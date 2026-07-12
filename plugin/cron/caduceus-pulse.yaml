@@ -1,0 +1,20 @@
+# Caduceus pulse — runs the daemon on a fixed cadence
+#
+# Default: every 2 minutes. This matches GitHub's X-Poll-Interval
+# guidance and keeps token usage low (304 Not Modified on idle ticks).
+#
+# Edit the `schedule` field to change cadence. Common alternatives:
+#   "every 5m"   — more conservative, fewer API calls
+#   "every 1m"   — more aggressive, faster pickup of new labeled issues
+#
+# The script is the daemon binary at <plugin>/bin/caduceus. Empty
+# stdout = silent (per the cron-automation contract).
+
+name: caduceus
+schedule: "every 2m"
+repeat: forever
+deliver: local
+script: "../bin/caduceus"
+no_agent: true
+workdir: "${plugin_root}"
+description: "Caduceus poll-and-process tick"

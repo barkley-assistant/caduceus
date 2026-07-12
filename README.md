@@ -1,6 +1,8 @@
 # Caduceus
 
-Caduceus is a self-hosted, event-driven GitHub issue orchestrator and daemon written in Rust. It acts as a robust, secure supervisor that handles the tedious system infrastructure of autonomous issue management — ETag-aware polling, trust-tier classification, file-backed atomic queues, and isolated git worktrees — before handing off cognitive execution to any arbitrary, pluggable local worker script.
+> **Hermes Agent plugin for self-hosted, event-driven GitHub issue automation.**
+
+Caduceus is a Rust daemon that polls GitHub for labeled issues, runs a user-configured AI harness against them in isolated worktrees, enforces hard timeouts, and finalizes the result as a branch + push + PR. It's shipped as a **Hermes plugin** so it integrates with your existing agent profile, cron harness, and Telegram delivery — and you install the Rust binary alongside the plugin in one step.
 
 ```
                     [ GitHub REST API ]
@@ -20,25 +22,58 @@ Caduceus is a self-hosted, event-driven GitHub issue orchestrator and daemon wri
             (Sandboxed)      │ (No GitHub Credentials)
                              ▼
               ┌─────────────────────────────┐
-              │      PLUGGABLE WORKER       │
-              │  (Python / OpenCode / LLM)  │  <-- Your AI agent or script
-              └──────────────┬──────────────┘
+              │      PLUGGABLE BRIDGE       │
+              │      (Python, user-edit)    │  <-- Translate CADUCEUS_* env vars
+              └──────────────┬──────────────┘    to your harness's CLI
                              │
-             Exit Status 0   │ Edits workspace files &
-                             │ writes worker-result.json
-                             ▼
-              ┌─────────────────────────────┐
-              │       CADUCEUS DAEMON       │
-              │        (Finalization)       │
-              │  - Atomic Git Branch & Push │
-              │  - Generates Pull Request   │
-              │  - Closes Issue & Logs Run  │
-              └─────────────────────────────┘
+              ┌──────────────┴──────────────┐
+              ▼                             ▼
+       ┌──────────────┐            ┌────────────────┐
+       │   OpenCode   │            │ pi · codex ·   │
+       │ + orchestr.  │            │ claude-code ·  │
+       │              │            │ your custom... │
+       └──────────────┘            └────────────────┘
 ```
 
 By explicitly decoupling deterministic infrastructure (Rust) from non-deterministic AI resolution (Python/TypeScript/Bash), Caduceus allows you to build rock-solid automation loops. Your AI agent scripts remain dead-simple, entirely air-gapped, and isolated from managing raw GitHub API states, secrets, or race conditions.
 
 Caduceus is **harness-agnostic**. Whether your worker invokes OpenCode, pi, codex, claude-code, or a custom agent, the contract is the same: the bridge reads `CADUCEUS_*` env vars, runs the harness, and the harness writes a `worker-result.json` file describing what it did. Caduceus never assumes any specific harness, workflow, or methodology.
+
+## Installation (Hermes plugin)
+
+```bash
+# Add the plugin to your active Hermes profile
+hermes plugin install barkley-assistant/caduceus
+
+# This installs:
+#   - The Rust daemon binary (managed by the plugin)
+#   - The plugin's skills, commands, and cron profile
+#   - The reference worker-bridge.py for OpenCode
+
+# Configure (in your ~/.hermes/config.yaml under caduceus: section)
+# See "Configuration" below
+
+# Start the daemon — the plugin sets up a cron profile for you
+hermes cron enable caduceus
+```
+
+The plugin manages the daemon binary lifecycle (install, upgrade, uninstall) so you never have to `curl | sh` or copy binaries manually.
+
+## Installation (standalone — no Hermes)
+
+If you don't use Hermes, you can install the daemon binary directly:
+
+```bash
+git clone https://github.com/barkley-assistant/caduceus.git
+cd caduceus
+cargo build --release
+cp target/release/caduceus ~/.local/bin/caduceus
+
+# Then create your config at ~/.config/caduceus/config.yaml
+# See "Configuration" below
+```
+
+You lose the plugin's skill/command/Telegram integration, but the daemon works identically. Config in `~/.config/caduceus/config.yaml` is the recommended location when not using Hermes.
 
 ## Why Caduceus Exists
 
@@ -56,35 +91,34 @@ Caduceus fixes this by enforcing a strict boundary: the daemon owns **process li
 - **Secret Masking:** Your GitHub Personal Access Token (PAT) resides solely within Caduceus. Downstream AI worker scripts never see or touch your API credentials.
 - **Bounded Retry Budget:** Each issue has a per-issue retry counter. After N failures, it transitions to a `failed` state and stops being claimed automatically — preventing infinite crash loops.
 
-### The Single Worker Contract
+## The Single Worker Contract
 
 Caduceus has exactly one worker path: a **harness bridge script** that you (the user) configure to invoke whichever AI harness you want — OpenCode today, pi or Codex or anything else tomorrow. The bridge receives `CADUCEUS_*` env vars from Caduceus, translates them into the harness's CLI surface, runs the harness, and exits with its exit code. Caduceus doesn't know or care which harness is on the other end.
 
 For investigation tickets (`🤖 auto-fix-investigate` label), the same bridge script runs — its behavior is driven by the labels passed through `CADUCEUS_ISSUE_LABELS`.
 
-The bridge is the **stable API** for harness integration. We ship a reference Python bridge (`examples/worker-bridge.py`) that invokes OpenCode with the `gentle-orchestrator` agent, but **the bridge is a starting point, not a constraint**. To switch harnesses:
+The bridge is the **stable API** for harness integration. We ship a reference Python bridge (`worker-bridge.py` — installed by the plugin to `~/.hermes/profiles/<profile>/plugins/caduceus/`) that invokes OpenCode with the `gentle-orchestrator` agent, but **the bridge is a starting point, not a constraint**. To switch harnesses:
 
-1. Copy `examples/worker-bridge.py` to your own config location
+1. Edit your local copy of `worker-bridge.py` (the plugin keeps your version across upgrades)
 2. Edit the `invoke_harness()` function to call your preferred harness's CLI (pi, codex, claude-code, etc.)
-3. Update the config's `worker_command` to point at your edited bridge
-4. Caduceus keeps working unchanged
+3. Caduceus keeps working unchanged
 
 The bridge owns the translation between Caduceus's env-var contract and your harness's CLI surface. Everything else — worktree provisioning, timeouts, queue management, finalize — stays in Caduceus.
 
 ### The Worker: Harness Bridge Pattern
 
-Caduceus spawns a **bridge script** (typically Python) that you configure to call whichever harness you want. We ship a reference bridge (`examples/worker-bridge.py`) that invokes OpenCode with the `gentle-orchestrator` agent. You fork it to plug in a different harness — pi, codex, claude-code, or anything else.
+Caduceus spawns a **bridge script** (typically Python) that you configure to call whichever harness you want. We ship a reference bridge (`worker-bridge.py`) that invokes OpenCode with the `gentle-orchestrator` agent. You fork it to plug in a different harness — pi, codex, claude-code, or anything else.
 
 **Out of the box (OpenCode):**
 
 ```python
-# examples/worker-bridge.py — reference implementation
+# worker-bridge.py — reference implementation
 def invoke_harness(worktree, prompt_file, run_id, labels):
     return subprocess.run([
         "opencode", "run",
         "--agent", "gentle-orchestrator",
         "-f", str(prompt_file),
-        "--", "Run the workflow per the attached prompt file.",
+        "--", "Run the workflow per the attached prompt file."
     ], cwd=worktree)
 ```
 
@@ -164,22 +198,24 @@ If your harness produces additional artifacts (specs, designs, test outputs, log
 }
 ```
 
-## Quick Start
+## Plugin Capabilities
 
-### 1. Build and Install Caduceus
+When installed as a Hermes plugin, Caduceus adds the following to your agent profile:
 
-Ensure you have the Rust toolchain installed on your machine, then clone and compile:
+- **`caduceus` skill** — Triggered when you mention GitHub issues, auto-fix, or PR automation in chat. Walks you through configuration, shows queue state, and surfaces recent run history.
+- **`/caduceus-status` command** — Quick status check from your chat surface (TUI or Telegram). Shows queue contents, last-run timestamps, current retry budget.
+- **`caduceus` cron profile** — Runs `caduceus` every 2 minutes. Configurable cadence.
+- **Daemon lifecycle management** — `hermes plugin upgrade caduceus` rebuilds and re-installs the binary. `hermes plugin uninstall caduceus` cleanly tears down state and cron profile.
 
-```bash
-git clone https://github.com/barkley-assistant/caduceus.git
-cd caduceus
-cargo build --release
-cp target/release/caduceus ~/.hermes/bin/caduceus
-```
+The plugin's SKILL.md, commands, and manifests live in `plugin/` in this repo.
 
-### 2. Configure the Daemon
+## Quick Start (Plugin path)
 
-Create your configuration file at `~/.hermes/config.yaml`. This example bridges the Caduceus orchestrator with the OpenCode + Gentle-AI reference worker:
+Once installed via `hermes plugin install barkley-assistant/caduceus`:
+
+### 1. Configure
+
+Add to your `~/.hermes/config.yaml`:
 
 ```yaml
 caduceus:
@@ -215,25 +251,24 @@ caduceus:
 
 > **Defaults are conservative — review before production.** The `poll_user` default `your-bot-account` and the `comment_ignore_patterns` regex are examples, not enforced values. Always review and override.
 
-### 3. Create Labels In Your Target Repositories
+### 2. Create Labels In Your Target Repositories
 
 ```bash
 gh label create "🤖 auto-fix" --repo OWNER/REPO --color "7C3AED" --description "Triggers Caduceus code automation pipeline"
 gh label create "🤖 auto-fix-investigate" --repo OWNER/REPO --color "7C3AED" --description "Triggers Caduceus analysis summary"
 ```
 
-### 4. Schedule Executions via Cron
-
-Because Caduceus produces zero output if no work is detected or if an ETag yields an HTTP 304 Not Modified, it functions perfectly as a silent cron job:
+### 3. Enable the cron profile
 
 ```bash
-# Example crontab entry running every 2 minutes
-*/2 * * * * ~/.hermes/bin/caduceus >> ~/.hermes/caduceus-state/cron.log 2>&1
+hermes cron enable caduceus
 ```
+
+Caduceus is now running silently every 2 minutes.
 
 ## Operational Diagnostics
 
-### `caduceus status`
+### `caduceus status` (CLI)
 
 Inspect the daemon's runtime state without grepping logs:
 
@@ -251,6 +286,16 @@ Queued issues:      4
 Stale claim reaped: 1 (last reap: 2026-07-12T21:30:00Z)
 Rate limit reset:   2026-07-12T22:14:23Z (remaining: 4987/5000)
 ```
+
+### `/caduceus-status` (in chat)
+
+From your Hermes TUI or Telegram:
+
+```
+/caduceus-status
+```
+
+Same information as the CLI, but formatted for your chat surface and routed through your normal notification channel.
 
 ### Session Transcripts
 
@@ -297,7 +342,7 @@ Caduceus logs the worker's resolved environment at startup (with secrets redacte
 | `poll_user` | `your-bot-account` | The GitHub login profile whose event stream is analyzed. **Override this in production.** |
 | `state_dir` | `~/.hermes/caduceus-state` | Location on disk where global states, atomicity lock-tokens, and running queues are managed. |
 | `stale_run_hours` | `1` | Automatic crash-recovery threshold. Active issue claims older than this are reaped on next tick. |
-| `worker_command` | *Required* | Array defining the exact command run to invoke your harness bridge. Default points at `examples/worker-bridge.py`. |
+| `worker_command` | *Required* | Array defining the exact command run to invoke your harness bridge. Default points at the plugin's bundled `worker-bridge.py`. |
 | `worker_timeout_seconds` | `3600` | Hard timeout cap enforced by Caduceus before forcefully terminating a worker. |
 | `workdir_base` | `~/projects` | Directory path where target repository clones are stored and worktrees are dynamically spun out. |
 | `feedback_author_allowlist` | `()` | Logins or numeric user IDs whose comments/inputs are granted Trusted rank classification. |
@@ -326,21 +371,15 @@ caduceus:
     - "gentle-ai"
 ```
 
-## Hermes Integration (Optional)
+## Configuration Resolution
 
-Caduceus is a standalone tool and can be used without Hermes installed. If you are a Hermes user, the daemon will additionally look for config under the `caduceus:` section of `~/.hermes/config.yaml` as a fallback. Resolution order:
+The daemon resolves its configuration in this order:
 
 1. `$CADUCEUS_CONFIG` environment variable (path to a YAML file)
-2. `~/.config/caduceus/config.yaml` (XDG-style, recommended for standalone users)
-3. `~/.hermes/config.yaml` under the `caduceus:` section (Hermes users)
+2. `~/.hermes/config.yaml` under the `caduceus:` section (the standard location when installed as a Hermes plugin)
+3. `~/.config/caduceus/config.yaml` (XDG-style, used as a fallback when running standalone without Hermes)
 
-A small optional Hermes plugin (in the `plugin/` directory of this repo) provides:
-
-- Auto-discovery of Caduceus state in the Hermes TUI
-- `caduceus status` integration with the Hermes status surface
-- Optional notifications via the existing Hermes Telegram gateway
-
-The plugin is **fully optional** — Caduceus works without it. See `plugin/README.md` for installation.
+Hermes users get the standard path (option 2). Standalone users get the XDG path (option 3). Power users can override either with the env var.
 
 ## License
 
