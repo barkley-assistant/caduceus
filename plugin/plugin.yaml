@@ -1,0 +1,54 @@
+name: caduceus
+version: 0.1.0
+description: Self-hosted GitHub issue orchestrator with hard worker timeouts and pluggable AI harness bridge.
+author: barkley-assistant
+license: MIT
+
+# The Hermes profile section this plugin adds skills/commands to
+profile_section: caduceus
+
+# Files that ship with the plugin (relative to this plugin/ folder)
+files:
+  - SKILL.md
+  - commands/caduceus-status.md
+  - cron/caduceus-pulse.yaml
+  - worker-bridge.py
+
+# Plugin-managed binary. Built from the repo's Cargo.toml during install.
+binaries:
+  - name: caduceus
+    build_from: ../Cargo.toml
+    install_to: bin/caduceus
+    build_command: cargo build --release
+
+# Hooks run during install/upgrade/uninstall
+hooks:
+  post_install:
+    - "mkdir -p ~/.hermes/caduceus-state/runs"
+    - "mkdir -p ~/.hermes/caduceus-state/claims"
+  pre_uninstall:
+    - "hermes cron disable caduceus || true"
+
+# Configuration schema (mirrors what's read from ~/.hermes/config.yaml)
+config:
+  schema_version: 1
+  defaults:
+    poll_interval_seconds: 120
+    poll_user: "your-bot-account"
+    state_dir: "~/.hermes/caduceus-state"
+    log_path: "~/.hermes/caduceus-state/processor.log"
+    workdir_base: "~/projects"
+    worker_timeout_seconds: 3600
+    max_retries_per_issue: 3
+    ticket_label_code: "🤖 auto-fix"
+    ticket_label_investigation: "🤖 auto-fix-investigate"
+    comment_forbidden_strings:
+      - "caduceus"
+      - "opencode"
+      - "gentle-ai"
+      - "engram"
+
+# Cron profile registered with the active profile
+cron_profiles:
+  - name: caduceus
+    source: cron/caduceus-pulse.yaml

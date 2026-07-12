@@ -1,51 +1,46 @@
-# Caduceus Hermes Plugin (Optional)
+# Caduceus Hermes Plugin
 
-This directory will contain the optional Hermes-side integration plugin for Caduceus. **It is not part of v0.1 of the daemon itself** — the daemon works fully standalone without it.
+The Caduceus daemon ships as a Hermes plugin. When installed, this folder's contents are placed at `~/.hermes/profiles/<profile>/plugins/caduceus/` and registered with the active profile.
+
+## What's here
+
+```
+plugin/
+├── plugin.yaml       # Plugin manifest (read by `hermes plugin install`)
+├── SKILL.md          # The "caduceus" skill — triggered by chat mentions
+├── commands/
+│   └── caduceus-status.md  # The /caduceus-status chat command
+├── cron/
+│   └── caduceus-pulse.yaml # Default cron profile (every 2 min)
+└── bin/
+    └── README.md     # The daemon binary gets installed here on plugin install
+```
+
+## Install lifecycle
+
+When a user runs `hermes plugin install barkley-assistant/caduceus`, the plugin manager:
+
+1. Copies the contents of this `plugin/` folder to the profile's plugin directory
+2. **Builds and installs the Rust daemon binary** from the repo's `Cargo.toml` into `<plugin>/bin/caduceus`
+3. Registers the skill, command, and cron profile with the active Hermes profile
+4. Creates `<state_dir>` (`~/.hermes/caduceus-state` by default) if it doesn't exist
+
+The binary install happens via the standard Hermes plugin lifecycle hooks (`post_install` in `plugin.yaml`). On `hermes plugin upgrade caduceus`, the binary is rebuilt and re-installed.
+
+## Uninstall
+
+`hermes plugin uninstall caduceus` removes the plugin folder, skill, command, and cron profile. It also stops the cron profile and removes the daemon binary. The user's `state_dir` is preserved (so re-installing later picks up where it left off), but can be manually deleted for a clean slate.
+
+## Editing the bridge
+
+The reference `worker-bridge.py` ships in this folder. After install, it's at:
+
+```
+~/.hermes/profiles/<profile>/plugins/caduceus/worker-bridge.py
+```
+
+Edit it directly to swap harnesses — your edits persist across plugin upgrades (the plugin manager doesn't overwrite user-modified files by default).
 
 ## Status
 
-The plugin does not exist yet. This README is a placeholder documenting what it will do when implemented (likely v0.2 of the daemon, or shortly after).
-
-## Planned Capabilities
-
-When implemented, the plugin will provide:
-
-1. **Auto-discovery** — Detect an installed `caduceus` binary and register its state with the Hermes profile.
-2. **Status integration** — Surface `caduceus status` output in the Hermes TUI status panel, alongside other agent state.
-3. **Notification routing** — Forward Caduceus delivery events (issue claimed, PR opened, worker timeout) through the existing Hermes Telegram gateway so they appear in the user's chat without additional configuration.
-4. **Cron profile** — Provide a default Hermes cron job entry that runs `caduceus` every 2 minutes, so users don't have to write their own crontab entry.
-
-## Installation (planned)
-
-Once implemented:
-
-```bash
-# From your Hermes profile root
-cd ~/.hermes/profiles/<your-profile>
-git clone https://github.com/barkley-assistant/caduceus.git plugins/caduceus
-hermes plugin enable caduceus
-```
-
-The plugin's `plugin.yaml` will declare the capabilities above and register the cron profile.
-
-## Architecture
-
-The plugin is a **thin wrapper**. It does not duplicate any daemon logic. Instead:
-
-- It reads `<state_dir>/state.json` directly (the daemon's state file) to surface queue state
-- It shells out to `caduceus status` for live runtime metrics
-- It reads `<state_dir>/cron.log` to surface recent activity in the TUI
-
-The daemon's binary remains the source of truth. If the plugin is uninstalled, Caduceus continues working identically — you just lose the Hermes-specific surfaces.
-
-## Why Optional?
-
-We chose to make the plugin optional (not required) because:
-
-- Caduceus is genuinely useful without Hermes — anyone with a Unix box and a GitHub repo can use it
-- A required Hermes dependency would limit the daemon's open-source audience
-- The "controller-worker" architecture means the daemon has zero runtime dependencies beyond `git` and the standard library — a clean, auditable footprint
-
-## Contributing
-
-If you'd like to help build this plugin, see `../CONTRIBUTING.md` and the planning documents in `../planning/`. Plugin implementation is not yet specced — the first step would be to write a `planning/YYYY-MM-DD_HHMMSS-caduceus-hermes-plugin.md` document that follows the same TDD-task style as the daemon's own plan.
+The plugin manifest (`plugin.yaml`), skill, command, and cron profile are scaffolding for the v0.1 implementation. The actual daemon binary doesn't exist yet — that's Phase 0+ of the planning doc.
