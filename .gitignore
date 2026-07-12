@@ -1,0 +1,24 @@
+# Build artifacts
+target/
+
+# OS / editor cruft
+.DS_Store
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# Local config / secrets (do not commit)
+*.local.yaml
+*.local.yml
+config.local.*
+.env
+.env.local
+
+# Caduceus runtime state (when run locally)
+state/
+runs/
+
+# Cargo lock for libraries (keep for binaries)
+# Cargo.lock
