@@ -25,7 +25,7 @@ Caduceus is a self-hosted, event-driven GitHub issue orchestrator and daemon wri
               └──────────────┬──────────────┘
                              │
              Exit Status 0   │ Edits workspace files &
-                             │ writes sdd-result.json
+                             │ writes worker-result.json
                              ▼
               ┌─────────────────────────────┐
               │       CADUCEUS DAEMON       │
@@ -37,6 +37,8 @@ Caduceus is a self-hosted, event-driven GitHub issue orchestrator and daemon wri
 ```
 
 By explicitly decoupling deterministic infrastructure (Rust) from non-deterministic AI resolution (Python/TypeScript/Bash), Caduceus allows you to build rock-solid automation loops. Your AI agent scripts remain dead-simple, entirely air-gapped, and isolated from managing raw GitHub API states, secrets, or race conditions.
+
+Caduceus is **harness-agnostic**. Whether your worker invokes OpenCode, pi, codex, claude-code, or a custom agent, the contract is the same: the bridge reads `CADUCEUS_*` env vars, runs the harness, and the harness writes a `worker-result.json` file describing what it did. Caduceus never assumes any specific harness, workflow, or methodology.
 
 ## Why Caduceus Exists
 
@@ -82,7 +84,7 @@ def invoke_harness(worktree, prompt_file, run_id, labels):
         "opencode", "run",
         "--agent", "gentle-orchestrator",
         "-f", str(prompt_file),
-        "--", "Run the SDD workflow per the attached prompt file."
+        "--", "Run the workflow per the attached prompt file.",
     ], cwd=worktree)
 ```
 
@@ -128,17 +130,37 @@ Caduceus explicitly **does not** propagate `GITHUB_TOKEN`, `GH_TOKEN`, `AUTO_ISS
 
 Your script simply reads the environment variables, alters code files directly inside the active directory, and indicates its outcome via its system exit state:
 
-- **Exit Code 0 (Success):** The script successfully resolved the issue. It must write a summary payload to `sdd-result.json` in the worktree root. Caduceus will then automatically create a branch, commit the changes, push to your remote, open a structured Pull Request, and close the origin ticket.
+- **Exit Code 0 (Success):** The script successfully resolved the issue. It must write a result payload to `worker-result.json` in the worktree root. Caduceus will then automatically create a branch, commit the changes, push to your remote, open a structured Pull Request, and close the origin ticket.
 - **Non-Zero Exit Code (Failure/Abstain):** The script failed to find a valid solution or errored out. Caduceus catches the failure cleanly, captures the full stdout/stderr execution transcript to a dedicated runner log, tears down the worktree safely, and unlocks the queue.
 
-### Required `sdd-result.json` Schema (For Exit 0):
+### Required `worker-result.json` Schema (For Exit 0):
 
 ```json
 {
-  "summary": "Detailed markdown text describing what the agent fixed. This becomes the description of the Pull Request.",
-  "commit_message": "fix(core): resolve buffer allocation leak",
-  "branch_name": "caduceus/auto-fix-42",
-  "pull_request_title": "fix(core): automatic mitigation of memory allocation leak"
+  "status": "success",
+  "summary": "Detailed markdown text describing what was done. Becomes the description of the Pull Request.",
+  "branch_name": "your-name/auto-fix-42",
+  "commit_message": "fix(component): resolve the issue",
+  "pull_request_title": "fix(component): automatic mitigation of issue"
+}
+```
+
+All fields are required. The schema is deliberately minimal and harness-agnostic — Caduceus doesn't care whether the worker used SDD, TDD, freeform editing, or anything else. It only needs to know the branch to push, the commit message to use, and the PR title/body to create.
+
+If your harness produces additional artifacts (specs, designs, test outputs, logs), you can include them under an optional `artifacts` object. Caduceus will surface them in the PR description but does not interpret their contents:
+
+```json
+{
+  "status": "success",
+  "summary": "...",
+  "branch_name": "...",
+  "commit_message": "...",
+  "pull_request_title": "...",
+  "artifacts": {
+    "spec_path": "openspec/changes/issue-42/spec.md",
+    "design_path": "openspec/changes/issue-42/design.md",
+    "test_output": "frontend/coverage/lcov.info"
+  }
 }
 ```
 
@@ -165,7 +187,7 @@ caduceus:
   poll_user: "your-bot-account"
   state_dir: "~/.hermes/caduceus-state"
   log_path: "~/.hermes/caduceus-state/processor.log"
-  sdd_workdir_base: "~/projects"
+  workdir_base: "~/projects"
 
   # The pluggable execution worker definition.
   # By default this points at the bundled bridge script, which invokes
@@ -277,7 +299,7 @@ Caduceus logs the worker's resolved environment at startup (with secrets redacte
 | `stale_run_hours` | `1` | Automatic crash-recovery threshold. Active issue claims older than this are reaped on next tick. |
 | `worker_command` | *Required* | Array defining the exact command run to invoke your harness bridge. Default points at `examples/worker-bridge.py`. |
 | `worker_timeout_seconds` | `3600` | Hard timeout cap enforced by Caduceus before forcefully terminating a worker. |
-| `sdd_workdir_base` | `~/projects` | Directory path where target repository clones are stored and worktrees are dynamically spun out. |
+| `workdir_base` | `~/projects` | Directory path where target repository clones are stored and worktrees are dynamically spun out. |
 | `feedback_author_allowlist` | `()` | Logins or numeric user IDs whose comments/inputs are granted Trusted rank classification. |
 | `comment_ignore_patterns` | standard bots | A regex list of users whose commentary additions should be explicitly skipped. |
 | `max_retries_per_issue` | `3` | Maximum number of consecutive worker failures before an issue transitions to `failed` state and stops being claimed. |
@@ -289,20 +311,19 @@ Caduceus logs the worker's resolved environment at startup (with secrets redacte
 
 The daemon refuses to post any bot comment containing the strings in `comment_forbidden_strings`. This is a **hard rule** — the daemon scans every outbound comment and skips the post if a forbidden string is found.
 
-**Default forbidden strings:** `caduceus`, `opencode`, `gentle-ai`, `engram`, `sdd` (all matched case-insensitive substring).
+**Default forbidden strings:** `caduceus`, `opencode`, `gentle-ai`, `engram` (all matched case-insensitive substring). These are the names of actual tools in the Caduceus stack — the daemon refuses to mention them so users don't leak their internal tooling into public issue/PR comments.
 
-**Why substring matching?** It catches every variant (`Caduceus`, `CADUCEUS`, `caduceus-bot`) without writing complex parsers. The cost is occasional false positives: the string `"sdd"` will match inside `"standards"` or `"address"`. If your comment needs to mention a string containing `sdd`, rephrase it ("Solid-State Drive" instead of "SSD") or override the list.
+**Why substring matching?** It catches every variant (`Caduceus`, `CADUCEUS`, `caduceus-bot`) without writing complex parsers. The cost is occasional false positives — e.g., the string `"opencode"` could match inside a longer word that happens to contain those letters. If your comment genuinely needs to mention such a string, override the list.
 
 **Override the default list** by setting `comment_forbidden_strings` in your config. **Explicit values replace the defaults entirely** — they do not merge. This keeps the rule strict: a user who lists one forbidden string is signaling they've thought about the rule and want that exact list.
 
 ```yaml
 caduceus:
-  # Example: keep all defaults except remove the broad "sdd" matcher
+  # Example: keep defaults except drop "engram" if you don't use it
   comment_forbidden_strings:
     - "caduceus"
     - "opencode"
     - "gentle-ai"
-    - "engram"
 ```
 
 ## Hermes Integration (Optional)
