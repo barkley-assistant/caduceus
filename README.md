@@ -54,13 +54,21 @@ Caduceus fixes this by enforcing a strict boundary: the daemon owns **process li
 - **Secret Masking:** Your GitHub Personal Access Token (PAT) resides solely within Caduceus. Downstream AI worker scripts never see or touch your API credentials.
 - **Bounded Retry Budget:** Each issue has a per-issue retry counter. After N failures, it transitions to a `failed` state and stops being claimed automatically — preventing infinite crash loops.
 
-## The Controller-Worker Contract
+### The Single Worker Contract
 
-Caduceus acts as the environment supervisor. When an eligible issue is queued and claimed, Caduceus spins up your configured `worker_command` inside the root directory of the freshly prepared git worktree.
+Caduceus has exactly one worker path: **OpenCode with the `gentle-orchestrator` agent**. The worker reads `CADUCEUS_*` env vars, executes the SDD workflow, edits files in place, writes `sdd-result.json`, and exits with a code. There's no separate Python worker for investigations — investigation tickets (those with the `🤖 auto-fix-investigate` label) use the same OpenCode invocation, with the orchestrator's behavior driven by the label passed through `CADUCEUS_ISSUE_LABELS`.
 
-### Reference Worker: OpenCode + Gentle-AI
+The optional Python wrapper script (`examples/worker-opencode-sdd.sh`) is **not a competing worker**. It exists only to:
 
-The out-of-the-box reference worker for code-fixing tickets is an OpenCode invocation that delegates to the `gentle-orchestrator` agent. The worker reads the SDD prompt Caduceus writes to the worktree, lets gentle-ai drive the full Spec-Driven Development pipeline, edits files in place, writes `sdd-result.json`, and exits 0.
+- Translate the `CADUCEUS_*` env vars into OpenCode's CLI flags
+- Ensure the OpenCode invocation runs with the right working directory, model, and prompt file
+- Surface the run ID and exit code in a way Caduceus's transcript capture can parse
+
+If you prefer, you can skip the wrapper entirely and configure OpenCode directly via the `worker_command` array in your config.
+
+### The Worker: OpenCode + Gentle-AI
+
+The v0.1 worker is a single OpenCode invocation that delegates to the `gentle-orchestrator` agent. The worker reads the SDD prompt Caduceus writes to the worktree, lets gentle-ai drive the full Spec-Driven Development pipeline, edits files in place, writes `sdd-result.json`, and exits 0.
 
 ```yaml
 worker_command:
@@ -75,7 +83,9 @@ worker_command:
 worker_timeout_seconds: 3600
 ```
 
-For investigation-only tickets (`🤖 auto-fix-investigate` label), a thinner Python worker that calls back to GitHub for context and writes a `findings.md` file is used instead. Both workers follow the same exit-code contract.
+For investigation tickets (`🤖 auto-fix-investigate` label), the same `worker_command` runs. The orchestrator's behavior differs based on the label, which Caduceus surfaces via the `CADUCEUS_ISSUE_LABELS` env var. The worker does **not** need to know it's an investigation ticket ahead of time — it reads the env var and behaves accordingly.
+
+A thin optional wrapper (`examples/worker-opencode-sdd.sh`) is provided for users who want bash-level control over the OpenCode invocation (custom env, pre-flight checks, exit-code mapping). The wrapper is purely a translation layer between Caduceus's env contract and OpenCode's CLI surface; it does no domain logic of its own.
 
 ### Context Injection (Environment Variables)
 
