@@ -56,36 +56,56 @@ Caduceus fixes this by enforcing a strict boundary: the daemon owns **process li
 
 ### The Single Worker Contract
 
-Caduceus has exactly one worker path: **OpenCode with the `gentle-orchestrator` agent**. The worker reads `CADUCEUS_*` env vars, executes the SDD workflow, edits files in place, writes `sdd-result.json`, and exits with a code. There's no separate Python worker for investigations — investigation tickets (those with the `🤖 auto-fix-investigate` label) use the same OpenCode invocation, with the orchestrator's behavior driven by the label passed through `CADUCEUS_ISSUE_LABELS`.
+Caduceus has exactly one worker path: a **harness bridge script** that you (the user) configure to invoke whichever AI harness you want — OpenCode today, pi or Codex or anything else tomorrow. The bridge receives `CADUCEUS_*` env vars from Caduceus, translates them into the harness's CLI surface, runs the harness, and exits with its exit code. Caduceus doesn't know or care which harness is on the other end.
 
-The optional Python wrapper script (`examples/worker-opencode-sdd.sh`) is **not a competing worker**. It exists only to:
+For investigation tickets (`🤖 auto-fix-investigate` label), the same bridge script runs — its behavior is driven by the labels passed through `CADUCEUS_ISSUE_LABELS`.
 
-- Translate the `CADUCEUS_*` env vars into OpenCode's CLI flags
-- Ensure the OpenCode invocation runs with the right working directory, model, and prompt file
-- Surface the run ID and exit code in a way Caduceus's transcript capture can parse
+The bridge is the **stable API** for harness integration. We ship a reference Python bridge (`examples/worker-bridge.py`) that invokes OpenCode with the `gentle-orchestrator` agent, but **the bridge is a starting point, not a constraint**. To switch harnesses:
 
-If you prefer, you can skip the wrapper entirely and configure OpenCode directly via the `worker_command` array in your config.
+1. Copy `examples/worker-bridge.py` to your own config location
+2. Edit the `invoke_harness()` function to call your preferred harness's CLI (pi, codex, claude-code, etc.)
+3. Update the config's `worker_command` to point at your edited bridge
+4. Caduceus keeps working unchanged
 
-### The Worker: OpenCode + Gentle-AI
+The bridge owns the translation between Caduceus's env-var contract and your harness's CLI surface. Everything else — worktree provisioning, timeouts, queue management, finalize — stays in Caduceus.
 
-The v0.1 worker is a single OpenCode invocation that delegates to the `gentle-orchestrator` agent. The worker reads the SDD prompt Caduceus writes to the worktree, lets gentle-ai drive the full Spec-Driven Development pipeline, edits files in place, writes `sdd-result.json`, and exits 0.
+### The Worker: Harness Bridge Pattern
 
-```yaml
-worker_command:
-  - "opencode"
-  - "run"
-  - "--agent"
-  - "gentle-orchestrator"
-  - "-f"
-  - ".hermes-sdd-prompt.txt"
-  - "--"
-  - "Run the SDD workflow per the attached prompt file."
-worker_timeout_seconds: 3600
+Caduceus spawns a **bridge script** (typically Python) that you configure to call whichever harness you want. We ship a reference bridge (`examples/worker-bridge.py`) that invokes OpenCode with the `gentle-orchestrator` agent. You fork it to plug in a different harness — pi, codex, claude-code, or anything else.
+
+**Out of the box (OpenCode):**
+
+```python
+# examples/worker-bridge.py — reference implementation
+def invoke_harness(worktree, prompt_file, run_id, labels):
+    return subprocess.run([
+        "opencode", "run",
+        "--agent", "gentle-orchestrator",
+        "-f", str(prompt_file),
+        "--", "Run the SDD workflow per the attached prompt file."
+    ], cwd=worktree)
 ```
 
-For investigation tickets (`🤖 auto-fix-investigate` label), the same `worker_command` runs. The orchestrator's behavior differs based on the label, which Caduceus surfaces via the `CADUCEUS_ISSUE_LABELS` env var. The worker does **not** need to know it's an investigation ticket ahead of time — it reads the env var and behaves accordingly.
+**Plugging in a different harness** (e.g., pi):
 
-A thin optional wrapper (`examples/worker-opencode-sdd.sh`) is provided for users who want bash-level control over the OpenCode invocation (custom env, pre-flight checks, exit-code mapping). The wrapper is purely a translation layer between Caduceus's env contract and OpenCode's CLI surface; it does no domain logic of its own.
+```python
+# your-copy/worker-bridge.py — your edits
+def invoke_harness(worktree, prompt_file, run_id, labels):
+    return subprocess.run([
+        "pi", "--workdir", str(worktree),
+        "--prompt-file", str(prompt_file),
+        "--run-id", run_id,
+    ], cwd=worktree)
+```
+
+The bridge does only two things:
+
+1. **Translate** `CADUCEUS_*` env vars into the harness's CLI flags
+2. **Propagate** the harness's exit code so Caduceus's `worker_timeout_seconds` and transcript capture work correctly
+
+Everything else — worktree provisioning, polling, atomic claims, finalize, comment posting — stays in Caduceus. The harness can be replaced without touching the daemon.
+
+For investigation tickets (`🤖 auto-fix-investigate` label), the same bridge runs. The harness reads `CADUCEUS_ISSUE_LABELS` and behaves accordingly. The bridge does **not** need to fork its behavior — it just passes the labels through.
 
 ### Context Injection (Environment Variables)
 
@@ -147,16 +167,14 @@ caduceus:
   log_path: "~/.hermes/caduceus-state/processor.log"
   sdd_workdir_base: "~/projects"
 
-  # The pluggable execution worker definition:
+  # The pluggable execution worker definition.
+  # By default this points at the bundled bridge script, which invokes
+  # OpenCode with the gentle-orchestrator agent. Edit the bridge (or
+  # write your own) to plug in pi, codex, claude-code, or any other
+  # harness — Caduceus doesn't care which one is on the other end.
   worker_command:
-    - "opencode"
-    - "run"
-    - "--agent"
-    - "gentle-orchestrator"
-    - "-f"
-    - ".hermes-sdd-prompt.txt"
-    - "--"
-    - "Run the SDD workflow per the attached prompt file."
+    - "python3"
+    - "/path/to/your/worker-bridge.py"
   worker_timeout_seconds: 3600
 
   # Security Trust Tiers
@@ -257,7 +275,7 @@ Caduceus logs the worker's resolved environment at startup (with secrets redacte
 | `poll_user` | `your-bot-account` | The GitHub login profile whose event stream is analyzed. **Override this in production.** |
 | `state_dir` | `~/.hermes/caduceus-state` | Location on disk where global states, atomicity lock-tokens, and running queues are managed. |
 | `stale_run_hours` | `1` | Automatic crash-recovery threshold. Active issue claims older than this are reaped on next tick. |
-| `worker_command` | *Required* | Array defining the exact command run to invoke your domain worker plug-in. |
+| `worker_command` | *Required* | Array defining the exact command run to invoke your harness bridge. Default points at `examples/worker-bridge.py`. |
 | `worker_timeout_seconds` | `3600` | Hard timeout cap enforced by Caduceus before forcefully terminating a worker. |
 | `sdd_workdir_base` | `~/projects` | Directory path where target repository clones are stored and worktrees are dynamically spun out. |
 | `feedback_author_allowlist` | `()` | Logins or numeric user IDs whose comments/inputs are granted Trusted rank classification. |
