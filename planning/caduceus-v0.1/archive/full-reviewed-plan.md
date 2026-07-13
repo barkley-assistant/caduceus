@@ -4,7 +4,7 @@
 
 **Goal:** Build a self-hosted Rust daemon, shipped as a **Hermes plugin**, that polls GitHub for labeled issues, manages an atomic claim queue, provisions isolated git worktrees, spawns a user-configurable AI harness via a Python bridge, enforces a hard worker timeout, and finalizes the result as a branch + push + PR + issue close.
 
-**Architecture:** Plugin-primary, daemon-binary. The Hermes plugin wraps the Rust daemon: provides skills, commands, cron profile, and the reference `worker-bridge.py`. The Rust daemon owns process lifecycle, IO, atomicity, and observability. The worker is a bridge script that reads `CADUCEUS_*` env vars, invokes a user-configured harness (OpenCode, pi, codex, claude-code, anything), edits files in the worktree, writes `worker-result.json`, and exits with a code. The daemon never sees an LLM API key or token.
+**Architecture:** Plugin-primary, daemon-binary. A small root Python adapter registers the Hermes skill, status command, setup/doctor CLI, and explicit cron lifecycle; the Rust daemon owns process lifecycle, IO, atomicity, GitHub work, and observability. Setup seeds a user-owned harness bridge. The bridge reads `CADUCEUS_*` env vars, invokes a configured harness (OpenCode, pi, codex, claude-code, anything), edits files in the worktree, writes `worker-result.json`, and exits with a code. The daemon never sees an LLM API key or token.
 
 **Tech Stack:**
 - Rust 2021 edition (≥ 1.75)
@@ -19,6 +19,922 @@
 - Reference worker: A user-editable Python bridge (`plugin/worker-bridge.py`) that wraps OpenCode + Gentle-AI by default. Users fork the bridge to plug in pi, codex, claude-code, or any other harness.
 
 ---
+
+## Binding v0.1 Corrections and Acceptance Overlay
+
+> **Preservation and precedence rule:** The original 46-task RED/GREEN/REFACTOR playbook remains below in full. This overlay records the review corrections without discarding that implementation detail. Engineers execute the original task steps and inline tests, augmented by the corresponding overlay requirements. Where an original prose statement, signature, schema, endpoint, placeholder stub, or inline test conflicts with this overlay, the overlay is authoritative and the conflicting fragment must be updated in that same task. Unmentioned original detail remains authoritative. A task is not complete until both its original acceptance steps and its overlay acceptance criteria pass.
+>
+> This overlay is intentionally inside the same planning document so a fresh subagent has one source of truth. It is not a replacement plan and must not be extracted into a second implementation track.
+
+### What is normative
+
+When two statements differ, use this order of authority:
+
+1. Non-negotiable invariants and canonical public contracts in this overlay.
+2. The exact lifecycle, failure classification, and orchestration order in Amendments 3.1–3.4 and 7.0–7.1.
+3. The applicable amendment's acceptance criteria and named edge cases.
+4. Unchanged prose in the original task body.
+5. Original inline code and test snippets.
+
+Inline snippets are implementation aids, not frozen production code. Do not copy a snippet that uses a superseded field, endpoint, environment variable, error variant, or signature. Rewrite that test around the normative behavior and public contract instead. Local helper types and private signatures may evolve during implementation; changing a serialized schema, CLI, environment variable, state transition, public signature listed in the overlay, or cross-module ownership boundary requires a plan update first.
+
+An agent may choose a different internal implementation only when all named failure paths and forbidden side effects remain covered. If a task cannot meet its acceptance criteria without changing a higher-authority contract, the task is blocked and must not silently redesign that contract.
+
+### Goal and scope
+
+Caduceus is a Unix single-host, one-shot Rust daemon shipped as a Hermes plugin. Each invocation polls GitHub for open issues carrying one of two configured trigger labels, atomically queues at most one unit of work, provisions an isolated git worktree, runs a user-editable harness bridge under a hard process-tree timeout, and finalizes a successful code result as a commit, push, pull request, and issue close. Investigation results are posted as findings without a code commit or PR. Linux is the tier-1 release platform; macOS is supported through the same Unix supervisor/session contract.
+
+The daemon owns GitHub credentials, polling, state, claims, worktrees, prompts, environment construction, process groups, transcripts, heartbeats, git operations, public-text validation, retries, and status metadata. The bridge owns only translation from `CADUCEUS_*` inputs to a harness command and propagation of the harness exit code.
+
+### Non-negotiable v0.1 invariants
+
+1. A nonblocking exclusive lock on `<state_dir>/daemon.lock` covers an entire tick. A second cron invocation exits 0 without polling or claiming.
+2. Queue and metadata files use same-directory temporary files, `fsync`, and atomic rename. Malformed `state.json` is never replaced with an empty state.
+3. Claim creation, queue transition, claim release, and retry transition are `StateStore` operations. Queue helpers never construct claim paths from raw issue strings.
+4. A claimed issue leaves `InProgress` through exactly one terminal operation: `complete`, `complete_investigation`, `retry_or_fail`, or `skip`. Every operation removes its claim.
+5. The daemon owns the git branch name. Worker output cannot select a ref.
+6. The worker is spawned in a new Unix session behind the internal Rust worker supervisor. Timeout, SIGINT, SIGTERM, and daemon-parent death kill the whole worker session and await output-drain tasks before cleanup.
+7. Rust, not Python, owns heartbeat creation and removal.
+8. No GitHub credential resolved or held by the daemon is injected into the worker environment or command. The child uses `env_clear()` followed by an explicit allowlist plus documented `CADUCEUS_*` variables. Same-user filesystem access is not an OS sandbox and is documented separately.
+9. All public GitHub text—comments, PR title, and PR body—passes the public-voice check before any API mutation.
+10. Finalization is idempotent across partial failures: existing remote branches and open PRs are detected and reused.
+11. A rate-limit observation is persisted before returning. No later tick performs GitHub calls before the persisted reset time.
+12. No-argument CLI invocation is exactly equivalent to `caduceus run`.
+
+### Toolchain and dependencies
+
+- Rust 2021, MSRV 1.75
+- Runtime: `tokio`, `tokio-util`, `reqwest`, `serde`, `serde_json`, `serde_yaml`, `clap`, `tracing`, `tracing-subscriber`, `tracing-appender`, `thiserror`, `fs2`, `ulid`, `chrono`, `regex`, `which`, `shellexpand`, `sha2`, `hex`, `filetime`, `walkdir`, `libc`
+- Git implementation: shell out to the installed `git` executable. This avoids libgit2 credential divergence and uses the operator's existing SSH agent or credential helper. Every invocation uses argument arrays, never a shell string.
+- Dev: `tempfile`, `wiremock`, `assert_fs`, `predicates`, `serial_test`
+- Python bridge tests: `pytest`
+
+Commit `Cargo.lock` and use `--locked` for CI, plugin, and release builds. The dependency resolver must pass the release suite on Rust 1.75; upgrading a crate in a way that raises MSRV is a documented compatibility change, not an incidental lockfile refresh.
+
+### Canonical public contracts
+
+#### Configuration
+
+```rust
+pub struct Config {
+    pub poll_interval_seconds: u64,          // 120; must be > 0
+    pub state_dir: PathBuf,                  // $HERMES_HOME/caduceus-state
+    pub log_path: PathBuf,                   // <state_dir>/processor.log
+    pub workdir_base: PathBuf,               // ~/projects
+    pub watched_repos: Vec<String>,          // [] means discover via /user/repos
+    pub worker_command: Vec<String>,         // resolved plugin default or explicit
+    pub worker_timeout_seconds: u64,         // 3600; must be > 0
+    pub http_timeout_seconds: u64,           // 60; must be > 0
+    pub git_timeout_seconds: u64,            // 300; must be > 0
+    pub transcript_max_bytes: u64,           // 10 MiB
+    pub run_retention_days: u64,             // 30; must be > 0
+    pub stale_run_hours: u64,                // 1; must be > 0
+    pub max_retries_per_issue: u32,          // 3 total failed attempts; must be > 0
+    pub retry_backoff_seconds: u64,          // 300; must be > 0
+    pub ticket_label_code: String,
+    pub ticket_label_investigation: String,
+    pub feedback_author_allowlist: Vec<String>,
+    pub comment_ignore_patterns: Vec<String>,
+    pub comment_forbidden_strings: Vec<String>,
+    pub worker_env_allowlist: Vec<String>,
+    pub github_token: Option<String>,
+    pub api_base: String,
+    pub dry_run: bool,
+}
+```
+
+`Config::load()` resolves `$CADUCEUS_CONFIG`, then `$HERMES_HOME/config.yaml` under `caduceus:` (`HERMES_HOME` defaults to `~/.hermes`), then `~/.config/caduceus/config.yaml` under `caduceus:`. Relative `HERMES_HOME` is rejected. `CADUCEUS_DRY_RUN` overrides YAML when its value is one of `1,true,yes`; `0,false,no` disables it; other values are errors. Paths expand only a leading `~`; no shell expansion is performed. In `worker_command` arguments only, the exact token `${plugin_root}` is replaced with the plugin root derived from the installed executable. No other `${...}` interpolation is accepted.
+
+When `worker_command` is absent and the executable has the canonical `<plugin>/bin/caduceus` layout, the daemon uses `python3 $HERMES_HOME/caduceus/worker-bridge.py` if setup created that user-owned file. Standalone/noncanonical installs must set `worker_command`; absence is a validation error. Tests use `Config::test_defaults(root: &Path)`, never a host-dependent `Config::defaults()`.
+
+Token resolution is explicit config, `CADUCEUS_GITHUB_TOKEN`, `GITHUB_TOKEN`, then `gh auth token`. Empty values are ignored. Errors never include token contents.
+
+#### Issue identity and queue schema
+
+```rust
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+pub struct IssueKey { pub owner: String, pub repo: String, pub number: u64 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Phase { Queued, InProgress, Previewed, Done, Failed, Skipped }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TicketType { Code, Investigation }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FinalizationStage { Committed, Pushed, PrCreated, Commented, InvestigationReady, InvestigationCommented }
+
+pub struct FinalizationCheckpoint {
+    pub run_id: String,
+    pub branch_name: String,
+    pub result_path: PathBuf,          // secure copy under state_dir/runs
+    pub stage: FinalizationStage,
+    pub commit_oid: Option<String>,
+    pub pr_number: Option<u64>,
+    pub pr_url: Option<String>,
+}
+
+pub struct QueueEntry {
+    pub key: IssueKey,
+    pub phase: Phase,
+    pub ticket_type: TicketType,
+    pub attempts: u32,
+    pub last_error: Option<String>,
+    pub last_run_id: Option<String>,
+    pub next_attempt_at: Option<DateTime<Utc>>,
+    pub finalization: Option<FinalizationCheckpoint>,
+    pub queued_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+pub struct QueueState { pub version: u32, pub entries: BTreeMap<String, QueueEntry> }
+```
+
+The map key is lowercase `owner/repo#number`, derived from a validated `IssueKey`; fields retain GitHub's canonical casing for display/API paths. Owner is 1–39 alphanumeric/hyphen characters, cannot begin/end with a hyphen, and repo is 1–100 `[A-Za-z0-9_.-]` characters other than `.` or `..`; number must be positive. Configured repositories deduplicate case-insensitively. Claim filenames are `sha256(lowercase_display_key).claim`; claim contents are JSON `{version,key,run_id,pid,process_start_identity,started_at,worktree_path}`. On Linux, process identity combines boot ID and `/proc/<pid>/stat` start ticks so PID reuse cannot preserve a stale claim; other Unix platforms use the strongest available process start/executable check and fall back conservatively to age.
+
+After a worker result is validated, the daemon copies it atomically to `<state_dir>/runs/<run_id>.result.json` with mode `0600`. Checkpoint loading verifies `result_path` is a regular non-symlink beneath the canonical runs directory and revalidates its schema/hash. Once a code commit exists—or before an investigation comment is attempted—the queue entry receives a durable `FinalizationCheckpoint`. A later tick with a checkpoint resumes that exact branch/result/stage and does not invoke the worker or generate a new run ID. Stage advancement is persisted immediately after each idempotent side effect. Completion retains the checkpoint as audit data; queue reset refuses a checkpoint with a live/open PR unless `--force-finalization-reset` is explicitly supplied and confirmed in dry-run output.
+
+Retry semantics use total worker-attributable failed attempts: with a budget of 3, failures one and two return to `Queued` with `next_attempt_at = now + retry_backoff_seconds`; failure three transitions to `Failed`. GitHub, git transport, local I/O, rate-limit, and operator-cancellation failures do not increment this budget. A still-open issue already in `Failed` is not automatically reset. Operators use the explicit queue reset command defined in Task 3.4; removing and re-adding a label alone does not bypass the budget.
+
+Dry-run success transitions to `Previewed`. While dry-run remains enabled, rediscovery is a no-op. On the first non-dry tick, rediscovery atomically promotes a still-labeled `Previewed` entry back to `Queued`, so previewing never prevents the eventual real run.
+
+#### Polling contract
+
+The daemon does not consume GitHub's heterogeneous Events API. It discovers repositories with paginated `GET /user/repos?per_page=100&sort=full_name` unless `watched_repos` is configured, then performs one paginated open-issue query per URL-encoded trigger label: `GET /repos/{slug}/issues?state=open&labels={label}&per_page=100&sort=updated&direction=desc`. Results are merged by case-insensitive issue key. Pull-request objects are excluded by the presence of `pull_request`. Trigger labels are still verified from each returned object's label array rather than trusting the query alone. An issue present in both mutually exclusive result sets is reported as ambiguous and is not enqueued until a user removes one.
+
+Every GET page has a persisted ETag entry in `<state_dir>/cache/http.json`. A 304 reuses the last successfully parsed body stored with that ETag. Cache writes are atomic. Invalid cache JSON or an invalid ETag drops only the affected cache entry and refetches unconditionally. The first tick processes current labeled issues; there is no historical event replay.
+
+All requests set `User-Agent: caduceus/<version>`, `Accept: application/vnd.github+json`, and `X-GitHub-Api-Version: 2022-11-28`. All non-2xx/304 statuses become typed errors. `Link` pagination is followed within a configurable hard maximum of 20 pages per endpoint; exceeding it is an error rather than silent truncation.
+
+#### Worker environment and result
+
+The child receives exactly these Caduceus variables:
+
+- `CADUCEUS_ISSUE_NUMBER`, `CADUCEUS_ISSUE_TITLE`, `CADUCEUS_ISSUE_BODY`, `CADUCEUS_ISSUE_REPO`
+- `CADUCEUS_ISSUE_LABELS_JSON` (JSON array; the comma-separated variable is removed)
+- `CADUCEUS_WORKTREE_PATH`, `CADUCEUS_RUN_ID`, `CADUCEUS_CONTEXT_JSON`
+- `CADUCEUS_BRANCH_NAME` (daemon-owned expected branch)
+
+The inherited allowlist defaults to `PATH`, `HOME`, `USER`, `SHELL`, `LANG`, `LC_ALL`, `TERM`, `TMPDIR`, plus variables matching `OPENAI_*`, `ANTHROPIC_*`, `OPENROUTER_*`, and `OPENCODE_*`. GitHub credential names are denied even if users add them to the allowlist. Startup logs variable names and redacted presence only, never values. Because the worker normally runs as the daemon's OS user, it may still be able to read that user's credential files; operators requiring a hostile-worker security boundary must run the bridge in a separately configured container/user sandbox.
+
+Allowlist syntax is an exact variable name or one terminal `*` prefix pattern such as `OPENAI_*`. Any other wildcard placement, empty entry, `=`, NUL, or nonportable variable name is a configuration error.
+
+#### Filesystem permissions
+
+The daemon creates `state_dir`, `runs`, `claims`, `cache`, and temporary worker-home/control directories with mode `0700`, and state, metadata, cache, claim, heartbeat, transcript, and dry-run files with mode `0600`. Existing paths that are symlinks, non-directories, group/world writable without the sticky-bit exception, or owned by another user are rejected. Atomic replacement reapplies the intended mode. Tests may skip ownership assertions only on platforms that cannot expose Unix metadata.
+
+On exit 0 the bridge must leave `<worktree>/worker-result.json`:
+
+```json
+{
+  "status": "success",
+  "summary": "Non-empty Markdown summary",
+  "commit_message": "fix(component): description",
+  "pull_request_title": "fix(component): description",
+  "artifacts": { "optional-name": "any JSON value" }
+}
+```
+
+The file is limited to 1 MiB. Unknown top-level fields are rejected. Required strings are trimmed, non-empty, NUL-free, and limited to 64 KiB for summary and 256 characters for commit/PR titles. PR title is one line with no control characters; commit message may contain newlines but no other control characters. Artifact keys are nonempty, control-free, at most 128 characters, and limited to 100 entries. `artifacts` is `BTreeMap<String, serde_json::Value>` and its rendered PR section is escaped and size-limited. Investigation uses the same schema; `commit_message` and `pull_request_title` must still be present for schema stability but are ignored.
+
+#### Finalization contract
+
+The daemon creates `automation/issue-<number>-<run-id-lowercase>` before worker launch and exports it. Code success requires at least one tracked or untracked change other than daemon control files (`worker-prompt.md`, `worker-result.json`, dry-run reports). The daemon excludes those files from commits, commits all remaining changes, pushes `HEAD:refs/heads/<branch>`, finds or creates an open PR for that head/base, posts a completion comment if not already present, and closes the issue if still open. Each step treats an already-achieved state as success.
+
+Investigation success posts a voice-checked findings comment derived from `summary` and leaves the issue open with the trigger label removed. It performs no commit, push, or PR creation.
+
+Dry-run performs polling, claim, issue fetch, prompt creation, worker execution, result validation, and change inspection. It performs no commit, push, comment, label mutation, PR, or issue close. It writes `<state_dir>/runs/<run_id>.dry-run.md` before teardown.
+
+#### State metadata and status
+
+`<state_dir>/state_meta.json` contains schema version, tick start/finish/outcome, last HTTP status, next allowed poll time, reap time/count, rate-limit limit/remaining/reset, and last error. It uses the same atomic writer as queue state.
+
+`caduceus status [--json]` loads configuration through the normal resolution chain, then reads that config's `state_dir`. It reports version, last tick timestamps/outcome, currently running worker and transcript, counts by queue phase, FIFO next head, recent errors, reap stats, and rate-limit data. Missing state yields a distinct nonzero diagnostic; corrupt state yields a nonzero diagnostic preserving the file. Heartbeats older than 90 seconds are stale, not live.
+
+#### CLI contract
+
+```text
+caduceus                         # identical to `caduceus run`
+caduceus run
+caduceus status [--json]
+caduceus worktree-gc [--older-than-days N] [--dry-run]
+caduceus queue reset <owner/repo#number> [--dry-run]
+caduceus migrate-state --from <path> [--dry-run]
+```
+
+Implement no-argument behavior by inspecting `args_os` and inserting `run` before Clap parsing; do not rely on a nonexistent/default-subcommand annotation. Successful `run` writes no stdout. Diagnostics go to stderr. `run` returns 0 for processed/idle/concurrent/cadence/rate-limit/cancelled outcomes and 1 for configuration, corruption, invariant, or unrecovered pipeline failures. `status` returns 2 for missing state and 1 for corrupt/unreadable state. Mutation/recovery commands require the daemon lock.
+
+`__worker-supervisor` is a hidden internal mode dispatched before public command handling. It is never shown in help, never accepted from cron/plugin configuration, and refuses to start unless its inherited versioned control/status file descriptors are valid.
+
+#### Hermes plugin compatibility contract
+
+Hermes Agent v0.18.2 (`v2026.7.7.2`) is the minimum tested host for v0.1. The repository root is the installable Hermes directory-plugin root because `hermes plugins install barkley-assistant/caduceus` clones the selected repository root into `~/.hermes/plugins/caduceus/`. Installing only the historical `plugin/` subdirectory is unsupported: Hermes would move that subdirectory without the Rust workspace needed by setup.
+
+The canonical Hermes-facing layout is:
+
+```text
+plugin.yaml
+__init__.py
+Cargo.toml
+Cargo.lock
+src/
+skills/caduceus/SKILL.md
+plugin-assets/worker-bridge.py
+plugin-assets/caduceus-pulse.sh
+bin/                         # generated by explicit setup; ignored by git
+```
+
+`plugin.yaml` uses only fields consumed by the v0.18.2 directory-plugin loader: `manifest_version`, `name`, `version`, `description`, `author`, `kind`, `requires_env`, `provides_tools`, and `provides_hooks`. Caduceus uses `kind: standalone`, no tools/hooks, and does not put defaults, file lists, binaries, lifecycle shell commands, profiles, or cron declarations in the manifest. Unknown manifest fields may be silently ignored by Hermes and are therefore rejected by Caduceus's contract test.
+
+Root `__init__.py` is a small, standard-library-only Hermes adapter. Its `register(ctx)` explicitly registers:
+
+- `ctx.register_skill("caduceus", <root>/skills/caduceus/SKILL.md, ...)`, resolvable as `caduceus:caduceus`; plugin skills are opt-in and are not automatic trigger rules.
+- `/caduceus-status` through `ctx.register_command`; it invokes `<root>/bin/caduceus status --json` with an argument array, a short timeout, and bounded output, then returns a chat-safe diagnostic when setup has not built the binary.
+- `hermes caduceus ...` through `ctx.register_cli_command`, with `setup`, `doctor`, `status`, `cron-install`, and `cron-remove` subcommands.
+
+Plugin import/registration never compiles code, mutates config, creates cron jobs, or performs network access. `hermes caduceus setup` is the explicit build/install step: verify Rust/Cargo/Git/Python prerequisites, run `cargo build --release --locked --manifest-path <root>/Cargo.toml`, atomically install the resulting executable as `<root>/bin/caduceus`, create the configured state directories with secure modes, and seed the user-owned bridge at `$HERMES_HOME/caduceus/worker-bridge.py` (default `~/.hermes/caduceus/worker-bridge.py`) only when absent. If the shipped bridge template changes and the user copy differs, setup writes a sibling `.new` candidate and reports it; it never overwrites the user bridge. The daemon's plugin default points to this user-owned path. Standalone installs must set `worker_command` explicitly.
+
+Hermes cron does not import `cron/*.yaml`. `hermes caduceus cron-install` atomically writes a generated Bash wrapper beneath `$HERMES_HOME/scripts/caduceus-pulse.sh`; the wrapper contains the absolute installed binary path and uses `exec <binary> run`. It then creates or reconciles exactly one named `caduceus` no-agent job equivalent to:
+
+```text
+hermes cron create "every 2m" --name caduceus --script caduceus-pulse.sh --no-agent
+```
+
+Reconciliation uses Hermes's registered `cronjob` tool through `ctx.dispatch_tool`, not direct edits to `cron/jobs.json`: zero matches creates, one match updates/reuses, and multiple matches fail with their IDs. `cron-remove` removes the recorded/matching job and wrapper idempotently. The gateway must be running (or a configured managed cron provider active) for scheduled jobs to fire. The daemon's own full-tick lock remains required because manual runs and multiple Hermes schedulers may overlap.
+
+Hermes has no plugin uninstall hook. Operators run `hermes caduceus cron-remove` before `hermes plugins remove caduceus`; removal preserves `$HERMES_HOME/caduceus/`, the daemon state directory, user config, and repositories. `hermes plugins update caduceus` updates sources only; operators rerun `hermes caduceus setup` to rebuild. The setup/doctor output makes these lifecycle facts explicit.
+
+### Error contract
+
+```rust
+#[derive(thiserror::Error, Debug)]
+pub enum CaduceusError {
+    Config(String),
+    Io(#[from] std::io::Error),
+    Json(#[from] serde_json::Error),
+    Yaml(#[from] serde_yaml::Error),
+    Http(#[from] reqwest::Error),
+    Git { operation: &'static str, stderr: String },
+    GitHubApi { status: u16, message: String },
+    RateLimited { reset_at: u64, remaining: u32, limit: Option<u32> },
+    TokenResolution(String),
+    Worker(String),
+    Worktree(String),
+    Queue(String),
+    StateCorrupt { path: PathBuf, message: String },
+    Cancelled,
+    Other(String),
+}
+pub type CaduceusResult<T> = Result<T, CaduceusError>;
+```
+
+No production constructor panics on malformed external data. Poisoned mutexes, invalid timestamps, invalid UTF-8 paths, and malformed queue keys return errors.
+
+---
+
+### Phase 0: Project scaffolding
+
+#### Amendment 0.1: Create the Rust crate and module graph
+
+Create `Cargo.toml`, committed `Cargo.lock`, `src/main.rs`, and modules `config`, `context`, `error`, `finalize`, `github`, `issue`, `logging`, `meta`, `migrate`, `poll`, `prompt`, `queue`, `status`, `validate`, `verify`, `worktree`, `worker`, and `worker_supervisor`. Add all dependencies listed above now so later tasks do not mutate the toolchain opportunistically. Re-export only `CaduceusError`, `CaduceusResult`, `IssueDetail`, `IssueKey`, queue enums/entries, and `WorkerResult` from `lib.rs`; modules otherwise use their canonical paths.
+
+Acceptance: `cargo build --locked --all-targets`, `cargo fmt --check`, and `cargo clippy --locked --all-targets -- -D warnings` pass on the pinned MSRV. `main` parses the canonical CLI only; it does not print a version during a normal cron tick.
+
+Dependencies: none.
+
+#### Amendment 0.2: Implement and validate the Hermes adapter
+
+Replace the historical `plugin/` scaffolding with the root-level layout in the Hermes compatibility contract. Implement root `__init__.py` registration and its explicit setup/doctor/status/cron lifecycle. Keep the adapter stdlib-only so Hermes can discover it before the Rust binary is built. All subprocess calls use argument arrays, bounded output, timeouts, and redacted errors. The bridge template remains the only harness-specific Python file; the Hermes adapter never imports it or handles daemon credentials.
+
+Tests run against Hermes Agent 0.18.2 in an isolated `HERMES_HOME` and prove: install from repository root; plugin discovery and enablement; manifest field allowlist; skill resolution as `caduceus:caduceus`; slash and CLI command registration; missing-binary diagnostics; locked Rust build and atomic binary placement; setup idempotency; user bridge preservation and `.new` upgrade candidate; cron wrapper path/content/mode; cron zero/one/multiple-match reconciliation; no-agent execution invokes `caduceus run`; cron removal; source update followed by rebuild; plugin removal leaves user bridge/state; and registration performs no build/network/config/cron mutation. A negative fixture containing the legacy custom manifest fields must fail the contract test.
+
+Dependencies: 0.1.
+
+### Phase 1: Configuration, errors, and logging
+
+#### Amendment 1.1: Parse and validate Config
+
+Implement the canonical `Config` contract and a private deserialization layer so missing `worker_command` can be resolved after the source path is known. Compile regex patterns during validation and reject malformed allowlist IDs, invalid repository slugs, zero durations/budgets, duplicate trigger labels, and forbidden attempts to allow GitHub credential variables.
+
+Tests: minimal plugin-derived config; every default; explicit replacement semantics for all lists; leading-tilde expansion; exact `${plugin_root}` worker-argument expansion; rejection of unknown interpolation; empty/zero rejection; invalid regex; malformed `id:`; duplicate labels; unknown YAML field rejection using `deny_unknown_fields`; standalone missing-worker error; secure directory/file modes; symlinked state path; wrong-owner path; and unsafe existing permissions.
+
+Dependencies: 0.1.
+
+#### Amendment 1.2: Resolve GitHub authentication
+
+Implement the documented hierarchy without mutating global environment during parallel tests. Token tests use `serial_test` and a scoped environment guard. Shell out to `gh auth token` with captured stderr, a 10-second timeout, and no token logging. Whitespace-only output is failure.
+
+Tests: each hierarchy level, precedence, empty values, missing `gh`, nonzero `gh`, timeout, and redacted error text.
+
+Dependencies: 1.1.
+
+#### Amendment 1.3: Resolve config files and environment overrides
+
+Implement `Config::load`, `load_from(path)`, and test-only `load_with_paths(env, hermes, standalone)`. An explicitly configured missing `$CADUCEUS_CONFIG` is an error and never falls through. A present Hermes file without a `caduceus` section falls through only when a standalone file exists; otherwise it reports the missing section. Apply `CADUCEUS_DRY_RUN` after YAML parsing.
+
+Tests: all precedence cases, explicit missing path, malformed YAML, missing section, standalone fallback, dry-run truth table, non-Unicode environment value, and paths containing spaces.
+
+Dependencies: 1.1.
+
+#### Amendment 1.4: Initialize structured logging safely
+
+Return a `WorkerGuard` that keeps the nonblocking file writer alive. Create parent directories, write structured compact logs to the file, and human-readable warnings/errors to stderr. Initialization is once per process; tests use a subscriber scoped with `tracing::subscriber::with_default` rather than installing multiple globals. Secrets and environment values are never logged.
+
+Tests: nested directory creation, flushed line after dropping guard, second initialization behavior, unwritable path, and redaction helper.
+
+Dependencies: 1.1.
+
+#### Amendment 1.5: Implement the unified error hierarchy
+
+Implement the exact error contract above plus a separate `VoiceError { Forbidden { found: String }, TooLong { limit: usize } }`. Add conversions only where lossless; attach operation context to git and worker errors. Ensure `Debug` and `Display` cannot contain resolved tokens.
+
+Tests: every automatic conversion, rate-limit display, state-corruption path, voice errors, and token redaction.
+
+Dependencies: 0.1.
+
+#### Amendment 1.6: Validate the worker command and runtime prerequisites
+
+Validate nonempty command, executable lookup, readable bridge path when the second argument names the bundled bridge, installed `git`, writable state/workdir parents, and Unix process-group support. Validation runs before acquiring the daemon tick lock so configuration errors remain visible.
+
+Tests use temporary executables and controlled `PATH`; they cover absolute and PATH commands, non-executable files, empty command, missing bridge, missing git, and unwritable directories.
+
+Dependencies: 1.1, 1.5.
+
+### Phase 2: GitHub client and polling
+
+#### Amendment 2.1: Build the typed HTTP client and persistent conditional cache
+
+Implement `github::Client::with_config(&Config) -> CaduceusResult<Client>` and a shared, mutex-protected `HttpCache` rooted at `<state_dir>/cache/http.json`. Configure a 10-second connect timeout and `http_timeout_seconds` total request timeout. Redirects are limited to three and only to the same scheme/host/port as `api_base`; authorization is never forwarded elsewhere. Responses retain their final URL so issue verification can detect a transfer. Centralize headers, status mapping, ETag validation, atomic cache writes, cached-body reuse on 304, and a streaming response-size limit of 10 MiB before full allocation. Cache keys are full URL plus relevant Accept header. Concurrent detail requests merge cache entries through one locked update; they never overwrite from independent stale snapshots.
+
+Tests: required headers, auth header, connect/request timeout, allowed same-host redirect, cross-host redirect rejected without token forwarding, redirect loop, first 200 then a new client sending `If-None-Match`, 304 body reuse, cache corruption recovery, invalid ETag, chunked oversized body, 401/403/404/500 mapping, and no token in errors.
+
+Dependencies: 1.2, 1.5.
+
+#### Amendment 2.2: Discover watched repositories
+
+If `watched_repos` is nonempty, return its validated sorted deduplicated contents without an API call. Otherwise paginate `/user/repos`, extract `full_name`, exclude archived/disabled repos, and cap at 20 pages. Repository discovery responses use the persistent HTTP cache.
+
+Tests: configured bypass, two-page Link traversal, sorting/deduplication, empty result, archived exclusion, malformed object, page-cap error, and rate limit on page two.
+
+Dependencies: 2.1.
+
+#### Amendment 2.3: Poll open labeled issues with a typed schema
+
+Define `IssueSummary { key, title, labels, ticket_type }`. Paginate the two encoded label queries for each watched repo, merge results, exclude PR objects, and exact-match trigger labels. Return summaries plus structured ambiguous-trigger diagnostics; do not mutate queue state here.
+
+Tests use realistic GitHub issue-list fixtures and cover Unicode URL encoding, code/investigation merge, both-label rejection, server returning an unrelated-label object, PR exclusion, empty/null body tolerance, malformed number, pagination in either query, 304 reuse, and no Events API fields.
+
+Dependencies: 2.1, 2.2, 3.0 (for the canonical `TicketType`).
+
+#### Amendment 2.4: Handle poll cadence and rate limits
+
+Parse `X-Poll-Interval`, `X-RateLimit-Limit`, `Remaining`, and `Reset` from every response. Persist observations immediately. At tick start, compare now with both `last_tick_started + poll_interval_seconds` and the persisted rate-limit reset; an early invocation exits 0 with a `skipped_cadence` or `rate_limited` outcome without an HTTP call. A 429 or remaining zero at any page stops pagination and becomes a clean tick outcome.
+
+Tests: cadence skip across two process-equivalent clients, longer server poll interval, 429 mid-pagination, remaining zero on 200, missing/malformed headers, reset persistence before exit, and resumption after reset.
+
+Dependencies: 2.1 and Task 7.2 metadata types. Implement Task 7.2's types before this task, then return here before Task 7.1.
+
+#### Amendment 2.5: Verify the selected trigger label immediately before work
+
+Implement `verify_trigger(client, key, ticket_type, config) -> CaduceusResult<bool>` using the full current issue response. Select the expected label by ticket type. Closed, transferred, deleted, or unlabeled issues return `false`; authentication/rate-limit/server failures return errors and do not consume a retry.
+
+Tests: both ticket types, removed label, closed issue, 404 skip, 403 error, 429 outcome, redirect/transfer, and both-label ambiguity.
+
+Dependencies: 2.1, 3.0.
+
+#### Amendment 2.6: Fetch complete issue detail
+
+Define serializable `IssueDetail`, `IssueComment`, and `IssueEvent` with explicit fields rather than tuples. Fetch issue, comments, and timeline concurrently, but cancel and return the first error. Comments use `per_page=100`, follow GitHub's default chronological pagination for at most 20 pages, then retain the most recent 100 in chronological order. Timeline follows the same cap. Preserve author login/id, body, timestamps, and label events.
+
+Tests: complete parse, null body/user, empty data, chronological normalization, multipage comments, malformed comments, 404, rate limit in one branch of the join, and `Serialize` round-trip for context construction.
+
+Dependencies: 2.1.
+
+### Phase 3: Durable queue and atomic claims
+
+#### Amendment 3.0: Implement validated queue data types
+
+Implement the canonical `IssueKey`, `Phase`, `TicketType`, `QueueEntry`, and `QueueState` types. `IssueKey::parse` returns an error and never panics. Serialization is schema-stable, timestamps are RFC3339 UTC, and unknown fields are rejected for the current version. A future version mismatch is a `StateCorrupt`/unsupported-version error, not best-effort parsing.
+
+Tests: display/parse round-trip, invalid owner/repo/number, lowercase enum JSON, complete state round-trip, unknown field, missing required field, and unsupported version.
+
+Dependencies: 1.5.
+
+#### Amendment 3.1: Implement crash-safe StateStore
+
+```rust
+pub struct StateStore { state_dir: PathBuf, state_path: PathBuf, claims_dir: PathBuf }
+impl StateStore {
+    pub fn open(state_dir: &Path) -> CaduceusResult<Self>;
+    pub fn snapshot(&self) -> CaduceusResult<QueueState>;
+    pub fn enqueue(&self, key: &IssueKey, ticket_type: TicketType, dry_run: bool) -> CaduceusResult<EnqueueOutcome>;
+    pub fn acquire_next(&self, run_id: &str, pid: u32, now: DateTime<Utc>) -> CaduceusResult<Option<ClaimedEntry>>;
+    pub fn set_worktree(&self, claim: &ClaimToken, path: &Path) -> CaduceusResult<()>;
+    pub fn save_finalization(&self, claim: &ClaimToken, checkpoint: FinalizationCheckpoint) -> CaduceusResult<()>;
+    pub fn complete(&self, claim: ClaimToken) -> CaduceusResult<()>;
+    pub fn complete_investigation(&self, claim: ClaimToken) -> CaduceusResult<()>;
+    pub fn retry_or_fail(&self, claim: ClaimToken, error: &str, budget: u32) -> CaduceusResult<Phase>;
+    pub fn requeue_infrastructure(&self, claim: ClaimToken, error: &str, not_before: DateTime<Utc>) -> CaduceusResult<()>;
+    pub fn skip(&self, claim: ClaimToken, reason: &str) -> CaduceusResult<()>;
+}
+```
+
+`acquire_next` skips queued entries whose `next_attempt_at` is in the future. Each mutating method takes an exclusive `flock` on a separate `<state_dir>/state.lock`, loads and validates state, applies one transition, writes a temporary file, flushes and `sync_all`s it, renames it, syncs the directory, then releases the lock. `snapshot` takes a shared lock and never rewrites state. Errors leave the prior file intact. Completion/retry methods durably persist the new queue phase before unlinking the claim and syncing `claims_dir`; a claim-unlink failure is reported without rolling back the durable phase and is repaired idempotently by the reaper.
+
+Tests: initialization, mutation/checkpoint round-trip, read-only snapshot mtime unchanged, truncated state error/preservation, simulated pre-rename failure, concurrent enqueues, deterministic FIFO (`queued_at`, then display key), checkpoint update under the matching claim/run only, and no lost update.
+
+Dependencies: 3.0.
+
+#### Amendment 3.2: Create and release atomic claims
+
+`acquire_next` creates the SHA-256 claim path with `create_new(true)`, writes/syncs claim JSON, then marks the same entry `InProgress` while holding `state.lock`. If state persistence fails, it removes the new claim. If claim creation loses a race, it tries the next FIFO entry. `ClaimToken` contains the digest path and run ID but does not expose arbitrary deletion.
+
+Add a separate nonblocking `DaemonLock::try_acquire(state_dir) -> CaduceusResult<Option<DaemonLock>>` held for the entire tick. Its file handle releases the lock on drop; the file itself may remain.
+
+Tests: two threads and two subprocesses yield one claim winner, two daemon locks yield one winner, rollback after state-write failure, claim JSON durability, hostile key cannot affect paths, and completed claims are deleted.
+
+Dependencies: 3.1.
+
+#### Amendment 3.3: Reap stale claims and abandoned worktrees
+
+At tick start under `DaemonLock`, scan claim JSON. A claim is stale only if its age exceeds `stale_run_hours` and its recorded process identity is absent or no longer matches. A timestamp more than five minutes in the future is corrupt rather than immortal. Malformed/future claims are quarantined to `<claims>/corrupt/` and reported; they are never silently deleted. For an `InProgress` entry, reaping returns it to `Queued` without incrementing attempts after safe worktree removal. For an entry already durably `Queued`, `Previewed`, `Done`, `Failed`, or `Skipped`, the reaper treats the claim as residue: it performs any required teardown and removes only the claim without changing phase. It returns `ReapReport { count, errors }`.
+
+The same maintenance task removes regular, non-symlink run artifacts older than `run_retention_days` only when their run ID is absent from every active claim, live heartbeat, `InProgress` entry, and resumable finalization checkpoint. It never removes queue tombstones; `Done`, `Failed`, and `Skipped` entries remain durable to prevent accidental re-triggering. Files with unknown names are reported and left untouched.
+
+Tests: stale dead PID, matching live PID retained, reused PID/start-identity mismatch reaped, recent dead PID retained until threshold, future timestamp quarantine, malformed quarantine, missing queue entry, residual claim for every non-in-progress phase, missing worktree, teardown failure retained for retry, claim-unlink failure after durable transition, old unreferenced run cleanup, active/checkpoint artifact retention, symlink/unknown-file rejection, and reap metadata.
+
+Dependencies: 3.2, 4.3.
+
+#### Amendment 3.4: Enforce retry and terminal transitions
+
+Implement the exact three-worker-failures semantics. `retry_or_fail` increments once, records a bounded error string, applies the configured backoff, returns to `Queued` below budget, transitions to `Failed` at the budget, and always removes the claim. `requeue_infrastructure` records a bounded diagnostic and eligibility time without incrementing attempts. Rate limits use the persisted reset time; cancellation is immediately eligible after cleanup. `skip` transitions to terminal `Skipped`. `complete`/`complete_investigation` transition to `Done`; `complete_preview` transitions to `Previewed`. Re-enqueue is a no-op except that a non-dry enqueue promotes `Previewed` to `Queued`.
+
+Add `caduceus queue reset <owner/repo#number>` as the only v0.1 recovery operation for a `Failed` or `Skipped` entry. It acquires `DaemonLock` and `state.lock`, refuses entries with an active claim, resets attempts/error/run ID, and returns the entry to `Queued` only if the issue is explicitly named. It supports `--dry-run`; there is no bulk reset. A finalization checkpoint is preserved by default. Clearing one requires `--force-finalization-reset`, reports the branch/PR that may need manual reconciliation, and never deletes a remote branch or PR automatically.
+
+Tests: failures 1/2/3/4, worker backoff eligibility, infrastructure failure leaves attempts unchanged, rate-limit reset eligibility, cancellation immediate eligibility, zero budget rejected by config, success clears error/backoff, skip cannot be reacquired, done/failed cannot be reacquired, preview cannot be reacquired while dry, preview promotion when dry-run is disabled, claim removal on every transition, transition called with the wrong run ID, reset terminal entry, active-claim refusal, checkpoint-preserving reset, forced checkpoint reset warning, and reset dry-run.
+
+Dependencies: 3.2.
+
+### Phase 4: Repository and worktree lifecycle
+
+#### Amendment 4.1: Discover and validate local clones
+
+Implement a common `GitRunner` used by every git task. It sets `GIT_TERMINAL_PROMPT=0`, clears daemon GitHub token variables, captures bounded stdout/stderr, starts git/SSH in a process group, enforces `git_timeout_seconds`, and kills/reaps the group on timeout/cancellation. Then implement `find_main_clone(config, key) -> CaduceusResult<PathBuf>` at `<workdir_base>/<owner>/<repo>`. Require a git worktree, a clean main checkout, and an `origin` whose normalized owner/repo matches the issue slug. For the public API base, remote host must be `github.com`; for a GitHub Enterprise API base it must equal that URL's host. SSH host aliases are intentionally rejected in v0.1 because their destination cannot be authenticated from the remote string. Determine the default base branch from `refs/remotes/origin/HEAD`, falling back to the repository's current branch only with a warning. Return `RepositoryInfo { path, base_branch, remote_url }`.
+
+Tests: SSH/HTTPS origin normalization, official/enterprise host validation, SSH alias/host mismatch rejection, missing repo, non-git directory, slug mismatch, detached HEAD without origin HEAD, dirty main checkout, paths containing spaces, prompt suppression, timeout with SSH-like grandchild, cancellation, and stderr redaction/truncation.
+
+Dependencies: 1.6, 3.0.
+
+#### Amendment 4.2: Create a daemon-owned worktree and branch
+
+Implement `create(config, repo, key, run_id) -> CaduceusResult<Worktree>` using `git fetch --prune origin <base>` followed by `git worktree add -b <branch> <path> origin/<base>`. `Worktree` records the initial base OID. Branch is `automation/issue-<number>-<lowercase-run-id>` and is validated with `git check-ref-format --branch`. Worktree path is `<repo>/.worktrees/<run_id>` rather than the slash-containing branch. Pre-existing local/remote branch or path is reconciled only when it belongs to the same run ID; otherwise return a collision error.
+
+Tests use a local bare origin and cover successful creation, default base, branch/path separation, fetch failure, collision, invalid run ID, and parent checkout unchanged.
+
+Dependencies: 4.1.
+
+#### Amendment 4.3: Tear down safely
+
+Implement `remove(worktree)`: `git worktree remove --force <path>`, then `git worktree prune`, then delete the local branch only when no finalization checkpoint needs it and it was not pushed. Dry-run and pre-commit worker-failure branches are removed; committed/resumable or pushed branches are retained. Missing paths are idempotent. Never use raw recursive deletion until git has removed its registration; a final filesystem fallback must verify the path is beneath the expected `.worktrees` directory.
+
+Tests: success/failure/dry-run teardown, already missing path, nested filesystem contents, registered metadata removed, pushed branch retained, and path-escape rejection.
+
+Dependencies: 4.2.
+
+#### Amendment 4.4: Generate the canonical prompt file
+
+Implement a pure `build_prompt(issue, ticket_type, context_json, branch_name) -> String` and atomic `write_prompt(worktree, text)`. The prompt states the exact output schema, daemon-owned branch, forbidden modification of `.git` and control files, prohibition on committing/pushing/checking out or renaming branches, code versus investigation behavior, and that daemon GitHub access is unavailable. Fence issue body and context safely so adversarial Markdown cannot terminate structural sections. The encoded prompt is limited to 2 MiB; exceeding the bound is a non-retryable input/configuration diagnostic rather than a partial write.
+
+Tests: title/body/labels/repo/number/context/branch, exact investigation selection, Markdown fence injection, empty body, Unicode, maximum input size, and file write failure.
+
+Dependencies: 2.6, 5.6.
+
+#### Amendment 4.5: Implement safe worktree GC
+
+`caduceus worktree-gc [--older-than-days 7] [--dry-run]` enumerates registered worktrees using `git worktree list --porcelain` across validated repositories. It excludes any path referenced by a claim or fresh heartbeat, removes only paths beneath that repo's `.worktrees`, and uses Task 4.3. Unregistered directories are reported but removed only when their canonical path is safe and they are old, inactive, and not symlinks.
+
+Tests: multiple repos, nested branch names irrelevant, old active worktree retained, symlink rejected, unregistered orphan, dry-run no mutation, and git metadata cleanup.
+
+Dependencies: 3.1, 4.3, 5.1. Heartbeat parsing is a shared helper in `worker`; status and GC call the same implementation.
+
+### Phase 5: Worker execution and context
+
+#### Amendment 5.0: Define finalization interfaces without runtime stubs
+
+Define only types and traits needed to compile earlier tasks; do not add `unimplemented!()` production functions. `FinalizeContext` includes client, config, repository info, issue, claim/run data, worktree, and result. `FinalizeOutput` records action, PR URL, and idempotency observations. Phase 6 supplies concrete functions before orchestration is enabled behind a temporary `compile_orchestrator` feature.
+
+Acceptance: default builds contain no reachable `unimplemented!()`, `todo!()`, or `panic!()` outside tests.
+
+Dependencies: 2.6, 3.2, 4.2.
+
+#### Amendment 5.1: Spawn and supervise the entire worker process tree
+
+Implement:
+
+```rust
+pub async fn spawn(
+    cfg: &Config,
+    issue: &IssueDetail,
+    worktree: &Worktree,
+    run_id: &str,
+    context_json: &str,
+    cancellation: CancellationToken,
+) -> CaduceusResult<WorkerResult>;
+```
+
+The public daemon never spawns the bridge directly. It spawns the same binary with hidden `__worker-supervisor` mode and dedicated control/status pipes. The supervisor stays outside the worker session and forks the worker behind an exec-gate pipe. The worker calls `setsid` but cannot exec the bridge until the supervisor sends `READY(pgid)`, the daemon records that PGID and replies `ACK`, and the supervisor opens the gate. If either side dies before ACK, gate EOF makes the pre-exec child exit without running the harness. After ACK, unexpected supervisor exit makes the daemon kill the recorded session; daemon death closes the control pipe and makes the live supervisor kill it.
+
+On Linux the supervisor sets `PR_SET_CHILD_SUBREAPER` before spawning. Cleanup enumerates its descendant PIDs from `/proc`, signals both the original negative PGID and every descendant (including children that created another process group/session), waits at most two seconds, repeats discovery, sends KILL, and reaps until no descendants remain. On other Unix platforms it uses the worker process group and documents that deliberately detached descendants require container-level isolation. EOF on the control pipe means the daemon died and triggers this sequence. Normal timeout/cancellation uses an explicit control message. When the direct bridge exits, the supervisor also cleans remaining descendants before returning its status.
+
+Create `<state_dir>/runs/<run_id>.log` and heartbeat before supervisor spawn. Forward stdout/stderr through one bounded async channel to a single transcript writer so chunks cannot race file offsets. Retain at most `transcript_max_bytes`, append one truncation marker, and continue draining/discarding until the supervisor closes both streams. Await supervisor, both readers, and writer; remove heartbeat only afterward. Spawn/protocol failures close the control pipe, trigger session cleanup, and remove heartbeat. The supervisor protocol is versioned and length-bounded, uses inherited file descriptors rather than filesystem sockets, and receives only the cleared worker environment—not daemon credentials.
+
+Tests: exit 0, nonzero, timeout, SIGINT cancellation, transcript content, concurrent stdout/stderr, truncation marker, disk-write failure, missing command, supervisor protocol corruption, direct-child exit with a live grandchild, a grandchild that calls `setsid` on Linux, heartbeat visible while live and removed afterward, daemon SIGKILL/control-pipe EOF, and supervisor crash. PID assertions use bounded polling and captured diagnostics rather than sleeps alone.
+
+Dependencies: 5.2, 5.3. `CancellationToken` is part of this task's public interface; Task 7.4 only supplies signal-driven cancellation.
+
+#### Amendment 5.2: Construct a deny-by-default worker environment
+
+Implement `sanitized_env(args) -> CaduceusResult<BTreeMap<OsString, OsString>>` from an injected parent environment for testability. `spawn` must call `env_clear()` before `envs`. Preserve exact default variables and configured prefix patterns, but hard-deny `GITHUB_TOKEN`, `GH_TOKEN`, `CADUCEUS_GITHUB_TOKEN`, `AUTO_ISSUE_GITHUB_TOKEN`, variables containing `GITHUB` plus `TOKEN`, and any daemon-internal secret. Emit labels as JSON and all paths as absolute UTF-8 or return an error.
+
+Tests execute a real child that dumps its environment; cover all contract variables, empty labels, labels containing commas, denied credentials despite allowlist, approved provider keys, unrelated AWS secret removed, invalid path, and values absent from logs.
+
+Dependencies: 1.1, 2.6, 4.2.
+
+#### Amendment 5.3: Parse and validate worker results
+
+Define the canonical schema with `#[serde(deny_unknown_fields)]` and `artifacts: BTreeMap<String, Value>`. Open with `O_NOFOLLOW`, verify the opened descriptor is a regular file, and read with a 1 MiB limit before allocating the full file. Validate status/lengths and wrap all file/schema failures as contextual `CaduceusError::Worker`. Code tickets require meaningful repository changes later in finalize; investigation does not.
+
+Tests: valid minimal, nested artifact values, malformed artifacts container, unknown field, missing/empty/oversized fields, title newline/control/NUL, multiline commit message, artifact key/count limits, wrong status, invalid UTF-8, oversized file, symlink, missing file, and error variant consistency.
+
+Dependencies: 1.5.
+
+#### Amendment 5.4: Render artifacts and public PR text safely
+
+Implement deterministic artifact rendering sorted by key. Values render in fenced JSON with dynamically chosen fence length, total rendered output is capped, and control characters are escaped. `build_pr_body` combines summary, artifact section, issue-closing reference, and an idempotency marker comment. Validate title and body through the public-voice rule before returning.
+
+Tests: empty/nonempty/nested artifacts, Markdown fence injection, stable order, size cap, forbidden string in summary/artifact/title, and marker presence.
+
+Dependencies: 5.3, 6.6.
+
+#### Amendment 5.5: Implement dry-run as a first-class outcome
+
+Dry-run executes through result and change validation, writes an atomic report under `state_dir/runs`, skips every git/GitHub mutation including commit, then completes the queue entry as `Previewed` and tears down. The report includes proposed branch, commit, PR title/body or investigation comment, changed-file list, transcript path, and validation warnings. When dry-run is later disabled, normal polling promotes a still-labeled preview back to `Queued` exactly once.
+
+Tests assert no commit, remote ref, HTTP mutation, label change, or worktree remains; report survives teardown; queue becomes `Previewed`; disabling dry-run promotes it; and worker failure still consumes retry budget.
+
+Dependencies: 5.3, 5.4, 6.6.
+
+#### Amendment 5.6: Build stable context JSON
+
+Emit schema version, issue timeline, filtered `issue_comments`, and explicit `trusted_comments`. Parse allowlist entries during config validation. Invalid ignore regexes are configuration errors, never silently dropped. A comment is trusted by exact login or numeric ID; ignored authors are absent from both arrays. Cap each comment body at 64 KiB and the encoded context at 1 MiB. Remove oldest untrusted comments first, then oldest trusted comments only if necessary, and emit counts/byte truncation metadata; timeline events are similarly bounded before failing.
+
+Tests: empty schema snapshot, login/id trust, rename-resistant ID, ignored bot, invalid regex rejected in config, timeline serialization, stable chronological order, exact per-body/total boundaries, trusted-last truncation order/metadata, irreducibly oversized timeline, Unicode, and JSON round-trip.
+
+Dependencies: 1.1, 2.6.
+
+### Phase 6: Idempotent finalization
+
+#### Amendment 6.1: Inspect changes and commit code results
+
+First require `HEAD` still equals the worktree's recorded initial OID; a worker-created commit, checkout, merge, rebase, or detached HEAD is a worker-contract failure. Then use `git status --porcelain=v2 -z` to collect changed paths. Exclude control files explicitly; reject symlinks escaping the worktree and changes under `.git`. A code success with no remaining changes becomes a worker failure. Stage with `git add --all -- <validated paths>` and commit using the worker message with configured daemon identity. Atomically copy the validated result to the runs directory, commit, then persist a `Committed` checkpoint containing the OID and daemon branch before teardown. A retry with an existing committed checkpoint skips worker and commit.
+
+Immediately before this first finalization mutation, re-fetch the issue and require it is still open with exactly the expected trigger-label state. A user withdrawal transitions the claim to `Skipped`, writes a diagnostic/report preserving the worker summary locally, removes the unpushed branch/worktree, and performs no commit, push, or GitHub mutation.
+
+Tests: tracked/untracked/deleted/renamed files, only control files, no changes, worker-created commit/checkout/detached HEAD, path with newline, escaping symlink, commit identity, commit message length, and parent checkout untouched.
+
+Dependencies: 4.2, 5.3.
+
+#### Amendment 6.2: Push idempotently through git
+
+Push the checkpoint's local branch as `refs/heads/<daemon branch>` using the operator's configured git credential mechanism. Never place the PAT in arguments, URLs, or environment. Query the remote first: absent ref is created; identical ref is success; an ancestor ref is fast-forwarded; divergent ref is a terminal collision. Persist `Pushed` immediately after success. Capture bounded stderr with secrets redacted.
+
+Tests use local bare origin for absent/identical/fast-forward/divergent refs and a fake git credential helper to assert no API PAT injection. A hanging remote/credential helper must hit `git_timeout_seconds`, kill descendants, and leave the claim recoverable.
+
+Dependencies: 6.1.
+
+#### Amendment 6.3: Find or create the pull request
+
+Load the checkpoint's secure worker result and revalidate issue/trigger state, then query `GET /repos/{slug}/pulls?state=open&head={owner}:{branch}&base={base}` before POST. Reuse exactly one matching PR; error on multiple matches. Otherwise POST title/body/head/base and require a 201 with number and URL. A retry after a lost response re-queries before posting. Persist PR number/URL and `PrCreated` immediately. Validate all public text first. Withdrawal after push but before PR creation leaves the remote branch/checkpoint recorded, transitions to `Skipped`, and reports the branch for manual cleanup; it never creates the PR anyway.
+
+Tests: create, reuse, multiple-match error, malformed response, 422 followed by successful re-query, 429, forbidden text prevents request, and exact base/head.
+
+Dependencies: 2.1, 5.4, 6.2.
+
+#### Amendment 6.4: Post completion and close idempotently
+
+Use a hidden marker `<!-- automation-run:<checkpoint.run_id> -->` to detect an existing completion comment. Before posting/closing, fetch issue state and trigger labels again. If the PR already exists but the trigger was withdrawn, leave both PR and issue open, persist the checkpoint, transition to `Skipped`, and emit a diagnostic linking the PR; do not post completion or close. Otherwise post only if absent and persist `Commented`; already-closed issue is success. If comment succeeds and close fails, retry resumes from the checkpoint and detects the comment without a worker run. Do not claim HTTP ordering without verifying mock expectations.
+
+Tests: fresh, comment exists, already closed, partial failure then retry, voice rejection, 404, and rate limit.
+
+Dependencies: 6.3, 6.6.
+
+#### Amendment 6.5: Finalize failures and investigations
+
+Worker/process failures update local state first. After revalidating that the issue remains open/triggered, a best-effort generic failure comment may name the run ID but never claims a local transcript is a public link; withdrawal suppresses the comment, and comment failure does not hide the original error. Investigation success copies the result to the runs directory and persists `InvestigationReady` before posting findings. Findings combine summary with the same bounded, injection-safe artifact renderer used for PR bodies. Revalidate the issue/label immediately before posting and again before label removal; withdrawal skips the remaining mutations. Otherwise post/reuse the marker comment, persist `InvestigationCommented`, remove only the configured investigation label, leave the issue open, and perform no git mutation. A retry resumes the checkpoint without invoking the worker. Both paths are idempotent and voice-checked.
+
+Tests: failure comment, forbidden original error not leaked, comment API failure preserves worker error, investigation comment/label removal, retry marker reuse, issue remains open, and no push/PR calls.
+
+Dependencies: 5.3, 6.6.
+
+#### Amendment 6.6: Enforce the public-voice rule
+
+Implement `validate_public_text(text, cfg, limit) -> Result<(), VoiceError>` using case-insensitive Unicode substring matching and byte-length limits. Call it in the only HTTP helpers capable of posting comments, PR titles, or PR bodies so callers cannot bypass it. Log the matched configured term only if the term itself is not sensitive; never log rejected text.
+
+Tests: defaults, case variants, substring behavior, explicit replacement, empty forbidden entry rejected by config, PR body/artifact enforcement, max length, and proof that a rejected request never reaches Wiremock.
+
+Dependencies: 1.1, 1.5.
+
+### Phase 7: Orchestration, metadata, status, and system tests
+
+#### Amendment 7.0: Define orchestration-owned types and dependency injection
+
+Define `Services { clock, github, git, process }` traits/adapters used only where deterministic testing requires them; production adapters remain thin. Define `TickOutcome` (`Processed`, `Idle304`, `IdleEmpty`, `SkippedConcurrent`, `SkippedCadence`, `RateLimited`, `Cancelled`, `Failed`), `FailureClass` (`Worker`, `Infrastructure`, `RateLimit { reset_at }`, `Cancellation`), and one exhaustive `classify_error` match. Schema/result/content/no-code-change/worker-exit/timeout failures are `Worker`; HTTP transport/server, git transport, filesystem, and teardown failures are `Infrastructure`; typed rate limits and cancellation retain their own class. New `CaduceusError` variants make this match fail to compile until classified.
+
+Define `ActiveRunGuard`, which owns claim, optional worktree, supervisor handle/worker PGID, and cancellation state. Its async `finish_*` methods perform explicit transitions; `Drop` logs an invariant violation but synchronous drop is not relied upon for cleanup.
+
+There is one canonical worker signature (Task 5.1), one canonical worktree type (Task 4.2), and one canonical finalization context (Task 5.0). Delete any earlier temporary signatures when enabling orchestration.
+
+Acceptance: a repository-wide check finds no `unimplemented!`, `todo!`, placeholder ellipses, duplicate public function declarations, or `expect`/`unwrap` in production modules handling external input.
+
+Dependencies: 3.4, 4.3, 5.1, 6.5.
+
+#### Amendment 7.1: Implement the single canonical tick
+
+The exact order is:
+
+1. Load/validate config and initialize logging in `run`; injected config in `run_with_config` is still validated.
+2. Try `DaemonLock`; if unavailable, persist nothing and return `SkippedConcurrent`/exit 0.
+3. Load metadata, enforce rate-limit and cadence gates, then atomically persist `last_tick_started` and `running` outcome.
+4. Reap stale claims/worktrees, apply safe run-artifact retention, and persist the report.
+5. Build the GitHub client, discover repositories, poll typed open issues, and enqueue summaries.
+6. Persist rate-limit observations after every response through the client observer.
+7. Generate a fresh candidate run ID and call `acquire_next`. The store uses the checkpoint's existing run ID when present and the candidate otherwise. If no entry is eligible, finish as `Idle304` only when every poll response was 304; otherwise `IdleEmpty` and report the earliest backed-off eligibility time when relevant.
+8. If the acquired entry contains a finalization checkpoint, jump directly to the matching Phase 6 resume stage without verification/worker/worktree recreation unless that stage specifically needs the retained local branch. Otherwise continue the fresh run using the claim's returned run ID.
+9. Verify the ticket-type-specific label. False calls `store.skip`; transport/rate-limit error releases through a non-attempting requeue operation.
+10. Fetch `IssueDetail`; build context; discover repo; create worktree/branch; persist worktree in claim; write prompt.
+11. Spawn the worker with cancellation. Classify every error as `Worker`, `Infrastructure`, `RateLimit`, or `Cancellation`. Worker/result/content-validation failures use `retry_or_fail`; GitHub/git/I/O failures use `requeue_infrastructure`; rate limits use their reset time; cancellation does not increment attempts. Teardown precedes the queue transition, then worker-attributable failures may send a best-effort notification.
+12. On success, revalidate issue/trigger state, then perform dry-run, investigation, or code finalization. Finalization revalidates again at each irreversible GitHub boundary. Teardown always runs. Only after required side effects succeed does the store complete the claim; user withdrawal follows the explicit `Skipped` rules in Phase 6.
+13. Persist finish time/outcome/error and return exit 0 for successful, idle, concurrent, cadence, and rate-limit outcomes; configuration/state/invariant failures return exit 1.
+
+Every step after claim acquisition is inside one explicit cleanup scope. If primary work and teardown both fail, return a compound error preserving both messages and leave enough claim data for reaping.
+
+Public signatures:
+
+```rust
+pub fn run() -> CaduceusResult<u8>;
+pub async fn run_with_config(cfg: Config, cancellation: CancellationToken) -> CaduceusResult<TickOutcome>;
+pub async fn tick(cfg: Config, services: Services, cancellation: CancellationToken) -> CaduceusResult<TickOutcome>;
+```
+
+Tests: concurrent lock skip, cadence skip, empty/304 distinction, code happy path, investigation path, label removed before work, label removed after worker, label removed after push, label removed after PR, detail-fetch error without retry consumption, worker failure retry/backoff, timeout, finalize validation versus transport classification, teardown failure, rate limit at every fetch/finalize stage, and metadata finish on all paths.
+
+Dependencies: all Tasks 2.x–6.x and 7.2.
+
+#### Amendment 7.2: Persist complete daemon metadata
+
+Define versioned `StateMeta` and a shared `MetaStore`. `MetaStore::update` serializes read-modify-write operations through a mutex plus the crash-safe file writer. Concurrent HTTP responses merge rate-limit observations; an observation with an older timestamp cannot overwrite a newer one. `StateMeta` is:
+
+```rust
+pub struct StateMeta {
+    pub version: u32,
+    pub last_tick_started: Option<DateTime<Utc>>,
+    pub last_tick_finished: Option<DateTime<Utc>>,
+    pub last_outcome: Option<TickOutcome>,
+    pub last_http_status: Option<u16>,
+    pub next_allowed_poll_at: Option<DateTime<Utc>>,
+    pub last_reap_at: Option<DateTime<Utc>>,
+    pub last_reaped_count: u32,
+    pub rate_limit: Option<RateLimitObservation>,
+    pub last_error: Option<String>,
+    pub recent_diagnostics: Vec<DaemonDiagnostic>, // newest 20, bounded fields
+}
+```
+
+`DaemonDiagnostic` contains timestamp, stable code, optional issue key, and a bounded human message. Poll ambiguity, cache recovery, reaper quarantine, and infrastructure failures append diagnostics; duplicate `(code, issue_key)` entries within one hour coalesce instead of growing the file.
+
+Implement strict load and crash-safe save in `meta.rs`. Corrupt metadata is copied to a timestamped diagnostic file and a `<state_dir>/state_meta.corrupt` marker is written, but the active file is preserved and the tick fails closed. Later ticks refuse GitHub calls while the marker exists; only the documented recovery command may clear it after validation. Queue state is untouched. To break the Phase 2 dependency, `RateLimitObserver` is defined here before Task 2.4 implementation begins, or Tasks 2.4 and 7.2 are assigned together.
+
+Tests: full/minimal round-trip, atomic-write failure, corrupt-file preservation/marker/fail-closed next tick, unsupported version, concurrent observer updates without lost fields, stale observation cannot replace newer data, diagnostic cap/coalescing, and timestamp serialization.
+
+Dependencies: 1.5. Prerequisite for 2.4 and 7.1.
+
+#### Amendment 7.3: Implement status and heartbeat inspection
+
+Rust worker supervision writes heartbeat JSON `{version,run_id,pid,started_at,updated_at,issue_key,transcript_path}` atomically every 30 seconds. `live_workers` accepts only regular non-symlink `.heartbeat` files updated within 90 seconds, parses the run ID directly from `file_stem`, validates paths, and uses saturating elapsed-time arithmetic.
+
+`build_report(config) -> CaduceusResult<StatusReport>` uses `StateStore::snapshot`, strict metadata load, phase counts including `Previewed`, FIFO eligible queued head, earliest future eligibility when all queued entries are backed off, at most 10 recent failed/skipped queue errors plus daemon diagnostics (including ambiguous trigger labels), and live workers. Human output has golden fixtures matching README; JSON has a schema-version field. `status` loads normal config so custom state directories work.
+
+Tests: exact README idle output, running output with transcript, JSON snapshot, all phase counts, deterministic head, missing state diagnostic, corrupt state diagnostic, fresh/stale/future/malformed/symlink heartbeat, and custom config path.
+
+Dependencies: 3.1, 7.2.
+
+#### Amendment 7.4: Handle SIGINT and SIGTERM through cancellation
+
+Install Unix signal listeners before calling `tick` and cancel a shared `CancellationToken`. Worker supervision selects on it, commands the supervisor cleanup sequence, awaits drains, and returns `Cancelled`; `ActiveRunGuard` tears down and requeues without consuming retry budget because operator shutdown is not a worker failure. A second signal requests the supervisor's immediate KILL phase but still avoids deleting state files directly. Idle cancellation exits 0.
+
+Tests invoke the built `CARGO_BIN_EXE_caduceus`, not the test binary. Cover idle SIGINT, worker SIGTERM, grandchild death, claim removal/requeue, worktree cleanup, transcript flush, second signal, and no retry increment.
+
+Dependencies: 5.1, 7.1.
+
+#### Amendment 7.5: Full-system integration suite
+
+Build reusable fixtures: Wiremock GitHub server with request expectations, local main repo plus bare origin and `origin/HEAD`, executable worker scripts, isolated config/state, and the real binary where CLI behavior matters.
+
+Required scenarios:
+
+1. Code success: repository discovery, paginated issue list, verify, detail/comments/timeline, prompt/env, source edit, result, commit, remote branch, one PR, one marker comment, close, done state, removed worktree/claim, persisted transcript/metadata.
+2. Investigation success: findings comment and label removal, no commit/push/PR/close.
+3. Second idle invocation: persisted ETags cause 304 and status reports `Idle304`.
+4. Partial PR response failure followed by retry: one remote branch and one PR.
+5. Timeout with grandchild: both processes die, transcript persists, issue requeues/then fails at exact budget.
+6. Two concurrent binaries: only one makes HTTP calls and runs a worker.
+7. Rate limit on page two: observation persists, exit 0, next pre-reset tick makes zero calls.
+8. Corrupt `state.json`: exit 1, original bytes preserved, no worker/API mutation.
+9. Dry-run: worker and validation occur, report persists, no git/GitHub mutation, worktree removed.
+10. SIGTERM: process tree dies and claim returns to queued without attempt increment.
+
+Every Wiremock mutation has an exact expected call count. Tests assert both desired effects and forbidden effects.
+
+Dependencies: 7.1–7.4.
+
+### Phase 8: Plugin and documentation contract
+
+#### Amendment 8.1: Finalize the reference bridge and public docs
+
+The canonical bridge reads required environment values with clear errors, reads labels from `CADUCEUS_ISSUE_LABELS_JSON`, verifies the prompt, invokes the configured harness, and returns its code. It does not write heartbeats or state. `invoke_harness` is the only user-editable function. The plugin manager's preservation behavior must be verified by an actual Hermes plugin test or described as conditional rather than promised.
+
+Python tests: success/nonzero propagation, missing prompt/env, malformed label JSON, arguments containing spaces/Unicode, signal propagation, and no heartbeat/state writes.
+
+Update README, plugin skill, Hermes adapter help, manifest, setup/doctor output, and cron-wrapper template from the canonical contracts. Remove claims that Hermes reads `commands/*.md`, cron-profile YAML, manifest config defaults, binary declarations, or lifecycle hooks. Add a cross-document test that extracts config keys and worker environment names and compares them with Rust fixtures, plus a Hermes contract test pinned to v0.18.2. Document the explicit `hermes plugins install` → enable → `hermes caduceus setup` → `hermes caduceus cron-install` flow; update/rebuild and cron-remove/uninstall order; plugin skill's opt-in namespace; gateway/cron-provider requirement; standalone requirement for explicit `worker_command`; required `<workdir_base>/<owner>/<repo>` pre-clones and matching origin/default branch; minimum fine-grained PAT permissions (Metadata read, Contents/Issues/Pull requests read-write); separate git authentication expectations; retry meaning; investigation behavior; dry-run behavior; transcript locality; and state recovery procedure.
+
+Dependencies: 7.5.
+
+### Phase 9: Migration and release readiness
+
+#### Amendment 9.1: Write migration and recovery procedures
+
+Create `MIGRATION.md` covering legacy cron disablement, schema import through a supported `caduceus migrate-state` command, dry-run rollout, rollback, corrupt-state and corrupt-metadata-marker recovery, failed-entry inspection/reset policy, credential-helper setup, and preservation of state on uninstall. Recovery validates a supplied repaired/generated file under the daemon lock, atomically installs it, archives the corrupt original, and only then clears a corruption marker. Never instruct users to edit `state.json`, metadata, or claims in place.
+
+Tests: migration fixtures for empty, queued, failed, malformed, duplicate, and already-current state; migration is atomic and leaves a backup.
+
+Dependencies: 7.5.
+
+#### Amendment 9.2: Execute the release gate and cutover checklist
+
+The v0.1 release cannot ship until all gates pass:
+
+- `cargo fmt --check`
+- `cargo clippy --locked --all-targets -- -D warnings`
+- `cargo test --locked --all-targets` including subprocess/signal tests on Linux
+- the same build/test suite under Rust 1.75
+- `pytest tests/bridge_test.py`
+- root-plugin install/enable/setup/update/rebuild/cron/remove lifecycle test against Hermes Agent 0.18.2
+- standalone install smoke test
+- no `todo!`, `unimplemented!`, placeholder ellipses, ignored tests, or network-dependent tests
+- README/config/env/schema cross-document contract test
+- secret scan of transcripts, logs, errors, git remotes, and child environment fixtures
+- manual dry-run against a disposable repository
+
+Cutover runs Caduceus alone against one disposable repo first. Running it beside a legacy processor against the same labels is forbidden because both can act on the same issue. Expand repository scope only after status, retry, rate-limit, and rollback checks pass.
+
+Dependencies: all prior tasks.
+
+### Task file and test ownership map
+
+Every task owns the listed production and primary test files. Shared fixture edits are allowed, but changing another task's public contract requires updating that task section first.
+
+| Task | Production files | Primary tests |
+|---|---|---|
+| 0.1 | `Cargo.toml`, `Cargo.lock`, `src/main.rs`, `src/lib.rs`, all module stubs | compile/fmt/clippy gates |
+| 0.2 | root `plugin.yaml`, `__init__.py`, `skills/caduceus/SKILL.md`, `plugin-assets/*` | `tests/hermes_plugin_test.py` |
+| 1.1 | `src/config.rs` | `tests/config_test.rs` |
+| 1.2 | `src/config.rs` | `tests/token_test.rs` |
+| 1.3 | `src/config.rs` | `tests/config_resolution_test.rs` |
+| 1.4 | `src/logging.rs` | `tests/logging_test.rs` |
+| 1.5 | `src/error.rs` | `tests/error_test.rs` |
+| 1.6 | `src/validate.rs` | `tests/validate_test.rs` |
+| 2.1 | `src/github.rs` | `tests/github_client_test.rs` |
+| 2.2 | `src/poll.rs` | `tests/repository_poll_test.rs` |
+| 2.3 | `src/poll.rs` | `tests/issue_poll_test.rs` |
+| 2.4 | `src/github.rs`, `src/meta.rs` | `tests/rate_limit_test.rs`, `tests/cadence_test.rs` |
+| 2.5 | `src/verify.rs` | `tests/verify_test.rs` |
+| 2.6 | `src/issue.rs` | `tests/issue_detail_test.rs` |
+| 3.0 | `src/queue.rs` | `tests/queue_model_test.rs` |
+| 3.1 | `src/queue.rs` | `tests/state_store_test.rs` |
+| 3.2 | `src/queue.rs` | `tests/claim_test.rs`, `tests/daemon_lock_test.rs` |
+| 3.3 | `src/queue.rs` | `tests/reaper_test.rs` |
+| 3.4 | `src/queue.rs`, `src/main.rs` | `tests/retry_test.rs`, `tests/queue_reset_cli_test.rs` |
+| 4.1 | `src/worktree.rs` | `tests/repository_discovery_test.rs` |
+| 4.2 | `src/worktree.rs` | `tests/worktree_create_test.rs` |
+| 4.3 | `src/worktree.rs` | `tests/worktree_remove_test.rs` |
+| 4.4 | `src/prompt.rs` | `tests/prompt_test.rs` |
+| 4.5 | `src/worktree.rs`, `src/main.rs` | `tests/worktree_gc_test.rs` |
+| 5.0 | `src/finalize.rs` types only | compile gate |
+| 5.1 | `src/worker.rs`, `src/worker_supervisor.rs`, `src/main.rs` internal dispatch | `tests/worker_process_test.rs`, `tests/worker_parent_death_test.rs` |
+| 5.2 | `src/worker.rs` | `tests/worker_env_test.rs` |
+| 5.3 | `src/worker.rs` | `tests/worker_result_test.rs` |
+| 5.4 | `src/finalize.rs` | `tests/pr_body_test.rs` |
+| 5.5 | `src/finalize.rs` | `tests/dry_run_test.rs` |
+| 5.6 | `src/context.rs` | `tests/context_test.rs` |
+| 6.1 | `src/finalize.rs` | `tests/commit_test.rs` |
+| 6.2 | `src/finalize.rs` | `tests/push_test.rs` |
+| 6.3 | `src/finalize.rs`, `src/github.rs` | `tests/pr_test.rs` |
+| 6.4 | `src/finalize.rs`, `src/github.rs` | `tests/issue_close_test.rs` |
+| 6.5 | `src/finalize.rs`, `src/github.rs` | `tests/failure_investigation_test.rs` |
+| 6.6 | `src/finalize.rs`, `src/github.rs` | `tests/voice_rule_test.rs` |
+| 7.0 | `src/lib.rs` orchestration types | compile/placeholder audit |
+| 7.1 | `src/lib.rs`, `src/main.rs` | `tests/tick_test.rs` |
+| 7.2 | `src/meta.rs` | `tests/meta_test.rs` |
+| 7.3 | `src/status.rs`, `src/main.rs` | `tests/status_test.rs`, golden fixtures |
+| 7.4 | `src/main.rs`, `src/worker.rs` | `tests/signal_test.rs` |
+| 7.5 | fixture helpers only | `tests/integration_test.rs` |
+| 8.1 | root Hermes assets, `README.md` | `tests/bridge_test.py`, `tests/docs_contract_test.rs`, `tests/hermes_plugin_test.py` |
+| 9.1 | `MIGRATION.md`, `src/migrate.rs`, `src/main.rs` | `tests/migration_test.rs` |
+| 9.2 | CI/release configuration | full release gate |
+
+#### Required task execution protocol
+
+1. Read this document's canonical contracts plus the task and every declared prerequisite.
+2. Write the named failing tests first. A RED run must fail for the missing behavior, not because the test does not compile for an unrelated reason.
+3. Implement only the task contract, then run its primary tests and `cargo test --locked --all-targets`.
+4. Run fmt/clippy with warnings denied. Subprocess tests must report PIDs, exit states, and retained logs on failure.
+5. Remove temporary stubs and generated artifacts. Do not commit ignored/disabled tests.
+6. Handoff with exact signatures, state/schema changes, commands, and test results.
+
+### Dependency graph and task assignment rules
+
+Critical path:
+
+`0.1 -> 1.1/1.5 -> 1.2/1.3/1.6 -> 2.1 -> 7.2(types) -> 2.2/2.6 -> 3.0 -> 2.3/2.4/2.5 -> 3.1 -> 3.2 -> 3.4 -> 4.1 -> 4.2/4.3 -> 5.2/5.3/5.6 -> 4.4 -> 5.1 -> 6.6 -> 5.4 -> 6.1 -> 6.2 -> 6.3 -> 6.4/6.5 -> 7.0 -> 7.1 -> 7.3/7.4 -> 4.5 -> 7.5 -> 8.1 -> 9.1 -> 9.2`
+
+Special ordering:
+
+- Implement 7.2's metadata types before 2.4; implement 2.4 behavior before 7.1.
+- Implement 3.0's shared identity/ticket types before 2.3 and 2.5.
+- Implement 4.3 before 3.3 so the reaper never uses raw deletion.
+- Implement 5.6 before 4.4, and 5.1's heartbeat reader before 4.5.
+- Implement 6.6 before 5.4 and all GitHub mutation helpers.
+- Implement all Phase 6 concrete functions before enabling the Phase 7 orchestrator.
+- Task 7.5 is not divisible by deleting assertions; each scenario is a required release property.
+
+Each task handoff must include: files changed, exact public signatures used, tests added, commands run, and any contract change. A task is not complete if tests pass only in isolation but `cargo test --all-targets` fails. Process-global environment/subscriber/signal tests must be serialized or moved to subprocesses.
+
+### Resolved decisions
+
+1. **JSON state on one local host.** SQLite and multi-host state remain deferred, but JSON writes are atomic and recoverable.
+2. **PAT/API token authentication for v0.1.** GitHub App authentication is deferred. Git pushes use normal git credential helpers or SSH, not API-token injection.
+3. **Never auto-merge.** Code tickets open PRs for human review.
+4. **Public-voice enforcement is mandatory.** It covers every public string, including worker-derived PR content.
+5. **Hermes-primary configuration with standalone fallback.** Explicit plugin setup seeds a user-owned bridge under `HERMES_HOME`; standalone users configure `worker_command` explicitly.
+6. **Rust/Python boundary remains fixed.** Python translates harness invocation only; Rust owns all durable/runtime state.
+7. **One-shot cron model remains fixed.** Cross-invocation ETags, cadence metadata, and a full-tick lock make it safe.
+8. **Daemon-owned branches.** Worker-selected refs are removed from the stable bridge contract.
+9. **Investigation is a comment workflow, not a PR workflow.** It posts findings, removes its trigger label, and leaves the issue open.
+
+### Explicit v0.2+ deferrals
+
+- SQLite/PostgreSQL state and multi-host high availability.
+- GitHub App authentication.
+- Auto-merge and CI/review gating.
+- Native Hermes dashboard widgets. The shipped `/caduceus-status` chat command is v0.1 scope and is not deferred.
+- Parallel workers. v0.1 intentionally processes one issue per host-wide tick.
+- Automatic reset of terminal failed entries. v0.1 recovery tooling is explicit and auditable.
+
+No deferred item is required to uphold a v0.1 promise. Process-group termination, durable ETags, crash-safe JSON, idempotent finalization, and chat status are explicitly not deferred.
+
+### Risk register
+
+| Risk | Required v0.1 control | Verification |
+|---|---|---|
+| GitHub schema/API drift | Typed issue-list schema and pinned API version | Realistic fixtures + header tests |
+| Rate-limit storm | Persist reset before exit; preflight gate | Two-tick integration test |
+| Concurrent cron ticks | Whole-tick nonblocking flock | Two-binary integration test |
+| State corruption | temp+fsync+rename; preserve/quarantine corruption | fault-injection tests |
+| Worker descendants survive | Rust supervisor + control-pipe EOF + worker-session kill | grandchild and daemon-SIGKILL tests |
+| Daemon credential reaches worker/log/git | env clear/allowlist, redaction, credential helper | real child env + secret scan |
+| Hostile same-user worker reads host files | Explicitly not an OS sandbox; document separate-user/container deployment | docs/install smoke test |
+| Retry loop | exact total-attempt budget and claim release | boundary tests |
+| Partial finalize duplicates | remote/PR/comment/close idempotency | retry integration test |
+| Worktree leak or unsafe GC | active claim/heartbeat checks; git-aware removal | active-old/symlink tests |
+| Public tool-name leak | central public-text validator | no-request Wiremock tests |
+| Transcript fills disk | byte cap with drain continuation | noisy-worker test |
+| Run artifacts accumulate | age-based GC excluding active/checkpoint runs | retention tests |
+| Hermes loader/lifecycle drift | Pin minimum v0.18.2; root adapter uses documented `ctx` APIs; explicit setup/cron lifecycle | isolated real-Hermes install/update/remove test |
+| Plugin/docs drift | generated contract fixtures | cross-document test |
+
+### Definition of done
+
+The plan is implemented only when a fresh Hermes install can run after explicit setup with its seeded user-owned bridge, no-argument cron ticks are silent on success, a standalone install fails with a precise missing-worker instruction, every README status field is backed by persisted data, all worker descendants die on timeout/shutdown, retries and claims make progress without waiting for stale reaping, corrupt state is preserved, and the complete release gate in Task 9.2 passes.
+
+---
+
+## Original 46-Task RED/GREEN/REFACTOR Playbook
+
+The task bodies below are preserved from the original plan. Apply the binding overlay above while executing them.
+
 
 ## Phase 0: Project Scaffolding (no Rust code yet)
 
@@ -101,16 +1017,26 @@ state.json
 
 **Step 7:** Commit: `chore: scaffold caduceus binary crate`
 
-### Task 0.2: Plugin manifest and lifecycle hooks [DONE — already committed]
+### Task 0.2: Hermes plugin adapter and explicit lifecycle
 
-The plugin manifest (`plugin/plugin.yaml`), `SKILL.md`, `commands/caduceus-status.md`, `cron/caduceus-pulse.yaml`, and `worker-bridge.py` already exist at their canonical locations under `plugin/`. No action needed.
+**Objective:** Replace the existing nonfunctional plugin scaffolding with a valid Hermes Agent v0.18.2 directory plugin. Follow Amendment 0.2 and the Hermes plugin compatibility contract exactly.
 
-**Canonical locations:**
-- Plugin manifest: `plugin/plugin.yaml`
-- Skill: `plugin/SKILL.md`
-- Command: `plugin/commands/caduceus-status.md`
-- Cron profile: `plugin/cron/caduceus-pulse.yaml`
-- Worker bridge: `plugin/worker-bridge.py` — **single source of truth.** Any `examples/` copies are stale by definition; do not create duplicates. If an example is needed for documentation, symlink to `plugin/worker-bridge.py`.
+**Files:**
+- Create: `plugin.yaml`
+- Create: `__init__.py`
+- Create: `skills/caduceus/SKILL.md`
+- Create: `plugin-assets/worker-bridge.py`
+- Create: `plugin-assets/caduceus-pulse.sh`
+- Create: `tests/hermes_plugin_test.py`
+- Remove after migration: legacy `plugin/plugin.yaml`, `plugin/SKILL.md`, `plugin/commands/`, and `plugin/cron/`
+
+The checked-in `plugin/` directory is historical scaffolding, not a completed Hermes plugin. Its custom manifest fields, Markdown command convention, profile path, lifecycle hooks, and cron YAML are not consumed by Hermes Agent v0.18.2. Do not preserve those assumptions in implementation.
+
+**RED:** In an isolated `HERMES_HOME` with Hermes Agent 0.18.2 installed, write failing tests for repository-root discovery, exact manifest fields, `register(ctx)` surfaces, non-mutating import, missing-binary status, setup/bridge preservation, and cron reconciliation.
+
+**GREEN:** Implement the root adapter and explicit lifecycle from the binding compatibility contract. Plugin registration is stdlib-only and never builds. `setup` performs the locked Rust build and safe install; `cron-install` uses the public plugin dispatch surface and writes only the sanctioned Hermes script path.
+
+**REFACTOR/verify:** Run the adapter tests against the pinned Hermes version, then `hermes plugins list`, `hermes plugins enable caduceus`, `hermes caduceus doctor`, and an isolated cron install/run/remove smoke test. Verify plugin removal preserves state and the user-owned bridge.
 
 ---
 
@@ -3835,116 +4761,30 @@ async fn full_pipeline_handles_empty_queue() {
 
 ## Phase 8: Documentation & Examples
 
-### Task 8.1: Reference bridge script (Python harness adapter)
+### Task 8.1: Hermes-facing documentation and bridge contract
 
-**Objective:** The canonical Python bridge already exists at `plugin/worker-bridge.py`. This task documents the bridge, adds a test suite, and removes any stale copies under `examples/`.
+**Objective:** Finish the user-owned bridge template and make every public document match the root Hermes adapter implemented in Task 0.2. Follow Amendment 8.1; do not recreate the legacy plugin directory conventions.
 
 **Files:**
-- **Canonical:** `plugin/worker-bridge.py` (exists, do not recreate)
-- Create: `tests/bridge_test.py` (Python tests using `pytest`)
-- Delete: `examples/` directory if it exists (stale)
+- Modify: `plugin-assets/worker-bridge.py`
+- Modify: `skills/caduceus/SKILL.md`
+- Modify: root `__init__.py` help/status text
+- Modify: `README.md`
+- Create/modify: `tests/bridge_test.py`
+- Create/modify: `tests/docs_contract_test.rs`
+- Extend: `tests/hermes_plugin_test.py`
 
-**Step 1:** The bridge already exists at `plugin/worker-bridge.py`. Write Python tests in `tests/bridge_test.py`:
+**RED:** Test the bridge's required JSON-label environment, exit propagation, missing/malformed input, signal behavior, and absence of heartbeat/state writes. Test public docs against the Config/env/CLI fixtures. Run a real isolated Hermes 0.18.2 install/enable/setup/cron/remove lifecycle and assert that every documented command exists and behaves as described.
 
-```python
-#!/usr/bin/env python3
-"""Caduceus harness bridge — reference implementation.
+**GREEN:** Update the bridge template and documentation. The template is copied by explicit setup to `$HERMES_HOME/caduceus/worker-bridge.py` only when absent. Plugin source update never overwrites the user copy; changed templates are offered as `.new` files. The namespaced skill is opt-in, the slash command is registered through `ctx`, and cron is an explicit no-agent job backed by `$HERMES_HOME/scripts/caduceus-pulse.sh`.
 
-Translates CADUCEUS_* env vars into a harness invocation. Fork this to
-plug in a different harness (pi, codex, claude-code, etc.) by editing
-invoke_harness() only.
-"""
+**REFACTOR/verify:** Search for and remove claims about `hermes plugin` (singular), profile plugin paths, automatic skill triggers, `commands/*.md` registration, cron-profile YAML, manifest defaults/binaries, or lifecycle hooks. Run bridge, docs-contract, and pinned Hermes integration tests together.
 
-import os
-import subprocess
-import sys
-import time
-import threading
-from pathlib import Path
+**Acceptance:** A new operator can follow README from `hermes plugins install ... --enable` through setup, doctor, cron install, status, update/rebuild, cron removal, and plugin removal without relying on an undocumented Hermes behavior. Standalone installation remains documented and functional.
 
-
-def invoke_harness(worktree: Path, prompt_file: Path, run_id: str, labels: list[str]) -> int:
-    """Run the configured harness. Return its exit code.
-
-    Default: OpenCode with gentle-orchestrator. Edit this function to
-    switch harnesses — everything else in the bridge stays the same.
-    """
-    return subprocess.run([
-        "opencode", "run",
-        "--agent", "gentle-orchestrator",
-        "-f", str(prompt_file),
-        "--", "Run the workflow per the attached prompt file.",
-    ], cwd=worktree).returncode
-
-
-def main() -> int:
-    worktree = Path(os.environ["CADUCEUS_WORKTREE_PATH"])
-    prompt_file = worktree / "worker-prompt.md"
-    run_id = os.environ["CADUCEUS_RUN_ID"]
-    labels = [l for l in os.environ.get("CADUCEUS_ISSUE_LABELS", "").split(",") if l]
-
-    if not prompt_file.exists():
-        print(f"prompt file missing: {prompt_file}", file=sys.stderr)
-        return 2
-
-    # Write a heartbeat file every 30s so `caduceus status` can show live workers
-    state_dir = Path(os.environ.get("CADUCEUS_STATE_DIR", "~/.hermes/caduceus-state")).expanduser()
-    heartbeat_path = state_dir / "runs" / f"{run_id}.heartbeat"
-    stop = threading.Event()
-
-    def beat():
-        while not stop.is_set():
-            heartbeat_path.write_text(str(time.time()))
-            stop.wait(30)
-
-    threading.Thread(target=beat, daemon=True).start()
-
-    try:
-        return invoke_harness(worktree, prompt_file, run_id, labels)
-    finally:
-        stop.set()
-        heartbeat_path.unlink(missing_ok=True)
-
-
-if __name__ == "__main__":
-    sys.exit(main())
-```
-
-**Step 2:** Write tests in `tests/bridge_test.py`:
-
-```python
-def test_invoke_harness_propagates_exit_code(tmp_path):
-    # Mock harness script that exits 0
-    fake_harness = tmp_path / "fake-harness.sh"
-    fake_harness.write_text("#!/bin/sh\nexit 0\n")
-    fake_harness.chmod(0o755)
-
-    # Patch subprocess.run by monkey-patching invoke_harness for the test
-    ...
-
-def test_invoke_harness_propagates_non_zero_exit(tmp_path):
-    # Mock harness that exits 1 — verify bridge returns 1
-    ...
-
-def test_heartbeat_written_and_cleaned_up(tmp_path, monkeypatch):
-    # Set CADUCEUS_STATE_DIR to tmp_path, run bridge with mock harness,
-    # verify heartbeat file appears and is cleaned up after exit
-    ...
-
-def test_missing_prompt_file_returns_error(tmp_path, monkeypatch, capsys):
-    # Run bridge with no worker-prompt.md in worktree
-    # Verify exit code 2 and error message on stderr
-    ...
-```
-
-**Step 3:** Run tests, verify PASS.
-
-**Step 4:** If `examples/` exists with duplicate files, delete it. The canonical location is `plugin/worker-bridge.py`. Update README to point at `plugin/worker-bridge.py` as the canonical file.
-
-**Step 5:** Commit: `feat(examples): reference Python bridge tests, canonicalize to plugin/`
+**Commit:** `docs(plugin): align Hermes adapter and bridge lifecycle`
 
 ---
-
 ## Phase 9: Migration & Cutover
 
 ### Task 9.1: Migration checklist

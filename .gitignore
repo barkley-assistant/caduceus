@@ -3,6 +3,7 @@ target/
 
 # OS / editor cruft
 .DS_Store
+planning/caduceus-v0.1/.progress.lock
 *.swp
 *.swo
 *~

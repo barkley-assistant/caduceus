@@ -1,3 +1,5 @@
+# LEGACY SCAFFOLDING — not a valid Caduceus manifest contract for Hermes
+# Agent v0.18.2. Task 0.2 replaces this with root plugin.yaml + __init__.py.
 name: caduceus
 version: 0.1.0
 description: Self-hosted GitHub issue orchestrator with hard worker timeouts and pluggable AI harness bridge.
@@ -19,13 +21,15 @@ binaries:
   - name: caduceus
     build_from: ../Cargo.toml
     install_to: bin/caduceus
-    build_command: cargo build --release
+    build_command: cargo build --release --locked
 
 # Hooks run during install/upgrade/uninstall
 hooks:
   post_install:
-    - "mkdir -p ~/.hermes/caduceus-state/runs"
-    - "mkdir -p ~/.hermes/caduceus-state/claims"
+    - "mkdir -p -m 700 ~/.hermes/caduceus-state/runs"
+    - "mkdir -p -m 700 ~/.hermes/caduceus-state/claims"
+    - "mkdir -p -m 700 ~/.hermes/caduceus-state/cache"
+    - "chmod 700 ~/.hermes/caduceus-state ~/.hermes/caduceus-state/runs ~/.hermes/caduceus-state/claims ~/.hermes/caduceus-state/cache"
   pre_uninstall:
     - "hermes cron disable caduceus || true"
 
@@ -34,12 +38,24 @@ config:
   schema_version: 1
   defaults:
     poll_interval_seconds: 120
-    poll_user: "your-bot-account"
     state_dir: "~/.hermes/caduceus-state"
     log_path: "~/.hermes/caduceus-state/processor.log"
     workdir_base: "~/projects"
+    watched_repos: []
+    worker_command:
+      - "python3"
+      - "${plugin_root}/worker-bridge.py"
     worker_timeout_seconds: 3600
+    http_timeout_seconds: 60
+    git_timeout_seconds: 300
+    transcript_max_bytes: 10485760
+    run_retention_days: 30
+    stale_run_hours: 1
+    github_token: null
+    api_base: "https://api.github.com"
+    dry_run: false
     max_retries_per_issue: 3
+    retry_backoff_seconds: 300
     ticket_label_code: "🤖 auto-fix"
     ticket_label_investigation: "🤖 auto-fix-investigate"
     comment_forbidden_strings:
@@ -47,6 +63,23 @@ config:
       - "opencode"
       - "gentle-ai"
       - "engram"
+    feedback_author_allowlist: []
+    comment_ignore_patterns:
+      - "dependabot\\[bot\\]"
+      - "github-actions\\[bot\\]"
+    worker_env_allowlist:
+      - "PATH"
+      - "HOME"
+      - "USER"
+      - "SHELL"
+      - "LANG"
+      - "LC_ALL"
+      - "TERM"
+      - "TMPDIR"
+      - "OPENAI_*"
+      - "ANTHROPIC_*"
+      - "OPENROUTER_*"
+      - "OPENCODE_*"
 
 # Cron profile registered with the active profile
 cron_profiles:

@@ -1,5 +1,9 @@
 # /caduceus-status
 
+> Legacy Markdown scaffolding. Task 0.2 migrates this behavior into the root
+> Hermes adapter's explicit `ctx.register_command("caduceus-status", ...)`
+> registration; Hermes Agent v0.18.2 does not auto-register this directory.
+
 Quick status check for the Caduceus daemon.
 
 ## Usage
@@ -30,7 +34,7 @@ If the daemon is idle (304 Not Modified on last tick), include:
 🟢 Caduceus v0.1.0 — idle
 
 Last run:       2026-07-12T21:50:03Z (304 Not Modified)
-Queue depth:    4 issues
+Queue phases:   queued=4 in_progress=0 previewed=0 failed=2 skipped=0 done=12
 Next head:      your-org/your-repo#338 (2 attempts)
 
 Recent errors:
@@ -42,7 +46,8 @@ Rate limit:     4987 / 5000 remaining (resets 22:14:23Z)
 
 ## Errors
 
-- **"Daemon not running"** — `caduceus status` failed because the daemon process isn't responding. Suggest checking `<state_dir>/processor.log` and the cron profile (`hermes cron status caduceus`).
+- **"No live worker"** — normal for the one-shot cron model. Use the last tick outcome and cron status to distinguish idle operation from a scheduling problem.
+- **"State corrupt"** — the daemon preserved the malformed file and stopped. Follow `MIGRATION.md` recovery steps; do not edit or delete the state file in place.
 - **"State directory missing"** — `~/.hermes/caduceus-state` doesn't exist. Suggest running `hermes cron run caduceus` once to create it, or check the config.
 
 ## See also

@@ -1,7 +1,12 @@
-# Caduceus pulse — runs the daemon on a fixed cadence
+# LEGACY SCAFFOLDING — Hermes Agent v0.18.2 does not import this YAML.
+# Task 0.2 replaces it with a Bash wrapper under $HERMES_HOME/scripts/ and
+# an explicitly reconciled no-agent cron job.
 #
-# Default: every 2 minutes. This matches GitHub's X-Poll-Interval
-# guidance and keeps token usage low (304 Not Modified on idle ticks).
+# Caduceus pulse — intended fixed cadence
+#
+# Default: every 2 minutes. The daemon persists ETags and cadence/rate-limit
+# metadata across invocations, so idle ticks use conditional requests and
+# early invocations exit without contacting GitHub.
 #
 # Edit the `schedule` field to change cadence. Common alternatives:
 #   "every 5m"   — more conservative, fewer API calls
