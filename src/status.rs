@@ -19,7 +19,7 @@ pub struct StatusReport {
     pub phases: std::collections::BTreeMap<String, u64>,
     pub next_head: Option<String>,
     pub recent_errors: Vec<String>,
-    pub rate_limit: Option<super::meta::RateLimitState>,
+    pub rate_limit: Option<super::meta::RateLimitObservation>,
     pub current_run: Option<CurrentRun>,
 }
 
