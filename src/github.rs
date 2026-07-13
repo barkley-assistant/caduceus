@@ -69,6 +69,84 @@ impl Response {
             ))
         })
     }
+
+    /// Parsed GitHub rate-limit observation from this response's
+    /// headers, if any. Returns `None` when the response does not
+    /// carry the documented headers or when a header value is
+    /// malformed. The caller persists the result via the
+    /// [`meta::RateLimitObserver`].
+    pub fn rate_limit_observation(&self) -> Option<RateLimitInfo> {
+        rate_limit_from_headers(&self.headers, self.status)
+    }
+
+    /// Server-suggested `X-Poll-Interval` value, in seconds, if
+    /// present. GitHub returns this on user-search and a few
+    /// other endpoints; missing/malformed values are ignored.
+    pub fn poll_interval_seconds(&self) -> Option<u64> {
+        poll_interval_from_headers(&self.headers)
+    }
+}
+
+/// Parsed GitHub rate-limit observation. The fields are
+/// optional so the cadence / rate-limit gate can work with
+/// partial headers; `remaining` is mandatory for the observer
+/// to do anything useful.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RateLimitInfo {
+    pub limit: Option<u32>,
+    pub remaining: u32,
+    pub reset_at_unix: i64,
+    pub observed_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl RateLimitInfo {
+    /// Translate the seconds-until-reset relative to *now*.
+    pub fn reset_at(&self, now: chrono::DateTime<chrono::Utc>) -> chrono::DateTime<chrono::Utc> {
+        let seconds = (self.reset_at_unix - now.timestamp()).max(0);
+        now + chrono::Duration::seconds(seconds)
+    }
+}
+
+/// Parse `X-RateLimit-*` headers. Returns `None` when no
+/// `X-RateLimit-Remaining` header is present. The
+/// `status == 429` case is treated as exhaustion even if
+/// `Remaining` is non-zero (e.g. legacy proxies that drop the
+/// header on 429). The `meta` layer is responsible for the
+/// `remaining == 0` policy when *not* a 429.
+pub fn rate_limit_from_headers(headers: &HeaderMap, status: u16) -> Option<RateLimitInfo> {
+    let remaining = headers
+        .get("x-ratelimit-remaining")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| s.parse::<u32>().ok())?;
+    let limit = headers
+        .get("x-ratelimit-limit")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| s.parse::<u32>().ok());
+    let reset_unix = headers
+        .get("x-ratelimit-reset")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| s.parse::<i64>().ok())
+        .unwrap_or_else(|| chrono::Utc::now().timestamp());
+    let observed_at = chrono::Utc::now();
+    // 429 always counts as exhausted.
+    let remaining = if status == 429 { 0 } else { remaining };
+    Some(RateLimitInfo {
+        limit,
+        remaining,
+        reset_at_unix: reset_unix,
+        observed_at,
+    })
+}
+
+/// Parse `X-Poll-Interval` (GitHub user-search) as seconds.
+/// Malformed values return `None` so the caller can fall back to
+/// the configured `poll_interval_seconds`.
+pub fn poll_interval_from_headers(headers: &HeaderMap) -> Option<u64> {
+    let raw = headers
+        .get("x-poll-interval")
+        .and_then(|h| h.to_str().ok())?
+        .trim();
+    raw.parse::<u64>().ok()
 }
 
 /// One cached response keyed by full URL + Accept header. The
@@ -534,6 +612,25 @@ impl Client {
                     continue;
                 }
                 _ => {
+                    // 429 is rate-limit exhaustion even when the
+                    // X-RateLimit-Remaining header is missing or
+                    // non-zero. Surface a typed RateLimited error
+                    // so the daemon's tick wrapper can record the
+                    // observation via CadenceGate.
+                    if status == 429 {
+                        let now_unix = chrono::Utc::now().timestamp();
+                        let reset_unix = headers_snapshot
+                            .get("x-ratelimit-reset")
+                            .and_then(|h| h.to_str().ok())
+                            .and_then(|s| s.parse::<i64>().ok())
+                            .unwrap_or(now_unix + 60);
+                        let reset_at = (reset_unix - now_unix).max(0) as u64;
+                        return Err(CaduceusError::RateLimited {
+                            reset_at,
+                            remaining: 0,
+                            limit: None,
+                        });
+                    }
                     let text = String::from_utf8_lossy(&body).into_owned();
                     return Err(map_status(status, text));
                 }
