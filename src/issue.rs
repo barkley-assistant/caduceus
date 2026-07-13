@@ -30,6 +30,46 @@ impl IssueKey {
         )
     }
 
+    /// Parse an `owner/repo#number` reference. The input may have
+    /// any casing for owner/repo; validation normalises the casing
+    /// rules but preserves the original case in the returned
+    /// struct (so API paths use GitHub's canonical case). Returns
+    /// a [`CaduceusError::Config`] for malformed input — never
+    /// panics.
+    pub fn parse(input: &str) -> CaduceusResult<Self> {
+        let (head, number_text) = input
+            .split_once('#')
+            .ok_or_else(|| CaduceusError::Config(format!("issue ref missing '#': {input}")))?;
+        let (owner, repo) = head
+            .split_once('/')
+            .ok_or_else(|| CaduceusError::Config(format!("issue ref missing '/': {input}")))?;
+        if owner.is_empty() || repo.is_empty() {
+            return Err(CaduceusError::Config(format!(
+                "issue ref has empty owner or repo: {input}"
+            )));
+        }
+        if repo.contains('/') {
+            return Err(CaduceusError::Config(format!(
+                "issue ref has extra '/': {input}"
+            )));
+        }
+        let number = number_text.parse::<u64>().map_err(|err| {
+            CaduceusError::Config(format!("issue ref number parse: {input} ({err})"))
+        })?;
+        if number == 0 {
+            return Err(CaduceusError::Config(format!(
+                "issue number must be positive: {input}"
+            )));
+        }
+        let key = Self {
+            owner: owner.to_string(),
+            repo: repo.to_string(),
+            number,
+        };
+        key.validate()?;
+        Ok(key)
+    }
+
     /// Validate identifier components per `CONTRACTS.md`.
     pub fn validate(&self) -> CaduceusResult<()> {
         validate_owner(&self.owner)?;
