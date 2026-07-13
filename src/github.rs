@@ -52,6 +52,10 @@ pub struct Response {
     pub status: u16,
     pub final_url: String,
     pub body: Vec<u8>,
+    /// Raw response headers (case-insensitive). Used by the
+    /// pagination loop (Link header) and by the rate-limit observer
+    /// (Task 2.4).
+    pub headers: HeaderMap,
     /// True when the body was reused from the cache after a 304.
     pub from_cache: bool,
 }
@@ -482,6 +486,7 @@ impl Client {
                         status,
                         final_url: current.to_string(),
                         body,
+                        headers: headers_snapshot,
                         from_cache: false,
                     });
                 }
@@ -491,6 +496,7 @@ impl Client {
                             status: 304,
                             final_url: entry.final_url.clone(),
                             body: entry.body.clone(),
+                            headers: headers_snapshot,
                             from_cache: true,
                         });
                     }
