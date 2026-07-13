@@ -2,7 +2,7 @@
   "schema_version": 1,
   "plan_id": "caduceus-v0.1",
   "contracts": "CONTRACTS.md",
-  "contracts_sha256": "a3a986ab023a2bd7e207dab02904ed8c3d6705a9ce28e224b7bb75f7f420aa3c",
+  "contracts_sha256": "ace44d138c05548cb1b15e3176ed99f0521148ed4c24b449643716340be91eb2",
   "contract_revision_log": "CONTRACT_REVISIONS.md",
   "progress": "progress.json",
   "archive": "archive/full-reviewed-plan.md",

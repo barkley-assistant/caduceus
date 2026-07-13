@@ -25,13 +25,13 @@ The daemon owns GitHub credentials, polling, state, claims, worktrees, prompts, 
 
 ## Toolchain and dependencies
 
-- Rust 2021, MSRV 1.75
+- Rust 2021, MSRV 1.97
 - Runtime: `tokio`, `tokio-util`, `reqwest`, `serde`, `serde_json`, `serde_yaml`, `clap`, `tracing`, `tracing-subscriber`, `tracing-appender`, `thiserror`, `fs2`, `ulid`, `chrono`, `regex`, `which`, `shellexpand`, `sha2`, `hex`, `filetime`, `walkdir`, `libc`
 - Git implementation: shell out to the installed `git` executable. This avoids libgit2 credential divergence and uses the operator's existing SSH agent or credential helper. Every invocation uses argument arrays, never a shell string.
 - Dev: `tempfile`, `wiremock`, `assert_fs`, `predicates`, `serial_test`
 - Python bridge tests: `pytest`
 
-Commit `Cargo.lock` and use `--locked` for CI, plugin, and release builds. The dependency resolver must pass the release suite on Rust 1.75; upgrading a crate in a way that raises MSRV is a documented compatibility change, not an incidental lockfile refresh.
+Commit `Cargo.lock` and use `--locked` for CI, plugin, and release builds. The dependency resolver must pass the release suite on Rust 1.97; upgrading a crate in a way that raises MSRV is a documented compatibility change, not an incidental lockfile refresh.
 
 ## Canonical public contracts
 
