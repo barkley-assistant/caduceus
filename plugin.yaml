@@ -1,0 +1,21 @@
+# Caduceus v0.1 — Hermes plugin manifest
+#
+# Field set is restricted to the ones the Hermes Agent v0.18.2 directory-plugin
+# loader actually consumes (see hermes_cli/plugins.py::PluginManifest).
+# Unknown fields are silently dropped by Hermes; Caduceus's contract test
+# rejects them on this side instead.
+#
+# `kind: standalone` is the only kind the contract accepts. Caduceus is a
+# daemon with its own cron lifecycle and explicit `setup` step; it does not
+# register tools or hooks and it is not a backend/platform/model provider.
+manifest_version: 1
+name: caduceus
+version: 0.1.0
+description: >-
+  Hermes-managed Unix daemon that polls GitHub for labeled issues, runs a
+  user-configured AI harness in isolated worktrees under a hard timeout,
+  and finalizes results as branches, pull requests, and comments.
+author: barkley-assistant
+kind: standalone
+provides_tools: []
+provides_hooks: []
