@@ -24,7 +24,8 @@ pub struct SupervisedWorker {
 /// Start the worker under supervision. Tasks 5.1 and 5.2 implement the
 /// environment construction + spawn.
 pub async fn spawn(_command: &[String], _cwd: &PathBuf, _key: &IssueKey) -> CaduceusResult<Child> {
-    Err(crate::error::CaduceusError::Worker(
-        "spawn() implementation lives in Task 5.1".to_string(),
-    ))
+    Err(crate::error::CaduceusError::Worker {
+        context: "spawn",
+        stderr: "spawn() implementation lives in Task 5.1".to_string(),
+    })
 }

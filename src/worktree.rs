@@ -22,9 +22,10 @@ pub struct WorktreeHandle {
 
 /// Provision an isolated worktree + branch.
 pub fn create(_key: &IssueKey, _run_id: &str) -> CaduceusResult<WorktreeHandle> {
-    Err(crate::error::CaduceusError::Worktree(
-        "create() implementation lives in Task 4.2".to_string(),
-    ))
+    Err(crate::error::CaduceusError::Worktree {
+        context: "create",
+        stderr: "create() implementation lives in Task 4.2".to_string(),
+    })
 }
 
 /// Tear down a worktree, refusing to remove anything claimed or
