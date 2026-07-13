@@ -1,10 +1,10 @@
 # Caduceus Skill
 
-The `caduceus` skill is triggered when you mention GitHub issues, auto-fix, PR automation, or queue state in chat. It surfaces the current Caduceus daemon state and helps you configure and debug it.
+This content is migrated by Task 0.2 to the explicitly registered `caduceus:caduceus` plugin skill. Hermes plugin skills are opt-in; conversational phrases do not trigger them automatically. Once loaded, it surfaces daemon state and helps configure and debug Caduceus.
 
-## Triggers
+## Intended uses
 
-This skill fires when the user says things like:
+Load this skill when the user asks things like:
 
 - "What issues is caduceus working on?"
 - "Show me the caduceus queue"
@@ -19,14 +19,14 @@ When triggered, this skill should:
 
 1. **Check daemon status** by running `caduceus status` (or `/caduceus-status` from chat). Parse the output.
 2. **If the user wants to know what's happening**: surface the queue contents, last-run timestamps, retry counts, recent errors.
-3. **If the user wants to configure**: walk them through the `caduceus:` section of `~/.hermes/config.yaml`. Reference the plugin's defaults.
+3. **If the user wants to configure**: walk them through the `caduceus:` section of `~/.hermes/config.yaml`, then verify watched repositories exist at `<workdir_base>/<owner>/<repo>` with a matching noninteractive `origin`. Reference the plugin's defaults.
 4. **If the user wants to swap harnesses**: explain that they edit the plugin's `worker-bridge.py` and change one function (`invoke_harness`).
-5. **If something is broken**: tail `<state_dir>/processor.log` and `<state_dir>/runs/<run-id>.log` for the affected run.
+5. **If something is broken**: tail `<state_dir>/processor.log` and `<state_dir>/runs/<run-id>.log` for the affected run. For a terminal failed/skipped entry, show `caduceus queue reset OWNER/REPO#N --dry-run` before proposing the real reset; never edit state directly.
 
 ## Boundaries
 
-- **Do not edit daemon state files** directly. The state files use `flock` and atomic-claim primitives; editing them manually will corrupt the queue.
-- **Do not run multiple caduceus processes** against the same `state_dir`. The atomic claims make this safe-ish but the heartbeat and cron profile assume one daemon.
+- **Do not edit daemon state files** directly. Use the documented migration/recovery commands; malformed state is preserved for diagnosis.
+- Multiple cron invocations are safe: a host-wide nonblocking lock allows one tick and makes later invocations exit cleanly. Do not bypass that lock with custom tooling.
 - **Do not edit user-modifiable config** without confirming with the user first.
 
 ## Related commands
