@@ -13,9 +13,9 @@
       "handoff": "handoffs/0.2.md"
     },
     "1.1": {
-      "status": "pending",
-      "updated_at": null,
-      "handoff": null
+      "status": "complete",
+      "updated_at": "2026-07-13T15:13:01.275564+00:00",
+      "handoff": "handoffs/1.1.md"
     },
     "1.2": {
       "status": "pending",
