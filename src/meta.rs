@@ -47,6 +47,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{CaduceusError, CaduceusResult};
+use crate::github::RateLimitInfo;
 use crate::issue::IssueKey;
 
 /// Current metadata envelope version. Bumping this is a breaking
@@ -248,6 +249,187 @@ impl<'a> RateLimitObserver<'a> {
                 return;
             }
             meta.rate_limit = Some(obs);
+        })
+    }
+}
+
+/// Outcome of the cadence / rate-limit precheck the daemon
+/// runs at the start of every tick. The cadence gate answers
+/// "may this tick proceed, and if not, why not?".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CadenceDecision {
+    /// Polling is allowed; the daemon should proceed.
+    Proceed,
+    /// The configured `poll_interval_seconds` has not elapsed
+    /// since the last tick. The daemon exits 0 with a Cadence
+    /// outcome.
+    Cadence { next_allowed_at: DateTime<Utc> },
+    /// A previous tick observed rate-limit exhaustion and the
+    /// persisted reset time has not elapsed. The daemon exits 0
+    /// with a RateLimited outcome.
+    RateLimited { next_allowed_at: DateTime<Utc> },
+}
+
+impl CadenceDecision {
+    pub fn is_proceed(&self) -> bool {
+        matches!(self, CadenceDecision::Proceed)
+    }
+    pub fn tick_outcome(&self) -> Option<TickOutcome> {
+        match self {
+            CadenceDecision::Proceed => None,
+            CadenceDecision::Cadence { .. } => Some(TickOutcome::Cadence),
+            CadenceDecision::RateLimited { .. } => Some(TickOutcome::RateLimited),
+        }
+    }
+}
+
+/// Cadence and rate-limit gate. Wraps a [`MetaStore`] and
+/// exposes the read-modify-write operations the daemon runs at
+/// tick boundaries. The precheck is read-only with respect to
+/// the HTTP layer; the record methods persist observations.
+#[derive(Debug)]
+pub struct CadenceGate {
+    store: MetaStore,
+}
+
+impl CadenceGate {
+    /// Open the gate rooted at *state_dir*. The wrapped
+    /// `MetaStore` is created on demand and reuses the
+    /// existing metadata file.
+    pub fn open(state_dir: &Path) -> CaduceusResult<Self> {
+        Ok(Self {
+            store: MetaStore::open(state_dir)?,
+        })
+    }
+
+    /// Borrow the underlying metadata store (test seam).
+    pub fn store(&self) -> &MetaStore {
+        &self.store
+    }
+
+    /// Decide whether the tick at *now* may proceed. Pure
+    /// read-only; does not persist anything. The decision is
+    /// the most restrictive of:
+    ///
+    /// 1. The persisted rate-limit reset has not elapsed.
+    /// 2. The configured `poll_interval_seconds` has not elapsed
+    ///    since `last_tick_finished` (the more conservative
+    ///    interpretation of "two cron invocations" the
+    ///    contract calls for).
+    pub fn precheck(&self, now: DateTime<Utc>, poll_interval_seconds: u64) -> CadenceDecision {
+        let snapshot = self.store.snapshot();
+        // Rate-limit gate: persisted reset_at in the future blocks.
+        if let Some(rate) = snapshot.rate_limit.as_ref() {
+            if rate.remaining == 0 && rate.reset_at > now {
+                return CadenceDecision::RateLimited {
+                    next_allowed_at: rate.reset_at,
+                };
+            }
+        }
+        // Cadence gate: last_tick_finished + poll_interval_seconds > now blocks.
+        if let Some(last) = snapshot.last_tick_finished.as_ref() {
+            let next = *last + chrono::Duration::seconds(poll_interval_seconds as i64);
+            if next > now {
+                return CadenceDecision::Cadence {
+                    next_allowed_at: next,
+                };
+            }
+        }
+        CadenceDecision::Proceed
+    }
+
+    /// Record that a tick started at *now*. Persists
+    /// `last_tick_started` so the next precheck can compute its
+    /// gate.
+    pub fn record_tick_started(&self, now: DateTime<Utc>) -> CaduceusResult<()> {
+        self.store.update(|meta| {
+            meta.last_tick_started = Some(now);
+        })
+    }
+
+    /// Record the outcome of a finished tick. Persists
+    /// `last_tick_finished`, `last_outcome`, `last_http_status`,
+    /// and `next_allowed_poll_at` (computed from the outcome).
+    /// When *rate_limit* is `Some`, the observation is persisted
+    /// atomically and `next_allowed_poll_at` is set to the
+    /// observation's `reset_at`; otherwise the next-allowed time
+    /// is `now + poll_interval_seconds`.
+    pub fn record_tick_finished(
+        &self,
+        now: DateTime<Utc>,
+        outcome: TickOutcome,
+        http_status: Option<u16>,
+        poll_interval_seconds: u64,
+        rate_limit: Option<&RateLimitInfo>,
+        last_error: Option<String>,
+    ) -> CaduceusResult<()> {
+        // Persist the rate-limit observation first so the
+        // snapshot taken inside `update` already sees the new
+        // entry.
+        let mut persisted_rate_limit: Option<RateLimitObservation> = None;
+        if let Some(info) = rate_limit {
+            persisted_rate_limit = Some(self.record_rate_limit(info)?);
+        }
+        let next_allowed_poll_at = match outcome {
+            TickOutcome::RateLimited => persisted_rate_limit
+                .as_ref()
+                .map(|r| r.reset_at)
+                .or_else(|| self.store.snapshot().rate_limit.map(|r| r.reset_at)),
+            _ => Some(now + chrono::Duration::seconds(poll_interval_seconds as i64)),
+        };
+        self.store.update(|meta| {
+            meta.last_tick_finished = Some(now);
+            meta.last_outcome = Some(outcome);
+            meta.last_http_status = http_status;
+            if let Some(next) = next_allowed_poll_at {
+                meta.next_allowed_poll_at = Some(next);
+            }
+            if let Some(err) = last_error {
+                meta.last_error = Some(err);
+            }
+        })
+    }
+
+    /// Persist a [`RateLimitInfo`] from a GitHub response. The
+    /// observation is only accepted when the new `reset_at` is
+    /// strictly newer than the previously persisted one, per
+    /// the meta-layer stale-observation rule.
+    pub fn record_rate_limit(
+        &self,
+        info: &crate::github::RateLimitInfo,
+    ) -> CaduceusResult<RateLimitObservation> {
+        let now = info.observed_at;
+        let reset_at = info.reset_at(now);
+        let obs = RateLimitObservation {
+            limit: info.limit,
+            remaining: info.remaining,
+            reset_at,
+            observed_at: now,
+        };
+        RateLimitObserver::new(&self.store).observe(obs.clone())?;
+        Ok(obs)
+    }
+
+    /// Persist the server-suggested poll interval. Used after
+    /// the daemon has finished a tick and observed an
+    /// `X-Poll-Interval` header on any response; the next
+    /// precheck uses the longer of the configured and the
+    /// server-suggested interval.
+    pub fn record_poll_interval(
+        &self,
+        now: DateTime<Utc>,
+        server_suggested_seconds: u64,
+    ) -> CaduceusResult<()> {
+        self.store.update(|meta| {
+            let current = meta
+                .next_allowed_poll_at
+                .map(|t| (t - now).num_seconds().max(0) as u64)
+                .unwrap_or(0);
+            // Take the longer of the existing and the new interval
+            // so the server-suggested floor only ever slows the
+            // daemon down, never speeds it up.
+            let effective = current.max(server_suggested_seconds);
+            meta.next_allowed_poll_at = Some(now + chrono::Duration::seconds(effective as i64));
         })
     }
 }

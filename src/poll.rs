@@ -15,7 +15,7 @@ use url::Url;
 
 use crate::config::{is_valid_repo_slug, Config};
 use crate::error::{CaduceusError, CaduceusResult};
-use crate::github::{Client, Response, ACCEPT_VALUE};
+use crate::github::{rate_limit_from_headers, Client, Response, ACCEPT_VALUE};
 use crate::issue::IssueKey;
 use crate::queue::TicketType;
 
@@ -152,9 +152,13 @@ async fn discover_via_api(client: &Client) -> CaduceusResult<Vec<String>> {
         // Rate-limit responses carry `x-ratelimit-remaining: 0` plus
         // a `x-ratelimit-reset` Unix timestamp; surface them as a
         // typed RateLimited error so the meta layer can persist the
-        // observation (Task 2.4).
-        if let Some(observation) = rate_limit_from_headers(&response) {
-            return Err(observation);
+        // observation (Task 2.4). Non-zero `remaining` (or a 429
+        // response) is observed for cadence but does not short-circuit
+        // a successful page.
+        if let Some(observation) = rate_limit_from_headers(&response.headers, response.status) {
+            if observation.remaining == 0 {
+                return Err(rate_limit_error(observation));
+            }
         }
         // The response body must be a JSON array of repository
         // objects. Anything else is malformed.
@@ -227,38 +231,25 @@ pub fn next_url_from_link_header(header: &str) -> Option<String> {
     None
 }
 
-/// Translate GitHub rate-limit headers into a typed error.
-/// `x-ratelimit-remaining: 0` plus a `x-ratelimit-reset` Unix
-/// timestamp is the documented exhaustion signal. Other pages may
-/// carry the headers but still succeed; we treat a remaining of
-/// zero as the threshold so a successful response is never
-/// mis-classified as rate-limited.
-fn rate_limit_from_headers(response: &Response) -> Option<CaduceusError> {
-    let remaining = response
-        .headers
-        .get("x-ratelimit-remaining")
-        .and_then(|h| h.to_str().ok())
-        .and_then(|s| s.parse::<u32>().ok())?;
-    let limit = response
-        .headers
-        .get("x-ratelimit-limit")
-        .and_then(|h| h.to_str().ok())
-        .and_then(|s| s.parse::<u32>().ok());
-    let reset_unix = response
-        .headers
-        .get("x-ratelimit-reset")
-        .and_then(|h| h.to_str().ok())
-        .and_then(|s| s.parse::<i64>().ok())?;
-    if remaining != 0 {
-        return None;
+/// Translate a [`crate::github::RateLimitInfo`] into the
+/// typed `CaduceusError::RateLimited` variant the daemon's
+/// outer loop recognises. Only a `remaining == 0` observation
+/// (or a 429) is treated as exhausted; other responses carry
+/// the headers for observation but proceed normally.
+fn rate_limit_error(observation: crate::github::RateLimitInfo) -> CaduceusError {
+    if observation.remaining != 0 {
+        return CaduceusError::Other(format!(
+            "rate_limit_error called with remaining={} (not exhausted)",
+            observation.remaining
+        ));
     }
     let now = chrono::Utc::now().timestamp();
-    let reset_at = (reset_unix.saturating_sub(now)).max(0) as u64;
-    Some(CaduceusError::RateLimited {
+    let reset_at = (observation.reset_at_unix.saturating_sub(now)).max(0) as u64;
+    CaduceusError::RateLimited {
         reset_at,
-        remaining,
-        limit,
-    })
+        remaining: observation.remaining,
+        limit: observation.limit,
+    }
 }
 
 /// One row of the GitHub `/user/repos` payload. We deliberately
@@ -341,8 +332,10 @@ async fn poll_label(
             }
             pages += 1;
             let response = client.get_url(&url, ACCEPT_VALUE).await?;
-            if let Some(observation) = rate_limit_from_headers(&response) {
-                return Err(observation);
+            if let Some(observation) = rate_limit_from_headers(&response.headers, response.status) {
+                if observation.remaining == 0 {
+                    return Err(rate_limit_error(observation));
+                }
             }
             let issues: Vec<IssueObject> =
                 serde_json::from_slice(&response.body).map_err(|err| {
