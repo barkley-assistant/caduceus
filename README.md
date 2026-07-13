@@ -238,8 +238,13 @@ caduceus:
   # Security Trust Tiers
   feedback_author_allowlist:
     - "trusted-maintainer-username"
-    - "id:12345678"   # Numeric GitHub IDs supported to protect against rename spoofing
-  comment_ignore_patterns: "dependabot\\[bot\\]|github-actions\\[bot\\]"
+    - "id:12345678"   # Numeric GitHub user ID — protects against rename spoofing
+  # Each entry is a separate regex pattern. The defaults filter standard
+  # bots so their comments don't pollute the worker context. Substring
+  # match against the comment author login (e.g. `dependabot[bot]`).
+  comment_ignore_patterns:
+    - "dependabot\\[bot\\]"
+    - "github-actions\\[bot\\]"
 
   # Bounded retry budget — after 3 failures, the issue is shelved
   max_retries_per_issue: 3
@@ -249,7 +254,11 @@ caduceus:
   ticket_label_investigation: "🤖 auto-fix-investigate"
 ```
 
-> **Defaults are conservative — review before production.** The `poll_user` default `your-bot-account` and the `comment_ignore_patterns` regex are examples, not enforced values. Always review and override.
+> **Defaults are conservative — review before production.** The `poll_user` default `your-bot-account` is an example, not an enforced value. Always review and override.
+
+**About the allowlist:** Each entry is either a GitHub login or `id:<numeric>` where `<numeric>` is the user's GitHub numeric user ID (visible via `https://api.github.com/users/<login>` in the `id` field). Numeric IDs are recommended for security-sensitive contexts because they survive username renames — a user who renames their account to bypass an allowlist still matches the numeric ID. The daemon extracts the numeric ID from each comment's `user.id` field at fetch time; no extra API call is required.
+
+**About `comment_ignore_patterns`:** A list of regex patterns matched against each comment author's login (substring match, case-sensitive). The default patterns filter standard bot accounts (`dependabot[bot]`, `github-actions[bot]`) so their automated comments don't pollute the worker context. The list **replaces** the defaults if you set any values — to keep the defaults, set the list back to both patterns explicitly.
 
 ### 2. Create Labels In Your Target Repositories
 
