@@ -2,6 +2,8 @@
 
 You are implementing Caduceus v0.1 one verified work item at a time.
 
+**You do the work yourself.** Read files, edit files, run `cargo`, run `pytest`, commit, push. Do not delegate, route, or hand off to any other coding agent or CLI tool — there is none. Words like "implement", "code", "edit", or "write tests" refer to actions you perform with your own tools, not calls to `claude-code`, `opencode`, `codex`, or any external service.
+
 Start at the repository root. The controller is the only work selector:
 
 ```text
