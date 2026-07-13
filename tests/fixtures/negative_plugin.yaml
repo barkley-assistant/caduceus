@@ -1,0 +1,33 @@
+# LEGACY SCAFFOLDING — intentionally contains fields the v0.18.2 loader
+# silently drops. The contract test (test_negative_manifest_with_legacy_fields_is_rejected)
+# reads this file and asserts that ``unknown_fields`` is non-empty.
+manifest_version: 1
+name: caduceus
+version: 0.1.0
+description: Legacy fixture.
+author: barkley-assistant
+kind: standalone
+provides_tools: []
+provides_hooks: []
+# Below: legacy fields the contract explicitly forbids.
+profile_section: caduceus
+files:
+  - SKILL.md
+  - commands/caduceus-status.md
+  - cron/caduceus-pulse.yaml
+  - worker-bridge.py
+binaries:
+  - name: caduceus
+    build_from: ../Cargo.toml
+    install_to: bin/caduceus
+    build_command: cargo build --release --locked
+hooks:
+  post_install:
+    - "mkdir -p -m 700 ~/.hermes/caduceus-state/runs"
+config:
+  schema_version: 1
+  defaults:
+    poll_interval_seconds: 120
+cron_profiles:
+  - name: caduceus
+    source: cron/caduceus-pulse.yaml

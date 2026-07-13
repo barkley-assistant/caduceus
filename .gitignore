@@ -1,6 +1,11 @@
 # Build artifacts
 target/
 
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+
 # OS / editor cruft
 .DS_Store
 planning/caduceus-v0.1/.progress.lock
