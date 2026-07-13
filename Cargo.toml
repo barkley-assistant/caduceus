@@ -1,0 +1,52 @@
+[package]
+name = "caduceus"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.97"
+description = "Unix single-host, one-shot Rust daemon that polls GitHub, queues one unit of work per tick, and finalizes code or investigation results."
+license = "MIT"
+publish = false
+
+[lib]
+name = "caduceus"
+path = "src/lib.rs"
+
+[[bin]]
+name = "caduceus"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+clap = { version = "4", features = ["derive", "string", "wrap_help"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json", "registry"] }
+tracing-appender = "0.2"
+thiserror = "1"
+fs2 = "0.4"
+ulid = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+regex = "1"
+which = "6"
+shellexpand = "3"
+sha2 = "0.10"
+hex = "0.4"
+filetime = "0.2"
+walkdir = "2"
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+wiremock = "0.6"
+assert_fs = "1"
+predicates = "3"
+serial_test = "3"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
