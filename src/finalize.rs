@@ -210,8 +210,403 @@ pub async fn finalize(_req: FinalizeRequest) -> CaduceusResult<FinalizeOutcome> 
 }
 
 // ---------------------------------------------------------------------------
-// Dry-run finalization
+// Code result finalization: inspect, validate, commit
 // ---------------------------------------------------------------------------
+
+/// Finalization checkpoint stage. The checkpoint is the
+/// durable state the orchestrator persists between
+/// finalization steps so a retry can resume from the
+/// right place.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CommitStage {
+    /// The commit has not yet been written.
+    Pending,
+    /// The commit was written; the OID is durable.
+    Committed,
+}
+
+/// The orchestrator's view of the commit. The OID is
+/// filled in by [`commit_code_result`]. The branch is
+/// the daemon-owned branch (from `worktree.branch_name`).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CommitOutcome {
+    /// The commit OID, after `git rev-parse HEAD` on the
+    /// worktree.
+    pub commit_oid: String,
+    /// The branch the commit landed on.
+    pub branch: String,
+}
+
+/// Paths that are part of the worker's contract (the
+/// worker writes these) and must not be staged into the
+/// commit. The canonical set is the result file and the
+/// transcript; the worker-result file is the only one
+/// the daemon excludes by default.
+pub const WORKER_CONTROL_FILE_NAMES: &[&str] = &["worker-result.json"];
+
+/// Default identity used by the daemon when committing
+/// worker results. The values match the documented
+/// "configured daemon identity" wording in Task 6.1; the
+/// contract treats them as authoritative until Phase 6
+/// adds operator-tunable identity fields.
+pub const DEFAULT_GIT_USER_NAME: &str = "Caduceus Daemon";
+pub const DEFAULT_GIT_USER_EMAIL: &str = "caduceus@daemon.local";
+
+/// Inspect the worktree, validate the changes, and commit
+/// the worker's work. The function:
+/// 1. Verifies `HEAD` still equals the worktree's
+///    `base_oid`. A worker-created commit / checkout /
+///    merge / rebase / detached HEAD is a
+///    `WorkerContractFailure`.
+/// 2. Runs `git status --porcelain=v2 -z` to collect
+///    changed paths. Excludes control files explicitly
+///    (the `worker-result.json` is *not* committed).
+/// 3. Rejects symlinks whose target escapes the
+///    worktree, and rejects any change under `.git/`.
+/// 4. A code success with no remaining changes is a
+///    `WorkerContractFailure` (the worker said
+///    `WorkerStatus::Success` but produced no diff).
+/// 5. Stages the validated paths with
+///    `git add --all -- <paths>` and commits using the
+///    worker's `commit_message` and the daemon's
+///    configured identity.
+/// 6. Atomically copies the worker result file to
+///    `<state_dir>/runs/<run_id>.result.json`.
+///
+/// `ctx` is the active finalization context.
+/// `runner` runs the git commands. `worker_result_path`
+/// is the on-disk result file (copied into `runs/` after
+/// the commit lands).
+pub fn commit_code_result(
+    ctx: &FinalizeContext,
+    worker_result: &WorkerResult,
+    runner: &crate::worktree::GitRunner,
+    worker_result_path: &std::path::Path,
+) -> CaduceusResult<CommitOutcome> {
+    // 1. Verify HEAD == base_oid.
+    let head_oid = git_rev_in(&ctx.worktree.path, "HEAD")?;
+    if head_oid != ctx.worktree.base_oid {
+        return Err(CaduceusError::Worker {
+            context: "commit",
+            stderr: format!(
+                "HEAD ({head_oid}) drifted from base_oid ({}); worker must not commit/checkout",
+                ctx.worktree.base_oid
+            ),
+        });
+    }
+    // 2. Status --porcelain=v2 -z.
+    let entries = git_status_v2(&ctx.worktree.path)?;
+    // 3-4. Filter.
+    let mut validated: Vec<String> = Vec::new();
+    let mut has_changes = false;
+    for entry in entries {
+        // Skip control files.
+        if WORKER_CONTROL_FILE_NAMES
+            .iter()
+            .any(|n| entry.path.ends_with(n))
+        {
+            continue;
+        }
+        // Reject any change under .git/.
+        if entry.path.starts_with(".git/") || entry.path == ".git" {
+            return Err(CaduceusError::Worker {
+                context: "commit",
+                stderr: format!("worker touched .git/: {}", entry.path),
+            });
+        }
+        // Reject escaping symlinks: if the path on disk
+        // is a symlink whose target is absolute or starts
+        // with `..`, the worker is trying to escape the
+        // worktree.
+        let full_path = ctx.worktree.path.join(&entry.path);
+        if let Ok(target) = std::fs::symlink_metadata(&full_path) {
+            if target.file_type().is_symlink() {
+                if let Ok(link) = std::fs::read_link(&full_path) {
+                    if link.starts_with("..") || link.is_absolute() {
+                        return Err(CaduceusError::Worker {
+                            context: "commit",
+                            stderr: format!(
+                                "worker created an escaping symlink: {} -> {}",
+                                entry.path,
+                                link.display()
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+        validated.push(entry.path);
+        has_changes = true;
+    }
+    if !has_changes {
+        return Err(CaduceusError::Worker {
+            context: "commit",
+            stderr: "code success with no remaining changes".to_string(),
+        });
+    }
+    // 5. Stage and commit.
+    for path in &validated {
+        git_add(&ctx.worktree.path, path, runner)?;
+    }
+    let commit_oid = git_commit(
+        &ctx.worktree.path,
+        &worker_result.commit_message,
+        DEFAULT_GIT_USER_NAME,
+        DEFAULT_GIT_USER_EMAIL,
+        runner,
+    )?;
+    // 6. Atomically copy the result to runs/.
+    let runs_dir = ctx.config.state_dir.join("runs");
+    std::fs::create_dir_all(&runs_dir).map_err(|err| CaduceusError::StateCorrupt {
+        path: runs_dir.clone(),
+        message: format!("create_dir_all failed: {err}"),
+    })?;
+    let target = runs_dir.join(format!("{}.result.json", ctx.run_id));
+    if worker_result_path.exists() {
+        let bytes =
+            std::fs::read(worker_result_path).map_err(|err| CaduceusError::StateCorrupt {
+                path: worker_result_path.to_path_buf(),
+                message: format!("read result: {err}"),
+            })?;
+        write_atomic(&target, &bytes).map_err(|err| CaduceusError::StateCorrupt {
+            path: target.clone(),
+            message: format!("write_atomic result: {err}"),
+        })?;
+    }
+    let _ = worker_result_path;
+    Ok(CommitOutcome {
+        commit_oid,
+        branch: ctx.worktree.branch_name.clone(),
+    })
+}
+
+/// A single `git status --porcelain=v2 -z` entry. The
+/// format is a NUL-separated list of header + path bytes;
+/// we only carry the fields the daemon needs.
+#[derive(Clone, Debug)]
+struct GitStatusEntry {
+    /// 1-character kind: `M` (modified in index), ` `
+    /// (modified in worktree), `?` (untracked), `!`
+    /// (ignored), `s` (sparse). For untracked entries the
+    /// v2 header is `? <path>` and the worktree did not
+    /// include the symlink test in v2; we synthesise
+    /// `kind = "untracked"` for those.
+    kind: String,
+    /// Path relative to the worktree root.
+    path: String,
+}
+
+/// Parse `git status --porcelain=v2 -z` into a list of
+/// entries. The porcelain=v2 format uses NUL bytes
+/// between records and the untracked-records section
+/// after a NUL terminator; this parser handles the
+/// document shape end-to-end.
+fn git_status_v2(workdir: &std::path::Path) -> CaduceusResult<Vec<GitStatusEntry>> {
+    let out = std::process::Command::new("git")
+        .args(["status", "--porcelain=v2", "-z", "--untracked-files=all"])
+        .current_dir(workdir)
+        .output()
+        .map_err(|err| CaduceusError::StateCorrupt {
+            path: workdir.to_path_buf(),
+            message: format!("spawn git status: {err}"),
+        })?;
+    if !out.status.success() {
+        return Err(CaduceusError::StateCorrupt {
+            path: workdir.to_path_buf(),
+            message: format!(
+                "git status failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            ),
+        });
+    }
+    // Split on NUL. Trailing empty is dropped.
+    let parts: Vec<&[u8]> = out
+        .stdout
+        .split(|b| *b == 0)
+        .filter(|b| !b.is_empty())
+        .collect();
+    let mut entries = Vec::new();
+    let mut i = 0;
+    while i < parts.len() {
+        let header = parts[i];
+        let header_str =
+            std::str::from_utf8(header).map_err(|err| CaduceusError::StateCorrupt {
+                path: workdir.to_path_buf(),
+                message: format!("utf8 in status header: {err}"),
+            })?;
+        // Header formats:
+        // 1: "1 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <path>\0"
+        //    2: "2 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <X><score> <path>\0<origPath>\0"
+        //    u: "? <path>\0" (untracked)
+        //    !: "! <path>\0" (ignored)
+        match header_str.chars().next() {
+            Some('1') => {
+                let fields: Vec<&str> = header_str.split_whitespace().collect();
+                if fields.len() < 9 {
+                    return Err(CaduceusError::StateCorrupt {
+                        path: workdir.to_path_buf(),
+                        message: format!("short v2 header: {header_str:?}"),
+                    });
+                }
+                let path = fields[8].to_string();
+                let xy = fields[1].chars().next().unwrap_or(' ').to_string();
+                entries.push(GitStatusEntry { kind: xy, path });
+                i += 1;
+            }
+            Some('2') => {
+                let fields: Vec<&str> = header_str.split_whitespace().collect();
+                if fields.len() < 10 {
+                    return Err(CaduceusError::StateCorrupt {
+                        path: workdir.to_path_buf(),
+                        message: format!("short v2 header: {header_str:?}"),
+                    });
+                }
+                let path = fields[9].to_string();
+                let xy = fields[1].chars().next().unwrap_or(' ').to_string();
+                entries.push(GitStatusEntry { kind: xy, path });
+                // The renamed entry's orig path is the
+                // next NUL record; skip it.
+                i += 2;
+            }
+            Some('?') => {
+                let path = header_str[2..].to_string();
+                entries.push(GitStatusEntry {
+                    kind: "untracked".to_string(),
+                    path,
+                });
+                i += 1;
+            }
+            Some('!') => {
+                // Ignored. Skip.
+                i += 1;
+            }
+            Some(other) => {
+                return Err(CaduceusError::StateCorrupt {
+                    path: workdir.to_path_buf(),
+                    message: format!("unknown v2 header type: {other:?}"),
+                });
+            }
+            None => {
+                i += 1;
+            }
+        }
+    }
+    Ok(entries)
+}
+
+/// Run `git rev-parse <rev>` in *workdir* and return the
+/// trimmed OID. Used to compare against the worktree's
+/// recorded `base_oid`.
+fn git_rev_in(workdir: &std::path::Path, rev: &str) -> CaduceusResult<String> {
+    let out = std::process::Command::new("git")
+        .args(["rev-parse", rev])
+        .current_dir(workdir)
+        .output()
+        .map_err(|err| CaduceusError::StateCorrupt {
+            path: workdir.to_path_buf(),
+            message: format!("spawn git rev-parse: {err}"),
+        })?;
+    if !out.status.success() {
+        return Err(CaduceusError::StateCorrupt {
+            path: workdir.to_path_buf(),
+            message: format!(
+                "git rev-parse failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            ),
+        });
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// `git add --all -- <path>` for a single validated
+/// path. The daemon adds paths one at a time so a
+/// per-path failure is surfaced precisely.
+fn git_add(
+    workdir: &std::path::Path,
+    path: &str,
+    _runner: &crate::worktree::GitRunner,
+) -> CaduceusResult<()> {
+    let out = std::process::Command::new("git")
+        .args(["add", "--", path])
+        .current_dir(workdir)
+        .output()
+        .map_err(|err| CaduceusError::StateCorrupt {
+            path: workdir.to_path_buf(),
+            message: format!("spawn git add: {err}"),
+        })?;
+    if !out.status.success() {
+        return Err(CaduceusError::StateCorrupt {
+            path: workdir.to_path_buf(),
+            message: format!(
+                "git add {path} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// `git -c user.name=… -c user.email=… commit -m <msg>`
+/// and return the new commit OID.
+fn git_commit(
+    workdir: &std::path::Path,
+    message: &str,
+    user_name: &str,
+    user_email: &str,
+    _runner: &crate::worktree::GitRunner,
+) -> CaduceusResult<String> {
+    let out = std::process::Command::new("git")
+        .args([
+            "-c",
+            &format!("user.name={user_name}"),
+            "-c",
+            &format!("user.email={user_email}"),
+            "commit",
+            "-m",
+            message,
+        ])
+        .current_dir(workdir)
+        .output()
+        .map_err(|err| CaduceusError::StateCorrupt {
+            path: workdir.to_path_buf(),
+            message: format!("spawn git commit: {err}"),
+        })?;
+    if !out.status.success() {
+        return Err(CaduceusError::StateCorrupt {
+            path: workdir.to_path_buf(),
+            message: format!(
+                "git commit failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            ),
+        });
+    }
+    git_rev_in(workdir, "HEAD")
+}
+
+/// Inspect the worktree, validate the changes, and
+/// commit. The high-level wrapper that the orchestrator
+/// calls; it composes the daemon's configured identity
+/// with the runner. The wrapper is a thin shim around
+/// `commit_code_result` that produces a `FinalizeOutput`
+/// instead of a `CommitOutcome`.
+pub fn commit_code_and_finalize(
+    ctx: &FinalizeContext,
+    worker_result: &WorkerResult,
+    runner: &crate::worktree::GitRunner,
+    worker_result_path: &std::path::Path,
+) -> CaduceusResult<FinalizeOutput> {
+    let outcome = commit_code_result(ctx, worker_result, runner, worker_result_path)?;
+    Ok(FinalizeOutput {
+        action: FinalizeAction::Committed,
+        pr_url: None,
+        idempotency_observations: vec![
+            "committed".to_string(),
+            format!("oid={}", outcome.commit_oid),
+            format!("branch={}", outcome.branch),
+        ],
+    })
+}
 
 /// Atomic report written under `<state_dir>/runs/<run_id>.preview.json`
 /// when the daemon runs a dry-run. The report is the
