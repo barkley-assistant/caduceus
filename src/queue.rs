@@ -468,12 +468,14 @@ impl StateStore {
     /// [`ClaimedEntry`] carries both the entry and the
     /// [`ClaimToken`] every later transition must present.
     ///
-    /// `None` is returned when no eligible entry exists. The queue
-    /// is rewritten under the flock to mark the entry as
-    /// `InProgress`; the matching claim file is written atomically
-    /// with `O_CREAT`/`O_EXCL` semantics *after* the queue rewrite
-    /// succeeds, so a crash leaves either both (and the entry can
-    /// be reaped) or neither.
+    /// `None` is returned when no eligible entry exists. The
+    /// contract for crash-safety is: the claim file is created
+    /// first (with `O_CREAT`/`O_EXCL`), then the queue is rewritten
+    /// to mark the entry as `InProgress`. If the queue rewrite
+    /// fails, the new claim is removed so the entry can be
+    /// re-claimed. If two acquires race on the same entry the
+    /// second one tries the next FIFO entry rather than surfacing
+    /// a hard error.
     pub fn acquire_next(
         &self,
         run_id: &str,
@@ -482,94 +484,9 @@ impl StateStore {
     ) -> CaduceusResult<Option<ClaimedEntry>> {
         let token_claims_dir = self.claims_dir.clone();
         let token_run_id = run_id.to_string();
-        let claimed: Option<ClaimedEntry> = self.with_exclusive(|store| {
-            let mut state = store.load_validated()?;
-            // Pick the oldest eligible queued entry. The dispatch
-            // order is (queued_at, then display_key) — the BTreeMap
-            // already iterates by display_key, so the inner scan
-            // collapses to "min queued_at among eligible keys".
-            let mut chosen: Option<(String, QueueEntry)> = None;
-            for (key, entry) in state.entries.iter() {
-                if entry.phase != Phase::Queued {
-                    continue;
-                }
-                if let Some(backoff) = entry.next_attempt_at {
-                    if backoff > now {
-                        continue;
-                    }
-                }
-                let replace = match &chosen {
-                    Some((_, prev)) => {
-                        entry.queued_at < prev.queued_at
-                            || (entry.queued_at == prev.queued_at
-                                && key.as_str() < prev.key.display_key().as_str())
-                    }
-                    None => true,
-                };
-                if replace {
-                    chosen = Some((key.clone(), entry.clone()));
-                }
-            }
-            let Some((display_key, mut entry)) = chosen else {
-                return Ok::<Option<ClaimedEntry>, CaduceusError>(None);
-            };
-            // Promote to InProgress in the durable state first so
-            // the claim file is a derived artifact, not the source
-            // of truth.
-            entry.phase = Phase::InProgress;
-            entry.last_run_id = Some(token_run_id.clone());
-            // attempts is preserved on claim: a worker that
-            // restarts mid-run keeps its retry budget intact.
-            entry.updated_at = now;
-            state.entries.insert(display_key.clone(), entry.clone());
-            store.persist(&state)?;
-            let digest = display_digest(&display_key);
-            // Create the claim file via O_CREAT|O_EXCL so two
-            // concurrent acquire attempts cannot both observe the
-            // entry as available.
-            let path = store.claims_dir.join(format!("{digest}.claim"));
-            let body = ClaimFileBody {
-                version: CLAIM_FILE_VERSION,
-                key: entry.key.clone(),
-                run_id: token_run_id.clone(),
-                pid,
-                process_start_identity: process_start_identity(pid),
-                started_at: now,
-                worktree_path: None,
-            };
-            let body_text = serde_json::to_string(&body).map_err(|err| CaduceusError::Queue {
-                context: "claim",
-                stderr: format!("serialize claim: {err}"),
-            })?;
-            // OpenOptions cannot request O_EXCL alone; use
-            // OpenOptions::create_new(true) which maps to
-            // O_CREAT|O_EXCL. If the file already exists we
-            // surface a Queue error rather than overwrite — the
-            // reaper owns orphan cleanup.
-            match OpenOptions::new().write(true).create_new(true).open(&path) {
-                Ok(mut f) => {
-                    f.write_all(body_text.as_bytes())?;
-                    f.sync_all()?;
-                }
-                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-                    return Err(CaduceusError::Queue {
-                        context: "claim",
-                        stderr: format!("claim file already exists: {}", path.display()),
-                    });
-                }
-                Err(err) => return Err(err.into()),
-            }
-            sync_dir(&store.claims_dir)?;
-            Ok(Some(ClaimedEntry {
-                entry,
-                claim: ClaimToken {
-                    claims_dir: token_claims_dir.clone(),
-                    digest,
-                    run_id: token_run_id.clone(),
-                },
-            }))
-        })?;
-        Ok(claimed)
+        self.with_exclusive(|store| {
+            acquire_next_locked(store, &token_claims_dir, &token_run_id, pid, now)
+        })
     }
 
     /// Persist a worktree path on the matching claim. Returns an
@@ -816,6 +733,217 @@ impl StateStore {
             return Err(claim_mismatch(claim));
         }
         Ok(())
+    }
+}
+
+// -----------------------------------------------------------------------
+// acquire_next_locked — the body of acquire_next, factored out so
+// the retry-on-race path stays linear and the borrow on `state`
+// stays scoped to a single iteration.
+// -----------------------------------------------------------------------
+
+fn acquire_next_locked(
+    store: &StateStore,
+    claims_dir: &Path,
+    run_id: &str,
+    pid: u32,
+    now: DateTime<Utc>,
+) -> CaduceusResult<Option<ClaimedEntry>> {
+    let mut state = store.load_validated()?;
+    // Collect every eligible (Queued, no future backoff) entry
+    // sorted by (queued_at, display_key). The BTreeMap already
+    // iterates in display_key order; we sort again by queued_at
+    // so the loop just pops the head each iteration.
+    let mut eligible: Vec<(String, QueueEntry)> = state
+        .entries
+        .iter()
+        .filter(|(_, e)| e.phase == Phase::Queued)
+        .filter(|(_, e)| match e.next_attempt_at {
+            Some(backoff) => backoff <= now,
+            None => true,
+        })
+        .map(|(k, e)| (k.clone(), e.clone()))
+        .collect();
+    eligible.sort_by(|a, b| {
+        a.1.queued_at
+            .cmp(&b.1.queued_at)
+            .then_with(|| a.0.cmp(&b.0))
+    });
+
+    // Iterate FIFO; for each candidate create the claim file with
+    // O_CREAT|O_EXCL. A race-loss on the claim means another
+    // process already grabbed this entry — skip to the next
+    // candidate rather than surfacing a hard error.
+    for (display_key, mut entry) in eligible {
+        let digest = display_digest(&display_key);
+        let claim_path = store.claims_dir.join(format!("{digest}.claim"));
+
+        let claim_file = match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&claim_path)
+        {
+            Ok(f) => f,
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                // Race-loss: another process / thread already
+                // claimed this entry. Try the next FIFO entry.
+                continue;
+            }
+            Err(err) => return Err(err.into()),
+        };
+
+        let body = ClaimFileBody {
+            version: CLAIM_FILE_VERSION,
+            key: entry.key.clone(),
+            run_id: run_id.to_string(),
+            pid,
+            process_start_identity: process_start_identity(pid),
+            started_at: now,
+            worktree_path: None,
+        };
+        let body_text = match serde_json::to_string(&body) {
+            Ok(text) => text,
+            Err(err) => {
+                // Roll back the empty claim file we just created.
+                let _ = fs::remove_file(&claim_path);
+                return Err(CaduceusError::Queue {
+                    context: "claim",
+                    stderr: format!("serialize claim: {err}"),
+                });
+            }
+        };
+        if let Err(err) = write_and_sync_claim(&claim_file, body_text.as_bytes()) {
+            let _ = fs::remove_file(&claim_path);
+            return Err(err);
+        }
+        if let Err(err) = sync_dir(&store.claims_dir) {
+            // The claim is on disk but the directory fsync failed;
+            // that's best-effort and not a rollback trigger.
+            tracing::debug!(error = %err, "claim dir sync");
+        }
+
+        // Mark the entry InProgress and persist. If persistence
+        // fails, roll back the claim file so the entry can be
+        // re-claimed on the next tick.
+        entry.phase = Phase::InProgress;
+        entry.last_run_id = Some(run_id.to_string());
+        // attempts is preserved on claim: a worker that restarts
+        // mid-run keeps its retry budget intact.
+        entry.updated_at = now;
+        state.entries.insert(display_key.clone(), entry.clone());
+        if let Err(err) = store.persist(&state) {
+            // Best-effort rollback of the claim file. A failure
+            // here is logged and the reaper cleans up.
+            if let Err(rm_err) = fs::remove_file(&claim_path) {
+                tracing::warn!(
+                    error = %rm_err,
+                    path = %claim_path.display(),
+                    "claim rollback after state-write failure failed; reaper will clean up"
+                );
+            }
+            return Err(err);
+        }
+
+        return Ok(Some(ClaimedEntry {
+            entry,
+            claim: ClaimToken {
+                claims_dir: claims_dir.to_path_buf(),
+                digest,
+                run_id: run_id.to_string(),
+            },
+        }));
+    }
+    Ok(None)
+}
+
+fn write_and_sync_claim(file: &File, body: &[u8]) -> CaduceusResult<()> {
+    let mut writer = file;
+    writer.write_all(body)?;
+    writer.sync_all()?;
+    // CONTRACTS.md "Filesystem permissions": claim files are
+    // written with mode 0600. OpenOptions + create_new respects
+    // the process umask, which on some distros lets group-read
+    // through (mode 0o640 or 0o660). Force 0600 here so the
+    // invariant holds on every Unix.
+    set_mode_0600(file)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_mode_0600(file: &File) -> CaduceusResult<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut perms = file.metadata()?.permissions();
+    perms.set_mode(0o600);
+    file.set_permissions(perms)?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_mode_0600(_file: &File) -> CaduceusResult<()> {
+    Ok(())
+}
+
+// -----------------------------------------------------------------------
+// DaemonLock — nonblocking exclusive lock for the entire tick.
+// CONTRACTS.md invariant #1.
+// -----------------------------------------------------------------------
+
+/// Filename of the daemon-wide tick lock. Distinct from
+/// `STATE_LOCK_FILENAME` (which guards state-store mutations); the
+/// daemon lock is held for an entire cron tick.
+pub const DAEMON_LOCK_FILENAME: &str = "daemon.lock";
+
+/// RAII wrapper around a nonblocking exclusive `flock` on
+/// `<state_dir>/daemon.lock`. Held for the entire tick; the OS
+/// releases the lock when the file descriptor drops. The lock
+/// *file* is intentionally allowed to remain on disk so a
+/// subsequent tick can re-open it without recreating the inode.
+#[derive(Debug)]
+pub struct DaemonLock {
+    file: File,
+}
+
+impl DaemonLock {
+    /// Attempt to take the daemon lock. Returns `Ok(None)` when
+    /// another process already holds it (the canonical "concurrent
+    /// tick" outcome), `Ok(Some(lock))` when this caller now owns
+    /// it, and an error only when I/O itself fails.
+    pub fn try_acquire(state_dir: &Path) -> CaduceusResult<Option<Self>> {
+        if !state_dir.exists() {
+            fs::create_dir_all(state_dir)?;
+        }
+        let lock_path = state_dir.join(DAEMON_LOCK_FILENAME);
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)?;
+        match file.try_lock_exclusive() {
+            Ok(()) => Ok(Some(Self { file })),
+            Err(err)
+                if err.kind() == std::io::ErrorKind::WouldBlock
+                    || err.kind() == std::io::ErrorKind::AlreadyExists =>
+            {
+                // Either another process holds the lock
+                // (`WouldBlock`) or flock is not implemented on this
+                // platform (`AlreadyExists` is fs2's fallback for
+                // `try_lock_exclusive`). Either way: a concurrent
+                // tick is in flight.
+                Ok(None)
+            }
+            Err(err) => Err(err.into()),
+        }
+    }
+}
+
+impl Drop for DaemonLock {
+    fn drop(&mut self) {
+        if let Err(err) = self.file.unlock() {
+            // The OS will reap the flock when the fd closes, so a
+            // failed unlock is informational only.
+            tracing::debug!(error = %err, "daemon lock unlock failed; OS will reap");
+        }
     }
 }
 
