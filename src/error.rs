@@ -100,6 +100,25 @@ pub enum CaduceusError {
         stderr: String,
     },
 
+    /// Push subprocess failure. ``context`` is a stable operation
+    /// label (``"ls-remote"``, ``"push"``); ``stderr`` carries the
+    /// captured error text (already redacted by the caller).
+    #[error("push {context} failure: {stderr}")]
+    Push {
+        context: &'static str,
+        stderr: String,
+    },
+
+    /// The remote had a non-ancestor ref under the daemon branch
+    /// name. The push is rejected without `--force`; the operator
+    /// must reconcile the branch manually.
+    #[error("push collision on {branch}: remote {remote_oid}, local {local_oid}")]
+    PushCollision {
+        branch: String,
+        remote_oid: String,
+        local_oid: String,
+    },
+
     /// State file is corrupt on disk. The path is preserved verbatim
     /// so the operator can quarantine or inspect the file. The
     /// error variant does NOT auto-delete the file — the daemon's
@@ -163,6 +182,19 @@ impl fmt::Debug for CaduceusError {
                 "Queue {{ context: {:?}, stderr: {} }}",
                 context,
                 scrub(stderr)
+            ),
+            CaduceusError::Push { context, stderr } => format!(
+                "Push {{ context: {:?}, stderr: {} }}",
+                context,
+                scrub(stderr)
+            ),
+            CaduceusError::PushCollision {
+                branch,
+                remote_oid,
+                local_oid,
+            } => format!(
+                "PushCollision {{ branch: {:?}, remote_oid: {:?}, local_oid: {:?} }}",
+                branch, remote_oid, local_oid
             ),
             CaduceusError::StateCorrupt { path, message } => format!(
                 "StateCorrupt {{ path: {:?}, message: {} }}",
