@@ -123,12 +123,64 @@ pub fn run() -> CaduceusResult<()> {
                     force_finalization_reset,
                 },
         }) => run_queue_reset(&issue, dry_run, force_finalization_reset),
+        Some(Command::WorktreeGc {
+            older_than_days,
+            dry_run,
+        }) => run_worktree_gc(older_than_days, dry_run),
         // Every other subcommand is a stub for now; `run` is the
         // canonical "no-op success" so the cron tick contract
         // (silent on success) holds while the rest of the daemon
         // is being built.
         _ => Ok(()),
     }
+}
+
+/// `caduceus worktree-gc [--older-than-days N] [--dry-run]` —
+/// the v0.1 maintenance entry point that sweeps stale
+/// worktrees across every repository in
+/// `config.watched_repos`.
+///
+/// The action is a thin wrapper around
+/// [`caduceus::worktree::gc`]; it owns config loading, the
+/// `DaemonLock` (so a tick is not concurrent with the sweep),
+/// and the report rendering.
+fn run_worktree_gc(older_than_days: u64, dry_run: bool) -> CaduceusResult<()> {
+    let config = match std::env::var_os("CADUCEUS_CONFIG") {
+        Some(path) => Config::load_from(std::path::Path::new(&path))?,
+        None => Config::load()?,
+    };
+    let state_dir = config.state_dir.clone();
+    // The GC may legitimately take seconds when many
+    // worktrees are present; the daemon lock is non-blocking
+    // so a concurrent tick wins the race. We log a clear
+    // error so the operator can re-run later.
+    let _daemon = match DaemonLock::try_acquire(&state_dir)? {
+        Some(lock) => lock,
+        None => {
+            eprintln!(
+                "caduceus: another tick holds {}/daemon.lock; refusing to GC",
+                state_dir.display()
+            );
+            return Err(CaduceusError::Worktree {
+                context: "gc",
+                stderr: "another tick is in progress; refusing to GC".to_string(),
+            });
+        }
+    };
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|err| CaduceusError::Worktree {
+            context: "gc",
+            stderr: format!("build tokio runtime: {err}"),
+        })?;
+    let removed = rt.block_on(caduceus::worktree::gc(&config, older_than_days, dry_run))?;
+    if dry_run {
+        println!("caduceus worktree-gc: dry-run complete; 0 worktrees removed (use without --dry-run to apply)");
+    } else {
+        println!("caduceus worktree-gc: removed {removed} worktree(s)");
+    }
+    Ok(())
 }
 
 /// `caduceus queue reset <owner/repo#number>` — the only v0.1
