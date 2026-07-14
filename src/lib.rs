@@ -41,3 +41,6 @@ pub use crate::queue::{
     FinalizationStage, Phase, QueueEntry, QueueState, ResetOutcome, StateStore, TicketType,
 };
 pub use crate::worker::WorkerResult;
+pub use crate::worktree::{
+    find_main_clone, GitOutput, GitRunner, RepositoryInfo, WorktreeHandle, GIT_OUTPUT_BYTE_CAP,
+};
