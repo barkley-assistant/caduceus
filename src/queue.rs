@@ -189,6 +189,17 @@ pub struct ClaimedEntry {
     pub claim: ClaimToken,
 }
 
+/// Result of [`StateStore::reset_entry`]. The caller (the
+/// `caduceus queue reset` CLI) renders the dropped checkpoint as
+/// a warning so the operator can reconcile the branch / PR
+/// manually. `cleared_finalization` is `true` when the
+/// `--force-finalization-reset` flag was supplied.
+#[derive(Clone, Debug)]
+pub struct ResetOutcome {
+    pub cleared_finalization: bool,
+    pub dropped_checkpoint: Option<FinalizationCheckpoint>,
+}
+
 /// Opaque claim token. Constructed by [`StateStore::acquire_next`]
 /// and consumed by the matching terminal transition
 /// ([`StateStore::complete`], [`StateStore::retry_or_fail`], …).
@@ -563,6 +574,14 @@ impl StateStore {
         self.complete_with(claim, Phase::Done)
     }
 
+    /// Terminal transition for a successful dry-run preview. The
+    /// entry moves to `Previewed`; on the next non-dry tick the
+    /// polling loop will atomically promote it to `Queued` (see
+    /// [`StateStore::enqueue`] and CONTRACTS.md "Dry-run").
+    pub fn complete_preview(&self, claim: ClaimToken) -> CaduceusResult<()> {
+        self.complete_with(claim, Phase::Previewed)
+    }
+
     /// Retry-or-fail terminal transition. With ``budget`` total
     /// allowed attempts the convention is: attempts 1..budget-1
     /// return to ``Queued`` with ``next_attempt_at = now +
@@ -659,6 +678,105 @@ impl StateStore {
         })
     }
 
+    /// Operator-driven reset for a `Failed` or `Skipped` entry.
+    /// Returns the entry to `Queued` with `attempts=0`, no
+    /// `last_error`, no `last_run_id`, and `next_attempt_at=None`.
+    /// Refuses to operate on a `Queued`/`InProgress`/`Previewed`
+    /// entry; refuses if an active claim file exists for the
+    /// entry's digest.
+    ///
+    /// `clear_finalization` controls the
+    /// `--force-finalization-reset` flag: by default the
+    /// `FinalizationCheckpoint` is preserved (so a follow-up
+    /// tick resumes from the saved branch/PR), and only the
+    /// run-tracking fields are cleared. With
+    /// `clear_finalization=true`, the checkpoint is dropped —
+    /// the caller is responsible for surfacing the branch/PR
+    /// to the operator and never deletes the remote branch or
+    /// PR itself.
+    pub fn reset_entry(
+        &self,
+        key: &IssueKey,
+        clear_finalization: bool,
+    ) -> CaduceusResult<ResetOutcome> {
+        self.with_exclusive(|store| {
+            let mut state = store.load_validated()?;
+            // Compare by display_key (lowercase) rather than
+            // the raw IssueKey — the on-disk map key is
+            // lowercased on every write, and an operator who
+            // types `OWNER/Repo#1` should still find the entry.
+            let target = key.display_key();
+            let entry = state
+                .entries
+                .values_mut()
+                .find(|e| e.key.display_key() == target)
+                .ok_or_else(|| CaduceusError::Queue {
+                    context: "reset",
+                    stderr: format!("no entry for {target}"),
+                })?;
+            // The contract only allows resetting `Failed` or
+            // `Skipped`. Anything else (including `Done` and
+            // `InProgress`) is an explicit operator error.
+            match entry.phase {
+                Phase::Failed | Phase::Skipped => {}
+                other => {
+                    return Err(CaduceusError::Queue {
+                        context: "reset",
+                        stderr: format!(
+                            "refusing to reset entry {}: phase is {:?}, must be Failed or Skipped",
+                            key.display_key(),
+                            other
+                        ),
+                    });
+                }
+            }
+            // Refuse if an active claim file exists. The reaper
+            // would clean it up on the next tick, but an active
+            // claim indicates a live worker and the operator
+            // must not silently invalidate it.
+            let digest = display_digest(&key.display_key());
+            let claim_path = store.claims_dir.join(format!("{digest}.claim"));
+            if claim_path.is_file() {
+                return Err(CaduceusError::Queue {
+                    context: "reset",
+                    stderr: format!(
+                        "refusing to reset entry {}: active claim file exists",
+                        key.display_key()
+                    ),
+                });
+            }
+            // Capture the checkpoint before we drop it so the
+            // caller can report the branch/PR.
+            let dropped_checkpoint = if clear_finalization {
+                entry.finalization.take()
+            } else {
+                None
+            };
+            entry.phase = Phase::Queued;
+            entry.attempts = 0;
+            entry.last_error = None;
+            entry.last_run_id = None;
+            entry.next_attempt_at = None;
+            entry.updated_at = Utc::now();
+            store.persist(&state)?;
+            Ok(ResetOutcome {
+                cleared_finalization: clear_finalization,
+                dropped_checkpoint,
+            })
+        })
+    }
+
+    /// Look up a `FinalizationCheckpoint` for an entry. Used by
+    /// the queue-reset CLI to surface the branch/PR in
+    /// `--force-finalization-reset` reports.
+    pub fn finalization_for(
+        &self,
+        key: &IssueKey,
+    ) -> CaduceusResult<Option<FinalizationCheckpoint>> {
+        let snap = self.snapshot()?;
+        Ok(snap.entry(key).and_then(|e| e.finalization.clone()))
+    }
+
     // --- internal helpers ---------------------------------------------------
 
     fn complete_with(&self, claim: ClaimToken, target: Phase) -> CaduceusResult<()> {
@@ -670,6 +788,7 @@ impl StateStore {
                 .find(|e| matches_token(e, &claim))
                 .ok_or_else(|| claim_mismatch(&claim))?;
             entry.phase = target;
+            entry.last_error = None;
             entry.last_run_id = None;
             entry.next_attempt_at = None;
             entry.updated_at = Utc::now();
