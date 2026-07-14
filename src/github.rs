@@ -647,6 +647,91 @@ impl Client {
         let _ = final_url;
         Err(map_status(status, text))
     }
+
+    /// POST a JSON body to *url_path* under the configured
+    /// `api_base`. The response is returned verbatim — no
+    /// caching (writes are not idempotent from the
+    /// server's perspective) and no automatic redirect
+    /// walk (a 201 must be the *original* response). The
+    /// function applies the canonical `User-Agent`,
+    /// `Accept`, `X-GitHub-Api-Version`, and
+    /// `Authorization: Bearer …` headers; the body is sent
+    /// as `application/json`.
+    pub async fn post(
+        &self,
+        url_path: &str,
+        accept: &str,
+        body: &[u8],
+    ) -> CaduceusResult<Response> {
+        let (path_only, query) = split_query(url_path);
+        let mut url = self.base_url.clone();
+        join_path(&mut url, path_only)?;
+        if !query.is_empty() {
+            url.set_query(Some(query));
+        }
+        self.post_url(&url, accept, body).await
+    }
+
+    /// Same as [`Client::post`] but with a fully-qualified URL.
+    /// Used when the orchestrator already has the post URL
+    /// in hand (e.g. from a Link header).
+    pub async fn post_url(&self, url: &Url, accept: &str, body: &[u8]) -> CaduceusResult<Response> {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            USER_AGENT,
+            header_value(&format!(
+                "{USER_AGENT_PREFIX}/{}",
+                env!("CARGO_PKG_VERSION")
+            )),
+        );
+        headers.insert(ACCEPT, header_value(accept));
+        headers.insert(
+            HeaderName::from_static("x-github-api-version"),
+            header_value(GITHUB_API_VERSION_VALUE),
+        );
+        headers.insert(
+            HeaderName::from_static("content-type"),
+            header_value("application/json"),
+        );
+        if url.scheme() == self.base_url.scheme()
+            && url.host_str() == self.base_url.host_str()
+            && url.port_or_known_default() == self.base_url.port_or_known_default()
+        {
+            if let Some(token) = &self.token {
+                headers.insert(AUTHORIZATION, header_value(&format!("Bearer {token}")));
+            }
+        }
+        let response = self
+            .inner
+            .post(url.as_str())
+            .headers(headers)
+            .body(body.to_vec())
+            .send()
+            .await?;
+        let status = response.status().as_u16();
+        let headers_snapshot = response.headers().clone();
+        let body_bytes = match read_bounded_body(response).await {
+            Ok(b) => b,
+            Err(CaduceusError::Other(msg)) if msg == BODY_TOO_LARGE_SENTINEL => {
+                return Err(CaduceusError::Other(format!(
+                    "response body exceeds {} bytes",
+                    MAX_BODY_BYTES
+                )));
+            }
+            Err(err) => return Err(err),
+        };
+        if (200..300).contains(&status) || status == 304 {
+            return Ok(Response {
+                status,
+                final_url: url.to_string(),
+                body: body_bytes,
+                headers: headers_snapshot,
+                from_cache: false,
+            });
+        }
+        let text = String::from_utf8_lossy(&body_bytes).into_owned();
+        Err(map_status(status, text))
+    }
 }
 
 const BODY_TOO_LARGE_SENTINEL: &str = "caduceus::github::body_too_large";
@@ -735,6 +820,16 @@ pub struct IssueSummary {
     pub title: String,
     pub labels: Vec<String>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Outcome of a PR create-or-reuse call. The `mode`
+/// records which path the orchestrator took: a fresh
+/// POST or a single-matching reuse.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PullRequest {
+    pub number: u64,
+    pub url: String,
+    pub reused: bool,
 }
 
 pub async fn fetch_issue(_client: &Client, _key: &IssueKey) -> CaduceusResult<IssueSummary> {
