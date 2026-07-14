@@ -113,9 +113,9 @@
       "handoff": "handoffs/4.3.md"
     },
     "4.4": {
-      "status": "pending",
-      "updated_at": null,
-      "handoff": null
+      "status": "complete",
+      "updated_at": "2026-07-14T18:31:47.404936+00:00",
+      "handoff": "handoffs/4.4.md"
     },
     "4.5": {
       "status": "pending",
