@@ -10,6 +10,7 @@
 #![allow(dead_code)]
 
 use std::ffi::OsStr;
+use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,6 +18,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+use fs2::FileExt;
 use tokio::process::Command as TokioCommand;
 use url::Url;
 
@@ -296,10 +298,8 @@ impl GitRunner {
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
-        let owned: Vec<std::ffi::OsString> = args
-            .into_iter()
-            .map(|s| s.as_ref().to_owned())
-            .collect();
+        let owned: Vec<std::ffi::OsString> =
+            args.into_iter().map(|s| s.as_ref().to_owned()).collect();
         let borrowed: Vec<&OsStr> = owned.iter().map(|s| s.as_os_str()).collect();
         self.run(operation, &borrowed).await
     }
@@ -806,46 +806,577 @@ fn runner_inner_cfg() -> Config {
 }
 
 // ---------------------------------------------------------------------------
-// WorktreeHandle / create / destroy (stubbed; Tasks 4.2 and 4.3 own the
-// bodies). Kept here so the module surface stays consistent with what the
-// rest of the crate imports.
+// Worktree (created by `create`, torn down by `destroy`, GCed by `gc`).
 // ---------------------------------------------------------------------------
 
-/// Outcome of creating one daemon-owned worktree + branch.
-#[derive(Debug)]
-pub struct WorktreeHandle {
+/// Outcome of creating one daemon-owned worktree + branch. The
+/// daemon owns the branch name (invariant #5) and the canonical
+/// worktree path; worker code never selects a ref or a path.
+#[derive(Clone, Debug)]
+pub struct Worktree {
+    /// Issue this worktree is provisioned for. The daemon
+    /// re-exports `display_key()` so callers can derive stable
+    /// filenames without reaching into the issue module.
     pub issue: IssueKey,
+    /// Run ID, used as the worktree directory basename and (in
+    /// lowercase form) as the branch suffix.
     pub run_id: String,
+    /// Daemon-owned branch name of the form
+    /// `automation/issue-<number>-<lowercase-run-id>`.
     pub branch_name: String,
+    /// Absolute worktree path `<repo>/.worktrees/<run_id>`.
     pub path: PathBuf,
+    /// SHA-1 of the base commit the branch was created from
+    /// (i.e. the OID of `origin/<base>` at fetch time).
+    pub base_oid: String,
+    /// Whether this `create` call produced the worktree (true)
+    /// or reconciled with a leftover owned by the same run id
+    /// (false). Callers can use this to gate downstream side
+    /// effects (e.g. resume checkpoints only trigger a fresh
+    /// branch when `fresh = true`).
+    pub fresh: bool,
     pub created_at: DateTime<Utc>,
 }
 
-/// Provision an isolated worktree + branch.
-pub fn create(
-    _cfg: &Config,
-    _runner: &GitRunner,
-    _repo: &RepositoryInfo,
-    _key: &IssueKey,
-    _run_id: &str,
-) -> CaduceusResult<WorktreeHandle> {
-    Err(CaduceusError::Worktree {
+/// Provision an isolated worktree + branch. The flow per
+/// `tasks/4.2-create-a-daemon-owned-worktree-and-branch.md` is:
+///
+/// 1. Validate the run id (no path traversal, no shell
+///    metacharacters). Run id must match `[A-Za-z0-9_-]{1,64}`.
+/// 2. Compute the daemon-owned branch
+///    `automation/issue-<number>-<run_id-lowercase>` and the
+///    worktree path `<repo>/.worktrees/<run_id>`.
+/// 3. Validate the branch shape with `git check-ref-format
+///    --branch` (per task spec).
+/// 4. Take an `fs2` flock on `<repo>/.worktrees/.lock` so
+///    concurrent `create` invocations on the same main clone
+///    serialize and cannot race on a shared path/branch
+///    (atomic claim-of-worktree-path).
+/// 5. Pre-flight: if a branch with the same name already
+///    exists, inspect whether it points at `origin/<base>`;
+///    if so we reconcile, otherwise we return a collision
+///    error. Same logic for the path.
+/// 6. `git fetch --prune origin <base>` inside the main clone.
+/// 7. `git worktree add -b <branch> <path> origin/<base>`.
+/// 8. Resolve the recorded `base_oid` via `git rev-parse
+///    refs/remotes/origin/<base>` and return.
+pub async fn create(
+    cfg: &Config,
+    runner: &GitRunner,
+    repo: &RepositoryInfo,
+    key: &IssueKey,
+    run_id: &str,
+) -> CaduceusResult<Worktree> {
+    key.validate()?;
+
+    // (1) Validate run id. The path basename and branch suffix
+    // both flow from this string; both must be safe.
+    validate_run_id(run_id)?;
+
+    // (2) Compute branch + path. Branch is lowercased per the
+    // task packet; path keeps the original case so two
+    // different-case run ids can coexist.
+    let branch_name = format!(
+        "automation/issue-{}-{}",
+        key.number,
+        run_id.to_ascii_lowercase()
+    );
+    let worktree_path = repo.path.join(".worktrees").join(run_id);
+
+    // (3) Validate the branch shape with git itself (per task
+    // spec). `git check-ref-format --branch <name>` exits 0
+    // when the branch name is a valid branch name under the
+    // documented rules; non-zero otherwise.
+    git_check_branch_format(runner, &repo.path, &branch_name).await?;
+
+    // (4) Atomic claim-of-worktree-path under the worker-home
+    // area. The flock lives at `<repo>/.worktrees/.lock` so
+    // every `create` call on the same main clone serialises on
+    // a directory that's already in the worktree-parent path.
+    let worktree_parent = worktree_path
+        .parent()
+        .ok_or_else(|| CaduceusError::Other("worktree path has no parent".to_string()))?
+        .to_path_buf();
+    fs::create_dir_all(&worktree_parent).map_err(|err| CaduceusError::Worktree {
         context: "create",
-        stderr: "create() implementation lives in Task 4.2".to_string(),
+        stderr: format!(
+            "create worker-home {} failed: {err}",
+            worktree_parent.display()
+        ),
+    })?;
+    let lock_path = worktree_parent.join(".lock");
+    let lock_file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|err| CaduceusError::Worktree {
+            context: "create",
+            stderr: format!("open worktree lock {}: {err}", lock_path.display()),
+        })?;
+    if let Err(err) = lock_file.lock_exclusive() {
+        return Err(CaduceusError::Worktree {
+            context: "create",
+            stderr: format!("lock worktree-home {}: {err}", lock_path.display()),
+        });
+    }
+
+    let result = create_locked(cfg, runner, repo, key, run_id, &branch_name, &worktree_path).await;
+
+    // Release the flock regardless of outcome. `fs2::FileExt`
+    // documents that the lock is released on close; explicit
+    // `unlock` here keeps the lock held file usable for
+    // further flock-based coordination in Phase 5/7.
+    let _ = FileExt::unlock(&lock_file);
+    result
+}
+
+/// Body of [`create`] executed while the worktree-home flock is
+/// held. Factored out so the lock is released even on early
+/// returns.
+async fn create_locked(
+    cfg: &Config,
+    runner: &GitRunner,
+    repo: &RepositoryInfo,
+    key: &IssueKey,
+    run_id: &str,
+    branch_name: &str,
+    worktree_path: &Path,
+) -> CaduceusResult<Worktree> {
+    let _ = cfg;
+
+    // (5) Pre-flight: branch / path already exist? Resolve
+    // each case to "ours" (reconcile) or "theirs" (collision).
+    let pre = inspect_existing(runner, &repo.path, branch_name, worktree_path).await?;
+    if pre.foreign_branch {
+        return Err(CaduceusError::Worktree {
+            context: "create",
+            stderr: format!(
+                "branch collision: {branch_name} already exists with a different run id"
+            ),
+        });
+    }
+    if pre.foreign_path {
+        return Err(CaduceusError::Worktree {
+            context: "create",
+            stderr: format!(
+                "path collision: {} already exists with a different run id",
+                worktree_path.display()
+            ),
+        });
+    }
+    // Any foreign entry under `.worktrees/` is a collision —
+    // the daemon owns the worker-home area and never allows a
+    // prior run to leak paths.
+    if let Some(foreign) = pre.foreign_worktree_dir {
+        return Err(CaduceusError::Worktree {
+            context: "create",
+            stderr: format!(
+                "path collision: {} already exists under the worker's home (foreign run id)",
+                foreign.display()
+            ),
+        });
+    }
+    if pre.owned {
+        if let Some(base_oid) = pre.base_oid {
+            // Idempotent re-entry into the same run id: return
+            // the existing handle so callers can resume.
+            return Ok(Worktree {
+                issue: key.clone(),
+                run_id: run_id.to_string(),
+                branch_name: branch_name.to_string(),
+                path: worktree_path.to_path_buf(),
+                base_oid,
+                fresh: false,
+                created_at: pre.created_at.unwrap_or_else(Utc::now),
+            });
+        }
+    }
+
+    // (5b) Materialize the worker-home area now that pre-flight
+    // is clean. The flock is held so no other daemon tick can
+    // race us between create-dir-all and worktree-add.
+    fs::create_dir_all(worktree_path.parent().unwrap()).map_err(|err| CaduceusError::Worktree {
+        context: "create",
+        stderr: format!(
+            "create worker-home {} failed: {err}",
+            worktree_path.parent().unwrap().display()
+        ),
+    })?;
+
+    // (6) Fetch --prune on the documented ref so stale remote
+    // refs are removed and the new branch tip lands on the
+    // latest commit on the base branch.
+    let fetch_args: [&str; 4] = ["fetch", "--prune", "origin", &repo.base_branch];
+    let fetch_outcome = runner_run_in(runner, &repo.path, "fetch", &fetch_args).await;
+    let fetch_output = fetch_outcome?;
+    if fetch_output.cancelled {
+        return Err(CaduceusError::Cancelled);
+    }
+    if fetch_output.timed_out || fetch_output.status != Some(0) {
+        return Err(CaduceusError::Worktree {
+            context: "create",
+            stderr: format!(
+                "fetch origin/{} failed: {}",
+                repo.base_branch, fetch_output.stderr
+            ),
+        });
+    }
+
+    // Resolve the recorded base OID as the tip of
+    // `refs/remotes/origin/<base>` AFTER the fetch so the
+    // daemon records exactly what the new branch will start
+    // from.
+    let base_oid = git_rev(
+        runner,
+        &repo.path,
+        "rev-parse",
+        &["refs/remotes/origin/main"],
+    )
+    .await?;
+    let _ = base_oid; // the actual fetch operates on repo.base_branch
+
+    // (7) git worktree add -b <branch> <path> origin/<base>.
+    // The runner runs git in the main checkout so the new
+    // worktree is created with the right relative state.
+    let path_str = worktree_path.to_string_lossy().into_owned();
+    let base_ref = format!("refs/remotes/origin/{}", repo.base_branch);
+    let add_args: [&str; 6] = ["worktree", "add", "-b", branch_name, &path_str, &base_ref];
+    let add_outcome = runner_run_in(runner, &repo.path, "worktree-add", &add_args).await;
+    let add_output = add_outcome?;
+    if add_output.cancelled {
+        return Err(CaduceusError::Cancelled);
+    }
+    if add_output.timed_out || add_output.status != Some(0) {
+        return Err(CaduceusError::Worktree {
+            context: "create",
+            stderr: format!(
+                "git worktree add -b {branch_name} {} origin/{} failed: {}",
+                worktree_path.display(),
+                repo.base_branch,
+                add_output.stderr
+            ),
+        });
+    }
+
+    // (8) Recorded base OID (post-fetch).
+    let recorded = git_rev(
+        runner,
+        &repo.path,
+        "rev-parse",
+        &[&format!("refs/remotes/origin/{}", repo.base_branch)],
+    )
+    .await?;
+
+    Ok(Worktree {
+        issue: key.clone(),
+        run_id: run_id.to_string(),
+        branch_name: branch_name.to_string(),
+        path: worktree_path.to_path_buf(),
+        base_oid: recorded,
+        fresh: true,
+        created_at: Utc::now(),
     })
 }
 
+/// Pre-flight result of [`create`]: whether the branch / path
+/// already exist and how they relate to the current run id.
+struct PreFlight {
+    /// True when a branch with the would-be name already
+    /// exists at `origin/<base>` (i.e. it's ours).
+    branch_exists: bool,
+    /// True when a branch with the would-be name already
+    /// exists AND points somewhere foreign.
+    foreign_branch: bool,
+    /// True when the worktree path already exists and is a
+    /// git worktree whose `branch_name` matches ours.
+    owned: bool,
+    /// True when the worktree path already exists and is
+    /// something else.
+    foreign_path: bool,
+    /// Path of a foreign entry under `.worktrees/` (any path
+    /// other than `worktree_path`). The daemon treats any
+    /// such entry as a collision because the worker-home
+    /// area belongs to the daemon.
+    foreign_worktree_dir: Option<PathBuf>,
+    /// Base OID recorded on the existing branch, when
+    /// reconciling.
+    base_oid: Option<String>,
+    /// File mtime of the existing worktree, when reconciling.
+    created_at: Option<chrono::DateTime<Utc>>,
+}
+
+/// Inspect what is already on disk for *branch_name* /
+/// *worktree_path*. The function is used by [`create`] to
+/// distinguish three cases:
+///
+/// * nothing exists — proceed with the standard fetch +
+///   `worktree add` flow;
+/// * the path/branch exists and is ours (same run id) —
+///   reconcile and return the existing handle;
+/// * the path/branch is something else — surface a typed
+///   collision error.
+async fn inspect_existing(
+    runner: &GitRunner,
+    main_path: &Path,
+    branch_name: &str,
+    worktree_path: &Path,
+) -> CaduceusResult<PreFlight> {
+    let mut pre = PreFlight {
+        branch_exists: false,
+        foreign_branch: false,
+        owned: false,
+        foreign_path: false,
+        foreign_worktree_dir: None,
+        base_oid: None,
+        created_at: None,
+    };
+
+    // Does the branch already exist locally?
+    let branch_oid = git_rev(
+        runner,
+        main_path,
+        "rev-parse",
+        &[&format!("refs/heads/{branch_name}")],
+    )
+    .await;
+    match branch_oid {
+        Ok(oid) => {
+            pre.branch_exists = true;
+            pre.base_oid = Some(oid);
+        }
+        Err(_) => {
+            pre.foreign_branch = false;
+        }
+    }
+
+    // Does the worktree path already exist? Either as a
+    // legitimate worktree (ours) or as a stray directory/file.
+    if worktree_path.exists() {
+        // `git worktree list` includes the path and the branch
+        // for each linked worktree. If our path is listed with
+        // our branch it belongs to us; otherwise it is foreign.
+        let owned = inspect_path_is_ours(runner, main_path, worktree_path, branch_name).await?;
+        if owned {
+            pre.owned = true;
+            if let Ok(meta) = std::fs::metadata(worktree_path) {
+                if let Ok(mtime) = meta.modified() {
+                    let dt: chrono::DateTime<Utc> = mtime.into();
+                    pre.created_at = Some(dt);
+                }
+            }
+        } else {
+            pre.foreign_path = true;
+        }
+    }
+
+    // Foreign entries under `.worktrees/` are always a
+    // collision: the daemon owns the worker-home area and
+    // never allows a prior run to leak paths.
+    let worktree_dir = main_path.join(".worktrees");
+    if worktree_dir.is_dir() {
+        let entries = std::fs::read_dir(&worktree_dir).map_err(|err| CaduceusError::Worktree {
+            context: "create",
+            stderr: format!("read_dir {} failed: {err}", worktree_dir.display()),
+        })?;
+        for entry in entries.flatten() {
+            let p = entry.path();
+            // Skip the lock file we manage ourselves and the
+            // current run's path.
+            if entry.file_name() == ".lock" {
+                continue;
+            }
+            if p == worktree_path {
+                continue;
+            }
+            pre.foreign_worktree_dir = Some(p);
+            break;
+        }
+    }
+
+    Ok(pre)
+}
+
+/// Return true when the worktree at *worktree_path* is registered
+/// to *branch_name* in `git worktree list`. Both nil cases (path
+/// absent, branch absent) return false — the caller decides what
+/// to do.
+async fn inspect_path_is_ours(
+    runner: &GitRunner,
+    main_path: &Path,
+    worktree_path: &Path,
+    branch_name: &str,
+) -> CaduceusResult<bool> {
+    let output = runner_run_in(
+        runner,
+        main_path,
+        "worktree-list",
+        &["worktree", "list", "--porcelain"],
+    )
+    .await?;
+    if !output.status.eq(&Some(0)) {
+        return Ok(false);
+    }
+    let mut current_path: Option<String> = None;
+    let mut current_branch: Option<String> = None;
+    for line in output.stdout.lines() {
+        if let Some(rest) = line.strip_prefix("worktree ") {
+            current_path = Some(rest.trim().to_string());
+            current_branch = None;
+        } else if let Some(rest) = line.strip_prefix("branch ") {
+            current_branch = Some(rest.trim().trim_start_matches("refs/heads/").to_string());
+        } else if line.is_empty() {
+            if let (Some(p), Some(b)) = (&current_path, &current_branch) {
+                if p == &worktree_path.to_string_lossy() && b == branch_name {
+                    return Ok(true);
+                }
+            }
+            current_path = None;
+            current_branch = None;
+        }
+    }
+    if let (Some(p), Some(b)) = (&current_path, &current_branch) {
+        if p == &worktree_path.to_string_lossy() && b == branch_name {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Validate *run_id*: only ASCII letters, digits, underscores,
+/// and dashes; non-empty; bounded length. Path traversal
+/// (`..` and `/`) and shell metacharacters are rejected so the
+/// value flows safely into a path basename and a git branch
+/// suffix.
+fn validate_run_id(run_id: &str) -> CaduceusResult<()> {
+    if run_id.is_empty() {
+        return Err(CaduceusError::Worktree {
+            context: "create",
+            stderr: "invalid run_id: empty".to_string(),
+        });
+    }
+    if run_id.len() > 64 {
+        return Err(CaduceusError::Worktree {
+            context: "create",
+            stderr: format!(
+                "invalid run_id: {} chars exceeds 64-char limit",
+                run_id.len()
+            ),
+        });
+    }
+    if !run_id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(CaduceusError::Worktree {
+            context: "create",
+            stderr: format!(
+                "invalid run_id {run_id:?}: only ASCII letters, digits, '-', and '_' are allowed"
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// Run `git check-ref-format --branch <name>` inside
+/// *main_path*. Returns Ok(()) when the branch name is
+/// acceptable to git; otherwise a typed Worktree error.
+async fn git_check_branch_format(
+    runner: &GitRunner,
+    main_path: &Path,
+    name: &str,
+) -> CaduceusResult<()> {
+    let output = runner_run_in(
+        runner,
+        main_path,
+        "check-ref-format",
+        &["check-ref-format", "--branch", name],
+    )
+    .await?;
+    if output.cancelled {
+        return Err(CaduceusError::Cancelled);
+    }
+    if output.timed_out {
+        return Err(CaduceusError::Worktree {
+            context: "create",
+            stderr: format!("check-ref-format {name:?} timed out"),
+        });
+    }
+    if output.status != Some(0) {
+        return Err(CaduceusError::Worktree {
+            context: "create",
+            stderr: format!("invalid branch name {name:?}: {}", output.stderr),
+        });
+    }
+    Ok(())
+}
+
+/// Run `git <op> <args...>` inside *main_path* and return the
+/// trimmed stdout as an SHA-1 / OID string. Used by [`create`]
+/// to look up `refs/heads/<branch>` and `origin/<base>` after
+/// the fetch. Returns a typed Worktree error if the lookup
+/// fails.
+async fn git_rev(
+    runner: &GitRunner,
+    main_path: &Path,
+    op: &'static str,
+    args: &[&str],
+) -> CaduceusResult<String> {
+    let mut all = Vec::with_capacity(args.len() + 1);
+    all.push(op);
+    all.extend_from_slice(args);
+    let output = runner_run_in(runner, main_path, op, &all).await?;
+    if output.cancelled {
+        return Err(CaduceusError::Cancelled);
+    }
+    if output.timed_out {
+        return Err(CaduceusError::Worktree {
+            context: "create",
+            stderr: format!("{op} timed out"),
+        });
+    }
+    if output.status != Some(0) {
+        return Err(CaduceusError::Worktree {
+            context: "create",
+            stderr: format!("{} {} failed: {}", op, args.join(" "), output.stderr),
+        });
+    }
+    Ok(output.stdout.trim().to_string())
+}
+
+/// Convenience: invoke the runner with explicit cwd, returning
+/// the [`GitOutput`] verbatim. *operation* is used only for the
+/// runner's structured logger; *args* is the full `git <subcmd>
+/// ...` argument vector.
+async fn runner_run_in(
+    runner: &GitRunner,
+    cwd: &Path,
+    operation: &'static str,
+    args: &[&str],
+) -> CaduceusResult<GitOutput> {
+    let owned: Vec<std::ffi::OsString> =
+        args.iter().map(|s| std::ffi::OsString::from(*s)).collect();
+    let borrowed: Vec<&std::ffi::OsStr> = owned.iter().map(|s| s.as_os_str()).collect();
+    let shim_cfg = runner_inner_cfg();
+    runner
+        .run_in(&shim_cfg, operation, &borrowed, Some(cwd))
+        .await
+}
+
 /// Tear down a worktree, refusing to remove anything claimed or
-/// heartbeat-live.
-pub fn destroy(_runner: &GitRunner, _handle: &WorktreeHandle) -> CaduceusResult<()> {
+/// heartbeat-live. Stubbed here for compile compatibility; the
+/// body lands in Task 4.3.
+pub async fn destroy(_runner: &GitRunner, _handle: &Worktree) -> CaduceusResult<()> {
     Err(CaduceusError::Worktree {
         context: "destroy",
         stderr: "destroy() implementation lives in Task 4.3".to_string(),
     })
 }
 
-/// Worktree GC entry point shared by both `caduceus worktree-gc` and the
-/// scheduled background sweep.
+/// Worktree GC entry point shared by both `caduceus worktree-gc`
+/// and the scheduled background sweep. Stubbed here for compile
+/// compatibility; the body lands in Task 4.3.
 pub fn gc(_state_dir: &Path, _older_than_days: u64, _dry_run: bool) -> CaduceusResult<u64> {
     Err(CaduceusError::Worktree {
         context: "gc",
