@@ -56,6 +56,81 @@ pub struct FinalizeRequest {
     pub worktree_path: PathBuf,
 }
 
+/// Inputs that every finalization stage consumes. The struct
+/// is the canonical argument to the Phase 6
+/// implementation; Task 5.0 only defines the type so
+/// earlier tasks can compile against it.
+///
+/// `client` is the GitHub API client (Phase 6 owns the
+/// concrete type), `config` is the live daemon config, and
+/// `repository` is the cloned-repo metadata. `issue` is the
+/// fetched issue detail; `claim`/`run_id`/`worktree` carry
+/// the active run's identity. `result` is the worker's
+/// output — the same [`FinalizeRequest`] payload the
+/// worker writes to `worker-result.json`.
+#[derive(Clone, Debug)]
+pub struct FinalizeContext {
+    /// GitHub API client. Phase 6 owns the concrete type.
+    /// Task 5.0 uses a unit placeholder so the struct
+    /// compiles before Phase 6 lands.
+    pub client: (),
+    /// Live daemon config (allowlist, timeouts, …).
+    pub config: Config,
+    /// Local repository metadata (path, base branch, remote URL).
+    pub repository: crate::worktree::RepositoryInfo,
+    /// Issue the run is finalising.
+    pub issue: crate::issue::IssueDetail,
+    /// Active run's claim token (proves the caller is the
+    /// daemon, not a stray worker).
+    pub claim: crate::queue::ClaimToken,
+    /// Active run id.
+    pub run_id: String,
+    /// Active worktree handle. Task 5.0 keeps the existing
+    /// `Worktree` struct from `worktree.rs`.
+    pub worktree: crate::worktree::Worktree,
+    /// Worker output (`worker-result.json`).
+    pub result: FinalizeRequest,
+}
+
+/// What a finalization stage returns to the orchestrator.
+/// `action` records which stage produced this output
+/// (e.g. `Committed`, `Pushed`, `PrCreated`, `Commented`,
+/// `Closed`, `InvestigationReady`,
+/// `InvestigationCommented`). `pr_url` is the canonical
+/// PR URL once it exists. `idempotency_observations` is a
+/// free-form list of operator-facing notes the
+/// orchestrator surfaces to the structured log so the
+/// "did we already post this comment?" check is auditable.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FinalizeOutput {
+    /// The action the finalization stage performed.
+    pub action: FinalizeAction,
+    /// Canonical PR URL, if the action created or updated one.
+    pub pr_url: Option<String>,
+    /// Per-step idempotency notes (e.g. "comment already posted",
+    /// "branch already pushed"). The orchestrator logs these
+    /// but does not retry on them.
+    pub idempotency_observations: Vec<String>,
+}
+
+/// The action a finalization stage took. Mirrors the
+/// `FinalizationStage` enum in `queue.rs` but lives here
+/// because the orchestrator's view of the world is the
+/// `FinalizeOutput` it hands back to the cron tick.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[serde(deny_unknown_fields)]
+pub enum FinalizeAction {
+    #[default]
+    Committed,
+    Pushed,
+    PrCreated,
+    Commented,
+    Closed,
+    InvestigationReady,
+    InvestigationCommented,
+}
+
 /// Outcome of a finalization attempt.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FinalizeOutcome {
