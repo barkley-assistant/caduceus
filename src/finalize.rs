@@ -32,6 +32,7 @@ use serde::{Deserialize, Serialize};
 use crate::config::Config;
 use crate::error::{CaduceusError, CaduceusResult, VoiceError};
 use crate::issue::IssueKey;
+use crate::worker::WorkerResult;
 
 /// Default outbound-comment max bytes when the operator has not
 /// overridden the limit. GitHub caps comment bodies at 65 536 bytes
@@ -234,5 +235,219 @@ pub fn terminal_from_voice(err: VoiceError) -> CaduceusError {
         VoiceError::TooLong { limit } => {
             CaduceusError::Other(format!("public-voice: text exceeds limit of {limit} bytes"))
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Public-voice-driven PR body and title rendering
+// ---------------------------------------------------------------------------
+
+/// Hard cap on the rendered PR body in bytes. The daemon
+/// never emits a body larger than this; the validator's
+/// `DEFAULT_PR_BODY_MAX_BYTES` is the upper bound, this
+/// constant is the *render* cap. We pick 64 KiB so the
+/// rendered body stays well under GitHub's 65 536-byte
+/// limit while still leaving room for a future contract
+/// bump.
+pub const MAX_RENDERED_BODY_BYTES: usize = 64 * 1024;
+
+/// Idempotency marker that the daemon appends to every PR
+/// body. The marker is a hidden HTML comment so it does not
+/// affect the rendered Markdown. The body includes the
+/// run_id so a re-render of the same body produces the
+/// same bytes.
+pub const IDEMPOTENCY_MARKER_PREFIX: &str = "<!-- caduceus-pr-body:run=";
+
+/// Marker for the issue-closing reference. GitHub renders
+/// `Closes #N` as a closing reference; the daemon always
+/// uses the canonical form so the bot's behaviour is
+/// auditable in test fixtures.
+pub const CLOSES_REFERENCE_PREFIX: &str = "Closes #";
+
+/// Render the canonical PR body for a worker `result`.
+///
+/// The body is the concatenation of:
+/// 1. The worker's `summary`.
+/// 2. A blank line, then the issue-closing reference.
+/// 3. A blank line, then a fenced-JSON artifact section
+///    sorted by key.
+/// 4. A blank line, then the idempotency marker comment.
+///
+/// `result.artifacts` is rendered with a fence length
+/// dynamically chosen to be longer than any backtick run
+/// in the rendered JSON. The total body is bounded by
+/// [`MAX_RENDERED_BODY_BYTES`]. The body is then passed
+/// through the public-voice validator with the documented
+/// PR-body limit before being returned.
+pub fn build_pr_body(
+    result: &WorkerResult,
+    issue: &IssueKey,
+    run_id: &str,
+    cfg: &Config,
+) -> CaduceusResult<String> {
+    let artifact_section = render_artifacts(&result.artifacts);
+    let closes = format!("{}{}", CLOSES_REFERENCE_PREFIX, issue.number);
+    let marker = format!("{}{}{} -->", IDEMPOTENCY_MARKER_PREFIX, run_id, "");
+    let mut body = String::with_capacity(8 * 1024);
+    body.push_str(&result.summary);
+    body.push_str("\n\n");
+    body.push_str(&closes);
+    if !artifact_section.is_empty() {
+        body.push_str("\n\n");
+        body.push_str(&artifact_section);
+    }
+    body.push_str("\n\n");
+    body.push_str(&marker);
+    if body.len() > MAX_RENDERED_BODY_BYTES {
+        // Truncate the body to the cap, then re-append the
+        // marker so the body is always capped *and* the
+        // idempotency marker is present. We do this before
+        // the public-voice check so a too-long summary
+        // still produces a valid (capped) body.
+        if let Some(pos) = body.find(IDEMPOTENCY_MARKER_PREFIX) {
+            // Keep the marker, drop everything after.
+            body.truncate(pos);
+        }
+        // The summary may be huge; we have already
+        // truncated everything after the marker. Now make
+        // sure the *front* is under the cap by stripping
+        // from the top of the summary.
+        let marker_len = marker.len();
+        if body.len() + marker_len + 4 > MAX_RENDERED_BODY_BYTES {
+            // Hard-truncate the leading summary so the
+            // body is under the cap.
+            let allowed = MAX_RENDERED_BODY_BYTES
+                .saturating_sub(marker_len)
+                .saturating_sub(4);
+            body.truncate(allowed);
+        }
+        body.push_str("\n\n");
+        body.push_str(&marker);
+    }
+    validate_pr_body(&body, cfg).map_err(terminal_from_voice)?;
+    Ok(body)
+}
+
+/// Render the canonical PR title. The worker's
+/// `pull_request_title` is validated through the public-voice
+/// rule with the documented PR-title limit and returned
+/// unchanged otherwise.
+pub fn build_pr_title(result: &WorkerResult, cfg: &Config) -> CaduceusResult<String> {
+    validate_pr_title(&result.pull_request_title, cfg).map_err(terminal_from_voice)?;
+    Ok(result.pull_request_title.clone())
+}
+
+/// Render the artifact section as a fenced-JSON block.
+///
+/// The output is the empty string when the worker emitted no
+/// artifacts. Otherwise the block is:
+/// ```text
+/// <caption>
+///
+/// ```fence
+/// <json>
+/// ```
+/// ```
+/// where `<fence>` is a backtick run whose length is one
+/// longer than the longest backtick run in the JSON. The
+/// caption lists the artifact count.
+fn render_artifacts(artifacts: &std::collections::BTreeMap<String, serde_json::Value>) -> String {
+    if artifacts.is_empty() {
+        return String::new();
+    }
+    let mut json = String::new();
+    // Deterministic order: BTreeMap iterates in key order.
+    let json_value = serde_json::json!(artifacts);
+    json.push_str(&serde_json::to_string_pretty(&json_value).expect("serialize json"));
+    let fence = dynamic_fence_length(&json);
+    let mut fence_str = String::with_capacity(fence);
+    for _ in 0..fence {
+        fence_str.push('`');
+    }
+    let caption = format!("Artifacts ({}):", artifacts.len());
+    let mut out = String::with_capacity(json.len() + caption.len() + fence * 2 + 8);
+    out.push_str(&caption);
+    out.push_str("\n\n");
+    out.push_str(&fence_str);
+    out.push_str("json\n");
+    out.push_str(&json);
+    out.push('\n');
+    out.push_str(&fence_str);
+    out
+}
+
+/// Pick a backtick fence length that is at least 3 and one
+/// longer than the longest run of backticks in *body*. The
+/// contract says "dynamically chosen"; 3 is the Markdown
+/// minimum and we extend as needed.
+fn dynamic_fence_length(body: &str) -> usize {
+    let mut longest = 0;
+    let mut current = 0;
+    for c in body.chars() {
+        if c == '`' {
+            current += 1;
+            if current > longest {
+                longest = current;
+            }
+        } else {
+            current = 0;
+        }
+    }
+    let pick = longest + 1;
+    if pick < 3 {
+        3
+    } else {
+        pick
+    }
+}
+
+/// Escape control characters in a string so the JSON block
+/// is safe to embed in a Markdown document. We follow the
+/// "no control characters" rule from
+/// [`crate::worker::validate_worker_result`].
+pub fn escape_control_chars(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if c.is_control() && c != '\n' && c != '\t' {
+            // Replace with the standard JSON-style escape
+            // (\\u00XX) so the body is human-readable and
+            // round-trip safe.
+            let code = c as u32;
+            out.push_str(&format!("\\u{code:04X}"));
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Apply the control-character escape to every artifact
+/// value. Artifact keys are passed through unchanged (the
+/// schema validator already rejects control characters in
+/// keys; the escape is a belt-and-braces guard for the
+/// render path).
+pub fn render_artifacts_with_escape(
+    artifacts: &std::collections::BTreeMap<String, serde_json::Value>,
+) -> std::collections::BTreeMap<String, serde_json::Value> {
+    artifacts
+        .iter()
+        .map(|(k, v)| (k.clone(), escape_json_value(v)))
+        .collect()
+}
+
+fn escape_json_value(v: &serde_json::Value) -> serde_json::Value {
+    match v {
+        serde_json::Value::String(s) => serde_json::Value::String(escape_control_chars(s)),
+        serde_json::Value::Array(arr) => {
+            serde_json::Value::Array(arr.iter().map(escape_json_value).collect())
+        }
+        serde_json::Value::Object(obj) => {
+            let mut new = serde_json::Map::new();
+            for (k, v) in obj {
+                new.insert(k.clone(), escape_json_value(v));
+            }
+            serde_json::Value::Object(new)
+        }
+        other => other.clone(),
     }
 }
