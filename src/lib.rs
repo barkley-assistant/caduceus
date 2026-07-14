@@ -37,6 +37,7 @@ pub mod worktree;
 pub use crate::error::{CaduceusError, CaduceusResult};
 pub use crate::issue::{IssueDetail, IssueKey};
 pub use crate::queue::{
-    FinalizationCheckpoint, FinalizationStage, Phase, QueueEntry, QueueState, TicketType,
+    ClaimToken, ClaimedEntry, EnqueueOutcome, FinalizationCheckpoint, FinalizationStage, Phase,
+    QueueEntry, QueueState, StateStore, TicketType,
 };
 pub use crate::worker::WorkerResult;
