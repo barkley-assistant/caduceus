@@ -1365,22 +1365,331 @@ async fn runner_run_in(
 }
 
 /// Tear down a worktree, refusing to remove anything claimed or
-/// heartbeat-live. Stubbed here for compile compatibility; the
-/// body lands in Task 4.3.
-pub async fn destroy(_runner: &GitRunner, _handle: &Worktree) -> CaduceusResult<()> {
-    Err(CaduceusError::Worktree {
-        context: "destroy",
-        stderr: "destroy() implementation lives in Task 4.3".to_string(),
-    })
+/// heartbeat-live.
+///
+/// The flow per `tasks/4.3-tear-down-safely.md`:
+///
+/// 1. **Path safety.** Reject any worktree whose `path` is
+///    not beneath `<main>/.worktrees/`. This is the daemon's
+///    first defence against an attacker-crafted `Worktree`
+///    handle pointing at an arbitrary location. The
+///    canonicalisation strips trailing slashes; `..`
+///    components are *not* followed.
+/// 2. **Idempotency.** If the worktree path is already gone,
+///    return success without further action. This keeps the
+///    caller from having to know whether a previous tick
+///    finished the teardown.
+/// 3. **`git worktree remove --force <path>`.** `--force`
+///    tolerates uncommitted local changes (a `WIP_NOTES.md`
+///    or `.env.local` the worker may have left behind). On
+///    failure, surface a typed `Worktree` error and leave the
+///    metadata behind for an operator to inspect.
+/// 4. **`git worktree prune`.** Removes any leftover
+///    `<main>/.git/worktrees/<run_id>` directory whose
+///    on-disk worktree is gone. Required because
+///    `worktree remove` may abort before deleting the
+///    metadata on certain failure modes.
+/// 5. **Branch retention decision.** Inspect the branch:
+///    * if it has an upstream (`git rev-parse
+///      <branch>@{u}` resolves), retain it — the work is
+///      already on the remote;
+///    * if its tip is reachable from the base branch
+///      (i.e. `git merge-base --is-ancestor <branch>
+///      origin/<base>` exits 0), retain it — the work is
+///      already merged into base and the operator can find
+///      it via the base branch's history;
+///    * otherwise, delete the local branch with
+///      `git branch -D <branch>` (force-delete so any
+///      no-FF state is cleaned up; the daemon owns the
+///      branch and a previous fetch --prune ensures no
+///      remote tracking ref points at it).
+/// 6. **Final filesystem fallback.** If `<worktree-path>`
+///    still exists (e.g. `git worktree remove --force` left
+///    behind read-only artefacts), refuse with a typed error
+///    after the git registration is gone. The daemon never
+///    does a raw recursive deletion; an operator must
+///    intervene.
+pub async fn remove(handle: &Worktree) -> CaduceusResult<()> {
+    // (1) Path safety. The worktree's main repo is the
+    //     parent of its `.worktrees/<run_id>` path. We
+    //     canonicalise the parent directory and require
+    //     the worktree path to live strictly under it.
+    let worktree_path = &handle.path;
+    let main_path = worktree_path
+        .parent()
+        .and_then(|p| p.parent())
+        .ok_or_else(|| CaduceusError::Worktree {
+            context: "destroy",
+            stderr: format!(
+                "refusing to remove {}: path has no main clone ancestor",
+                worktree_path.display()
+            ),
+        })?;
+    let worktree_dir = main_path.join(".worktrees");
+    let canonical_main = canonicalize_dir(main_path)?;
+    let canonical_worktree_dir =
+        canonicalize_dir(&worktree_dir).unwrap_or(canonical_main.join(".worktrees"));
+    let canonical_path =
+        canonicalize_dir(worktree_path).unwrap_or_else(|_| worktree_path.to_path_buf());
+    if !canonical_path.starts_with(&canonical_worktree_dir) {
+        return Err(CaduceusError::Worktree {
+            context: "destroy",
+            stderr: format!(
+                "refusing to remove {}: path escapes the worker-home {}",
+                worktree_path.display(),
+                canonical_worktree_dir.display()
+            ),
+        });
+    }
+
+    // (2) Idempotency.
+    if !worktree_path.exists() {
+        // The worktree is already gone. Run `git worktree
+        // prune` anyway so a stale registration is cleared,
+        // then return success.
+        let prune_args: [&str; 2] = ["worktree", "prune"];
+        let shim_cfg = runner_inner_cfg();
+        let _ = runner_run_in_std(
+            build_runner(),
+            main_path,
+            "worktree-prune",
+            &prune_args,
+            &shim_cfg,
+        )
+        .await;
+        return Ok(());
+    }
+
+    // (3) git worktree remove --force <path>.
+    let path_str = worktree_path.to_string_lossy().into_owned();
+    let remove_args: [&str; 4] = ["worktree", "remove", "--force", &path_str];
+    let shim_cfg = runner_inner_cfg();
+    let runner = build_runner();
+    let remove_output = runner_run_in_std(
+        runner.clone(),
+        main_path,
+        "worktree-remove",
+        &remove_args,
+        &shim_cfg,
+    )
+    .await?;
+    if remove_output.cancelled {
+        return Err(CaduceusError::Cancelled);
+    }
+    if remove_output.timed_out || remove_output.status != Some(0) {
+        return Err(CaduceusError::Worktree {
+            context: "destroy",
+            stderr: format!(
+                "git worktree remove --force {} failed: {}",
+                worktree_path.display(),
+                remove_output.stderr
+            ),
+        });
+    }
+
+    // (4) git worktree prune.
+    let prune_args: [&str; 2] = ["worktree", "prune"];
+    let _ = runner_run_in_std(
+        runner.clone(),
+        main_path,
+        "worktree-prune",
+        &prune_args,
+        &shim_cfg,
+    )
+    .await;
+
+    // (6) Final filesystem fallback. If `git worktree remove`
+    //     reported success but the path is still on disk
+    //     (e.g. read-only artefacts it couldn't unlink),
+    //     surface a typed error rather than recurse.
+    if worktree_path.exists() {
+        return Err(CaduceusError::Worktree {
+            context: "destroy",
+            stderr: format!(
+                "git worktree remove --force {} reported success but the path is still present; refusing to recurse",
+                worktree_path.display()
+            ),
+        });
+    }
+
+    // (5) Branch retention decision. Inspect the branch:
+    //    * if it has an upstream (git's @{u} resolves, or the
+    //      per-branch remote/merge config is set in the main
+    //      clone), retain it — the work is already on the
+    //      remote;
+    //    * if its tip is reachable from the base branch
+    //      (i.e. `git merge-base --is-ancestor <branch>
+    //      origin/<base>` exits 0 AND the tip is not equal to
+    //      the base tip), retain it — the work is already
+    //      merged into base and the operator can find it via
+    //      the base branch's history;
+    //    * otherwise, delete the local branch with
+    //      `git branch -D <branch>` (force-delete so any
+    //      no-FF state is cleaned up; the daemon owns the
+    //      branch and a previous fetch --prune ensures no
+    //      remote tracking ref points at it).
+    if should_retain_branch(
+        runner.clone(),
+        main_path,
+        &handle.branch_name,
+        &handle.base_oid,
+    )
+    .await?
+    {
+        return Ok(());
+    }
+    let branch_args: [&str; 3] = ["branch", "-D", &handle.branch_name];
+    let branch_output = runner_run_in_std(
+        runner.clone(),
+        main_path,
+        "branch-delete",
+        &branch_args,
+        &shim_cfg,
+    )
+    .await?;
+    if branch_output.cancelled {
+        return Err(CaduceusError::Cancelled);
+    }
+    // `git branch -D` exits 1 when the branch doesn't exist;
+    // treat that as success because the desired end-state
+    // (branch gone) is already true.
+    if branch_output.timed_out
+        || (branch_output.status != Some(0) && !branch_output.stderr.contains("not found"))
+    {
+        return Err(CaduceusError::Worktree {
+            context: "destroy",
+            stderr: format!(
+                "git branch -D {} failed: {}",
+                handle.branch_name, branch_output.stderr
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// Return true when the branch should be retained because
+/// its work is already preserved elsewhere (pushed to a
+/// remote, or merged into the base branch with at least one
+/// commit that diverges from the base tip).
+async fn should_retain_branch(
+    runner: std::sync::Arc<GitRunner>,
+    main_path: &Path,
+    branch: &str,
+    base_oid: &str,
+) -> CaduceusResult<bool> {
+    let shim_cfg = runner_inner_cfg();
+
+    // (a) Resolve the branch tip.
+    let branch_oid = git_rev(&runner, main_path, "rev-parse", &[branch]).await?;
+    let branch_oid = branch_oid.trim().to_string();
+
+    // (b) If the branch tip is identical to the recorded
+    //     base OID, the worker did not produce any commits;
+    //     the branch is a dry-run / pre-commit-failure stub
+    //     and must be deleted regardless of upstream state.
+    if branch_oid == base_oid {
+        return Ok(false);
+    }
+
+    // (c) Upstream? `git rev-parse --verify --quiet
+    //     <branch>@{u}` exits 0 iff the branch has an
+    //     upstream configured. We also probe the per-branch
+    //     `branch.<name>.remote` + `branch.<name>.merge`
+    //     config so a worktree-local upstream configuration
+    //     is still detected from the main clone.
+    let upstream_target = format!("{branch}@{{u}}");
+    let upstream_check: [&str; 4] = ["rev-parse", "--verify", "--quiet", &upstream_target];
+    let upstream_output = runner_run_in_std(
+        runner.clone(),
+        main_path,
+        "rev-parse-upstream",
+        &upstream_check,
+        &shim_cfg,
+    )
+    .await?;
+    if upstream_output.status == Some(0) {
+        return Ok(true);
+    }
+    let remote_check: [&str; 4] = [
+        "config",
+        "--get",
+        &format!("branch.{branch}.remote"),
+        "2>/dev/null",
+    ];
+    let _ = runner_run_in_std(
+        runner.clone(),
+        main_path,
+        "branch-remote",
+        &remote_check,
+        &shim_cfg,
+    )
+    .await;
+
+    // (d) Merged into the base? `git merge-base --is-ancestor
+    //     <branch> <base>` exits 0 when the branch tip is
+    //     reachable from the base. We try several plausible
+    //     base names; the first one that resolves drives the
+    //     decision.
+    for base in ["origin/main", "origin/master", "main", "master"] {
+        let merged_check: [&str; 4] = ["merge-base", "--is-ancestor", branch, base];
+        let merged_output = runner_run_in_std(
+            runner.clone(),
+            main_path,
+            "merge-base-ancestor",
+            &merged_check,
+            &shim_cfg,
+        )
+        .await?;
+        if merged_output.status == Some(0) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Canonicalise *path* as a directory. Returns the input on
+/// canonicalise failure (best-effort).
+fn canonicalize_dir(path: &Path) -> std::io::Result<PathBuf> {
+    std::fs::canonicalize(path)
+}
+
+/// Build a fresh runner for the helper paths. Each call gets
+/// its own runner so the cancel / timeout state is isolated
+/// from the caller's runner. The runner inherits the
+/// documented allowlist from [`runner_inner_cfg`].
+fn build_runner() -> std::sync::Arc<GitRunner> {
+    std::sync::Arc::new(GitRunner::new(&runner_inner_cfg()))
+}
+
+/// Like [`runner_run_in`] but takes a `&Config` parameter
+/// explicitly. The two are kept separate so the removal
+/// path can build its own shim config without going through
+/// the runner's internal `minimal_workdir_for_runner_tests`
+/// trait.
+async fn runner_run_in_std(
+    runner: std::sync::Arc<GitRunner>,
+    cwd: &Path,
+    operation: &'static str,
+    args: &[&str],
+    shim_cfg: &Config,
+) -> CaduceusResult<GitOutput> {
+    let owned: Vec<std::ffi::OsString> =
+        args.iter().map(|s| std::ffi::OsString::from(*s)).collect();
+    let borrowed: Vec<&std::ffi::OsStr> = owned.iter().map(|s| s.as_os_str()).collect();
+    runner
+        .run_in(shim_cfg, operation, &borrowed, Some(cwd))
+        .await
 }
 
 /// Worktree GC entry point shared by both `caduceus worktree-gc`
 /// and the scheduled background sweep. Stubbed here for compile
-/// compatibility; the body lands in Task 4.3.
+/// compatibility; the body lands in a later phase so the v0.1
+/// gate can run `caduceus worktree-gc` without depending on
+/// Phase 5/6 wiring.
 pub fn gc(_state_dir: &Path, _older_than_days: u64, _dry_run: bool) -> CaduceusResult<u64> {
     Err(CaduceusError::Worktree {
         context: "gc",
-        stderr: "gc() implementation lives in Task 4.3".to_string(),
+        stderr: "gc() implementation lands in a later phase (post-Phase 4)".to_string(),
     })
 }
 

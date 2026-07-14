@@ -42,6 +42,6 @@ pub use crate::queue::{
 };
 pub use crate::worker::WorkerResult;
 pub use crate::worktree::{
-    create as create_worktree, find_main_clone, GitOutput, GitRunner, RepositoryInfo, Worktree,
-    GIT_OUTPUT_BYTE_CAP,
+    create as create_worktree, find_main_clone, remove as remove_worktree, GitOutput, GitRunner,
+    RepositoryInfo, Worktree, GIT_OUTPUT_BYTE_CAP,
 };
