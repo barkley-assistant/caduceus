@@ -28,3 +28,6 @@ runs/
 
 # Cargo lock for libraries (keep for binaries)
 # Cargo.lock
+
+# Operator-generated prompt documents; not part of the daemon.
+prompts/
