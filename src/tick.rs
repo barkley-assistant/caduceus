@@ -190,6 +190,15 @@ pub async fn tick(
         Ok(repos) => repos,
         Err(err) => {
             let class = classify_error(&err);
+            // Rate-limit and other non-fatal infrastructure
+            // errors must return `Ok` with the matching
+            // `TickOutcome` so the cron contract's exit-0
+            // mapping applies. The observation is already
+            // persisted by `finish_tick_failure`.
+            if let Some(outcome) = class.non_fatal_outcome() {
+                finish_tick_failure(&gate, now, &cfg, &meta, class, Some(&err))?;
+                return Ok(outcome);
+            }
             finish_tick_failure(&gate, now, &cfg, &meta, class, Some(&err))?;
             return Err(err);
         }
@@ -219,6 +228,13 @@ pub async fn tick(
     }
     if let Some(err) = last_error {
         let class = classify_error(&err);
+        // Same cron-contract rule: rate-limit and other
+        // non-fatal errors return `Ok` with the matching
+        // outcome so the CLI's exit-0 mapping applies.
+        if let Some(outcome) = class.non_fatal_outcome() {
+            finish_tick_failure(&gate, now, &cfg, &meta, class, Some(&err))?;
+            return Ok(outcome);
+        }
         finish_tick_failure(&gate, now, &cfg, &meta, class, Some(&err))?;
         return Err(err);
     }
@@ -669,7 +685,38 @@ fn finish_tick_failure(
         _ => TickOutcome::Failed,
     };
     let _ = cfg;
-    finish_tick_outcome(gate, meta, now, outcome, None, last_error)
+    // The rate-limit observation is the input to the
+    // next tick's `CadenceGate::precheck` and must be
+    // persisted *before* the tick returns. The
+    // orchestrator's `tick` body itself does not always
+    // pass the rate-limit info to `record_tick_finished`;
+    // we extract the observation from the last error here
+    // when the failure class is `RateLimit` so the gate
+    // can record it via `record_tick_finished`.
+    let rate_limit_info: Option<RateLimitInfo> = match (class, last_error) {
+        (
+            FailureClass::RateLimit { .. },
+            Some(CaduceusError::RateLimited {
+                reset_at,
+                remaining,
+                limit,
+            }),
+        ) => Some(RateLimitInfo {
+            remaining: *remaining,
+            limit: *limit,
+            observed_at: now,
+            reset_at_unix: now.timestamp().saturating_add(*reset_at as i64),
+        }),
+        _ => None,
+    };
+    gate.record_tick_finished(
+        now,
+        outcome,
+        None,
+        cfg.poll_interval_seconds,
+        rate_limit_info.as_ref(),
+        last_error.map(|e| format!("{e}")),
+    )
 }
 
 fn dummy_rate_limit_info(obs: &crate::meta::RateLimitObservation) -> RateLimitInfo {

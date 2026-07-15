@@ -213,8 +213,8 @@
       "handoff": "handoffs/7.4.md"
     },
     "7.5": {
-      "status": "pending",
-      "updated_at": null,
+      "status": "in_progress",
+      "updated_at": "2026-07-15T09:25:56.781885+00:00",
       "handoff": null
     },
     "8.1": {
