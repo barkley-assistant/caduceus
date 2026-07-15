@@ -128,10 +128,21 @@ pub fn run() -> CaduceusResult<()> {
             dry_run,
         }) => run_worktree_gc(older_than_days, dry_run),
         Some(Command::Run) => {
-            // Delegate to the canonical tick. The exit code
-            // comes from the orchestrator's outcome mapping.
-            let _ = caduceus::tick::run()?;
-            Ok(())
+            // Resolve the config through the same env-aware
+            // chain the other subcommands use. Cron never sets
+            // `CADUCEUS_CONFIG`, so a missing env var still
+            // falls through to `Config::load()` and surfaces
+            // the Task 1.3 "not yet implemented" error.
+            let cfg = match std::env::var_os("CADUCEUS_CONFIG") {
+                Some(path) => Config::load_from(std::path::Path::new(&path))?,
+                None => Config::load()?,
+            };
+            let outcome = caduceus::tick::run_blocking(cfg)?;
+            // Map the outcome to the documented exit code so
+            // the cron model (Processed / Idle / Cancelled →
+            // 0; Failed → 1) holds without changing the CLI.
+            let exit_code = caduceus::tick::exit_code_for_tests(&outcome);
+            std::process::exit(exit_code as i32);
         }
         Some(Command::Status { json }) => {
             // Load the same config the canonical tick

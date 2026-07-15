@@ -25,6 +25,7 @@ pub mod orchestration;
 pub mod poll;
 pub mod prompt;
 pub mod queue;
+pub mod signals;
 pub mod status;
 pub mod tick;
 pub mod validate;
