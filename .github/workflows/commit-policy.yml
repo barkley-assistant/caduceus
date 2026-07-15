@@ -1,0 +1,69 @@
+# Conventional Commits subject check (CONTRACTS.md CI-003).
+#
+# Validates that every commit on the PR (or the squash title,
+# when the repo enforces squash merge) follows the
+# `<type>(<scope>): <description>` shape. Type and the required
+# non-empty scope are lowercase; the imperative description has
+# no trailing period; the complete subject is at most 80
+# characters.
+#
+# Required-check name: commit-policy / check
+name: commit-policy
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: commit-policy-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  check:
+    name: check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: determine the commit subjects to validate
+        id: subjects
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            if [ -z "$PR_BASE" ] || [ -z "$PR_HEAD" ]; then
+              echo "::error::pull_request event missing base.sha or head.sha"
+              exit 2
+            fi
+            echo "range=${PR_BASE}..${PR_HEAD}" >> "$GITHUB_OUTPUT"
+          else
+            # push to main: validate the commits on the push
+            # against the previous tip of the ref. The
+            # workflow-triggering SHA is in github.sha; the
+            # previous tip is the merge-base with the parent
+            # ref's previous head.
+            head_sha="$GITHUB_SHA"
+            prev_sha="$(git rev-parse "${head_sha}^" 2>/dev/null || true)"
+            if [ -z "$prev_sha" ]; then
+              echo "::error::no parent commit for $head_sha"
+              exit 2
+            fi
+            echo "range=${prev_sha}..${head_sha}" >> "$GITHUB_OUTPUT"
+          fi
+      - name: validate commit subjects
+        env:
+          RANGE: ${{ steps.subjects.outputs.range }}
+        run: |
+          set -euo pipefail
+          python3 planning/caduceus-v1.0/tools/check_commit_messages.py --range "$RANGE"

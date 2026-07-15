@@ -164,6 +164,47 @@ out loud.
    `<state_dir>/runs/`. You should be reading that
    report before the first real run. Trust, but verify.
 
+## The four keys you need to know about
+
+You will not get far without these. The full schema lives
+in [`docs/configuration.md`](docs/configuration.md) and the
+wiring lives in
+[`docs/architecture.md`](docs/architecture.md); this is the
+short version with the opinions attached.
+
+- `watched_repos` — the list of `owner/repo` pairs the daemon
+  polls. Each entry must resolve to a local clone under
+  `workdir_base/<owner>/<repo>` (default
+  `~/projects/<owner>/<repo>`) with a working `origin` remote
+  *before* the daemon will pick up an issue. The daemon
+  refuses to poll a `watched_repos` entry that has no local
+  clone. This is not a courtesy — a daemon that quietly
+  retried GitHub forever against a missing clone is how you
+  burn through a rate limit at 3 a.m. and never know why.
+- `worker_command` — the path the daemon execs after a tick.
+  The Hermes plugin seeds a default at
+  `~/.hermes/caduceus/worker-bridge.py`; a standalone install
+  requires this field to be set explicitly. The daemon
+  refuses to start without it on a standalone install, and
+  that is the right default: a daemon that silently
+  invents a worker path is a daemon that will surprise you
+  on the one host where the convention does not hold.
+- `poll_interval_seconds` — how often the cron tick fires.
+  Default is `120`. The plugin installs a 2-minute cron job;
+  the operator can override per environment. Lower it if you
+  want; do not set it to zero and expect a polite daemon.
+- `ticket_label_code` — the GitHub label that triggers a
+  code-fixing run (default `🤖 auto-fix`). The investigation
+  label is `ticket_label_investigate` (default
+  `🤖 auto-fix-investigate`). The two labels are created in
+  step 3 of the 60-second orientation above.
+
+Everything else lives in
+[`docs/configuration.md`](docs/configuration.md). If a config
+key is not named there, it is not part of the public v1.0
+contract surface; the daemon ignores it, which is the
+honest answer to "why does my custom key do nothing?"
+
 ## The Operator's Manual
 
 Moved out of the README on purpose. The README is the
