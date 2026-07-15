@@ -26,6 +26,7 @@ pub mod poll;
 pub mod prompt;
 pub mod queue;
 pub mod status;
+pub mod tick;
 pub mod validate;
 pub mod verify;
 pub mod worker;

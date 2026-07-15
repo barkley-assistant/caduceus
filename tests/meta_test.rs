@@ -257,13 +257,13 @@ fn concurrent_observer_updates_do_not_lose_fields() {
     );
     // Concurrent updates to *different* fields must not lose them.
     store
-        .update(|meta| meta.last_outcome = Some(TickOutcome::Idle))
+        .update(|meta| meta.last_outcome = Some(TickOutcome::Idle304))
         .expect("update outcome");
     store
         .update(|meta| meta.last_reaped_count = 17)
         .expect("update reap");
     let snap = store.snapshot();
-    assert_eq!(snap.last_outcome, Some(TickOutcome::Idle));
+    assert_eq!(snap.last_outcome, Some(TickOutcome::Idle304));
     assert_eq!(snap.last_reaped_count, 17);
     assert!(snap.rate_limit.is_some(), "rate limit preserved");
 }
@@ -421,8 +421,8 @@ fn rate_limit_observation_is_newer_than_helper() {
 
 #[test]
 fn tick_outcome_serializes_as_snake_case() {
-    let json = serde_json::to_string(&TickOutcome::Concurrent).unwrap();
-    assert_eq!(json, "\"concurrent\"");
+    let json = serde_json::to_string(&TickOutcome::SkippedConcurrent).unwrap();
+    assert_eq!(json, "\"skipped_concurrent\"");
 }
 
 // ---------------------------------------------------------------------------

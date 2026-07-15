@@ -105,15 +105,43 @@ impl StateMeta {
 }
 
 /// Outcome of the most recent tick.
+///
+/// The variant set is the contractually-documented one
+/// (Task 7.0 + Task 7.1). `Idle304` and `IdleEmpty` split
+/// the legacy `Idle` variant on whether every poll response
+/// reused the persistent HTTP cache. `SkippedConcurrent`
+/// and `SkippedCadence` replace the older `Concurrent` and
+/// `Cadence` aliases so the orchestrator's perspective is
+/// always the actionable one.
+/// - The `SkippedCadence` outcome is what the daemon returns
+///   when the configured `poll_interval_seconds` has not
+///   elapsed since the last tick; the older `Cadence` variant
+///   is retained as a low-level meta-layer alias.
+/// - The `Idle304` outcome is reserved for the "all polls
+///   reused the conditional GET cache" case. Otherwise, an
+///   idle poll finishes as `IdleEmpty`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TickOutcome {
+    /// A worker run completed successfully (code,
+    /// investigation, or dry-run preview).
     Processed,
-    Idle,
-    Concurrent,
-    Cadence,
+    /// Every poll response was a cached 304 — no eligible
+    /// entry exists.
+    Idle304,
+    /// At least one poll response was a fresh 200 with no
+    /// eligible entry.
+    IdleEmpty,
+    /// Another `caduceus` invocation holds the daemon.lock.
+    SkippedConcurrent,
+    /// The configured cadence interval has not elapsed.
+    SkippedCadence,
+    /// Persisted rate-limit reset has not elapsed.
     RateLimited,
+    /// Operator SIGINT/SIGTERM or timeout-driven drain.
     Cancelled,
+    /// A configuration / state / invariant / unrecovered
+    /// pipeline failure.
     Failed,
 }
 
@@ -277,7 +305,7 @@ impl CadenceDecision {
     pub fn tick_outcome(&self) -> Option<TickOutcome> {
         match self {
             CadenceDecision::Proceed => None,
-            CadenceDecision::Cadence { .. } => Some(TickOutcome::Cadence),
+            CadenceDecision::Cadence { .. } => Some(TickOutcome::SkippedCadence),
             CadenceDecision::RateLimited { .. } => Some(TickOutcome::RateLimited),
         }
     }

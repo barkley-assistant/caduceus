@@ -127,6 +127,12 @@ pub fn run() -> CaduceusResult<()> {
             older_than_days,
             dry_run,
         }) => run_worktree_gc(older_than_days, dry_run),
+        Some(Command::Run) => {
+            // Delegate to the canonical tick. The exit code
+            // comes from the orchestrator's outcome mapping.
+            let _ = caduceus::tick::run()?;
+            Ok(())
+        }
         // Every other subcommand is a stub for now; `run` is the
         // canonical "no-op success" so the cron tick contract
         // (silent on success) holds while the rest of the daemon

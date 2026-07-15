@@ -68,10 +68,11 @@ impl Clock for SystemClock {
 /// `wiremock`-backed `Client` and pass it through the same adapter
 /// so the contract surface is unchanged.
 pub trait GithubClient: Send + Sync {
-    /// Borrow the underlying [`Client`] so call sites that need
-    /// the full surface (e.g. cached `Arc<HttpCache>` test seams)
-    /// can still reach it without an extra trait method per call.
-    fn inner(&self) -> &Client;
+    /// Borrow the inner `Arc<Client>` so call sites that need
+    /// the full surface (e.g. cached `Arc<HttpCache>` test
+    /// seams) can still reach it without an extra trait method
+    /// per call.
+    fn inner(&self) -> &Arc<Client>;
 }
 
 /// Production GitHub adapter. Thin — every trait method would
@@ -100,7 +101,7 @@ impl GithubClientAdapter {
 }
 
 impl GithubClient for GithubClientAdapter {
-    fn inner(&self) -> &Client {
+    fn inner(&self) -> &Arc<Client> {
         &self.client
     }
 }
@@ -301,6 +302,31 @@ impl FailureClass {
     /// timeout-driven).
     pub fn is_cancellation(&self) -> bool {
         matches!(self, FailureClass::Cancellation)
+    }
+}
+
+/// Test seam: predicate tuple for [`FailureClass`]. Returns
+/// `(counts_against_retry_budget, must_persist_rate_limit,
+/// is_cancellation)`. Tests that need to assert the
+/// orchestrator's branching logic can use this without
+/// importing the orchestrator's private methods.
+pub fn failure_class_predicates_for_tests(class: FailureClass) -> (bool, bool, bool) {
+    (
+        class.counts_against_retry_budget(),
+        class.must_persist_rate_limit(),
+        class.is_cancellation(),
+    )
+}
+
+/// Test seam: outcome mapping for [`FailureClass`]. Returns
+/// the [`meta::TickOutcome`](crate::meta::TickOutcome) the
+/// orchestrator surfaces for each failure class. Mirrors the
+/// private [`outcome_for_class`] helper used by the tick.
+pub fn outcome_for_class_for_tests(class: FailureClass) -> crate::meta::TickOutcome {
+    match class {
+        FailureClass::RateLimit { .. } => crate::meta::TickOutcome::RateLimited,
+        FailureClass::Cancellation => crate::meta::TickOutcome::Cancelled,
+        _ => crate::meta::TickOutcome::Failed,
     }
 }
 
