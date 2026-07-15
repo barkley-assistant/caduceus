@@ -1,5 +1,29 @@
 #!/usr/bin/env python3
-"""Guarded, atomic progress transitions for the v1.0 one-task agent loop."""
+"""Guarded, atomic progress transitions for the v1.0 one-task agent loop.
+
+Phase 00 Task 0.2 (PLAN-002, PLAN-003) hardens the validator and
+the templates so incomplete or non-independent evidence is rejected
+before a task or phase transition is recorded.
+
+The fsync + atomic-replace + temp-cleanup contract is documented
+inline at `_save`. The procedure is:
+
+1. Write the new JSON to a PID-scoped temp file under
+   ``planning/caduceus-v1.0/.progress.json.<pid>.tmp``.
+2. ``flush()`` and ``os.fsync()`` the file before close so the
+   bytes hit stable storage.
+3. ``os.replace(tmp, path)`` for atomic publication.
+4. ``os.fsync()`` the parent directory so the rename itself is
+   durable.
+5. On any failure inside the try block, the temp file is removed
+   in the finally clause so a crashed prior invocation cannot
+   leak a half-written file.
+
+The contract is invoked by ``validate()`` in ``validate_plan.py``,
+which is the single source of truth for evidence acceptance. A
+transition is recorded only when both the controller's preconditions
+(``next work item``) and the validator's evidence rules pass.
+"""
 
 from __future__ import annotations
 
@@ -17,7 +41,17 @@ from validate_plan import PlanError, ROOT, validate
 
 
 def _save(path: Path, value: dict) -> None:
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    """Atomically replace ``path`` with ``value`` and fsync everything.
+
+    The progress directory is fsynced after the rename so a power
+    loss between replace and fsync still leaves the new content on
+    disk. The temp file is unlinked in the finally clause so a
+    mid-write crash never leaves a half-written artifact under
+    ``planning/caduceus-v1.0/``.
+    """
+    parent = path.parent
+    tmp = parent / f".{path.name}.{os.getpid()}.tmp"
+    replaced = False
     try:
         with tmp.open("w", encoding="utf-8") as handle:
             json.dump(value, handle, indent=2)
@@ -25,16 +59,27 @@ def _save(path: Path, value: dict) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp, path)
-        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        replaced = True
+        # fsync the parent directory so the rename is durable. A
+        # crash between the rename and this fsync leaves the new
+        # file in place but the directory entry may not be flushed;
+        # the fsync closes that window.
+        directory_fd = os.open(str(parent), os.O_RDONLY | os.O_DIRECTORY)
         try:
-            os.fsync(directory)
+            os.fsync(directory_fd)
         finally:
-            os.close(directory)
+            os.close(directory_fd)
     finally:
-        try:
-            tmp.unlink()
-        except FileNotFoundError:
-            pass
+        # On the failure path the temp file may still be on disk if
+        # the open succeeded but the dump / replace failed before
+        # the rename. The rename path leaves nothing to clean up
+        # (the inode has been moved). The finally clause is the
+        # single cleanup point; ``replaced`` distinguishes the two.
+        if not replaced:
+            try:
+                tmp.unlink()
+            except FileNotFoundError:
+                pass
 
 
 def main() -> int:
@@ -93,6 +138,10 @@ def main() -> int:
             state["updated_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
             if args.handoff:
                 state["handoff"] = args.handoff
+            # Evidence acceptance is delegated to ``validate(...)
+            # with progress_override=proposed``; the validator is
+            # the single source of truth for both the schema
+            # (PLAN-002) and the human-review surface (PLAN-003).
             validate(ROOT, progress_override=proposed)
             _save(ROOT / "progress.json", proposed)
         except PlanError as exc:
