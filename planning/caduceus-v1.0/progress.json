@@ -3,7 +3,9 @@
   "plan_id": "caduceus-v1.0",
   "tasks": {
     "0.1": {
-      "status": "pending"
+      "status": "complete",
+      "updated_at": "2026-07-15T19:55:13.868128+00:00",
+      "handoff": "handoffs/0.1.md"
     },
     "0.2": {
       "status": "pending"
