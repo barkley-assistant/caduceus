@@ -8,12 +8,16 @@ __pycache__/
 
 # OS / editor cruft
 .DS_Store
-planning/caduceus-v0.1/.progress.lock
+planning/*/.progress.lock
 *.swp
 *.swo
 *~
 .idea/
 .vscode/
+.atl/
+
+# CodeGraph (review-time index; regenerated on demand)
+.codegraph/
 
 # Local config / secrets (do not commit)
 *.local.yaml

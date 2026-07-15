@@ -1,58 +1,60 @@
-# Contributing to Caduceus
+# Contributing
 
-Caduceus is an open-source project under the MIT license. We welcome contributions that advance the daemon toward its v0.1 milestone and beyond.
+Thanks for helping improve Caduceus. Bug reports, documentation fixes, tests,
+and focused pull requests are all welcome.
 
-## Status: Pre-implementation
+## Start Here
 
-This repository currently contains only planning documents and the project README. **No Rust code has been written yet.** Contributions at this stage are best directed at the planning folder.
+- Search existing issues and pull requests before opening a new one.
+- Use issues for bugs and feature requests; use discussions for design
+  questions.
+- Report vulnerabilities privately through [SECURITY.md](SECURITY.md), not in a
+  public issue.
+- Read [AGENTS.md](AGENTS.md) before making a change. It defines the repository
+  boundaries, safety rules, and required checks.
 
-## Planning Folder Convention
+## Pull Requests
 
-All design work, scope discussions, and milestone breakdowns live under `planning/`. Each planning document follows this naming convention:
+Keep each pull request focused and explain the problem, the change, and the
+tests you ran. Changes to the CLI, configuration, plugin manifest, worker
+environment, result schema, or state format may affect the public contract;
+consult [RELEASING.md](RELEASING.md) before opening the pull request.
 
+Run the required checks before requesting review:
+
+```bash
+cargo fmt --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked --all-targets
+pytest -q tests/hermes_plugin_test.py tests/bridge_test.py
 ```
-planning/YYYY-MM-DD_HHMMSS-<slug>.md
+
+## Commits
+
+Every commit and merge commit follows
+[Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1.0.0/)
+with a required, non-empty scope:
+
+```text
+<type>(<scope>): <description>
 ```
 
-Where `<slug>` is a short kebab-case description (e.g., `caduceus-v0.1`, `worker-timeout-design`).
+Type and scope are lowercase. The description is imperative, has no trailing
+period, and keeps the complete subject at 80 characters or fewer. For example:
+`feat(lang): add Polish language example`. Use the type and scope appropriate
+to the actual change; the example is not a prescribed value.
 
-## How to Contribute
+## Project Conventions
 
-### Before opening a PR
-
-1. Read the current planning documents in `planning/`.
-2. Check the open issues for the area you want to work on.
-3. If your change affects scope or design, propose it in a planning doc **first** — get feedback before writing code.
-4. If your change is a bug fix or refactor with no design impact, you can skip the planning doc.
-
-### Code contributions (once implementation begins)
-
-1. Each implementation task in the planning doc has a corresponding test-first sequence.
-2. Open PRs should reference the planning task number (e.g., "Implements Phase 5, Task 5.1").
-3. Run `cargo test` and `cargo clippy --all-targets -- -D warnings` before requesting review.
-4. Commits should follow conventional commits format.
-
-### Documentation contributions
-
-- README improvements, typo fixes, and example additions are always welcome.
-- For substantial documentation changes, open an issue first to discuss.
-
-## Design Principles
-
-These are non-negotiable. PRs that violate them will be rejected.
-
-1. **Strict controller-worker separation.** The Rust daemon owns process lifecycle, IO, atomicity, and observability. The worker is replaceable; the daemon is not.
-2. **Zero inbound networking.** Caduceus never opens a port or runs an HTTP server.
-3. **Secret masking.** Caduceus holds the GitHub token; the worker does not.
-4. **Bounded resource usage.** Every worker invocation has a hard timeout. Every issue has a bounded retry budget.
-5. **Public voice rule.** When Caduceus posts comments on issues/PRs as a bot, those comments stay generic and don't mention the internal tooling (no "Caduceus", "OpenCode", "Gentle-AI", etc. references in user-facing text).
-
-## Communication
-
-- **Issues:** Use GitHub issues for bug reports and feature requests.
-- **Discussions:** Use GitHub Discussions for design questions and broader architectural topics.
-- **Security:** For security issues, do not open a public issue. Email security@yourdomain.example (placeholder — replace with real address before public launch).
+- Put tests in `tests/` as `<subject>_test.rs` or `<subject>_test.py`; do not
+  add inline test modules under `src/`.
+- Use `rustfmt` and Ruff defaults. Keep Markdown links relative, tag fenced
+  code blocks, and soft-wrap prose at 80 characters.
+- Do not edit daemon state, claim files, or transcripts directly. Use the
+  recovery procedures in [docs/state-recovery.md](docs/state-recovery.md).
+- Treat `planning/caduceus-v0.1/` as an immutable archive.
 
 ## License
 
-By contributing to Caduceus, you agree that your contributions will be licensed under the MIT License.
+By contributing, you agree that your contributions are licensed under the MIT
+License.
