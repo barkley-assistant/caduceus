@@ -1,216 +1,180 @@
-# Caduceus migration and recovery
+# Caduceus migration guide
 
-This document is the operator-facing runbook for migrating legacy
-Caduceus state into the v0.1 schema and for recovering from a corrupt
-state directory. It is the canonical reference for
-`caduceus migrate-state`, the corruption-marker recovery flow, the
-manual `caduceus queue reset` path, and the rollout / rollback
-procedure.
+This guide explains how to safely move Caduceus between supported releases,
+state formats, and installations. Read the release notes for the version you
+are installing before making a change; they identify the supported source and
+target versions, any required commands, and any version-specific limitations.
 
-> **Do not edit `state.json`, `state_meta.json`, or claim files in
-> place.** The daemon owns these files. Use the supported commands
-> documented below; the daemon takes the lock, validates input, and
-> installs the result atomically.
+> **Do not edit daemon state, metadata, claim files, or transcripts by hand.**
+> Caduceus owns those files. Use supported commands so it can take its lock,
+> validate input, and install changes atomically. See
+> [state recovery](docs/state-recovery.md) for recovery details.
 
-## 0. Before you start
+## Migration principles
 
-- Run Caduceus against one disposable repository first. Two active
-  processors (the legacy one and Caduceus) targeting the same labels
-  will both act on the same issue; that is forbidden during
-  cutover. See `planning/caduceus-v0.1/tasks/9.2-execute-the-release-gate-and-cutover-checklist.md`
-  for the cutover checklist.
-- Disable the legacy processor's cron entry before you install the
-  Caduceus state import. The daemon's lock is process-local, so the
-  legacy processor will not be blocked by Caduceus's daemon.lock and
-  will resume polling as soon as its cron fires.
-- Read your current `CADUCEUS_CONFIG` (or the resolved
-  `state_dir`) and confirm the path. Migration writes into that
-  directory under `<state_dir>/state.json` and never reads or writes
-  anything outside it.
+- Upgrade through documented, supported paths. Do not skip an intermediate
+  release when its release notes require a staged upgrade.
+- Test an upgrade against a disposable repository before changing a shared or
+  production installation.
+- Keep only one active processor for a repository and trigger-label set during
+  a cutover. A legacy processor is not protected by Caduceus's daemon lock.
+- Use a dry run whenever the applicable command supports one, then inspect its
+  report before applying changes.
+- Keep generated backups until the new installation has completed a successful
+  run and its state has been inspected.
 
-## 1. Import legacy state
+## Preflight and backup
+
+Before a migration:
+
+1. Read the target release notes and confirm that the source version and state
+   format are supported.
+2. Record the active configuration and resolved state directory. Migration
+   commands write only within that state directory.
+3. Stop scheduled ticks and disable any legacy processor. Wait for an active
+   tick to finish before continuing.
+4. Copy operator-owned configuration and retain the state backups produced by
+   Caduceus. Never replace a live state file by copying over it while the
+   daemon may run.
+5. Confirm that GitHub and Git credentials are available to the account that
+   will run the daemon after the upgrade.
+
+For HTTPS repositories, make the configured credential helper and token
+available to both the daemon and its scheduler. For SSH repositories, ensure
+the scheduler can access the required SSH configuration and agent. Caduceus
+does not pass GitHub credentials into worker or Git environments and never
+logs token values.
+
+## Supported state imports
+
+When release notes provide a state-import path, use the command and source
+format specified for that release. The **currently shipped** v0.1 binary
+supports importing a legacy JSON envelope with an `entries` array:
 
 ```text
 caduceus migrate-state --from <legacy.json> [--dry-run]
 ```
 
-The `--from` path is the legacy v0 state file (a JSON envelope with
-an `entries` array of `{repo, number, status, ...}` records). The
-command:
+The importer takes the daemon lock, validates every record, and adds entries
+that are not already present in live state. It does not overwrite conflicting
+entries. Malformed input leaves live state unchanged. A successful write uses
+the normal atomic-write procedure and creates a timestamped backup in the
+state directory.
 
-- takes the daemon lock (a concurrent tick wins the race; rerun
-  later);
-- parses the legacy envelope and validates each entry against the
-  current `IssueKey` rules;
-- imports any entries that are not already in the live state;
-- reports duplicates as `entries_skipped` (not errors);
-- leaves the live state untouched when the input is malformed;
-- installs the new state with the canonical atomic-write pattern
-  (temp file + fsync + rename);
-- preserves the prior content as `<state_dir>/state.json.bak-<ts>`;
-  a copy of the just-installed content is also written alongside
-  when there was no prior content, so the operator always has a
-  rollback target.
-
-### Dry-run rollout
-
-Always run with `--dry-run` first:
+Run a dry run first:
 
 ```text
-$ caduceus migrate-state --from /tmp/legacy.json --dry-run
-caduceus migrate-state: dry-run; would import N, would skip M
+caduceus migrate-state --from /path/to/legacy.json --dry-run
 ```
 
-Dry-run reads everything (including the live state under the
-lockless `snapshot` path) but never installs. Repeat the dry-run
-until the `would import` count matches your expectation, then run
-without `--dry-run`.
+Compare the reported import and skip counts with the source data. If they are
+not expected, stop and resolve the discrepancy before applying the migration.
+Running the same import again is idempotent: already-present entries are
+reported as skipped and are not duplicated.
 
-### Idempotency
+> **Planned v1.0 command.** The v1.0 contract (`CONTRACTS.md` STATE-002)
+> defines a different subcommand for the JSON→SQLite cutover:
+> `caduceus migrate-state --to sqlite`. That flag is **not** present in
+> any shipped binary. It is implemented by v1.0 Task 3.3 and only
+> available in a v1.0 release. When 3.3 lands, this guide is updated to
+> describe both surfaces accurately. Until then, treat
+> `--from <legacy.json>` as the only supported state-import command.
 
-A second `caduceus migrate-state` against the same input is a
-no-op and prints `already current; no changes`. The command never
-duplicates entries. Entries with the same `owner/repo#number` key
-that already exist in the live state are reported as `skipped` and
-left untouched; if the input and live state disagree on the entry
-content, the migration refuses to overwrite and reports the
-conflict as skipped. Use `caduceus queue reset` for an explicit
-operator-driven reset (see §4 below).
+## Validate and resume
 
-### Rollback
+After applying a migration or upgrade:
 
-The prior content is preserved at
-`<state_dir>/state.json.bak-<unix-ts>`. To roll back:
+1. Run `caduceus status` and review the reported state.
+2. Confirm that the expected backup exists in the state directory.
+3. Run one tick against a disposable repository and verify its logs, GitHub
+   access, Git credentials, and worker result.
+4. Re-enable scheduling only after the test tick succeeds.
+5. Monitor the first scheduled run and retain backups through that observation
+   period.
+
+If the installation includes the Hermes plugin, also run `hermes caduceus
+doctor` after setup or an upgrade. A missing scheduler capability, required
+gateway restart, incomplete configuration, or unavailable provider must be
+treated as an actionable setup failure rather than a healthy installation.
+
+## Rollback and recovery
+
+If validation fails, stop scheduling before changing state. Restore only from
+a backup created for the affected state directory, then restart the previous
+known-good installation. Do not resume a legacy processor until the Caduceus
+scheduler is disabled, and do not run both processors against the same work.
+
+Current JSON-state imports preserve prior content as
+`<state_dir>/state.json.bak-<timestamp>`. A typical rollback is:
 
 ```text
-$ # Stop the daemon (cron / supervisor).
-$ ls "$STATE_DIR"/state.json.bak-* | tail -n 1
-$ cp "$STATE_DIR"/state.json.bak-<latest> "$STATE_DIR"/state.json
-$ # Restart the daemon.
+# Stop the Caduceus scheduler first.
+cp <state_dir>/state.json.bak-<timestamp> <state_dir>/state.json
+# Restart the known-good installation after confirming its configuration.
 ```
 
-A `state.json.corrupt-<unix-ts>` archive is emitted by the
-recovery path (§3) when the daemon had previously detected a
-corrupt file. Operators may inspect these to confirm what was
-rejected.
+Use this only while the daemon is stopped. Releases that introduce a new state
+backend may provide a different rollback procedure; their release notes take
+precedence over this example.
 
-## 2. Credential-helper setup
+When Caduceus detects malformed state, it preserves the rejected bytes as a
+timestamped `state.json.corrupt-*` archive and refuses to proceed. Do not edit
+that archive or the live state in place. Follow the supported recovery process
+in [state recovery](docs/state-recovery.md); it validates replacement data,
+archives the corrupt input, and installs a replacement atomically.
 
-Caduceus does **not** inject GitHub credentials into the worker or
-git environment. The daemon only holds the token at the
-configuration-resolution step; the worker never sees it. Configure
-your environment so the daemon, the cron invoker, and `git push`
-all reach GitHub through the same credential-helper or SSH agent
-the operator uses:
+## Retrying failed work
 
-- For HTTPS repos, set the system credential helper
-  (`git config --global credential.helper <helper>`) and either
-  `CADUCEUS_GITHUB_TOKEN` / `GITHUB_TOKEN` / `gh auth token` so
-  `git push` and the daemon use the same token.
-- For SSH repos, ensure the cron invoker's `~/.ssh/config` and
-  `SSH_AUTH_SOCK` are reachable from the daemon's process.
-
-The daemon never logs token values. `caduceus status` reports the
-last HTTP status; a `401` or `403` after a previously-green tick
-indicates the credential expired.
-
-## 3. Corrupt-state recovery
-
-When the daemon's loader finds a malformed `state.json` it
-preserves the original bytes as `<state_dir>/state.json.corrupt-<ts>`
-and refuses to start until recovery completes. The `state.json.corrupt`
-marker is informational; the preserved file is the recovery target.
-**Never edit the corrupt file in place.**
-
-Recovery validates a supplied repaired file under the daemon lock,
-atomically installs it, archives the corrupt original, and only
-then clears the corruption marker. Use the API directly when
-scripting:
-
-```rust
-use caduceus::migrate::recover_state;
-
-let report = recover_state(&repaired_path, &state_dir, /*clear_marker=*/ true, /*hold_daemon_lock=*/ true)?;
-println!("archived at: {:?}", report.archived_corrupt);
-```
-
-Or via the migration test surface for scripted recovery: build a
-valid v1 `QueueState`, serialize it to a file, then call
-`recover_state`. The same shape is produced by `migrate-state`'s
-output, so an operator can always derive a recovered file by
-re-running the migration on a clean legacy input.
-
-A malformed repaired file is rejected; the original corrupt file
-remains archived, the active state file is unchanged, and the
-marker is not cleared.
-
-## 4. Failed-entry inspection and reset
-
-A `Failed` queue entry that you want to retry:
+Use the queue command to retry a failed item rather than changing state or
+removing and re-adding labels:
 
 ```text
-$ caduceus status                                     # find the issue
-$ caduceus queue reset owner/repo#number --dry-run    # inspect the planned change
-$ caduceus queue reset owner/repo#number              # apply
+caduceus status
+caduceus queue reset owner/repo#number --dry-run
+caduceus queue reset owner/repo#number
 ```
 
-The reset is non-destructive by default: the entry moves back to
-`Queued` and the persisted `FinalizationCheckpoint` (branch / PR
-/ run ID / commit OID) is preserved so a follow-up tick resumes
-from the saved state. Use `--force-finalization-reset` to drop
-the checkpoint; the daemon then prints a warning listing the
-branch and PR URL and leaves the remote branch and PR alone for
-manual reconciliation. The daemon never deletes remote branches
-or PRs.
+The normal reset keeps the saved finalization checkpoint so a later tick can
+resume safely. `--force-finalization-reset` discards that checkpoint only
+after warning about the affected branch and pull request; it never deletes
+remote branches or pull requests. See [troubleshooting](docs/troubleshooting.md)
+for common reset failures.
 
-Removing and re-adding the trigger label is **not** a substitute
-for `caduceus queue reset`; the budget of three total worker
-attempts is preserved across label churn and only the explicit
-reset path clears it.
+## Installation changes and removal
 
-## 5. Caduceus uninstall and state preservation
-
-Caduceus has no plugin uninstall hook in Hermes. Operators run the
-following sequence in order; each step is idempotent:
+Follow the release-specific install or upgrade instructions when plugin assets
+or scheduler integration changes. For Hermes installations, remove scheduling
+before removing the plugin:
 
 ```text
-$ hermes caduceus cron-remove           # removes the no-agent cron job + wrapper
-$ hermes plugins remove caduceus        # tears down the plugin
+hermes caduceus cron-remove
+hermes plugins remove caduceus
 ```
 
-The state directory (`$HERMES_HOME/caduceus/`-equivalent), the
-daemon state directory (`<state_dir>`), the user-owned bridge
-(`$HERMES_HOME/caduceus/worker-bridge.py`), and the operator's
-configuration (`~/.config/caduceus/config.yaml`) are all
-**preserved**. Reinstalling the plugin against the same state
-directory resumes the daemon where the last tick finished.
+This preserves the state directory, user-owned bridge, configuration, watched
+repositories, and worktrees for inspection or a later reinstall. Run
+`caduceus worktree-gc` when it is safe to clean unused worktrees.
 
-Caduceus also preserves the watched repositories and any worktrees
-they contain. `caduceus worktree-gc` cleans up after the daemon is
-removed.
+## Troubleshooting
 
-## 6. Cutover checklist summary
+- **Migration reports conflicts or unexpected skips:** do not force an import.
+  Compare the source and live entries, then use an explicit queue operation if
+  a reset is genuinely required.
+- **Credentials fail after upgrade:** verify the daemon and scheduler run as
+  the expected account and can reach the configured credential helper or SSH
+  agent.
+- **Scheduler is unavailable:** inspect `hermes caduceus doctor`, complete any
+  required gateway restart, and follow the host's documented scheduler setup.
+  Do not edit scheduler state files directly.
+- **State is corrupt:** stop scheduling and follow
+  [state recovery](docs/state-recovery.md). Preserve the corrupt archive and
+  backup for diagnosis.
 
-1. Stop the legacy processor's cron entry.
-2. Run `caduceus migrate-state --from <legacy.json> --dry-run`.
-3. Compare `would import` against the legacy file's `entries` count.
-4. Run `caduceus migrate-state --from <legacy.json>` (no `--dry-run`).
-5. Verify with `caduceus status` and inspect
-   `<state_dir>/state.json.bak-*`.
-6. Enable the Caduceus cron entry
-   (`hermes caduceus cron-install`).
-7. Watch one tick on a disposable repository; verify status, retry
-   rate-limit handling, and (when needed) rollback via the backup.
+## Release-specific notes
 
-If anything looks wrong, restore the backup file, disable the
-Caduceus cron entry, and re-enable the legacy cron entry to roll
-back.
-
-## 7. Related references
-
-- `planning/caduceus-v0.1/CONTRACTS.md` — the normative schema and
-  CLI contract.
-- `planning/caduceus-v0.1/phases/09-release.md` — the phase 9 gate
-  this document ships against.
-- `src/migrate.rs` — the implementation; `tests/migration_test.rs`
-  pins the migration and recovery tests.
+Every release that changes configuration, state, scheduling, worker execution,
+or supported host versions must include migration notes. Those notes must name
+the supported starting versions, required preflight checks, commands, backup
+and rollback procedure, validation steps, and any irreversible boundary. In a
+conflict, the release notes for the target version take precedence over this
+general guide.
