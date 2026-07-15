@@ -1,3 +1,5 @@
+![Caduceus logo](https://github.com/barkley-assistant/caduceus/blob/main/docs/caduceus-logo.jpg)
+
 # Caduceus
 
 > A Hermes plugin that turns a labeled GitHub issue into a pull
