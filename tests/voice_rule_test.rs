@@ -14,10 +14,7 @@ use caduceus::finalize::{
     validate_pr_title, validate_public_text, DEFAULT_COMMENT_MAX_BYTES, DEFAULT_PR_BODY_MAX_BYTES,
     DEFAULT_PR_TITLE_MAX_BYTES,
 };
-use caduceus::github::{
-    check_voice_or_error, post_investigation_comment, post_issue_comment, post_pull_request,
-    HttpClient, VoiceChannel,
-};
+use caduceus::github::{check_voice_or_error, VoiceChannel};
 use caduceus::issue::IssueKey;
 
 #[allow(dead_code)]
@@ -229,25 +226,17 @@ comment_forbidden_strings: ["foo", "", "bar"]
 
 #[test]
 fn rejected_pr_body_never_reaches_post_helper() {
-    // The validator must run before the (placeholder) HTTP layer is
-    // touched. We use the `voice_only_post_indicator` AtomicUsize
-    // as a stand-in for an HTTP client that the daemon would only
-    // touch on the success path; the helper returns early so the
-    // counter remains zero.
+    // The validator must reject the body before any HTTP layer is
+    // reached. The orchestrator (Phase 6) routes every outbound
+    // PR-body / PR-title / comment through `check_voice_or_error`
+    // first; this test exercises the validator chokepoint
+    // directly. A real HTTP integration that would otherwise
+    // surface as a 422 from GitHub is covered by the
+    // `pr_forbidden_text_prevents_http_request` test in
+    // `pr_test.rs`.
     let cfg = sample_config(&["forbidden"]);
-    let client = HttpClient::new("https://api.github.com");
-    let err = post_pull_request(
-        &client,
-        &caduceus::issue::IssueKey {
-            owner: "owner".to_string(),
-            repo: "repo".to_string(),
-            number: 1,
-        },
-        "fine",
-        "contains forbidden wording",
-        &cfg,
-    )
-    .expect_err("must reject");
+    let err = check_voice_or_error("contains forbidden wording", &cfg, VoiceChannel::PrBody)
+        .expect_err("must reject");
     let msg = format!("{err:?}");
     assert!(
         msg.contains("public-voice"),
@@ -258,36 +247,16 @@ fn rejected_pr_body_never_reaches_post_helper() {
 #[test]
 fn rejected_comment_never_reaches_post_helper() {
     let cfg = sample_config(&["sensitive"]);
-    let client = HttpClient::new("https://api.github.com");
-    let err = post_issue_comment(
-        &client,
-        &caduceus::issue::IssueKey {
-            owner: "o".to_string(),
-            repo: "r".to_string(),
-            number: 1,
-        },
-        "this is sensitive text",
-        &cfg,
-    )
-    .expect_err("must reject");
+    let err = check_voice_or_error("this is sensitive text", &cfg, VoiceChannel::Comment)
+        .expect_err("must reject");
     assert!(format!("{err:?}").contains("public-voice"));
 }
 
 #[test]
 fn rejected_investigation_comment_never_reaches_post_helper() {
     let cfg = sample_config(&["confidential"]);
-    let client = HttpClient::new("https://api.github.com");
-    let err = post_investigation_comment(
-        &client,
-        &caduceus::issue::IssueKey {
-            owner: "o".to_string(),
-            repo: "r".to_string(),
-            number: 1,
-        },
-        "this comment is confidential.",
-        &cfg,
-    )
-    .expect_err("must reject");
+    let err = check_voice_or_error("this comment is confidential.", &cfg, VoiceChannel::Comment)
+        .expect_err("must reject");
     assert!(format!("{err:?}").contains("public-voice"));
 }
 
@@ -302,33 +271,17 @@ fn check_voice_or_error_helpers_share_the_validator() {
 
 #[test]
 fn success_path_voice_validator_does_not_block_legitimate_text() {
+    // Validator lets legitimate text through. The downstream
+    // HTTP helpers (Phase 6 finalization) compose this
+    // chokepoint with the typed `Client`; this test pins
+    // the validator's pass-through behaviour.
     let cfg = sample_config(&["forbidden"]);
-    // Validator lets legitimate text through; the (placeholder)
-    // HTTP helpers return Ok.
-    let client = HttpClient::new("https://api.github.com");
-    post_issue_comment(
-        &client,
-        &caduceus::issue::IssueKey {
-            owner: "o".to_string(),
-            repo: "r".to_string(),
-            number: 1,
-        },
-        "thanks for filing",
-        &cfg,
-    )
-    .expect("legitimate comment");
-    post_pull_request(
-        &client,
-        &caduceus::issue::IssueKey {
-            owner: "o".to_string(),
-            repo: "r".to_string(),
-            number: 1,
-        },
-        "fix: handle edge case",
-        "longer description ...",
-        &cfg,
-    )
-    .expect("legitimate PR");
+    check_voice_or_error("thanks for filing", &cfg, VoiceChannel::Comment)
+        .expect("legitimate comment");
+    check_voice_or_error("fix: handle edge case", &cfg, VoiceChannel::PrTitle)
+        .expect("legitimate PR title");
+    check_voice_or_error("longer description ...", &cfg, VoiceChannel::PrBody)
+        .expect("legitimate PR body");
 }
 
 // ---------------------------------------------------------------------------

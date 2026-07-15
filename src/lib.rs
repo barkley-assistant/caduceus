@@ -21,6 +21,7 @@ pub mod issue;
 pub mod logging;
 pub mod meta;
 pub mod migrate;
+pub mod orchestration;
 pub mod poll;
 pub mod prompt;
 pub mod queue;
@@ -36,6 +37,10 @@ pub mod worktree;
 // not listed here.
 pub use crate::error::{CaduceusError, CaduceusResult};
 pub use crate::issue::{IssueDetail, IssueKey};
+pub use crate::orchestration::{
+    ActiveRunGuard, Clock, FailureClass, FinishOutcome, Git, GithubClient, ProcessSupervisor,
+    ProcessSupervisorAdapter, Services, SystemClock,
+};
 pub use crate::queue::{
     ClaimToken, ClaimedEntry, DaemonLock, EnqueueOutcome, FinalizationCheckpoint,
     FinalizationStage, Phase, QueueEntry, QueueState, ResetOutcome, StateStore, TicketType,

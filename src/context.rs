@@ -823,7 +823,8 @@ mod inline_tests {
             plugin_root: Some(std::env::temp_dir()),
             ..Default::default()
         };
-        let err = crate::config::Config::from_raw(raw_config, &ctx_holder).expect_err("must reject");
+        let err =
+            crate::config::Config::from_raw(raw_config, &ctx_holder).expect_err("must reject");
         let msg = format!("{err:?}");
         assert!(
             msg.contains("invalid regex") || msg.contains("comment_ignore_patterns"),

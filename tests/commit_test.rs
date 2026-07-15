@@ -19,11 +19,13 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+use std::sync::Arc;
 
 use caduceus::config::{Config, LoadContext, RawConfig};
 use caduceus::finalize::{
     commit_code_and_finalize, FinalizeAction, FinalizeContext, FinalizeOutput, FinalizeRequest,
 };
+use caduceus::github::Client;
 use caduceus::issue::IssueDetail;
 use caduceus::queue::ClaimToken;
 use caduceus::worker::{WorkerResult, WorkerStatus};
@@ -42,6 +44,12 @@ fn empty_config(state_dir: &Path) -> Config {
         ..Default::default()
     };
     Config::from_raw(raw, &ctx).expect("config")
+}
+
+/// Inert `Arc<Client>` for tests that build a `FinalizeContext`
+/// but never exercise the GitHub HTTP path.
+fn inert_client() -> Arc<Client> {
+    Arc::new(Client::new("https://api.github.com"))
 }
 
 fn sh(dir: &Path, op: &str, args: &[&str]) -> String {
@@ -111,7 +119,7 @@ fn make_context(cfg: &Config, wt: &Worktree, issue: &IssueDetail, run_id: &str) 
     let claim = ClaimToken::for_test(cfg.state_dir.join("claims"), "deadbeef00", run_id);
     let key = issue.key.clone();
     FinalizeContext {
-        client: (),
+        client: inert_client(),
         config: cfg.clone(),
         repository: RepositoryInfo {
             path: wt.path.parent().unwrap().to_path_buf(),
