@@ -57,6 +57,7 @@ use crate::orchestration::{classify_error, ActiveRunGuard, FailureClass, Service
 use crate::poll::{discover_watched_repos, merge_outcomes, poll_code, poll_investigation};
 use crate::prompt::{build_prompt, write_prompt};
 use crate::queue::{ClaimedEntry, DaemonLock, Phase, StateStore, TicketType};
+use crate::signals;
 use crate::worker::WorkerResult;
 use crate::worktree::{create as create_worktree, find_main_clone, GitRunner};
 
@@ -82,13 +83,34 @@ pub fn run() -> CaduceusResult<u8> {
 /// Run a single tick on a fresh `current_thread` runtime.
 /// Exposed so `status` and the CLI's other subcommands can
 /// drive a tick-style `async` driver without owning a runtime.
+/// The signal listener runs concurrently with the tick and
+/// shares the `CancellationToken` so a SIGINT or SIGTERM
+/// cancels the in-flight work and the orchestrator returns
+/// `TickOutcome::Cancelled` / exit 0.
 pub fn run_blocking(cfg: Config) -> CaduceusResult<TickOutcome> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|err| CaduceusError::Other(format!("build tokio runtime: {err}")))?;
     let cancellation = CancellationToken::new();
-    rt.block_on(async move { run_with_config(cfg, cancellation).await })
+    rt.block_on(async move {
+        tokio::select! {
+            outcome = run_with_config(cfg, cancellation.clone()) => outcome,
+            // The signal listener's first signal cancels the
+            // shared token, so the tick side returns on its own
+            // with `TickOutcome::Cancelled`. The listener itself
+            // continues to await a possible second signal so
+            // the orchestrator can escalate to immediate kill.
+            res = signals::listen(cancellation.clone()) => {
+                match res {
+                    Ok(()) => Ok(TickOutcome::Cancelled),
+                    Err(err) => Err(CaduceusError::Other(format!(
+                        "signal listener: {err}"
+                    ))),
+                }
+            }
+        }
+    })
 }
 
 /// Like [`run`] but accepts a pre-loaded [`Config`] and a
