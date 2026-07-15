@@ -434,7 +434,13 @@ def _atomic_install_binary(src: Path, dst: Path) -> None:
 
 
 def _cli_doctor() -> int:
-    """Print whether the binary, bridge, and cron job look healthy."""
+    """Print whether the binary, bridge, cron wrapper, and cron job look healthy.
+
+    The doctor output is deliberately self-explanatory: every line names
+    the file path or cron job identifier, the next action to take when
+    something is wrong, and the lifecycle facts operators routinely
+    forget (gateway requirement, plugin-skill opt-in nature, etc.).
+    """
     binary_ok = _binary_path().is_file()
     bridge_path = _user_bridge_path()
     bridge_ok = bridge_path.is_file() and not bridge_path.is_symlink()
@@ -446,10 +452,25 @@ def _cli_doctor() -> int:
         cron_ok, cron_detail = _cron_job_state(name="caduceus")
     except RuntimeError as exc:
         cron_detail = str(exc)
-    print(f"binary present : {'yes' if binary_ok else 'no'}")
+    print(f"binary present : {'yes' if binary_ok else 'no'} ({_binary_path()})")
     print(f"bridge present : {'yes' if bridge_ok else 'no'} ({bridge_path})")
     print(f"cron wrapper   : {'yes' if wrapper_ok else 'no'} ({wrapper})")
     print(f"cron job       : {'yes' if cron_ok else 'no'} ({cron_detail})")
+    print(f"plugin skill   : opt-in (caduceus:caduceus — explicit skill_view only)")
+    print(f"plugin layout  : standalone (no tools/hooks; explicit setup required)")
+    if binary_ok and bridge_ok and wrapper_ok and cron_ok:
+        print(
+            "gateway req    : the Hermes gateway (or a configured managed cron "
+            "provider) must be running for the cron job to fire"
+        )
+    print()
+    print("lifecycle:")
+    print("  install     : hermes plugins install barkley-assistant/caduceus --enable")
+    print("  build       : hermes caduceus setup")
+    print("  schedule    : hermes caduceus cron-install")
+    print("  inspect     : hermes caduceus status   |   /caduceus-status")
+    print("  source up   : hermes plugins update caduceus   then   hermes caduceus setup")
+    print("  uninstall   : hermes caduceus cron-remove   then   hermes plugins remove caduceus")
     return 0 if (binary_ok and bridge_ok) else 1
 
 

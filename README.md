@@ -57,7 +57,7 @@ hermes caduceus setup
 hermes caduceus cron-install
 ```
 
-Hermes installs plugin source but does not run manifest build/lifecycle hooks. Caduceus therefore exposes an explicit, idempotent `setup` command. After `hermes plugins update caduceus`, rerun `hermes caduceus setup`. Before removal, run `hermes caduceus cron-remove`, then `hermes plugins remove caduceus`; daemon state and the user-owned bridge are preserved.
+Hermes installs plugin source but does not run manifest build/hook steps. Caduceus therefore exposes an explicit, idempotent `setup` command. After `hermes plugins update caduceus`, rerun `hermes caduceus setup`. Before removal, run `hermes caduceus cron-remove`, then `hermes plugins remove caduceus`; daemon state and the user-owned bridge are preserved.
 
 ## Installation (standalone — no Hermes)
 
@@ -206,7 +206,7 @@ When installed, enabled, and set up as a Hermes plugin, Caduceus adds:
 - **`hermes caduceus` CLI** — Explicit `setup`, `doctor`, `status`, `cron-install`, and `cron-remove` lifecycle commands.
 - **A no-agent cron job** — `cron-install` places a Bash wrapper under `$HERMES_HOME/scripts/` and reconciles one two-minute `caduceus` job. The Hermes gateway or a configured managed cron provider must be running for it to fire.
 
-The repository root is the Hermes plugin root. Hermes discovers root `plugin.yaml` and `__init__.py`; it does not consume the historical `plugin/commands/*.md` or `plugin/cron/*.yaml` scaffolding.
+The repository root is the Hermes plugin root. Hermes discovers `plugin.yaml` and `__init__.py`; it does not consume the historical `plugin/` subdirectory scaffolding (the older pre-0.18 plugin shape is removed).
 
 ## Quick Start (Plugin path)
 
@@ -413,6 +413,48 @@ caduceus:
     - "opencode"
     - "gentle-ai"
 ```
+
+## Retry Semantics
+
+The per-issue retry budget counts **only worker-attributable failed attempts** (the harness exited non-zero). With the default `max_retries_per_issue: 3`:
+
+- **Worker failure 1 and 2:** the issue returns to `Queued` with `next_attempt_at = now + retry_backoff_seconds`.
+- **Worker failure 3:** the issue transitions to `Failed` and stops being claimed.
+- **GitHub / git transport / local I/O / rate-limit / operator-cancellation failures:** do **not** consume the worker budget. They count as transient and the daemon retries on the next tick without bumping the per-issue counter.
+- **Still-open `Failed` issues are not auto-reset.** Removing and re-adding the trigger label is not enough; use `caduceus queue reset OWNER/REPO#N [--dry-run]` (the recovery procedure is documented below).
+
+## Investigation vs. Code Tickets
+
+Both ticket types share the same bridge contract and the same `CADUCEUS_*` environment. They differ at finalization time:
+
+| Phase result | Code ticket (`🤖 auto-fix`) | Investigation ticket (`🤖 auto-fix-investigate`) |
+|---|---|---|
+| Polling, claim, prompt, worker | same | same |
+| Worker success result | commit + push + open PR + post completion comment + close issue | post findings comment + remove trigger label + leave issue open |
+| Worker success schemas | `worker-result.json` fields all meaningful | `commit_message` / `pull_request_title` still required for schema stability but ignored |
+| No commit, push, or PR is ever created for an investigation result | | |
+
+The labels pass through `CADUCEUS_ISSUE_LABELS_JSON` as a JSON array of strings. The bridge forwards that array to the harness, and the harness decides how to branch. The bridge itself never forks behavior.
+
+## Dry-Run Behavior
+
+`CADUCEUS_DRY_RUN=1` (or `dry_run: true` in YAML) runs a full tick that performs **polling, claim, issue fetch, prompt creation, worker execution, result validation, and change inspection** — but does **not** commit, push, comment, mutate labels, create a PR, or close the issue. The daemon writes `<state_dir>/runs/<run_id>.dry-run.md` before teardown so you can audit what would have changed.
+
+Successful dry-runs transition to `Previewed`. While dry-run remains enabled, rediscovery is a no-op (you won't get a queue of previews). The moment dry-run is disabled, any still-labeled `Previewed` entry is atomically promoted back to `Queued` so previewing never prevents the eventual real run.
+
+## State Recovery Procedure
+
+Caduceus stores queue state under `<state_dir>/queue.json` and metadata under `<state_dir>/state_meta.json`. Both files use temp-file + `fsync` + atomic rename and are never silently truncated:
+
+- **Corrupt `queue.json`:** the daemon exits non-zero (exit 1) and preserves the corrupt file in place. Inspect `<state_dir>/queue.json`, repair it manually or use `caduceus migrate-state --from <path> [--dry-run]`, then re-run.
+- **Corrupt `state_meta.json`:** same behavior — exit 1, file preserved, no silent empty-state overwrite.
+- **Heartbeats older than 90 seconds are stale.** A live worker must refresh its heartbeat every 5 seconds; stale heartbeats are reaped on the next tick after `stale_run_hours` elapses.
+- **Stuck issues:** requeued via `caduceus queue reset OWNER/REPO#N [--dry-run]`. The reset requires the daemon's whole-tick lock and refuses to drop an entry with an open PR unless `--force-finalization-reset` is supplied and confirmed in dry-run output.
+- **Manual intervention is not the normal path.** Never edit state files directly; the daemon's lock + atomic-write discipline only holds for the programmatic API.
+
+## Session Transcripts
+
+Every worker invocation writes its transcript to `<state_dir>/runs/<run_id>.log`. The path is reported live in `caduceus status` so you can `tail -n 100` the most recent run without grepping the daemon log. Transcripts are byte-capped at `transcript_max_bytes` (default 10 MiB) with drain continuation — the daemon never silently drops output.
 
 ## Configuration Resolution
 

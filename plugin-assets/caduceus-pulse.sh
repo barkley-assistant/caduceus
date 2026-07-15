@@ -11,6 +11,17 @@
 # Do not run this template directly. Always use `hermes caduceus
 # cron-install` (or the equivalent direct invocation of the adapter's
 # CLI) to install the runtime copy.
+#
+# Notes for the operator:
+#   * The runtime wrapper is owned by the Hermes install, not by this
+#     repo. `hermes caduceus cron-remove` removes it idempotently.
+#   * `exec <absolute-binary-path> run` replaces the shell process with
+#     the daemon so the cron process tree has no shell ancestor — that
+#     keeps the worker supervisor's session/timeout plan intact.
+#   * The wrapper does not pass any environment variables of its own;
+#     the daemon re-reads its config via the normal resolution chain.
+#   * The Hermes gateway (or a configured managed cron provider) must
+#     be running for this script to fire on schedule.
 set -euo pipefail
 
 # Two lines so users see exactly what would run:

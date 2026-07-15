@@ -16,6 +16,7 @@ pub mod config;
 pub mod context;
 pub mod error;
 pub mod finalize;
+pub mod fixtures;
 pub mod github;
 pub mod issue;
 pub mod logging;
