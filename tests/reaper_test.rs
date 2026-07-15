@@ -17,8 +17,7 @@ use caduceus::config::Config;
 use caduceus::issue::IssueKey;
 use caduceus::queue::{
     parse_queue_state, reap_stale_claims, serialize_queue_state, ClaimFileBody, ClaimToken, Phase,
-    QueueEntry, QueueState, TicketType, CLAIMS_CORRUPT_DIRNAME, CLAIMS_DIRNAME,
-    CLAIM_FILE_VERSION,
+    QueueEntry, QueueState, TicketType, CLAIMS_CORRUPT_DIRNAME, CLAIMS_DIRNAME, CLAIM_FILE_VERSION,
 };
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};

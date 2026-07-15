@@ -17,11 +17,13 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use caduceus::config::{Config, LoadContext, RawConfig};
 use caduceus::finalize::{
     post_failure_comment, post_investigation_comment, render_failure_comment,
-    render_investigation_comment, FAILURE_MARKER_PREFIX, INVESTIGATION_MARKER_PREFIX,
+    render_investigation_comment, FinalizeContext, FAILURE_MARKER_PREFIX,
+    INVESTIGATION_MARKER_PREFIX,
 };
 use caduceus::github::Client;
 use caduceus::issue::IssueDetail;
@@ -34,6 +36,12 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const TEST_TOKEN: &str = "ghp_testtoken_value_xyz";
+
+/// Inert `Arc<Client>` for tests that build a `FinalizeContext`
+/// but never exercise the GitHub HTTP path.
+fn inert_client() -> Arc<Client> {
+    Arc::new(Client::new("https://api.github.com"))
+}
 
 fn empty_config(state_dir: &Path) -> Config {
     let raw = RawConfig {
@@ -94,8 +102,8 @@ fn make_context(
     };
     let claim = ClaimToken::for_test(cfg.state_dir.join("claims"), "deadbeef00", run_id);
     let key = issue.key.clone();
-    caduceus::finalize::FinalizeContext {
-        client: (),
+    FinalizeContext {
+        client: inert_client(),
         config: cfg.clone(),
         repository: caduceus::worktree::RepositoryInfo {
             path: Path::new("/tmp/wt").to_path_buf(),

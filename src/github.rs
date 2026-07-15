@@ -832,61 +832,6 @@ pub struct PullRequest {
     pub reused: bool,
 }
 
-pub async fn fetch_issue(_client: &Client, _key: &IssueKey) -> CaduceusResult<IssueSummary> {
-    Ok(IssueSummary {
-        key: IssueKey {
-            owner: String::new(),
-            repo: String::new(),
-            number: 0,
-        },
-        title: String::new(),
-        labels: Vec::new(),
-        updated_at: chrono::Utc::now(),
-    })
-}
-
-/// HTTP helper for posting an issue comment. The helper is the
-/// only legitimate path for a comment to leave the daemon; tests
-/// use [`VoiceError`] to assert the validator's role.
-pub fn post_issue_comment(
-    _client: &Client,
-    _key: &IssueKey,
-    body: &str,
-    cfg: &Config,
-) -> CaduceusResult<()> {
-    check_voice_or_error(body, cfg, VoiceChannel::Comment)?;
-    // Real implementation lives in Task 6.x; the stub is here so
-    // callers and tests can wire through the validator today.
-    Ok(())
-}
-
-/// HTTP helper for posting or updating a pull-request title and
-/// body. Both fields are validated; the title uses the 256-byte
-/// limit and the body uses the 65 536-byte limit.
-pub fn post_pull_request(
-    _client: &Client,
-    _key: &IssueKey,
-    title: &str,
-    body: &str,
-    cfg: &Config,
-) -> CaduceusResult<()> {
-    check_voice_or_error(title, cfg, VoiceChannel::PrTitle)?;
-    check_voice_or_error(body, cfg, VoiceChannel::PrBody)?;
-    Ok(())
-}
-
-/// HTTP helper for the investigation comment. Uses the comment
-/// 65 536-byte limit.
-pub fn post_investigation_comment(
-    _client: &Client,
-    _key: &IssueKey,
-    body: &str,
-    cfg: &Config,
-) -> CaduceusResult<()> {
-    check_voice_or_error(body, cfg, VoiceChannel::Comment)?;
-    Ok(())
-}
-
 /// Distinguishes which validator to apply. The mapping is fixed by
 /// the contract; this enum exists so the helper cannot accept an
 /// arbitrary limit and accidentally weaken the rule.

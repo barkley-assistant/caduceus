@@ -23,11 +23,13 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::sync::Arc;
 
 use caduceus::config::{Config, LoadContext, RawConfig};
 use caduceus::finalize::{
     dry_run_finalize, write_atomic, FinalizeAction, FinalizeContext, FinalizeRequest, PreviewReport,
 };
+use caduceus::github::Client;
 use caduceus::issue::{IssueDetail, IssueKey};
 use caduceus::queue::{ClaimToken, Phase, QueueEntry, QueueState, TicketType};
 use caduceus::worker::{WorkerResult, WorkerStatus};
@@ -46,6 +48,12 @@ fn empty_config(state_dir: &std::path::Path) -> Config {
         ..Default::default()
     };
     Config::from_raw(raw, &ctx).expect("config")
+}
+
+/// Inert `Arc<Client>` for tests that build a `FinalizeContext`
+/// but never exercise the GitHub HTTP path.
+fn inert_client() -> Arc<Client> {
+    Arc::new(Client::new("https://api.github.com"))
 }
 
 fn sample_issue() -> IssueDetail {
@@ -94,7 +102,7 @@ fn sample_context(cfg: &Config) -> FinalizeContext {
     };
     let claim = ClaimToken::for_test(cfg.state_dir.join("claims"), "deadbeef00", "run-dry");
     FinalizeContext {
-        client: (),
+        client: inert_client(),
         config: cfg.clone(),
         repository: caduceus::worktree::RepositoryInfo {
             path: std::path::PathBuf::from("/tmp/wt"),

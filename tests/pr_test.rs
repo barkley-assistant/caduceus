@@ -18,6 +18,7 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use caduceus::config::{Config, LoadContext, RawConfig};
 use caduceus::finalize::find_or_create_pull_request;
@@ -32,6 +33,14 @@ use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const TEST_TOKEN: &str = "ghp_testtoken_value_xyz";
+
+/// Build an inert `Arc<Client>` for tests that construct a
+/// `FinalizeContext` but never call any HTTP method. The base
+/// URL is the same fallback `Client::new` uses internally when
+/// the supplied URL fails to parse.
+fn inert_client() -> Arc<Client> {
+    Arc::new(Client::new("https://api.github.com"))
+}
 
 fn empty_config(state_dir: &Path) -> Config {
     let raw = RawConfig {
@@ -93,7 +102,7 @@ fn make_context(
     let claim = ClaimToken::for_test(cfg.state_dir.join("claims"), "deadbeef00", run_id);
     let key = issue.key.clone();
     caduceus::finalize::FinalizeContext {
-        client: (),
+        client: inert_client(),
         config: cfg.clone(),
         repository: caduceus::worktree::RepositoryInfo {
             path: Path::new("/tmp/wt").to_path_buf(),

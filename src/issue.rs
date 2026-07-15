@@ -7,8 +7,6 @@
 //! cancels the other two on the first error. The output is the
 //! typed `IssueDetail` the worker uses to build its prompt.
 
-use std::path::PathBuf;
-
 use chrono::{DateTime, Utc};
 use futures_util::future::try_join3;
 use serde::{Deserialize, Serialize};
@@ -441,11 +439,4 @@ pub(crate) fn validate_repo(repo: &str) -> CaduceusResult<()> {
         )));
     }
     Ok(())
-}
-
-/// Convenience: where the worker should drop its `worker-result.json` for
-/// a given run ID on the daemon side. The actual implementation lands in
-/// Task 4.x; the stub keeps the symbol reachable.
-pub fn worker_result_path(_state_dir: &PathBuf, _run_id: &str) -> PathBuf {
-    PathBuf::new()
 }

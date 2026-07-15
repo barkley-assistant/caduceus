@@ -16,6 +16,7 @@
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+use std::sync::Arc;
 use std::time::Duration;
 
 use caduceus::config::{Config, LoadContext, RawConfig};
@@ -23,10 +24,15 @@ use caduceus::finalize::{
     push_and_finalize, push_daemon_branch, FinalizeAction, FinalizeContext, FinalizeOutput,
     FinalizeRequest, PushMode,
 };
+use caduceus::github::Client;
 use caduceus::issue::IssueDetail;
 use caduceus::queue::ClaimToken;
 use caduceus::worktree::{create as create_worktree, GitRunner, RepositoryInfo, Worktree};
 use chrono::Utc;
+
+fn inert_client() -> Arc<Client> {
+    Arc::new(Client::new("https://api.github.com"))
+}
 
 fn empty_config(state_dir: &Path) -> Config {
     let raw = RawConfig {
@@ -114,7 +120,7 @@ fn make_context(
     let claim = ClaimToken::for_test(cfg.state_dir.join("claims"), "deadbeef00", run_id);
     let key = issue.key.clone();
     FinalizeContext {
-        client: (),
+        client: inert_client(),
         config: cfg.clone(),
         repository: RepositoryInfo {
             path: wt.path.parent().unwrap().to_path_buf(),

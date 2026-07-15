@@ -26,8 +26,11 @@
 #![allow(dead_code)]
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
+
+use crate::github::Client;
 
 use crate::config::Config;
 use crate::error::{CaduceusError, CaduceusResult, VoiceError};
@@ -61,19 +64,26 @@ pub struct FinalizeRequest {
 /// implementation; Task 5.0 only defines the type so
 /// earlier tasks can compile against it.
 ///
-/// `client` is the GitHub API client (Phase 6 owns the
-/// concrete type), `config` is the live daemon config, and
-/// `repository` is the cloned-repo metadata. `issue` is the
-/// fetched issue detail; `claim`/`run_id`/`worktree` carry
-/// the active run's identity. `result` is the worker's
-/// output — the same [`FinalizeRequest`] payload the
-/// worker writes to `worker-result.json`.
-#[derive(Clone, Debug)]
+/// `client` is the shared `Arc<Client>` produced by the
+/// daemon's [`crate::orchestration::Services::production`]
+/// helper. Phase 6 already owns the concrete HTTP surface; the
+/// shared `Arc` lets the daemon, the status reporter, and the
+/// finalization stages share one connection pool + persistent
+/// cache without rebuilding the client three times. `config`
+/// is the live daemon config, and `repository` is the
+/// cloned-repo metadata. `issue` is the fetched issue detail;
+/// `claim`/`run_id`/`worktree` carry the active run's
+/// identity. `result` is the worker's output — the same
+/// [`FinalizeRequest`] payload the worker writes to
+/// `worker-result.json`.
+#[derive(Clone)]
 pub struct FinalizeContext {
-    /// GitHub API client. Phase 6 owns the concrete type.
-    /// Task 5.0 uses a unit placeholder so the struct
-    /// compiles before Phase 6 lands.
-    pub client: (),
+    /// Shared GitHub API client. The `Arc<Client>` is the
+    /// production value; the previous `()` placeholder is
+    /// removed because Phase 7's orchestrator shares the
+    /// same client through the [`crate::orchestration::Services`]
+    /// bundle.
+    pub client: Arc<Client>,
     /// Live daemon config (allowlist, timeouts, …).
     pub config: Config,
     /// Local repository metadata (path, base branch, remote URL).
@@ -198,14 +208,22 @@ pub fn validate_comment(text: &str, cfg: &Config) -> Result<(), VoiceError> {
     validate_public_text(text, cfg, DEFAULT_COMMENT_MAX_BYTES)
 }
 
-/// Dispatcher used by the orchestration loop. Phase 6 owns the real
-/// implementation; the stub keeps the symbol reachable.
-pub async fn finalize(_req: FinalizeRequest) -> CaduceusResult<FinalizeOutcome> {
-    Ok(FinalizeOutcome {
-        commit_oid: None,
-        pr_number: None,
-        pr_url: None,
-    })
+impl std::fmt::Debug for FinalizeContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The GitHub client is shared across phases; printing its
+        // debug shape would expose the persistent cache path. A
+        // placeholder is enough for the structured log lines.
+        f.debug_struct("FinalizeContext")
+            .field("client", &"Arc<Client>")
+            .field("config", &self.config)
+            .field("repository", &self.repository)
+            .field("issue", &self.issue)
+            .field("claim", &self.claim)
+            .field("run_id", &self.run_id)
+            .field("worktree", &self.worktree)
+            .field("result", &self.result)
+            .finish()
+    }
 }
 
 // ---------------------------------------------------------------------------
