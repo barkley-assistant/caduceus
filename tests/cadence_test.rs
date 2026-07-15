@@ -165,7 +165,7 @@ fn cadences_tick_outcome_is_cadence() {
     let d = CadenceDecision::Cadence {
         next_allowed_at: Utc::now(),
     };
-    assert_eq!(d.tick_outcome(), Some(TickOutcome::Cadence));
+    assert_eq!(d.tick_outcome(), Some(TickOutcome::SkippedCadence));
     let d = CadenceDecision::RateLimited {
         next_allowed_at: Utc::now(),
     };
