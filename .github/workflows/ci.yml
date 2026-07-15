@@ -46,6 +46,13 @@ jobs:
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
             | sh -s -- -y --default-toolchain 1.97.0 --profile minimal
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          # The minimal profile ships rustc + cargo only. The four-line
+          # gate runs cargo fmt --check and cargo clippy --locked, both
+          # of which need the rustfmt and clippy components. Add them
+          # explicitly so the gate is reproducible on every cold-cache
+          # first run. The local AGENTS.md gate is unaffected; this
+          # change only impacts CI.
+          rustup component add rustfmt clippy
       - name: cache cargo registry and target
         uses: actions/cache@v4
         with:
@@ -56,6 +63,17 @@ jobs:
           key: cargo-msrv-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             cargo-msrv-
+      - name: configure git identity for tests
+        run: |
+          set -euo pipefail
+          # Several tests in tests/repository_discovery_test.rs create
+          # a local clone and run `git commit` to verify discovery
+          # behavior. The GitHub-hosted runner has no global git
+          # identity, which makes those tests fail with
+          # "empty ident name". Set a local identity just for the
+          # duration of the job; nothing is pushed anywhere.
+          git config --global user.email "ci@caduceus.local"
+          git config --global user.name "caduceus-ci"
       - name: fmt
         run: cargo fmt --check
       - name: clippy
@@ -84,6 +102,10 @@ jobs:
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
             | sh -s -- -y --default-toolchain stable --profile minimal
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          # Same rationale as the rust-msrv job: explicit component
+          # install keeps the four-line gate reproducible on cold-cache
+          # first runs.
+          rustup component add rustfmt clippy
       - name: cache cargo registry and target
         uses: actions/cache@v4
         with:
@@ -94,6 +116,11 @@ jobs:
           key: cargo-stable-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             cargo-stable-
+      - name: configure git identity for tests
+        run: |
+          set -euo pipefail
+          git config --global user.email "ci@caduceus.local"
+          git config --global user.name "caduceus-ci"
       - name: fmt
         run: cargo fmt --check
       - name: clippy
@@ -113,11 +140,19 @@ jobs:
           set -euo pipefail
           sudo apt-get update -y
           sudo apt-get install -y python3 python3-pip python3-yaml
+          # Pin pytest to a known-good version. The system's pre-installed
+          # pytest may be a different major version; we want exactly the
+          # version we tested against locally (9.0.2) so behavior is
+          # identical between local and CI runs.
           python3 -m pip install --break-system-packages --quiet pytest==9.0.2
       - name: run the canonical Python gate
         run: |
           set -euo pipefail
+          # Write a JUnit XML next to the runner so the artifact step
+          # below can upload it. Without --junit-xml the runner has
+          # no test report to surface in the Actions UI.
           python3 -m pytest -q \
+            --junit-xml=pytest-junit.xml \
             tests/hermes_plugin_test.py \
             tests/bridge_test.py
       - name: upload pytest junit
@@ -127,7 +162,7 @@ jobs:
           name: pytest-junit
           path: pytest-junit.xml
           retention-days: 14
-          if-no-files-found: ignore
+          if-no-files-found: error
 
   planning:
     name: planning
