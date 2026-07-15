@@ -1,13 +1,22 @@
 # Caduceus v0.1 — Hermes plugin manifest
 #
-# Field set is restricted to the ones the Hermes Agent v0.18.2 directory-plugin
-# loader actually consumes (see hermes_cli/plugins.py::PluginManifest).
-# Unknown fields are silently dropped by Hermes; Caduceus's contract test
-# rejects them on this side instead.
+# Field set is restricted to the ones the Hermes Agent v0.18.2
+# directory-plugin loader actually consumes (see
+# hermes_cli/plugins.py::PluginManifest). Unknown fields are silently
+# dropped by Hermes; Caduceus's contract test rejects them on this side
+# instead. The cross-document test (tests/docs_contract_test.rs) and
+# tests/hermes_plugin_test.py::test_manifest_uses_only_supported_fields
+# pin this allowlist together.
 #
 # `kind: standalone` is the only kind the contract accepts. Caduceus is a
-# daemon with its own cron lifecycle and explicit `setup` step; it does not
-# register tools or hooks and it is not a backend/platform/model provider.
+# daemon with its own cron lifecycle and explicit `setup` step; it does
+# not register tools or hooks and it is not a backend/platform/model
+# provider.
+#
+# Note: requires_env, files, binaries, hooks, config, cron_profiles, and
+# profile_section are all **forbidden** legacy fields from the pre-0.18
+# plugin shape. The negative fixture under
+# tests/fixtures/negative_plugin.yaml locks this rule.
 manifest_version: 1
 name: caduceus
 version: 0.1.0
@@ -19,3 +28,9 @@ author: barkley-assistant
 kind: standalone
 provides_tools: []
 provides_hooks: []
+# requires_env is part of the v0.18.2 allowed field set. Caduceus
+# declares no required environment variables (the daemon resolves the
+# GitHub token via env_clear + allowlist at runtime), so the list is
+# empty. Removing this key would change the manifest's byte shape;
+# keeping it explicit makes the no-required-env contract obvious.
+requires_env: []
