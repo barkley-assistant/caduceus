@@ -18,6 +18,8 @@ trying to do. Pick the one that matches:
   [`plugin-lifecycle.md`](plugin-lifecycle.md)
 - Understand Hermes integration (cron, gateway, slash commands):
   [`hermes-integration.md`](hermes-integration.md)
+- Read the GitHub Actions matrix and the required-check
+  contract: [`ci.md`](ci.md)
 - Debug something that broke: [`troubleshooting.md`](troubleshooting.md)
 - Skim common questions: [`faq.md`](faq.md)
 

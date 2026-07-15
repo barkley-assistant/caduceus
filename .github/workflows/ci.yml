@@ -1,0 +1,142 @@
+# Canonical CI matrix for the Caduceus v1.0 plan.
+#
+# Implements CONTRACTS.md CI-001 and CI-002. Runs on every pull
+# request and every push to main. The matrix covers the pinned
+# MSRV (1.97) and stable Rust, with --locked in both jobs. The
+# Python gate runs the two project-required test files only:
+# tests/hermes_plugin_test.py and tests/bridge_test.py. The
+# planning validation step runs validate_plan.py from the v1.0
+# controller tools. Artifacts are retained for 14 days.
+#
+# Required-check names:
+# - ci / rust-1.97
+# - ci / rust-stable
+# - ci / python
+# - ci / planning
+#
+# These names appear in the branch-protection settings; do not
+# rename them without coordinating the branch-protection update.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Cancel in-progress runs on the same ref so a force-push does
+# not leave a stale runner burning CI minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  rust-msrv:
+    name: rust-1.97
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: install Rust 1.97 (pinned MSRV)
+        run: |
+          set -euo pipefail
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain 1.97.0 --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-msrv-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-msrv-
+      - name: fmt
+        run: cargo fmt --check
+      - name: clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: test
+        run: cargo test --locked --all-targets
+      - name: upload target
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: target-rust-1.97
+          path: target
+          retention-days: 14
+          if-no-files-found: ignore
+
+  rust-stable:
+    name: rust-stable
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: install stable Rust
+        run: |
+          set -euo pipefail
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain stable --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-stable-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-stable-
+      - name: fmt
+        run: cargo fmt --check
+      - name: clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: test
+        run: cargo test --locked --all-targets
+
+  python:
+    name: python
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: install Python and pytest
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo apt-get install -y python3 python3-pip python3-yaml
+          python3 -m pip install --break-system-packages --quiet pytest==9.0.2
+      - name: run the canonical Python gate
+        run: |
+          set -euo pipefail
+          python3 -m pytest -q \
+            tests/hermes_plugin_test.py \
+            tests/bridge_test.py
+      - name: upload pytest junit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-junit
+          path: pytest-junit.xml
+          retention-days: 14
+          if-no-files-found: ignore
+
+  planning:
+    name: planning
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: validate the v1.0 plan
+        run: |
+          set -euo pipefail
+          python3 -B planning/caduceus-v1.0/tools/validate_plan.py
