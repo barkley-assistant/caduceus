@@ -14,6 +14,22 @@ on:
   pull_request:
   push:
     branches: [main]
+    # Match the ci workflow's paths-ignore so docs-only and
+    # planning-only pushes do not spin up a runner for the
+    # commit-policy check. The ci workflow's planning job still
+    # validates the v1.0 catalog on those pushes.
+    paths-ignore:
+      - 'docs/**'
+      - 'README.md'
+      - 'CHANGELOG.md'
+      - 'CONTRIBUTING.md'
+      - 'AGENTS.md'
+      - 'RELEASING.md'
+      - 'SECURITY.md'
+      - 'LICENSE'
+      - '.github/ISSUE_TEMPLATE/**'
+      - 'planning/**'
+      - 'MIGRATION.md'
 
 concurrency:
   group: commit-policy-${{ github.ref }}
