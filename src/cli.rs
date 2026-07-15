@@ -159,6 +159,7 @@ pub fn run() -> CaduceusResult<()> {
             }
             Ok(())
         }
+        Some(Command::MigrateState { from, dry_run }) => run_migrate_state(&from, dry_run),
         // Every other subcommand is a stub for now; `run` is the
         // canonical "no-op success" so the cron tick contract
         // (silent on success) holds while the rest of the daemon
@@ -304,6 +305,39 @@ fn run_queue_reset(
         eprintln!(
             "warning: the remote branch and PR were NOT deleted; reconcile manually if appropriate"
         );
+    }
+    Ok(())
+}
+
+/// `caduceus migrate-state --from <path> [--dry-run]` —
+/// import a legacy v0 state file into the current schema
+/// under `<state_dir>/state.json`. The import path is
+/// idempotent: a second invocation with the same input
+/// against an unchanged live state is a no-op. See
+/// `MIGRATION.md` for the rollout, rollback, and recovery
+/// procedures.
+fn run_migrate_state(from: &std::path::Path, dry_run: bool) -> CaduceusResult<()> {
+    let config = match std::env::var_os("CADUCEUS_CONFIG") {
+        Some(path) => Config::load_from(std::path::Path::new(&path))?,
+        None => Config::load()?,
+    };
+    let state_dir = config.state_dir.clone();
+    let report = caduceus::migrate::run(from, &state_dir, dry_run)?;
+    match &report.outcome {
+        caduceus::migrate::MigrationOutcome::Imported { migrated, skipped } => {
+            println!("caduceus migrate-state: imported {migrated} entries, skipped {skipped}");
+        }
+        caduceus::migrate::MigrationOutcome::DryRun {
+            would_migrate,
+            would_skip,
+        } => {
+            println!(
+                "caduceus migrate-state: dry-run; would import {would_migrate}, would skip {would_skip}"
+            );
+        }
+        caduceus::migrate::MigrationOutcome::AlreadyCurrent => {
+            println!("caduceus migrate-state: already current; no changes");
+        }
     }
     Ok(())
 }
