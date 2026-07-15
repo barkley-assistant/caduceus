@@ -133,6 +133,21 @@ pub fn run() -> CaduceusResult<()> {
             let _ = caduceus::tick::run()?;
             Ok(())
         }
+        Some(Command::Status { json }) => {
+            // Load the same config the canonical tick
+            // would use, then render the report.
+            let config = match std::env::var_os("CADUCEUS_CONFIG") {
+                Some(path) => caduceus::config::Config::load_from(std::path::Path::new(&path))?,
+                None => caduceus::config::Config::load()?,
+            };
+            let output = caduceus::status::report(&config.state_dir, json)?;
+            if json {
+                println!("{output}");
+            } else {
+                print!("{output}");
+            }
+            Ok(())
+        }
         // Every other subcommand is a stub for now; `run` is the
         // canonical "no-op success" so the cron tick contract
         // (silent on success) holds while the rest of the daemon
