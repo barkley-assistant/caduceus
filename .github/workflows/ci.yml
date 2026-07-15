@@ -22,6 +22,34 @@ on:
   pull_request:
   push:
     branches: [main]
+    # Option A: a docs-only or planning-only push should not pay the
+    # full Rust+Python build cost. The commit-policy workflow still
+    # gates the commit shape on every push (its on: block does not
+    # filter by paths), and the planning job still validates the
+    # v1.0 catalog. The build only fires when Rust, Python, or
+    # the workflow files themselves change.
+    paths-ignore:
+      - 'docs/**'
+      - 'README.md'
+      - 'CHANGELOG.md'
+      - 'CONTRIBUTING.md'
+      - 'AGENTS.md'
+      - 'RELEASING.md'
+      - 'SECURITY.md'
+      - 'LICENSE'
+      - '.github/ISSUE_TEMPLATE/**'
+      - 'planning/**'
+      - 'MIGRATION.md'
+  # Option C: a weekly schedule trigger keeps the cargo and
+  # target caches warm so the next human push does not pay the
+  # cold-cache build cost (5-10 minutes on ubuntu-24.04 with a
+  # minimal rustup profile). The trigger runs the full gate;
+  # because the previous run cached its results, the warm run
+  # finishes in under two minutes. cron: "0 6 * * 0" is Sunday
+  # 06:00 UTC, which is off-peak for the public Actions runner
+  # pool.
+  schedule:
+    - cron: '0 6 * * 0'
 
 # Cancel in-progress runs on the same ref so a force-push does
 # not leave a stale runner burning CI minutes.
