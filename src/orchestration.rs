@@ -292,6 +292,20 @@ impl FailureClass {
         matches!(self, FailureClass::Worker)
     }
 
+    /// The matching `TickOutcome` for the failure class when
+    /// the orchestrator should *return* it (cron contract:
+    /// rate-limit and cancellation outcomes are exit 0, not
+    /// failures). Returns `None` for the classes that must
+    /// surface as `Failed` (worker-attributable and
+    /// unclassified infrastructure failures).
+    pub fn non_fatal_outcome(&self) -> Option<crate::meta::TickOutcome> {
+        match self {
+            FailureClass::RateLimit { .. } => Some(crate::meta::TickOutcome::RateLimited),
+            FailureClass::Cancellation => Some(crate::meta::TickOutcome::Cancelled),
+            FailureClass::Worker | FailureClass::Infrastructure => None,
+        }
+    }
+
     /// True when the orchestrator must persist a rate-limit
     /// observation before returning.
     pub fn must_persist_rate_limit(&self) -> bool {
