@@ -13,6 +13,11 @@
 //!   tick.
 //! - Resumption after the reset elapses returns the daemon to a
 //!   `Proceed` decision.
+//!
+//! Migrated to the v1.0 Phase 1.2 [`fixtures::MockGitHub`] helper
+//! for the two server-backed tests (429 mid-pagination, zero
+//! remaining on 200). The header-parsing and `CadenceGate`
+//! state-machine tests are pure unit tests and need no mock.
 
 use std::path::{Path, PathBuf};
 
@@ -24,7 +29,12 @@ use caduceus::meta::{CadenceDecision, CadenceGate, TickOutcome};
 use chrono::{Duration, Utc};
 use reqwest::header::{HeaderMap, HeaderValue};
 use wiremock::matchers::{method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use wiremock::{Mock, ResponseTemplate};
+
+#[path = "fixtures/mod.rs"]
+mod fixtures;
+
+use fixtures::MockGitHub;
 
 const TEST_TOKEN: &str = "ghp_testtoken_value_xyz";
 
@@ -39,9 +49,9 @@ fn tempdir(label: &str) -> PathBuf {
     dir
 }
 
-fn mock_client(server: &MockServer, state_dir: &Path) -> Client {
+fn mock_client(gh: &MockGitHub, state_dir: &Path) -> Client {
     let mut cfg = Config::test_defaults(state_dir);
-    cfg.api_base = server.uri();
+    cfg.api_base = gh.uri();
     cfg.github_token = Some(TEST_TOKEN.to_string());
     let cache = HttpCache::open(state_dir).expect("cache opens");
     Client::with_cache(&cfg, cache).expect("client builds")
@@ -138,12 +148,12 @@ fn poll_interval_header_malformed_is_none() {
 
 #[tokio::test]
 async fn four_twenty_nine_mid_pagination_short_circuits_poll() {
-    let server = MockServer::start().await;
+    let gh = MockGitHub::start().await;
     // Page 1 returns 200 with rate-limit headers still allowing
     // more requests.
     let next_url = format!(
         "{}/repos/octocat/hello-world/issues?per_page=100&page=2&labels=auto-fix&state=open&sort=updated&direction=desc",
-        server.uri()
+        gh.uri()
     );
     let link_header = format!("<{next_url}>; rel=\"next\"");
     Mock::given(method("GET"))
@@ -156,7 +166,7 @@ async fn four_twenty_nine_mid_pagination_short_circuits_poll() {
                 .set_body_string("[]"),
         )
         .expect(1)
-        .mount(&server)
+        .mount(gh.server())
         .await;
     // Page 2 returns 429.
     Mock::given(method("GET"))
@@ -168,11 +178,11 @@ async fn four_twenty_nine_mid_pagination_short_circuits_poll() {
                 .insert_header("x-ratelimit-reset", "0"),
         )
         .expect(1)
-        .mount(&server)
+        .mount(gh.server())
         .await;
 
     let state_dir = tempdir("429");
-    let client = mock_client(&server, &state_dir);
+    let client = mock_client(&gh, &state_dir);
     let mut cfg = Config::test_defaults(&state_dir);
     cfg.ticket_label_code = "auto-fix".to_string();
     cfg.watched_repos = vec!["octocat/hello-world".to_string()];
@@ -193,7 +203,7 @@ async fn four_twenty_nine_mid_pagination_short_circuits_poll() {
 
 #[tokio::test]
 async fn remaining_zero_on_success_response_is_typed_error() {
-    let server = MockServer::start().await;
+    let gh = MockGitHub::start().await;
     let reset = (Utc::now() + Duration::seconds(120)).timestamp();
     Mock::given(method("GET"))
         .and(path("/user/repos"))
@@ -205,11 +215,11 @@ async fn remaining_zero_on_success_response_is_typed_error() {
                 .set_body_string("[]"),
         )
         .expect(1)
-        .mount(&server)
+        .mount(gh.server())
         .await;
 
     let state_dir = tempdir("zero");
-    let client = mock_client(&server, &state_dir);
+    let client = mock_client(&gh, &state_dir);
     let cfg = Config::test_defaults(&state_dir);
     let err = caduceus::poll::discover_watched_repos(&client, &cfg)
         .await
