@@ -15,6 +15,13 @@
 //! * forbidden text prevents the HTTP request
 //! * exact base/head match: the query string includes
 //!   `head=<owner>:<branch>&base=<base>`
+//!
+//! Migrated to the v1.0 Phase 1.2 [`fixtures::MockGitHub`] helper
+//! for the server lifecycle. The `client_for` helper now takes
+//! `&MockGitHub` instead of `&MockServer`; the per-test `Mock::given(...)`
+//! chains continue to use the underlying wiremock `MockServer`
+//! because every test needs query-param and header matchers
+//! beyond the convenience helpers.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -30,7 +37,12 @@ use caduceus::worktree::Worktree;
 use chrono::Utc;
 use serde_json::json;
 use wiremock::matchers::{header, method, path, query_param};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use wiremock::{Mock, ResponseTemplate};
+
+#[path = "fixtures/mod.rs"]
+mod fixtures;
+
+use fixtures::MockGitHub;
 
 const TEST_TOKEN: &str = "ghp_testtoken_value_xyz";
 
@@ -121,17 +133,17 @@ fn make_context(
     }
 }
 
-fn client_for(server: &MockServer) -> Client {
+fn client_for(gh: &MockGitHub) -> Client {
     let state_dir = tempfile::tempdir().expect("state");
     let mut cfg = empty_config(state_dir.path());
-    cfg.api_base = server.uri();
+    cfg.api_base = gh.uri();
     cfg.github_token = Some(TEST_TOKEN.to_string());
     Client::with_config(&cfg).expect("client")
 }
 
 #[tokio::test]
 async fn pr_create_posts_when_no_open_pr() {
-    let server = MockServer::start().await;
+    let gh = MockGitHub::start().await;
     Mock::given(method("GET"))
         .and(path("/repos/owner/repo/pulls"))
         .and(query_param("state", "open"))
@@ -139,7 +151,7 @@ async fn pr_create_posts_when_no_open_pr() {
         .and(query_param("base", "main"))
         .respond_with(ResponseTemplate::new(200).set_body_json(Vec::<serde_json::Value>::new()))
         .expect(1)
-        .mount(&server)
+        .mount(gh.server())
         .await;
     Mock::given(method("POST"))
         .and(path("/repos/owner/repo/pulls"))
@@ -149,9 +161,9 @@ async fn pr_create_posts_when_no_open_pr() {
             "html_url": "https://github.com/owner/repo/pull/7",
         })))
         .expect(1)
-        .mount(&server)
+        .mount(gh.server())
         .await;
-    let client = client_for(&server);
+    let client = client_for(&gh);
     let state_dir = tempfile::tempdir().expect("state");
     let cfg = empty_config(state_dir.path());
     let issue = make_issue();
@@ -167,7 +179,7 @@ async fn pr_create_posts_when_no_open_pr() {
 
 #[tokio::test]
 async fn pr_reuse_when_one_open_pr_matches() {
-    let server = MockServer::start().await;
+    let gh = MockGitHub::start().await;
     Mock::given(method("GET"))
         .and(path("/repos/owner/repo/pulls"))
         .and(query_param("state", "open"))
@@ -178,15 +190,15 @@ async fn pr_reuse_when_one_open_pr_matches() {
             }
         ])))
         .expect(1)
-        .mount(&server)
+        .mount(gh.server())
         .await;
     // No POST should occur.
     Mock::given(method("POST"))
         .respond_with(ResponseTemplate::new(500))
         .expect(0)
-        .mount(&server)
+        .mount(gh.server())
         .await;
-    let client = client_for(&server);
+    let client = client_for(&gh);
     let state_dir = tempfile::tempdir().expect("state");
     let cfg = empty_config(state_dir.path());
     let issue = make_issue();
@@ -202,7 +214,7 @@ async fn pr_reuse_when_one_open_pr_matches() {
 
 #[tokio::test]
 async fn pr_multiple_match_returns_error() {
-    let server = MockServer::start().await;
+    let gh = MockGitHub::start().await;
     Mock::given(method("GET"))
         .and(path("/repos/owner/repo/pulls"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!([
@@ -210,9 +222,9 @@ async fn pr_multiple_match_returns_error() {
             { "number": 2, "html_url": "https://github.com/owner/repo/pull/2" },
         ])))
         .expect(1)
-        .mount(&server)
+        .mount(gh.server())
         .await;
-    let client = client_for(&server);
+    let client = client_for(&gh);
     let state_dir = tempfile::tempdir().expect("state");
     let cfg = empty_config(state_dir.path());
     let issue = make_issue();
@@ -227,14 +239,14 @@ async fn pr_multiple_match_returns_error() {
 
 #[tokio::test]
 async fn pr_malformed_response_returns_error() {
-    let server = MockServer::start().await;
+    let gh = MockGitHub::start().await;
     Mock::given(method("GET"))
         .and(path("/repos/owner/repo/pulls"))
         .respond_with(ResponseTemplate::new(200).set_body_string("not json"))
         .expect(1)
-        .mount(&server)
+        .mount(gh.server())
         .await;
-    let client = client_for(&server);
+    let client = client_for(&gh);
     let state_dir = tempfile::tempdir().expect("state");
     let cfg = empty_config(state_dir.path());
     let issue = make_issue();
@@ -249,14 +261,14 @@ async fn pr_malformed_response_returns_error() {
 
 #[tokio::test]
 async fn pr_429_rate_limit_is_surfaced() {
-    let server = MockServer::start().await;
+    let gh = MockGitHub::start().await;
     Mock::given(method("GET"))
         .and(path("/repos/owner/repo/pulls"))
         .respond_with(ResponseTemplate::new(429))
         .expect(1)
-        .mount(&server)
+        .mount(gh.server())
         .await;
-    let client = client_for(&server);
+    let client = client_for(&gh);
     let state_dir = tempfile::tempdir().expect("state");
     let cfg = empty_config(state_dir.path());
     let issue = make_issue();
@@ -275,18 +287,18 @@ async fn pr_forbidden_text_prevents_http_request() {
     // request. A forbidden term in the title or body
     // returns a typed error without ever contacting the
     // mock server.
-    let server = MockServer::start().await;
+    let gh = MockGitHub::start().await;
     Mock::given(method("GET"))
         .respond_with(ResponseTemplate::new(200).set_body_json(Vec::<serde_json::Value>::new()))
         .expect(0)
-        .mount(&server)
+        .mount(gh.server())
         .await;
     Mock::given(method("POST"))
         .respond_with(ResponseTemplate::new(500))
         .expect(0)
-        .mount(&server)
+        .mount(gh.server())
         .await;
-    let client = client_for(&server);
+    let client = client_for(&gh);
     let state_dir = tempfile::tempdir().expect("state");
     let mut cfg = empty_config(state_dir.path());
     cfg.comment_forbidden_strings = vec!["forbidden-term".to_string()];
@@ -312,14 +324,14 @@ async fn pr_query_string_has_exact_head_and_base() {
     // URL-encoded form; we use the `is_missing` matcher to
     // assert that the query string contains the expected
     // keys, and a `body_partial_json` matcher is unnecessary.
-    let server = MockServer::start().await;
+    let gh = MockGitHub::start().await;
     Mock::given(method("GET"))
         .and(path("/repos/owner/repo/pulls"))
         .respond_with(ResponseTemplate::new(200).set_body_json(Vec::<serde_json::Value>::new()))
         .expect(1)
-        .mount(&server)
+        .mount(gh.server())
         .await;
-    let client = client_for(&server);
+    let client = client_for(&gh);
     let state_dir = tempfile::tempdir().expect("state");
     let cfg = empty_config(state_dir.path());
     let issue = make_issue();
@@ -353,12 +365,12 @@ async fn pr_post_body_carries_exact_title_and_head() {
     // Wiremock matches against the body verbatim. The body
     // is JSON-encoded; the test pins the title substring
     // and lets the rest of the body match.
-    let server = MockServer::start().await;
+    let gh = MockGitHub::start().await;
     Mock::given(method("GET"))
         .and(path("/repos/owner/repo/pulls"))
         .respond_with(ResponseTemplate::new(200).set_body_json(Vec::<serde_json::Value>::new()))
         .expect(1)
-        .mount(&server)
+        .mount(gh.server())
         .await;
     Mock::given(method("POST"))
         .and(path("/repos/owner/repo/pulls"))
@@ -367,9 +379,9 @@ async fn pr_post_body_carries_exact_title_and_head() {
             "html_url": "https://github.com/owner/repo/pull/8",
         })))
         .expect(1)
-        .mount(&server)
+        .mount(gh.server())
         .await;
-    let client = client_for(&server);
+    let client = client_for(&gh);
     let state_dir = tempfile::tempdir().expect("state");
     let cfg = empty_config(state_dir.path());
     let issue = make_issue();

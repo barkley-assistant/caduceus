@@ -16,6 +16,14 @@
 //! - Oversized body (>10 MiB chunked) is refused before full allocation
 //! - 401/403/404/500 map to `CaduceusError::GitHubApi`
 //! - Token values never appear in `Display` or `Debug`
+//!
+//! Migrated to the v1.0 Phase 1.2 [`fixtures::MockGitHub`] helper
+//! for the server lifecycle. Tests that need matchers beyond
+//! `(method, path)` — headers, query params, the `NoHeader`
+//! inversion — drop down to the underlying wiremock `MockServer`
+//! via [`fixtures::MockGitHub::server`].
+
+#![allow(unused_imports)]
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -27,7 +35,12 @@ use caduceus::github::{
     GITHUB_API_VERSION_VALUE, MAX_BODY_BYTES, MAX_REDIRECTS, USER_AGENT_PREFIX,
 };
 use wiremock::matchers::{header, method, path, query_param};
-use wiremock::{Match, Mock, MockServer, Request, ResponseTemplate};
+use wiremock::{Match, Mock, Request, ResponseTemplate};
+
+#[path = "fixtures/mod.rs"]
+mod fixtures;
+
+use fixtures::MockGitHub;
 
 /// Custom matcher that requires the request to NOT carry the named
 /// header. Used to build stateful mocks that branch on header
@@ -66,9 +79,9 @@ fn test_config(state_dir: &Path, api_base: &str, token: Option<&str>) -> Config 
     cfg
 }
 
-fn client_for(server: &MockServer, token: Option<&str>) -> (Client, PathBuf) {
+fn client_for(gh: &MockGitHub, token: Option<&str>) -> (Client, PathBuf) {
     let state_dir = tempdir("client");
-    let cfg = test_config(&state_dir, &server.uri(), token);
+    let cfg = test_config(&state_dir, &gh.uri(), token);
     let cache = HttpCache::open(&state_dir).expect("cache opens");
     let client = Client::with_cache(&cfg, cache).expect("client builds");
     (client, state_dir)
@@ -80,7 +93,7 @@ fn client_for(server: &MockServer, token: Option<&str>) -> (Client, PathBuf) {
 
 #[tokio::test]
 async fn required_headers_are_present_on_every_request() {
-    let server = MockServer::start().await;
+    let gh = MockGitHub::start().await;
     Mock::given(method("GET"))
         .and(path("/repos/octocat/hello-world/issues"))
         .and(header(
@@ -98,10 +111,10 @@ async fn required_headers_are_present_on_every_request() {
         ))
         .respond_with(ResponseTemplate::new(200).set_body_string("[]"))
         .expect(1)
-        .mount(&server)
+        .mount(gh.server())
         .await;
 
-    let (client, _dir) = client_for(&server, Some(TEST_TOKEN));
+    let (client, _dir) = client_for(&gh, Some(TEST_TOKEN));
     let response = client
         .get("/repos/octocat/hello-world/issues", ACCEPT_VALUE)
         .await
@@ -111,22 +124,22 @@ async fn required_headers_are_present_on_every_request() {
 
 #[tokio::test]
 async fn missing_token_omits_authorization_header() {
-    let server = MockServer::start().await;
+    let gh = MockGitHub::start().await;
     Mock::given(method("GET"))
         .and(path("/user/repos"))
         .and(header("authorization", "Bearer"))
         .respond_with(ResponseTemplate::new(401))
         .expect(0)
-        .mount(&server)
+        .mount(gh.server())
         .await;
     Mock::given(method("GET"))
         .and(path("/user/repos"))
         .respond_with(ResponseTemplate::new(200).set_body_string("[]"))
         .expect(1)
-        .mount(&server)
+        .mount(gh.server())
         .await;
 
-    let (client, _dir) = client_for(&server, None);
+    let (client, _dir) = client_for(&gh, None);
     let response = client.get("/user/repos", ACCEPT_VALUE).await.expect("200");
     assert_eq!(response.status, 200);
 }
@@ -139,14 +152,14 @@ async fn missing_token_omits_authorization_header() {
 async fn request_timeout_fires_when_server_hangs() {
     // Mock a server that sleeps for 60 seconds — the client's 5s timeout
     // must trip before the sleep ends.
-    let server = MockServer::start().await;
+    let gh = MockGitHub::start().await;
     Mock::given(method("GET"))
         .and(path("/slow"))
         .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(60)))
-        .mount(&server)
+        .mount(gh.server())
         .await;
 
-    let (client, _dir) = client_for(&server, Some(TEST_TOKEN));
+    let (client, _dir) = client_for(&gh, Some(TEST_TOKEN));
     let started = std::time::Instant::now();
     let result = client.get("/slow", ACCEPT_VALUE).await;
     let elapsed = started.elapsed();
@@ -163,23 +176,23 @@ async fn request_timeout_fires_when_server_hangs() {
 
 #[tokio::test]
 async fn same_host_redirect_is_followed_within_limit() {
-    let server = MockServer::start().await;
+    let gh = MockGitHub::start().await;
     // The mock server reuses the same host for every response, so any
     // redirect to "/elsewhere" is a same-origin 302.
     Mock::given(method("GET"))
         .and(path("/start"))
         .respond_with(ResponseTemplate::new(302).insert_header("location", "/elsewhere"))
         .expect(1)
-        .mount(&server)
+        .mount(gh.server())
         .await;
     Mock::given(method("GET"))
         .and(path("/elsewhere"))
         .respond_with(ResponseTemplate::new(200).set_body_string("ok"))
         .expect(1)
-        .mount(&server)
+        .mount(gh.server())
         .await;
 
-    let (client, _dir) = client_for(&server, Some(TEST_TOKEN));
+    let (client, _dir) = client_for(&gh, Some(TEST_TOKEN));
     let response = client
         .get("/start", ACCEPT_VALUE)
         .await
@@ -192,25 +205,25 @@ async fn same_host_redirect_is_followed_within_limit() {
 async fn cross_host_redirect_is_rejected_and_token_is_not_forwarded() {
     // Two separate mock servers simulate two hosts. The first one
     // replies 302 to the second host; the client must refuse.
-    let server_a = MockServer::start().await;
-    let server_b = MockServer::start().await;
+    let gh_a = MockGitHub::start().await;
+    let gh_b = MockGitHub::start().await;
 
     Mock::given(method("GET"))
         .and(path("/a"))
         .respond_with(
-            ResponseTemplate::new(302).insert_header("location", format!("{}/b", server_b.uri())),
+            ResponseTemplate::new(302).insert_header("location", format!("{}/b", gh_b.uri())),
         )
         .expect(1)
-        .mount(&server_a)
+        .mount(gh_a.server())
         .await;
     Mock::given(method("GET"))
         .and(path("/b"))
         .respond_with(ResponseTemplate::new(200).set_body_string("leaked"))
         .expect(0)
-        .mount(&server_b)
+        .mount(gh_b.server())
         .await;
 
-    let (client, _dir) = client_for(&server_a, Some(TEST_TOKEN));
+    let (client, _dir) = client_for(&gh_a, Some(TEST_TOKEN));
     let err = client
         .get("/a", ACCEPT_VALUE)
         .await
@@ -228,16 +241,16 @@ async fn cross_host_redirect_is_rejected_and_token_is_not_forwarded() {
 
 #[tokio::test]
 async fn redirect_loop_is_bounded_by_max_redirects() {
-    let server = MockServer::start().await;
+    let gh = MockGitHub::start().await;
     // /loop -> 302 /loop -> 302 /loop ... The client must stop after
     // MAX_REDIRECTS hops (3) and surface the loop as an error.
     Mock::given(method("GET"))
         .and(path("/loop"))
         .respond_with(ResponseTemplate::new(302).insert_header("location", "/loop"))
-        .mount(&server)
+        .mount(gh.server())
         .await;
 
-    let (client, _dir) = client_for(&server, Some(TEST_TOKEN));
+    let (client, _dir) = client_for(&gh, Some(TEST_TOKEN));
     let err = client
         .get("/loop", ACCEPT_VALUE)
         .await
@@ -248,8 +261,13 @@ async fn redirect_loop_is_bounded_by_max_redirects() {
         "unexpected error: {text}"
     );
     // The loop bound: at most MAX_REDIRECTS+1 requests (initial + 3 hops).
-    // Wiremock records the request count on the server.
-    let received = server.received_requests().await.expect("received requests");
+    // Wiremock records the request count on the server; we drop down to
+    // the underlying mock because this test bypasses the CountingResponder.
+    let received = gh
+        .server()
+        .received_requests()
+        .await
+        .expect("received requests");
     assert!(
         received.len() <= MAX_REDIRECTS + 1,
         "expected at most {} requests, got {}",
@@ -270,7 +288,7 @@ async fn redirect_loop_is_bounded_by_max_redirects() {
 
 #[tokio::test]
 async fn first_request_stores_etag_and_second_client_returns_cached_body_on_304() {
-    let server = MockServer::start().await;
+    let gh = MockGitHub::start().await;
     // The first mock returns 200 + an ETag whenever the request
     // does NOT carry If-None-Match. The second mock matches a
     // request with If-None-Match and returns 304. Wiremock matches
@@ -286,7 +304,7 @@ async fn first_request_stores_etag_and_second_client_returns_cached_body_on_304(
                 .set_body_string("[{\"number\":1}]"),
         )
         .expect(1)
-        .mount(&server)
+        .mount(gh.server())
         .await;
     Mock::given(method("GET"))
         .and(path("/repos/octocat/hello-world/issues"))
@@ -294,11 +312,11 @@ async fn first_request_stores_etag_and_second_client_returns_cached_body_on_304(
         .and(header("if-none-match", "\"abc\""))
         .respond_with(ResponseTemplate::new(304))
         .expect(1)
-        .mount(&server)
+        .mount(gh.server())
         .await;
 
     let state_dir = tempdir("etag");
-    let cfg = test_config(&state_dir, &server.uri(), Some(TEST_TOKEN));
+    let cfg = test_config(&state_dir, &gh.uri(), Some(TEST_TOKEN));
 
     // First client performs a fresh GET.
     let cache_a = HttpCache::open(&state_dir).expect("cache opens");
@@ -347,7 +365,7 @@ async fn cache_corruption_is_recovered_on_next_open() {
 async fn invalid_etag_is_not_cached() {
     // An ETag without quotes is invalid; the cache must refuse to
     // store it so the next request is unconditional.
-    let server = MockServer::start().await;
+    let gh = MockGitHub::start().await;
     Mock::given(method("GET"))
         .and(path("/bad-etag"))
         .respond_with(
@@ -355,14 +373,14 @@ async fn invalid_etag_is_not_cached() {
                 .insert_header("etag", "not-a-quoted-tag")
                 .set_body_string("body"),
         )
-        .mount(&server)
+        .mount(gh.server())
         .await;
 
-    let (client, _dir) = client_for(&server, Some(TEST_TOKEN));
+    let (client, _dir) = client_for(&gh, Some(TEST_TOKEN));
     let response = client.get("/bad-etag", ACCEPT_VALUE).await.expect("ok");
     assert_eq!(response.status, 200);
     let cache = client.cache();
-    let key = cache_key(&format!("{}/bad-etag", server.uri()), ACCEPT_VALUE);
+    let key = cache_key(&format!("{}/bad-etag", gh.uri()), ACCEPT_VALUE);
     assert!(cache.get(&key).is_none(), "invalid ETag must not be cached");
 }
 
@@ -375,7 +393,7 @@ async fn oversized_chunked_body_is_refused_before_full_allocation() {
     // Build a body of MAX_BODY_BYTES + 1 bytes sent in 1 MiB chunks
     // (chunked transfer-encoding), then assert the client surfaces
     // a typed "too large" error rather than panicking.
-    let server = MockServer::start().await;
+    let gh = MockGitHub::start().await;
     let chunk = vec![b'x'; 1024 * 1024];
     let chunks_needed = (MAX_BODY_BYTES / chunk.len()) + 2;
     let mut body = Vec::with_capacity(chunks_needed * chunk.len());
@@ -389,10 +407,10 @@ async fn oversized_chunked_body_is_refused_before_full_allocation() {
     Mock::given(method("GET"))
         .and(path("/big"))
         .respond_with(ResponseTemplate::new(200).set_body_bytes(body))
-        .mount(&server)
+        .mount(gh.server())
         .await;
 
-    let (client, _dir) = client_for(&server, Some(TEST_TOKEN));
+    let (client, _dir) = client_for(&gh, Some(TEST_TOKEN));
     let err = client
         .get("/big", ACCEPT_VALUE)
         .await
@@ -411,15 +429,15 @@ async fn oversized_chunked_body_is_refused_before_full_allocation() {
 #[tokio::test]
 async fn non_success_statuses_map_to_typed_github_api_errors() {
     for status in [401u16, 403, 404, 500] {
-        let server = MockServer::start().await;
+        let gh = MockGitHub::start().await;
         Mock::given(method("GET"))
             .and(path("/probe"))
             .respond_with(ResponseTemplate::new(status).set_body_string("boom"))
             .expect(1)
-            .mount(&server)
+            .mount(gh.server())
             .await;
 
-        let (client, _dir) = client_for(&server, Some(TEST_TOKEN));
+        let (client, _dir) = client_for(&gh, Some(TEST_TOKEN));
         let err = client
             .get("/probe", ACCEPT_VALUE)
             .await
@@ -440,7 +458,7 @@ async fn non_success_statuses_map_to_typed_github_api_errors() {
 
 #[tokio::test]
 async fn token_value_never_appears_in_errors() {
-    let server = MockServer::start().await;
+    let gh = MockGitHub::start().await;
     // The body echoes back a credential-shaped assignment; if
     // redaction is broken anywhere in the chain, the assertion
     // below will catch it. The contract guarantees the three
@@ -450,10 +468,10 @@ async fn token_value_never_appears_in_errors() {
     Mock::given(method("GET"))
         .and(path("/leak"))
         .respond_with(ResponseTemplate::new(401).set_body_string(body))
-        .mount(&server)
+        .mount(gh.server())
         .await;
 
-    let (client, _dir) = client_for(&server, Some(TEST_TOKEN));
+    let (client, _dir) = client_for(&gh, Some(TEST_TOKEN));
     let err = client
         .get("/leak", ACCEPT_VALUE)
         .await
@@ -494,21 +512,21 @@ fn cache_key_includes_accept_header() {
 
 #[tokio::test]
 async fn final_url_survives_one_redirect_for_transfer_detection() {
-    let server = MockServer::start().await;
+    let gh = MockGitHub::start().await;
     Mock::given(method("GET"))
         .and(path("/repos/octocat/hello-world"))
         .respond_with(ResponseTemplate::new(301).insert_header("location", "/repositories/12345"))
         .expect(1)
-        .mount(&server)
+        .mount(gh.server())
         .await;
     Mock::given(method("GET"))
         .and(path("/repositories/12345"))
         .respond_with(ResponseTemplate::new(200).set_body_string("redirected"))
         .expect(1)
-        .mount(&server)
+        .mount(gh.server())
         .await;
 
-    let (client, _dir) = client_for(&server, Some(TEST_TOKEN));
+    let (client, _dir) = client_for(&gh, Some(TEST_TOKEN));
     let response = client
         .get("/repos/octocat/hello-world", ACCEPT_VALUE)
         .await

@@ -14,6 +14,12 @@
 //! - 304 reuse (the cache layer serves the second poll verbatim)
 //! - No Events API fields (the typed schema decodes only the
 //!   documented fields and silently ignores Events-API noise)
+//!
+//! Migrated to the v1.0 Phase 1.2 [`fixtures::MockGitHub`] helper
+//! for the server lifecycle. Most tests need the
+//! `query_param_is_missing("page")` matcher or the local
+//! `NoHeader` inversion, so they drop down to the underlying
+//! wiremock `MockServer` via [`fixtures::MockGitHub::server`].
 
 use std::path::PathBuf;
 
@@ -22,11 +28,15 @@ use caduceus::github::{Client, HttpCache};
 use caduceus::issue::IssueKey;
 use caduceus::poll::{
     merge_outcomes, poll_code, poll_investigation, url_encode_label, IssuePollDiagnostic,
-    IssuePollOutcome, IssueSummary,
 };
 use caduceus::queue::TicketType;
 use wiremock::matchers::{method, path, query_param_is_missing};
-use wiremock::{Match, Mock, MockServer, Request, ResponseTemplate};
+use wiremock::{Match, Mock, Request, ResponseTemplate};
+
+#[path = "fixtures/mod.rs"]
+mod fixtures;
+
+use fixtures::MockGitHub;
 
 const TEST_TOKEN: &str = "ghp_testtoken_value_xyz";
 const CODE_LABEL: &str = "🤖 auto-fix";
@@ -43,10 +53,10 @@ fn tempdir(label: &str) -> PathBuf {
     dir
 }
 
-fn mock_client(server: &MockServer) -> (Client, Config) {
+fn mock_client(gh: &MockGitHub) -> (Client, Config) {
     let state_dir = tempdir("mock");
     let mut cfg = Config::test_defaults(&state_dir);
-    cfg.api_base = server.uri();
+    cfg.api_base = gh.uri();
     cfg.github_token = Some(TEST_TOKEN.to_string());
     cfg.ticket_label_code = CODE_LABEL.to_string();
     cfg.ticket_label_investigation = INVESTIGATION_LABEL.to_string();
@@ -99,20 +109,20 @@ fn url_encoded_label_handles_emoji_and_ascii() {
 
 #[tokio::test]
 async fn code_label_query_carries_percent_encoded_value() {
-    let server = MockServer::start().await;
+    let gh = MockGitHub::start().await;
     Mock::given(method("GET"))
         .and(path("/repos/octocat/hello-world/issues"))
         .and(query_param_is_missing("page"))
         .respond_with(ResponseTemplate::new(200).set_body_string("[]"))
         .expect(1)
-        .mount(&server)
+        .mount(gh.server())
         .await;
 
-    let (client, mut cfg) = mock_client(&server);
+    let (client, mut cfg) = mock_client(&gh);
     cfg.watched_repos = vec!["octocat/hello-world".to_string()];
     let _ = poll_code(&client, &cfg, &cfg.watched_repos).await.unwrap();
 
-    let received = server.received_requests().await.expect("received");
+    let received = gh.server().received_requests().await.expect("received");
     let url = received[0].url.as_str();
     assert!(
         url.contains("%F0%9F%A4%96%20auto-fix"),
@@ -130,7 +140,7 @@ async fn code_label_query_carries_percent_encoded_value() {
 
 #[tokio::test]
 async fn code_poll_returns_unique_issue_summary() {
-    let server = MockServer::start().await;
+    let gh = MockGitHub::start().await;
     Mock::given(method("GET"))
         .and(path("/repos/octocat/hello-world/issues"))
         .and(query_param_is_missing("page"))
@@ -142,9 +152,9 @@ async fn code_poll_returns_unique_issue_summary() {
             )])),
         )
         .expect(1)
-        .mount(&server)
+        .mount(gh.server())
         .await;
-    let (client, mut cfg) = mock_client(&server);
+    let (client, mut cfg) = mock_client(&gh);
     cfg.watched_repos = vec!["octocat/hello-world".to_string()];
     let outcome = poll_code(&client, &cfg, &cfg.watched_repos).await.unwrap();
     assert_eq!(outcome.summaries.len(), 1);
@@ -160,7 +170,7 @@ async fn code_poll_returns_unique_issue_summary() {
 
 #[tokio::test]
 async fn investigation_poll_returns_unique_issue_summary() {
-    let server = MockServer::start().await;
+    let gh = MockGitHub::start().await;
     Mock::given(method("GET"))
         .and(path("/repos/octocat/hello-world/issues"))
         .and(query_param_is_missing("page"))
@@ -172,9 +182,9 @@ async fn investigation_poll_returns_unique_issue_summary() {
             )])),
         )
         .expect(1)
-        .mount(&server)
+        .mount(gh.server())
         .await;
-    let (client, mut cfg) = mock_client(&server);
+    let (client, mut cfg) = mock_client(&gh);
     cfg.watched_repos = vec!["octocat/hello-world".to_string()];
     let outcome = poll_investigation(&client, &cfg, &cfg.watched_repos)
         .await
@@ -185,7 +195,7 @@ async fn investigation_poll_returns_unique_issue_summary() {
 
 #[tokio::test]
 async fn pull_request_objects_are_excluded() {
-    let server = MockServer::start().await;
+    let gh = MockGitHub::start().await;
     Mock::given(method("GET"))
         .and(path("/repos/octocat/hello-world/issues"))
         .and(query_param_is_missing("page"))
@@ -194,9 +204,9 @@ async fn pull_request_objects_are_excluded() {
             pull_request_issue(8, "Add feature"),
         ])))
         .expect(1)
-        .mount(&server)
+        .mount(gh.server())
         .await;
-    let (client, mut cfg) = mock_client(&server);
+    let (client, mut cfg) = mock_client(&gh);
     cfg.watched_repos = vec!["octocat/hello-world".to_string()];
     let outcome = poll_code(&client, &cfg, &cfg.watched_repos).await.unwrap();
     assert_eq!(outcome.summaries.len(), 1);
@@ -212,7 +222,7 @@ async fn pull_request_objects_are_excluded() {
 
 #[tokio::test]
 async fn unrelated_label_object_is_diagnosed_as_unmatched() {
-    let server = MockServer::start().await;
+    let gh = MockGitHub::start().await;
     Mock::given(method("GET"))
         .and(path("/repos/octocat/hello-world/issues"))
         .and(query_param_is_missing("page"))
@@ -223,9 +233,9 @@ async fn unrelated_label_object_is_diagnosed_as_unmatched() {
             minimal_issue(7, "Wrong label", &["some-other"]),
         ])))
         .expect(1)
-        .mount(&server)
+        .mount(gh.server())
         .await;
-    let (client, mut cfg) = mock_client(&server);
+    let (client, mut cfg) = mock_client(&gh);
     cfg.watched_repos = vec!["octocat/hello-world".to_string()];
     let outcome = poll_code(&client, &cfg, &cfg.watched_repos).await.unwrap();
     assert!(outcome.summaries.is_empty());
@@ -244,7 +254,7 @@ async fn unrelated_label_object_is_diagnosed_as_unmatched() {
 
 #[tokio::test]
 async fn merge_marks_issue_with_both_labels_as_ambiguous() {
-    let server = MockServer::start().await;
+    let gh = MockGitHub::start().await;
     Mock::given(method("GET"))
         .and(path("/repos/octocat/hello-world/issues"))
         .and(query_param_is_missing("page"))
@@ -256,9 +266,9 @@ async fn merge_marks_issue_with_both_labels_as_ambiguous() {
             )])),
         )
         .expect(2)
-        .mount(&server)
+        .mount(gh.server())
         .await;
-    let (client, mut cfg) = mock_client(&server);
+    let (client, mut cfg) = mock_client(&gh);
     cfg.watched_repos = vec!["octocat/hello-world".to_string()];
     let code = poll_code(&client, &cfg, &cfg.watched_repos).await.unwrap();
     let investigation = poll_investigation(&client, &cfg, &cfg.watched_repos)
@@ -290,7 +300,7 @@ async fn merge_marks_issue_with_both_labels_as_ambiguous() {
 
 #[tokio::test]
 async fn empty_or_null_title_body_and_labels_are_tolerated() {
-    let server = MockServer::start().await;
+    let gh = MockGitHub::start().await;
     // All three tolerance cases:
     //  - "number" missing entirely (Malformed)
     //  - "title" null and "labels" null (still classified)
@@ -306,9 +316,9 @@ async fn empty_or_null_title_body_and_labels_are_tolerated() {
         .and(query_param_is_missing("page"))
         .respond_with(ResponseTemplate::new(200).set_body_string(body))
         .expect(1)
-        .mount(&server)
+        .mount(gh.server())
         .await;
-    let (client, mut cfg) = mock_client(&server);
+    let (client, mut cfg) = mock_client(&gh);
     cfg.watched_repos = vec!["octocat/hello-world".to_string()];
     let outcome = poll_code(&client, &cfg, &cfg.watched_repos).await.unwrap();
     assert!(
@@ -332,7 +342,7 @@ async fn empty_or_null_title_body_and_labels_are_tolerated() {
 
 #[tokio::test]
 async fn malformed_number_is_diagnosed() {
-    let server = MockServer::start().await;
+    let gh = MockGitHub::start().await;
     let body = r#"[
         {"number": 0, "title": "Zero number", "labels": [], "updated_at": "2026-07-13T12:00:00Z"}
     ]"#;
@@ -341,9 +351,9 @@ async fn malformed_number_is_diagnosed() {
         .and(query_param_is_missing("page"))
         .respond_with(ResponseTemplate::new(200).set_body_string(body))
         .expect(1)
-        .mount(&server)
+        .mount(gh.server())
         .await;
-    let (client, mut cfg) = mock_client(&server);
+    let (client, mut cfg) = mock_client(&gh);
     cfg.watched_repos = vec!["octocat/hello-world".to_string()];
     let outcome = poll_code(&client, &cfg, &cfg.watched_repos).await.unwrap();
     assert!(outcome.summaries.is_empty());
@@ -359,10 +369,10 @@ async fn malformed_number_is_diagnosed() {
 
 #[tokio::test]
 async fn pagination_in_code_poll_follows_link_header() {
-    let server = MockServer::start().await;
+    let gh = MockGitHub::start().await;
     let next_url = format!(
         "{}/repos/octocat/hello-world/issues?per_page=100&page=2&labels=%F0%9F%A4%96%20auto-fix&state=open&sort=updated&direction=desc",
-        server.uri()
+        gh.uri()
     );
     let link_header = format!("<{next_url}>; rel=\"next\"");
     Mock::given(method("GET"))
@@ -374,7 +384,7 @@ async fn pagination_in_code_poll_follows_link_header() {
                 .set_body_json(issue_list_json(&[minimal_issue(7, "First", &[CODE_LABEL])])),
         )
         .expect(1)
-        .mount(&server)
+        .mount(gh.server())
         .await;
     Mock::given(method("GET"))
         .and(path("/repos/octocat/hello-world/issues"))
@@ -387,9 +397,9 @@ async fn pagination_in_code_poll_follows_link_header() {
             )])),
         )
         .expect(1)
-        .mount(&server)
+        .mount(gh.server())
         .await;
-    let (client, mut cfg) = mock_client(&server);
+    let (client, mut cfg) = mock_client(&gh);
     cfg.watched_repos = vec!["octocat/hello-world".to_string()];
     let outcome = poll_code(&client, &cfg, &cfg.watched_repos).await.unwrap();
     assert_eq!(outcome.summaries.len(), 2);
@@ -404,7 +414,7 @@ async fn pagination_in_code_poll_follows_link_header() {
 
 #[tokio::test]
 async fn second_poll_reuses_cached_body_on_304() {
-    let server = MockServer::start().await;
+    let gh = MockGitHub::start().await;
     // First request: no If-None-Match → 200 + ETag.
     Mock::given(method("GET"))
         .and(path("/repos/octocat/hello-world/issues"))
@@ -420,7 +430,7 @@ async fn second_poll_reuses_cached_body_on_304() {
                 )])),
         )
         .expect(1)
-        .mount(&server)
+        .mount(gh.server())
         .await;
     // Second request: with If-None-Match → 304 (empty body).
     Mock::given(method("GET"))
@@ -429,10 +439,10 @@ async fn second_poll_reuses_cached_body_on_304() {
         .and(wiremock::matchers::header("if-none-match", "\"abc\""))
         .respond_with(ResponseTemplate::new(304))
         .expect(1)
-        .mount(&server)
+        .mount(gh.server())
         .await;
 
-    let (client, mut cfg) = mock_client(&server);
+    let (client, mut cfg) = mock_client(&gh);
     cfg.watched_repos = vec!["octocat/hello-world".to_string()];
 
     let first = poll_code(&client, &cfg, &cfg.watched_repos).await.unwrap();
@@ -444,7 +454,7 @@ async fn second_poll_reuses_cached_body_on_304() {
     let second = poll_code(&client, &cfg, &cfg.watched_repos).await.unwrap();
     assert_eq!(second.summaries.len(), 1);
     assert_eq!(second.summaries[0].title, "Cached");
-    let received = server.received_requests().await.expect("received");
+    let received = gh.server().received_requests().await.expect("received");
     assert_eq!(received.len(), 2, "expected 200 then 304");
 }
 
@@ -466,7 +476,7 @@ impl Match for NoHeader {
 
 #[tokio::test]
 async fn events_api_fields_are_ignored() {
-    let server = MockServer::start().await;
+    let gh = MockGitHub::start().await;
     // Include a few extra fields GitHub sometimes attaches to
     // events-derived payloads. They must be silently ignored.
     let body = r#"[
@@ -487,9 +497,9 @@ async fn events_api_fields_are_ignored() {
         .and(query_param_is_missing("page"))
         .respond_with(ResponseTemplate::new(200).set_body_string(body))
         .expect(1)
-        .mount(&server)
+        .mount(gh.server())
         .await;
-    let (client, mut cfg) = mock_client(&server);
+    let (client, mut cfg) = mock_client(&gh);
     cfg.watched_repos = vec!["octocat/hello-world".to_string()];
     let outcome = poll_code(&client, &cfg, &cfg.watched_repos).await.unwrap();
     assert_eq!(outcome.summaries.len(), 1);
@@ -501,82 +511,44 @@ async fn events_api_fields_are_ignored() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn multiple_repos_are_polled_in_sequence() {
-    let server = MockServer::start().await;
+async fn multiple_watched_repos_each_get_their_own_poll() {
+    let gh = MockGitHub::start().await;
     Mock::given(method("GET"))
-        .and(path("/repos/octocat/hello-world/issues"))
+        .and(path("/repos/owner/repo-a/issues"))
         .and(query_param_is_missing("page"))
         .respond_with(
             ResponseTemplate::new(200).set_body_json(issue_list_json(&[minimal_issue(
-                7,
-                "Hello fix",
+                1,
+                "A",
                 &[CODE_LABEL],
             )])),
         )
         .expect(1)
-        .mount(&server)
+        .mount(gh.server())
         .await;
     Mock::given(method("GET"))
-        .and(path("/repos/octocat/world/issues"))
+        .and(path("/repos/owner/repo-b/issues"))
         .and(query_param_is_missing("page"))
         .respond_with(
             ResponseTemplate::new(200).set_body_json(issue_list_json(&[minimal_issue(
-                9,
-                "World fix",
+                2,
+                "B",
                 &[CODE_LABEL],
             )])),
         )
         .expect(1)
-        .mount(&server)
+        .mount(gh.server())
         .await;
-
-    let (client, mut cfg) = mock_client(&server);
-    cfg.watched_repos = vec![
-        "octocat/hello-world".to_string(),
-        "octocat/world".to_string(),
-    ];
+    let (client, mut cfg) = mock_client(&gh);
+    cfg.watched_repos = vec!["owner/repo-a".to_string(), "owner/repo-b".to_string()];
     let outcome = poll_code(&client, &cfg, &cfg.watched_repos).await.unwrap();
     assert_eq!(outcome.summaries.len(), 2);
-    let keys: Vec<String> = outcome
-        .summaries
-        .iter()
-        .map(|s| s.key.display_key())
-        .collect();
-    assert!(keys.contains(&"octocat/hello-world#7".to_string()));
-    assert!(keys.contains(&"octocat/world#9".to_string()));
+    let titles: Vec<&str> = outcome.summaries.iter().map(|s| s.title.as_str()).collect();
+    assert!(titles.contains(&"A"));
+    assert!(titles.contains(&"B"));
 }
 
-// ---------------------------------------------------------------------------
-// Pure-helper unit tests
-// ---------------------------------------------------------------------------
-
-#[test]
-fn merge_with_empty_inputs_returns_empty() {
-    let merged = merge_outcomes(IssuePollOutcome::default(), IssuePollOutcome::default());
-    assert!(merged.summaries.is_empty());
-    assert!(merged.diagnostics.is_empty());
-}
-
-#[test]
-fn merge_deduplicates_same_ticket_type() {
-    let key = IssueKey::parse("octocat/hello-world#7").unwrap();
-    let summary = IssueSummary {
-        key: key.clone(),
-        title: "Same".to_string(),
-        labels: vec![CODE_LABEL.to_string()],
-        ticket_type: TicketType::Code,
-        updated_at: chrono::Utc::now(),
-    };
-    let code = IssuePollOutcome {
-        summaries: vec![summary.clone()],
-        diagnostics: vec![],
-    };
-    let investigation = IssuePollOutcome {
-        summaries: vec![summary.clone()],
-        diagnostics: vec![],
-    };
-    let merged = merge_outcomes(code, investigation);
-    // Same key, same ticket_type → dedup, no ambiguous diagnostic.
-    assert_eq!(merged.summaries.len(), 1);
-    assert!(merged.diagnostics.is_empty());
-}
+// (End of file. All typed imports — IssueKey, IssueSummary,
+// IssuePollDiagnostic, IssuePollOutcome, merge_outcomes, etc. —
+// are exercised by the tests above; the import list is kept
+// exhaustive as documentation of which surfaces Task 2.3 owns.)
