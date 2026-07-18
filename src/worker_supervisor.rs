@@ -650,6 +650,55 @@ fn parse_stat_parent(stat: &str) -> Option<i32> {
     Some(ppid)
 }
 
+// ---------------------------------------------------------------------------
+// Process-identity helpers — read /proc/<pid>/stat starttime to detect PID
+// reuse before signalling. Used by the deadline-enforcement machinery in
+// later work units.
+// ---------------------------------------------------------------------------
+
+/// Parse field 22 (starttime in clock ticks) from a `/proc/<pid>/stat`
+/// string. Returns `None` if the line is malformed.
+///
+/// Per `proc(5)`, the stat line is `pid (comm) state ppid ... starttime ...`
+/// where `starttime` is the 22nd field overall. After the `)`, `state` is the
+/// first token (field 3), so `starttime` lands at after-paren index 19.
+#[cfg(target_os = "linux")]
+fn parse_starttime_from_stat(stat: &str) -> Option<u64> {
+    let after_paren = stat.rsplit_once(')')?.1;
+    let fields: Vec<&str> = after_paren.split_whitespace().collect();
+    let starttime = fields.get(19).copied()?;
+    starttime.parse::<u64>().ok()
+}
+
+/// Read process starttime in clock ticks from `/proc/<pid>/stat`,
+/// field 22.  Returns `None` if the process no longer exists or the
+/// stat file cannot be read.
+#[cfg(target_os = "linux")]
+pub fn read_proc_starttime(pid: i32) -> Option<u64> {
+    use std::fs;
+    let body = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    parse_starttime_from_stat(&body)
+}
+
+/// Return `true` only when *pid* still refers to the same process
+/// incarnation whose starttime was *expected_starttime*.  Returns
+/// `false` if the process has exited (PID recycled) or the starttime
+/// differs (PID reuse).
+#[cfg(target_os = "linux")]
+pub fn verify_identity(pid: i32, expected_starttime: u64) -> bool {
+    read_proc_starttime(pid) == Some(expected_starttime)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn read_proc_starttime(_pid: i32) -> Option<u64> {
+    None
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn verify_identity(_pid: i32, _expected: u64) -> bool {
+    false
+}
+
 #[cfg(not(target_os = "linux"))]
 pub fn collect_descendants(_ppid: i32) -> Vec<i32> {
     Vec::new()
@@ -937,13 +986,23 @@ async fn run_supervisor(
         stderr: "supervisor stdout was not piped".to_string(),
     })?;
     let stderr = child.stderr.take();
+    // Capture the worker timeout into an owned value so the
+    // `'static` protocol task can read it without borrowing `cfg`.
+    let worker_timeout_seconds = cfg.worker_timeout_seconds;
 
     // Protocol loop. Reads `READY(pgid)` → sends `ACK`;
     // reads `DONE` → returns; reads `FATAL` → returns error.
+    // On timeout (cfg.worker_timeout_seconds), verifies worker
+    // identity before signalling, sends TERM, waits 2 s,
+    // re-verifies, then sends KILL.
     let protocol_task = {
         let cancel = cancellation.clone();
         tokio::spawn(async move {
             let mut buf = Vec::with_capacity(MAX_FRAME_BYTES);
+            // Track worker identity captured at READY for
+            // PID-reuse checks before signalling.
+            let mut worker_pgid: Option<i32> = None;
+            let mut worker_starttime: Option<u64> = None;
             loop {
                 tokio::select! {
                     biased;
@@ -956,6 +1015,70 @@ async fn run_supervisor(
                             signaled: true,
                             timed_out: false,
                             cancelled: true,
+                        };
+                    }
+                    _ = tokio::time::sleep(Duration::from_secs(worker_timeout_seconds)) => {
+                        // Deadline reached. Verify worker identity
+                        // before signalling to avoid killing an
+                        // unrelated process whose PID was recycled.
+                        match (worker_pgid, worker_starttime) {
+                            (Some(pgid), Some(expected)) => {
+                                if !verify_identity(pgid, expected) {
+                                    // PID was reused — do NOT signal.
+                                    return SupervisorOutcome {
+                                        status: 0,
+                                        signaled: false,
+                                        timed_out: true,
+                                        cancelled: false,
+                                    };
+                                }
+                                // Send TERM (graceful shutdown).
+                                write_frame_async(
+                                    &mut stdin,
+                                    &ControlFrame::Terminate { force: false },
+                                ).await.ok();
+                            }
+                            _ => {
+                                // Never got READY — best-effort
+                                // shutdown without identity check.
+                                write_frame_async(
+                                    &mut stdin,
+                                    &ControlFrame::Terminate { force: false },
+                                ).await.ok();
+                            }
+                        }
+
+                        // Wait 2 s grace period then re-verify and KILL.
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+
+                        match (worker_pgid, worker_starttime) {
+                            (Some(pgid), Some(expected)) => {
+                                if !verify_identity(pgid, expected) {
+                                    return SupervisorOutcome {
+                                        status: 0,
+                                        signaled: false,
+                                        timed_out: true,
+                                        cancelled: false,
+                                    };
+                                }
+                                write_frame_async(
+                                    &mut stdin,
+                                    &ControlFrame::Terminate { force: true },
+                                ).await.ok();
+                            }
+                            _ => {
+                                write_frame_async(
+                                    &mut stdin,
+                                    &ControlFrame::Terminate { force: true },
+                                ).await.ok();
+                            }
+                        }
+
+                        return SupervisorOutcome {
+                            status: 137,
+                            signaled: true,
+                            timed_out: true,
+                            cancelled: false,
                         };
                     }
                     frame = read_frame_async(&mut stdout, &mut buf) => {
@@ -973,8 +1096,13 @@ async fn run_supervisor(
                             Err(err) => return err.into_outcome(),
                         };
                         match frame {
-                            ControlFrame::Ready { .. } => {
+                            ControlFrame::Ready { pgid } => {
                                 write_frame_async(&mut stdin, &ControlFrame::Ack).await.ok();
+                                // Capture worker identity for
+                                // PID-reuse checks before
+                                // deadline signalling.
+                                worker_pgid = Some(pgid);
+                                worker_starttime = read_proc_starttime(pgid);
                             }
                             ControlFrame::Done { status, signaled } => {
                                 return SupervisorOutcome {
@@ -1209,5 +1337,74 @@ mod inline_tests {
         paths.ensure_dirs().expect("ensure_dirs");
         let meta = std::fs::metadata(dir.path().join("runs")).expect("stat runs");
         assert_eq!(meta.permissions().mode() & 0o777, 0o700);
+    }
+
+    // The remaining tests exercise the process-identity helpers that
+    // later units use to verify a worker PID has not been reused before
+    // signalling. They are Linux-only because they read /proc/<pid>/stat.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn read_proc_starttime_parses_field22() {
+        // Deterministic unit check of the field parser: feed a synthetic
+        // /proc/<pid>/stat line and confirm field 22 (starttime) is read at
+        // after-paren index 19.
+        let synthetic =
+            "1234 (fake_worker) S 1 1234 1234 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 12345678 0 0 0";
+        assert_eq!(
+            parse_starttime_from_stat(synthetic),
+            Some(12_345_678),
+            "field 22 (0-based 19 after ')') must be the starttime"
+        );
+
+        // Integration check against a real, still-alive process. Spawn a
+        // long-running child but never wait on it so it stays alive for the
+        // read. /proc/<pid>/stat starttime is always non-zero for a live
+        // process.
+        let mut child = std::process::Command::new("sleep")
+            .arg("60")
+            .spawn()
+            .expect("spawn sleep");
+        let pid = child.id() as i32;
+        let starttime = read_proc_starttime(pid);
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(
+            matches!(starttime, Some(x) if x > 0),
+            "live process starttime should be Some(>0), got {starttime:?}"
+        );
+
+        // A wildly impossible PID yields None (process gone).
+        assert_eq!(read_proc_starttime(999_999), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn verify_identity_detects_reuse() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("60")
+            .spawn()
+            .expect("spawn sleep");
+        let pid = child.id() as i32;
+        let starttime = read_proc_starttime(pid).expect("live starttime");
+        assert!(starttime > 0);
+
+        // Correct starttime → identity confirmed.
+        assert!(
+            verify_identity(pid, starttime),
+            "matching starttime must verify"
+        );
+        // Off-by-one starttime → PID reuse / mismatch must reject.
+        assert!(
+            !verify_identity(pid, starttime + 1),
+            "stale starttime must fail verification"
+        );
+        // Gone process → cannot verify.
+        assert!(
+            !verify_identity(999_999, 0),
+            "missing process must fail verification"
+        );
+
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }
