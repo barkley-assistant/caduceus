@@ -38,13 +38,19 @@
       "handoff": "handoffs/1.3.md"
     },
     "1.4": {
-      "status": "pending"
+      "status": "complete",
+      "updated_at": "2026-07-18T16:39:44.567646+00:00",
+      "handoff": "handoffs/1.4.md"
     },
     "2.1": {
-      "status": "pending"
+      "status": "complete",
+      "updated_at": "2026-07-18T16:39:58.419503+00:00",
+      "handoff": "handoffs/2.1.md"
     },
     "2.2": {
-      "status": "pending"
+      "status": "complete",
+      "updated_at": "2026-07-18T16:46:01.232392+00:00",
+      "handoff": "handoffs/2.2.md"
     },
     "2.3": {
       "status": "pending"
@@ -150,7 +156,9 @@
       "handoff": "handoffs/phase-00.md"
     },
     "1": {
-      "status": "pending"
+      "status": "complete",
+      "updated_at": "2026-07-18T16:39:51.796657+00:00",
+      "handoff": "handoffs/phase-01.md"
     },
     "2": {
       "status": "pending"
