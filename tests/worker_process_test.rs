@@ -14,6 +14,9 @@
 //! * The supervisor protocol is versioned and length-bounded.
 //! * The hidden command never appears in `--help`.
 
+#[path = "fixtures/mod.rs"]
+mod fixtures;
+
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
@@ -49,15 +52,7 @@ fn write_script(path: &PathBuf, body: &str) {
 }
 
 fn find_self_exe() -> PathBuf {
-    let mut here = std::env::current_exe().expect("current_exe");
-    loop {
-        if here.join("caduceus").is_file() {
-            return here.join("caduceus");
-        }
-        if !here.pop() {
-            panic!("could not find caduceus binary in target/debug");
-        }
-    }
+    fixtures::ReleaseBinary::locate()
 }
 
 fn sample_issue() -> IssueKey {
