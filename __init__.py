@@ -31,10 +31,12 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import stat
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Union
 
 
 # ---------------------------------------------------------------------------
@@ -51,6 +53,52 @@ SKILL_QUALIFIED_NAME = f"{PLUGIN_NAME}:{SKILL_BARE_NAME}"
 SUBPROCESS_TIMEOUT_SECONDS = 15
 SUBPROCESS_OUTPUT_BYTES = 32 * 1024
 SUBPROCESS_BUILD_TIMEOUT_SECONDS = 600
+
+
+# ---------------------------------------------------------------------------
+# Transactional types
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _Snapshot:
+    """Immutable snapshot of wrapper state before a cron mutation.
+
+    Captured by ``_snapshot_wrapper_and_job`` before any create/update/remove
+    operation so the system can roll back to a known state if the mutation
+    fails (AC-01).
+
+    Attributes:
+        wrapper_bytes: The raw bytes of the wrapper file at snapshot time.
+            Empty ``b""`` if the file did not exist.
+        wrapper_mode: The ``st_mode`` bits of the wrapper file. ``0`` if
+            the file did not exist.
+        job_dict: The matching cron job dict (from ``_cron_job_registry``),
+            or ``None`` if no job with the target name was registered.
+    """
+
+    wrapper_bytes: bytes
+    wrapper_mode: int
+    job_dict: Optional[Dict[str, Any]]
+
+
+class _NeedsAttention:
+    """Returned by ``_reconcile_after_error`` when rollback is impossible.
+
+    The CLI MUST exit nonzero when this is returned (AC-04). The
+    ``recovery_evidence`` string describes what state was found and what
+    manual steps are needed.
+
+    This is intentionally not a frozen dataclass so it does not look like
+    ``_Snapshot`` and is not a tuple so callers cannot accidentally unpack
+    it as ``(action, note)``.
+    """
+
+    def __init__(self, recovery_evidence: str) -> None:
+        self.recovery_evidence = recovery_evidence
+
+    def __repr__(self) -> str:
+        return f"NeedsAttention(recovery_evidence={self.recovery_evidence!r})"
 
 
 def _plugin_root() -> Path:
@@ -569,6 +617,166 @@ def _seed_user_bridge() -> None:
 # ---- cron ------------------------------------------------------------------
 
 
+def _snapshot_wrapper_and_job(
+    wrapper_path: Path, job_name: str, registry: Dict[str, Dict[str, Any]]
+) -> _Snapshot:
+    """Capture the current wrapper bytes/mode and the matching job (AC-01).
+
+    Reads the wrapper file at *wrapper_path* (if it exists) and searches
+    *registry* for a job whose ``name`` matches *job_name*. The returned
+    ``_Snapshot`` is the rollback target for ``_reconcile_after_error``.
+
+    ``registry`` is the already-resolved result of ``_cron_job_registry()``
+    — the function does NOT make a dispatch call itself.
+    """
+    wrapper_bytes: bytes = b""
+    wrapper_mode: int = 0
+    try:
+        if wrapper_path.is_file():
+            wrapper_bytes = wrapper_path.read_bytes()
+            wrapper_mode = stat.S_IMODE(wrapper_path.stat().st_mode)
+    except OSError:
+        # Best-effort — if we cannot read the wrapper, proceed with empty.
+        pass
+    matches = [job for job in registry.values() if job.get("name") == job_name]
+    job_dict = matches[0] if matches else None
+    return _Snapshot(
+        wrapper_bytes=wrapper_bytes,
+        wrapper_mode=wrapper_mode,
+        job_dict=job_dict,
+    )
+
+
+def _reconcile_after_error(
+    error: Exception,
+    snapshot: _Snapshot,
+    ctx: Any,
+    job_name: str,
+    intended_state: str,
+) -> Union[None, _NeedsAttention]:
+    """Re-list and restore after a cron mutation error (AC-03/04).
+
+    Called from ``_cron_install`` and ``_cli_cron_remove`` when a
+    create/update/remove operation raises. The function:
+
+    1. Re-lists the cron job registry.
+    2. If *intended_state* is ``"present"`` and a matching job exists →
+       success (no-op).
+    3. If *intended_state* is ``"absent"`` and no matching job exists →
+       success (no-op).
+    4. If the registry and wrapper match the *snapshot* → success (no-op).
+    5. Otherwise, restores the wrapper bytes/mode from *snapshot* and
+       re-creates or re-updates the cron job to match *snapshot.job_dict*.
+    6. If restoration is impossible → returns ``_NeedsAttention`` with
+       recovery evidence.
+
+    Returns ``None`` on successful reconciliation, or ``_NeedsAttention``
+    when manual intervention is needed.
+    """
+    del error  # error is logged, but reconciliation is based on state
+    wrapper_path = _pulse_wrapper_path()
+
+    # Step 1: Re-list.
+    try:
+        registry = _cron_job_registry()
+    except Exception:
+        # Cannot even re-list — return NeedsAttention.
+        return _NeedsAttention(
+            recovery_evidence=(
+                f"re-list failed after cron error; "
+                f"snapshot wrapper_bytes={len(snapshot.wrapper_bytes)}B "
+                f"job_dict={'present' if snapshot.job_dict else 'absent'}"
+            )
+        )
+
+    matches = [job for job in registry.values() if job.get("name") == job_name]
+
+    # Step 2: Intended state already achieved.
+    if intended_state == "present" and matches:
+        return None
+    if intended_state == "absent" and not matches:
+        return None
+
+    # Step 3: Nothing changed from snapshot.
+    current_wrapper_bytes: bytes = b""
+    current_wrapper_mode: int = 0
+    try:
+        if wrapper_path.is_file():
+            current_wrapper_bytes = wrapper_path.read_bytes()
+            current_wrapper_mode = stat.S_IMODE(wrapper_path.stat().st_mode)
+    except OSError:
+        pass
+    if (
+        current_wrapper_bytes == snapshot.wrapper_bytes
+        and current_wrapper_mode == snapshot.wrapper_mode
+        and (not matches if snapshot.job_dict is None else len(matches) == 1)
+    ):
+        return None
+
+    # Step 4: Restore wrapper from snapshot.
+    wrapper_restored = False
+    try:
+        if snapshot.wrapper_bytes:
+            wrapper_path.parent.mkdir(parents=True, exist_ok=True)
+            wrapper_path.write_bytes(snapshot.wrapper_bytes)
+            if snapshot.wrapper_mode:
+                os.chmod(wrapper_path, snapshot.wrapper_mode)
+            wrapper_restored = True
+        elif wrapper_path.exists():
+            wrapper_path.unlink()
+            wrapper_restored = True
+    except OSError:
+        pass
+
+    # Step 5: Restore job from snapshot.
+    job_restored = False
+    if snapshot.job_dict is not None:
+        try:
+            job_id = snapshot.job_dict.get("id")
+            if job_id and job_id in registry:
+                # Already exists — update.
+                _cronjob_update(
+                    job_id=job_id,
+                    schedule=snapshot.job_dict.get("schedule", "every 2m"),
+                    name=job_name,
+                    script=snapshot.job_dict.get("script", "caduceus-pulse.sh"),
+                    no_agent=snapshot.job_dict.get("no_agent", False),
+                )
+            else:
+                # Re-create.
+                _cronjob_create(
+                    schedule=snapshot.job_dict.get("schedule", "every 2m"),
+                    name=job_name,
+                    script=snapshot.job_dict.get("script", "caduceus-pulse.sh"),
+                    no_agent=snapshot.job_dict.get("no_agent", False),
+                )
+            job_restored = True
+        except Exception:
+            pass
+    else:
+        # Snapshot had no job — ensure it's gone.
+        for job in matches:
+            try:
+                _cronjob_remove(str(job.get("id")))
+            except Exception:
+                pass
+        job_restored = True  # best-effort
+
+    # Step 6: Check if both were restored.
+    if wrapper_restored and job_restored:
+        return None
+
+    return _NeedsAttention(
+        recovery_evidence=(
+            f"rollback {'partial' if wrapper_restored or job_restored else 'failed'}: "
+            f"wrapper_restored={wrapper_restored}, "
+            f"job_restored={job_restored}, "
+            f"snapshot_bytes={len(snapshot.wrapper_bytes)}B, "
+            f"snapshot_job={'present' if snapshot.job_dict else 'absent'}"
+        )
+    )
+
+
 def _pulse_wrapper_path() -> Path:
     """Return the absolute path of the installed bash wrapper."""
     return _hermes_home() / "scripts" / "caduceus-pulse.sh"
@@ -586,35 +794,83 @@ def _cron_install(*, dry_run: bool) -> tuple:
 
     The wrapper is unconditionally rewritten so its absolute binary path
     matches the current plugin install location.
+
+    Flow (AC-01/03/09):
+    1. Snapshot the wrapper and job registry BEFORE any mutation.
+    2. Write the pulse wrapper.
+    3. Check the cron capability (may raise CronCapabilityError).
+    4. Create or update the cron job.
+    5. On any error → reconcile from snapshot.
     """
     binary = _binary_path()
     if not binary.is_file():
         raise RuntimeError("caduceus binary not built; run `hermes caduceus setup`")
+
+    # Step 1: Snapshot before any mutation.
+    try:
+        registry = _cron_job_registry()
+    except Exception as exc:
+        raise RuntimeError(f"cannot list cron jobs: {exc}") from exc
+    wrapper_path = _pulse_wrapper_path()
+    snapshot = _snapshot_wrapper_and_job(wrapper_path, "caduceus", registry)
+
+    # Step 2: Write the pulse wrapper (unconditional rewrite).
     _write_pulse_wrapper(binary)
-    cronjob = _cron_job_registry()
+
+    # Step 3: Check cron capability (may raise CronCapabilityError).
+    # The registry is re-read here because the list may fail.
+    try:
+        cronjob = _cron_job_registry()
+    except Exception as exc:
+        # Reconcile: the wrapper was written but we cannot proceed.
+        result = _reconcile_after_error(
+            error=exc, snapshot=snapshot, ctx=None,
+            job_name="caduceus", intended_state="present",
+        )
+        if isinstance(result, _NeedsAttention):
+            raise RuntimeError(f"cron install failed, {result.recovery_evidence}") from exc
+        raise RuntimeError(f"cron job registry unavailable: {exc}") from exc
+
     matches = [job for job in cronjob.values() if job.get("name") == "caduceus"]
     if len(matches) > 1:
         ids = ", ".join(sorted(str(j.get("id")) for j in matches))
         raise RuntimeError(f"multiple caduceus cron jobs found: {ids}")
+
     if dry_run:
         return (("created" if not matches else "reused"), "dry-run")
-    if not matches:
-        job_id = _cronjob_create(
+
+    # Step 4: Create or update.
+    try:
+        if not matches:
+            job_id = _cronjob_create(
+                schedule="every 2m",
+                name="caduceus",
+                script=_pulse_wrapper_path().name,
+                no_agent=True,
+            )
+            return ("created", job_id)
+        job_id = str(matches[0].get("id"))
+        _cronjob_update(
+            job_id=job_id,
             schedule="every 2m",
             name="caduceus",
             script=_pulse_wrapper_path().name,
             no_agent=True,
         )
-        return ("created", job_id)
-    job_id = str(matches[0].get("id"))
-    _cronjob_update(
-        job_id=job_id,
-        schedule="every 2m",
-        name="caduceus",
-        script=_pulse_wrapper_path().name,
-        no_agent=True,
-    )
-    return ("reused", job_id)
+        return ("reused", job_id)
+    except Exception as exc:
+        # Step 5: Reconcile on error.
+        result = _reconcile_after_error(
+            error=exc, snapshot=snapshot, ctx=None,
+            job_name="caduceus", intended_state="present",
+        )
+        if isinstance(result, _NeedsAttention):
+            raise RuntimeError(
+                f"cron install failed and requires attention: "
+                f"{result.recovery_evidence}"
+            ) from exc
+        # Reconcile succeeded — re-raise to let caller know the error occurred.
+        raise RuntimeError(f"cron install failed (reconciled): {exc}") from exc
 
 
 def _write_pulse_wrapper(binary: Path) -> None:
@@ -658,24 +914,63 @@ def _cli_cron_install(*, dry_run: bool) -> int:
 
 def _cli_cron_remove() -> int:
     try:
+        # Step 1: Snapshot before any mutation.
         cronjob = _cron_job_registry()
+        wrapper_path = _pulse_wrapper_path()
+        snapshot = _snapshot_wrapper_and_job(wrapper_path, "caduceus", cronjob)
         matches = [job for job in cronjob.values() if job.get("name") == "caduceus"]
     except RuntimeError as exc:
         print(f"caduceus cron-remove: {exc}", file=sys.stderr)
         return 1
+
+    # Step 2: Remove the cron job(s).
+    error = None
     for job in matches:
         try:
             _cronjob_remove(str(job.get("id")))
         except RuntimeError as exc:
-            print(f"caduceus cron-remove: {exc}", file=sys.stderr)
-            return 1
-    wrapper = _pulse_wrapper_path()
-    if wrapper.is_file() or wrapper.is_symlink():
+            error = exc
+            break
+
+    # Step 3: Remove the wrapper file.
+    wrapper_removed = True
+    if wrapper_path.is_file() or wrapper_path.is_symlink():
         try:
-            wrapper.unlink()
+            wrapper_path.unlink()
         except OSError as exc:
-            print(f"caduceus cron-remove: cannot delete wrapper: {exc}", file=sys.stderr)
+            error = error or exc
+            wrapper_removed = False
+
+    # Step 4: If anything failed, reconcile.
+    if error is not None:
+        try:
+            result = _reconcile_after_error(
+                error=error, snapshot=snapshot, ctx=None,
+                job_name="caduceus", intended_state="absent",
+            )
+        except Exception as reconcile_error:
+            print(
+                f"caduceus cron-remove: reconcile failed: {reconcile_error}",
+                file=sys.stderr,
+            )
             return 1
+
+        if isinstance(result, _NeedsAttention):
+            print(
+                f"caduceus cron-remove: {result.recovery_evidence}",
+                file=sys.stderr,
+            )
+            return 1
+
+        if not wrapper_removed:
+            # Reconcile cleaned up but wrapper still present — report.
+            print(
+                "caduceus cron-remove: complete (cron job removed, "
+                "wrapper could not be removed; manual cleanup may be needed)",
+                file=sys.stderr,
+            )
+            return 1
+
     print("caduceus cron-remove: complete")
     return 0
 
@@ -745,6 +1040,8 @@ __all__ = [
     "SKILL_BARE_NAME",
     "SKILL_QUALIFIED_NAME",
     "register",
+    "_Snapshot",
+    "_NeedsAttention",
     "_handle_caduceus_status",
     "_register_caduceus_cli",
     "_caduceus_cli_command",

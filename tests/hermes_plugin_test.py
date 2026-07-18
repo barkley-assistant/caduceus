@@ -855,3 +855,600 @@ def test_subprocess_call_redacts_secrets(adapter) -> None:
     # The variable name remains so operators can still see WHICH env
     # var was leaked.
     assert "GITHUB_TOKEN=" in out or "GITHUB_TOKEN =" in out
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: Transactional Cron Flow (Tasks 2.1-2.7)
+# ---------------------------------------------------------------------------
+# These tests are written FIRST (RED phase of TDD) before any production
+# code changes. They verify the snapshot, reconcile, and crash-boundary
+# recovery behaviour specified in AC-01/03/04/09.
+# ---------------------------------------------------------------------------
+
+
+def _stub_wrapper_file(wrapper_path: Path, binary_path: Path) -> None:
+    """Create a realistic wrapper file for snapshot testing."""
+    wrapper_path.parent.mkdir(parents=True, exist_ok=True)
+    body = (
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        f"exec {binary_path} run \"$@\"\n"
+    )
+    wrapper_path.write_text(body, encoding="utf-8")
+    os.chmod(wrapper_path, 0o755)
+
+
+# ---------------------------------------------------------------------------
+# Task 2.1: _Snapshot frozen dataclass
+# ---------------------------------------------------------------------------
+
+
+def test_snapshot_is_frozen_dataclass() -> None:
+    """_Snapshot is a frozen dataclass with wrapper_bytes, wrapper_mode, job_dict."""
+    from caduceus import _Snapshot
+
+    snap = _Snapshot(wrapper_bytes=b"content", wrapper_mode=0o755, job_dict=None)
+    assert snap.wrapper_bytes == b"content"
+    assert snap.wrapper_mode == 0o755
+    assert snap.job_dict is None
+
+    # Frozen — cannot set attributes.
+    with pytest.raises(AttributeError):
+        snap.wrapper_bytes = b"other"
+
+    # Frozen — cannot delete attributes.
+    with pytest.raises(AttributeError):
+        del snap.wrapper_bytes
+
+
+def test_snapshot_accepts_job_dict() -> None:
+    """_Snapshot accepts a non-None job_dict."""
+    from caduceus import _Snapshot
+
+    job = {"id": "abc", "name": "caduceus", "schedule": "every 2m"}
+    snap = _Snapshot(wrapper_bytes=b"x", wrapper_mode=0o644, job_dict=job)
+    assert snap.job_dict == job
+
+
+# ---------------------------------------------------------------------------
+# Task 2.6: _NeedsAttention return type
+# ---------------------------------------------------------------------------
+
+
+def test_needs_attention_has_recovery_evidence() -> None:
+    """_NeedsAttention carries a recovery_evidence string."""
+    from caduceus import _NeedsAttention
+
+    na = _NeedsAttention(recovery_evidence="wrapper and job state diverged")
+    assert na.recovery_evidence == "wrapper and job state diverged"
+
+
+def test_needs_attention_is_not_a_success() -> None:
+    """_NeedsAttention is not a tuple and does not falsy-pass as success."""
+    from caduceus import _NeedsAttention
+
+    na = _NeedsAttention(recovery_evidence="unrecoverable")
+    # It must not be a tuple (the normal (action, note) return shape).
+    assert not isinstance(na, tuple)
+
+
+# ---------------------------------------------------------------------------
+# Task 2.2: _snapshot_wrapper_and_job()
+# ---------------------------------------------------------------------------
+
+
+def test_snapshot_wrapper_and_job_captures_bytes_and_mode(
+    adapter, isolated_hermes_home: Path, install_with_fake_binary: Path
+) -> None:
+    """_snapshot_wrapper_and_job captures wrapper bytes, mode, and matching job."""
+    from caduceus import _runtime
+
+    wrapper = isolated_hermes_home / "scripts" / "caduceus-pulse.sh"
+    _stub_wrapper_file(wrapper, install_with_fake_binary)
+
+    registry = {
+        "abc": {
+            "id": "abc",
+            "name": "caduceus",
+            "schedule": "every 2m",
+            "script": "caduceus-pulse.sh",
+        }
+    }
+    _stub_cron_runtime(adapter, registry)
+    try:
+        snap = adapter._snapshot_wrapper_and_job(wrapper, "caduceus", registry)
+    finally:
+        _runtime.reset_dispatcher()
+
+    assert isinstance(snap, adapter._Snapshot)
+    assert snap.wrapper_bytes == wrapper.read_bytes()
+    assert snap.wrapper_mode == 0o755
+    assert snap.job_dict is not None
+    assert snap.job_dict["id"] == "abc"
+
+
+def test_snapshot_wrapper_and_job_no_matching_job(
+    adapter, isolated_hermes_home: Path, install_with_fake_binary: Path
+) -> None:
+    """When no matching job exists, job_dict is None."""
+    from caduceus import _runtime
+
+    wrapper = isolated_hermes_home / "scripts" / "caduceus-pulse.sh"
+    _stub_wrapper_file(wrapper, install_with_fake_binary)
+
+    # Registry has jobs but none named "caduceus".
+    registry = {
+        "xyz": {
+            "id": "xyz",
+            "name": "other-service",
+            "schedule": "every 5m",
+        }
+    }
+    _stub_cron_runtime(adapter, registry)
+    try:
+        snap = adapter._snapshot_wrapper_and_job(wrapper, "caduceus", registry)
+    finally:
+        _runtime.reset_dispatcher()
+
+    assert snap.job_dict is None
+    assert snap.wrapper_bytes == wrapper.read_bytes()
+
+
+def test_snapshot_wrapper_and_job_no_wrapper_file(
+    adapter, isolated_hermes_home: Path
+) -> None:
+    """When the wrapper file does not exist, bytes are empty and mode is 0."""
+    from caduceus import _runtime
+
+    wrapper = isolated_hermes_home / "scripts" / "caduceus-pulse.sh"
+    registry = {}
+
+    _stub_cron_runtime(adapter, registry)
+    try:
+        snap = adapter._snapshot_wrapper_and_job(wrapper, "caduceus", registry)
+    finally:
+        _runtime.reset_dispatcher()
+
+    assert snap.wrapper_bytes == b""
+    assert snap.wrapper_mode == 0
+    assert snap.job_dict is None
+
+
+# ---------------------------------------------------------------------------
+# Task 2.3: _reconcile_after_error()
+# ---------------------------------------------------------------------------
+
+
+def test_reconcile_intended_state_already_exists(
+    adapter, isolated_hermes_home: Path, install_with_fake_binary: Path
+) -> None:
+    """If intended state already exists in the re-list, reconcile is a no-op."""
+    from caduceus import _runtime
+
+    wrapper = isolated_hermes_home / "scripts" / "caduceus-pulse.sh"
+    _stub_wrapper_file(wrapper, install_with_fake_binary)
+
+    # Registry already has a caduceus job (intended state).
+    registry = {
+        "abc": {
+            "id": "abc",
+            "name": "caduceus",
+            "schedule": "every 2m",
+        }
+    }
+    _stub_cron_runtime(adapter, registry)
+    try:
+        result = adapter._reconcile_after_error(
+            error=RuntimeError("something went wrong"),
+            snapshot=adapter._Snapshot(
+                wrapper_bytes=b"old", wrapper_mode=0o755, job_dict=None
+            ),
+            ctx=adapter,
+            job_name="caduceus",
+            intended_state="present",
+        )
+    finally:
+        _runtime.reset_dispatcher()
+
+    # Success — intended state already present.
+    assert result is None or result == "ok"
+
+
+def test_reconcile_nothing_changed_from_snapshot(
+    adapter, isolated_hermes_home: Path, install_with_fake_binary: Path
+) -> None:
+    """If re-list shows same state as snapshot, reconcile is a no-op."""
+    from caduceus import _runtime
+
+    wrapper = isolated_hermes_home / "scripts" / "caduceus-pulse.sh"
+    _stub_wrapper_file(wrapper, install_with_fake_binary)
+    wrapper_bytes = wrapper.read_bytes()
+    wrapper_mode = 0o755
+
+    # Registry has no caduceus job — matches snapshot (job_dict=None).
+    registry = {}
+    _stub_cron_runtime(adapter, registry)
+    try:
+        result = adapter._reconcile_after_error(
+            error=RuntimeError("something went wrong"),
+            snapshot=adapter._Snapshot(
+                wrapper_bytes=wrapper_bytes, wrapper_mode=wrapper_mode, job_dict=None
+            ),
+            ctx=adapter,
+            job_name="caduceus",
+            intended_state="absent",
+        )
+    finally:
+        _runtime.reset_dispatcher()
+
+    assert result is None or result == "ok"
+
+
+def test_reconcile_restores_wrapper_and_job(
+    adapter, isolated_hermes_home: Path, install_with_fake_binary: Path
+) -> None:
+    """Reconcile restores wrapper bytes/mode and re-creates the job from snapshot."""
+    from caduceus import _runtime
+
+    wrapper = isolated_hermes_home / "scripts" / "caduceus-pulse.sh"
+    _stub_wrapper_file(wrapper, install_with_fake_binary)
+    original_bytes = wrapper.read_bytes()
+
+    job_dict = {
+        "id": "abc",
+        "name": "caduceus",
+        "schedule": "every 2m",
+        "script": "caduceus-pulse.sh",
+        "no_agent": True,
+    }
+
+    # After the error, registry has been cleared (simulating a partially
+    # failed remove that left no jobs and no wrapper).
+    registry = {}
+    _stub_cron_runtime(adapter, registry)
+    # Remove the wrapper too.
+    if wrapper.exists():
+        wrapper.unlink()
+
+    try:
+        result = adapter._reconcile_after_error(
+            error=RuntimeError("remove failed"),
+            snapshot=adapter._Snapshot(
+                wrapper_bytes=original_bytes,
+                wrapper_mode=0o755,
+                job_dict=job_dict,
+            ),
+            ctx=adapter,
+            job_name="caduceus",
+            intended_state="present",
+        )
+    finally:
+        _runtime.reset_dispatcher()
+
+    # Should have restored.
+    assert result is None or result == "ok"
+    assert wrapper.is_file()
+    assert wrapper.read_bytes() == original_bytes
+    mode = stat.S_IMODE(wrapper.stat().st_mode)
+    assert mode == 0o755
+
+
+def test_reconcile_impossible_rollback_returns_needs_attention(
+    adapter, isolated_hermes_home: Path, install_with_fake_binary: Path
+) -> None:
+    """When reconciliation cannot restore state, _NeedsAttention is returned."""
+    from caduceus import _runtime
+
+    wrapper = isolated_hermes_home / "scripts" / "caduceus-pulse.sh"
+    _stub_wrapper_file(wrapper, install_with_fake_binary)
+
+    job_dict = {"id": "abc", "name": "caduceus", "schedule": "every 2m"}
+
+    _stub_cron_runtime(adapter, {})
+    try:
+        # Remove wrapper so there's nothing to restore from.
+        if wrapper.exists():
+            wrapper.unlink()
+        result = adapter._reconcile_after_error(
+            error=RuntimeError("remove failed"),
+            snapshot=adapter._Snapshot(
+                wrapper_bytes=b"", wrapper_mode=0, job_dict=job_dict,
+            ),
+            ctx=adapter,
+            job_name="caduceus",
+            intended_state="present",
+        )
+    finally:
+        _runtime.reset_dispatcher()
+
+    # Snapshot has empty wrapper but had a job — cannot restore wrapper.
+    assert isinstance(result, adapter._NeedsAttention)
+    assert isinstance(result.recovery_evidence, str)
+    assert len(result.recovery_evidence) > 0
+
+
+# ---------------------------------------------------------------------------
+# Task 2.4: Rewritten _cron_install with snapshot + reconcile
+# ---------------------------------------------------------------------------
+
+
+def test_cron_install_snapshots_before_mutation(
+    adapter, isolated_hermes_home: Path, install_with_fake_binary: Path
+) -> None:
+    """_cron_install snapshots the wrapper and job before any mutation (AC-01)."""
+    from caduceus import _runtime
+
+    wrapper = isolated_hermes_home / "scripts" / "caduceus-pulse.sh"
+    _stub_wrapper_file(wrapper, install_with_fake_binary)
+
+    registry = {}
+    actions = _stub_cron_runtime(adapter, registry)
+    try:
+        action, note = adapter._cron_install(dry_run=False)
+    finally:
+        _runtime.reset_dispatcher()
+
+    assert action in ("created", "reused")
+    # The first list action is the snapshot — it happens before create.
+    list_actions = [a for a in actions if a["action"] == "list"]
+    create_actions = [a for a in actions if a["action"] == "create"]
+    assert len(list_actions) >= 1
+    if create_actions:
+        assert actions.index(list_actions[0]) < actions.index(create_actions[0])
+
+
+def test_cron_install_checks_capability_before_wrapper(
+    adapter, isolated_hermes_home: Path, install_with_fake_binary: Path
+) -> None:
+    """Cron capability is checked BEFORE the wrapper is written.
+
+    Per AC-01 and design decision #8: the capability check must precede
+    the mutation (wrapper write) so a denied/failing cron does not leave
+    a stray wrapper on disk.
+    """
+    from caduceus import _runtime
+
+    wrapper = isolated_hermes_home / "scripts" / "caduceus-pulse.sh"
+    registry = {}
+    _stub_cron_runtime(adapter, registry)
+
+    # Patch _cron_job_registry to raise CronCapabilityError(denied).
+    original_registry = adapter._cron_job_registry
+    def _failing_registry():
+        raise _runtime.CronCapabilityError("denied", "cron denied")
+
+    try:
+        adapter._cron_job_registry = _failing_registry  # type: ignore[assignment]
+        with pytest.raises((_runtime.CronCapabilityError, RuntimeError)):
+            adapter._cron_install(dry_run=False)
+    finally:
+        _runtime.reset_dispatcher()
+        adapter._cron_job_registry = original_registry
+
+    # Wrapper should NOT have been written — capability check fails first.
+    assert not wrapper.exists(), (
+        "wrapper should not exist when cron capability check fails"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Task 2.5: Rewritten _cli_cron_remove with snapshot + reconcile
+# ---------------------------------------------------------------------------
+
+
+def test_cron_remove_snapshots_before_mutation(
+    adapter, isolated_hermes_home: Path, install_with_fake_binary: Path
+) -> None:
+    """_cli_cron_remove snapshots wrapper and job before removal (AC-01/03)."""
+    from caduceus import _runtime
+
+    wrapper = isolated_hermes_home / "scripts" / "caduceus-pulse.sh"
+    _stub_wrapper_file(wrapper, install_with_fake_binary)
+
+    registry = {
+        "abc": {
+            "id": "abc",
+            "name": "caduceus",
+            "schedule": "every 2m",
+        }
+    }
+    actions = _stub_cron_runtime(adapter, registry)
+    try:
+        rc = adapter._cli_cron_remove()
+    finally:
+        _runtime.reset_dispatcher()
+
+    assert rc == 0
+    # List should happen before remove.
+    list_actions = [a for a in actions if a["action"] == "list"]
+    remove_actions = [a for a in actions if a["action"] == "remove"]
+    assert len(list_actions) >= 1
+    if remove_actions:
+        assert actions.index(list_actions[0]) < actions.index(remove_actions[0])
+    assert not wrapper.exists()
+
+
+def test_cron_remove_reconciles_on_failure(
+    adapter, isolated_hermes_home: Path, install_with_fake_binary: Path
+) -> None:
+    """When cron-remove fails mid-way, reconcile restores stable state."""
+    from caduceus import _runtime
+
+    wrapper = isolated_hermes_home / "scripts" / "caduceus-pulse.sh"
+    _stub_wrapper_file(wrapper, install_with_fake_binary)
+    original_bytes = wrapper.read_bytes()
+
+    registry = {
+        "abc": {
+            "id": "abc",
+            "name": "caduceus",
+            "schedule": "every 2m",
+        }
+    }
+    actions = _stub_cron_runtime(adapter, registry)
+
+    # Make cron_remove_job fail on first call.
+    original_remove = adapter._cronjob_remove
+    fail_count = [0]
+
+    def _failing_remove(job_id: str):
+        fail_count[0] += 1
+        if fail_count[0] == 1:
+            raise RuntimeError("simulated remove failure")
+        return original_remove(job_id)
+
+    adapter._cronjob_remove = _failing_remove  # type: ignore[assignment]
+    try:
+        rc = adapter._cli_cron_remove()
+    finally:
+        _runtime.reset_dispatcher()
+        adapter._cronjob_remove = original_remove
+
+    # Reconcile restored stable state — wrapper and job are preserved.
+    assert rc == 0
+    assert wrapper.is_file()
+    assert wrapper.read_bytes() == original_bytes
+    # Job still exists — remove failed and reconcile preserved it.
+    assert "abc" in registry
+
+
+# ---------------------------------------------------------------------------
+# Task 2.7: Crash-boundary reconciliation scenarios (AC-09)
+# ---------------------------------------------------------------------------
+
+
+def test_cron_install_crash_after_wrapper_before_create_is_idempotent(
+    adapter, isolated_hermes_home: Path, install_with_fake_binary: Path
+) -> None:
+    """Re-running cron-install after a crash between wrapper write and
+    job create converges to the single intended state."""
+    from caduceus import _runtime
+
+    wrapper = isolated_hermes_home / "scripts" / "caduceus-pulse.sh"
+
+    # First run: write wrapper, then fail on cron list (simulating crash).
+    adapter._write_pulse_wrapper(install_with_fake_binary)
+    assert wrapper.is_file()
+
+    # Second run should succeed and create the job.
+    registry = {}
+    _stub_cron_runtime(adapter, registry)
+    try:
+        action, note = adapter._cron_install(dry_run=False)
+    finally:
+        _runtime.reset_dispatcher()
+
+    assert action == "created"
+    assert wrapper.is_file()
+
+
+def test_cron_remove_crash_after_remove_before_wrapper_delete(
+    adapter, isolated_hermes_home: Path, install_with_fake_binary: Path
+) -> None:
+    """Re-running cron-remove after a crash between job remove and
+    wrapper delete converges to clean state."""
+    from caduceus import _runtime
+
+    wrapper = isolated_hermes_home / "scripts" / "caduceus-pulse.sh"
+    _stub_wrapper_file(wrapper, install_with_fake_binary)
+
+    # First run: remove the job manually (simulating crash after remove).
+    registry = {}
+    _stub_cron_runtime(adapter, registry)
+    try:
+        rc = adapter._cli_cron_remove()
+    finally:
+        _runtime.reset_dispatcher()
+
+    # Should succeed — job is already gone, wrapper gets removed.
+    assert rc == 0
+    assert not wrapper.exists()
+
+
+def test_cron_install_crash_between_create_and_update_is_idempotent(
+    adapter, isolated_hermes_home: Path, install_with_fake_binary: Path
+) -> None:
+    """If cron-install crashes after creating a job but before the
+    reconcile check, a second run updates the existing job."""
+    from caduceus import _runtime
+
+    wrapper = isolated_hermes_home / "scripts" / "caduceus-pulse.sh"
+    _stub_wrapper_file(wrapper, install_with_fake_binary)
+
+    # Pre-seed a caduceus job with stale schedule (simulating partial state).
+    registry = {
+        "abc": {
+            "id": "abc",
+            "name": "caduceus",
+            "schedule": "every 5m",
+            "script": "caduceus-pulse.sh",
+            "no_agent": False,
+        }
+    }
+    actions = _stub_cron_runtime(adapter, registry)
+    try:
+        action, note = adapter._cron_install(dry_run=False)
+    finally:
+        _runtime.reset_dispatcher()
+
+    assert action == "reused"
+    # The job should have been updated.
+    assert registry["abc"]["schedule"] == "every 2m"
+    assert registry["abc"]["no_agent"] is True
+
+
+# ---------------------------------------------------------------------------
+# Additional triangulation: reconcile edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_reconcile_absent_intended_state_already_absent(
+    adapter, isolated_hermes_home: Path
+) -> None:
+    """Reconcile with intended_state=absent is a no-op when no job exists."""
+    from caduceus import _runtime
+
+    registry = {}
+    _stub_cron_runtime(adapter, registry)
+    try:
+        result = adapter._reconcile_after_error(
+            error=RuntimeError("remove failed"),
+            snapshot=adapter._Snapshot(
+                wrapper_bytes=b"", wrapper_mode=0, job_dict=None,
+            ),
+            ctx=adapter,
+            job_name="caduceus",
+            intended_state="absent",
+        )
+    finally:
+        _runtime.reset_dispatcher()
+
+    assert result is None  # No-op success
+
+
+def test_reconcile_failed_relist_returns_needs_attention(
+    adapter, isolated_hermes_home: Path
+) -> None:
+    """When re-list fails, reconcile returns NeedsAttention."""
+    from caduceus import _runtime
+
+    original_registry = adapter._cron_job_registry
+    def _failing_registry():
+        raise RuntimeError("cannot list cron jobs")
+
+    try:
+        adapter._cron_job_registry = _failing_registry  # type: ignore[assignment]
+        result = adapter._reconcile_after_error(
+            error=RuntimeError("some error"),
+            snapshot=adapter._Snapshot(
+                wrapper_bytes=b"data", wrapper_mode=0o755, job_dict={"id": "abc"},
+            ),
+            ctx=adapter,
+            job_name="caduceus",
+            intended_state="present",
+        )
+    finally:
+        adapter._cron_job_registry = original_registry
+
+    assert isinstance(result, adapter._NeedsAttention)
+    assert "re-list failed" in result.recovery_evidence
