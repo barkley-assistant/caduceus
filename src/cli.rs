@@ -10,7 +10,7 @@ use std::ffi::OsString;
 
 use clap::{Parser, Subcommand};
 
-use caduceus::config::Config;
+use caduceus::config::{Config, SetupAction};
 use caduceus::error::{CaduceusError, CaduceusResult};
 use caduceus::issue::IssueKey;
 use caduceus::queue::StateStore;
@@ -66,6 +66,13 @@ pub enum Command {
         from: std::path::PathBuf,
         /// Report what would change without modifying anything.
         #[arg(long, default_value_t = false)]
+        dry_run: bool,
+    },
+    /// Generate minimal non-secret configuration.
+    #[command(name = "setup", about = "Generate minimal non-secret configuration")]
+    Setup {
+        /// Print the planned action without writing.
+        #[arg(long)]
         dry_run: bool,
     },
 }
@@ -132,7 +139,7 @@ pub fn run() -> CaduceusResult<()> {
             // chain the other subcommands use. Cron never sets
             // `CADUCEUS_CONFIG`, so a missing env var still
             // falls through to `Config::load()` and surfaces
-            // the Task 1.3 "not yet implemented" error.
+            // a configuration error.
             let cfg = match std::env::var_os("CADUCEUS_CONFIG") {
                 Some(path) => Config::load_from(std::path::Path::new(&path))?,
                 None => Config::load()?,
@@ -160,6 +167,28 @@ pub fn run() -> CaduceusResult<()> {
             Ok(())
         }
         Some(Command::MigrateState { from, dry_run }) => run_migrate_state(&from, dry_run),
+        Some(Command::Setup { dry_run }) => {
+            let hermes_home = match std::env::var_os("HERMES_HOME") {
+                Some(h) => std::path::PathBuf::from(&h),
+                None => {
+                    eprintln!("caduceus: $HERMES_HOME is required for setup");
+                    return Err(CaduceusError::Config(
+                        "HERMES_HOME must be set for setup".to_string(),
+                    ));
+                }
+            };
+            let report = caduceus::config::setup_config(&hermes_home, dry_run)?;
+            match report.action {
+                SetupAction::Created => {
+                    println!("caduceus setup: created {}", report.path.display());
+                }
+                SetupAction::Updated => {
+                    println!("caduceus setup: updated {}", report.path.display());
+                }
+                SetupAction::Skipped => {} // dry-run already printed
+            }
+            Ok(())
+        }
         // Every other subcommand is a stub for now; `run` is the
         // canonical "no-op success" so the cron tick contract
         // (silent on success) holds while the rest of the daemon

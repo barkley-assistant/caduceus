@@ -22,6 +22,14 @@ fn ctx(root: &Path) -> LoadContext {
     }
 }
 
+fn ctx_standalone() -> LoadContext {
+    LoadContext {
+        hermes_home: None,
+        plugin_root: None,
+        env: RawEnv::default(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Defaults & test_defaults
 // ---------------------------------------------------------------------------
@@ -250,15 +258,12 @@ fn tilde_in_worker_command_is_rejected() {
 
 #[test]
 fn empty_worker_command_in_standalone_install_is_rejected() {
-    let root = tempdir("empty-worker");
-    let mut ctx = ctx(&root);
-    // No plugin_root → default bridge path is unavailable → standalone install.
-    ctx.plugin_root = None;
+    // No plugin_root and no hermes_home → standalone install.
     let yaml = r#"
         worker_command: []
         "#;
     let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
-    let err = Config::from_raw(raw, &ctx)
+    let err = Config::from_raw(raw, &ctx_standalone())
         .expect_err("empty worker_command must fail outside a plugin layout");
     let msg = format!("{err:?}");
     assert!(
@@ -608,14 +613,12 @@ fn missing_state_dir_path_is_accepted() {
 
 #[test]
 fn missing_worker_command_in_standalone_install_is_a_config_error() {
-    let root = tempdir("standalone-no-worker");
-    let mut ctx = ctx(&root);
-    ctx.plugin_root = None; // standalone install
+    // No plugin_root and no hermes_home → standalone install.
     let yaml = r#"
         poll_interval_seconds: 60
         "#;
     let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
-    let err = Config::from_raw(raw, &ctx)
+    let err = Config::from_raw(raw, &ctx_standalone())
         .expect_err("standalone install without worker_command must fail");
     let msg = format!("{err:?}");
     assert!(
