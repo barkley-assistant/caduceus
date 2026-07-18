@@ -373,24 +373,6 @@ pub fn commit_code_result(
         DEFAULT_GIT_USER_EMAIL,
         runner,
     )?;
-    // 6. Atomically copy the result to runs/.
-    let runs_dir = ctx.config.state_dir.join("runs");
-    std::fs::create_dir_all(&runs_dir).map_err(|err| CaduceusError::StateCorrupt {
-        path: runs_dir.clone(),
-        message: format!("create_dir_all failed: {err}"),
-    })?;
-    let target = runs_dir.join(format!("{}.result.json", ctx.run_id));
-    if worker_result_path.exists() {
-        let bytes =
-            std::fs::read(worker_result_path).map_err(|err| CaduceusError::StateCorrupt {
-                path: worker_result_path.to_path_buf(),
-                message: format!("read result: {err}"),
-            })?;
-        write_atomic(&target, &bytes).map_err(|err| CaduceusError::StateCorrupt {
-            path: target.clone(),
-            message: format!("write_atomic result: {err}"),
-        })?;
-    }
     let _ = worker_result_path;
     Ok(CommitOutcome {
         commit_oid,
@@ -1621,6 +1603,35 @@ pub fn dry_run_finalize(
             format!("report={}", report_path.display()),
         ],
     })
+}
+
+/// Atomically archive a worker result from the worktree to the
+/// canonical `<state_dir>/runs/<run_id>.result.json` path. The
+/// helper reads the file, creates the runs directory (if needed),
+/// and writes via [`write_atomic`] for crash safety.
+///
+/// Returns the canonical archive path so callers can pass it to
+/// downstream finalization.
+pub fn archive_worker_result(
+    worktree_result_path: &std::path::Path,
+    state_dir: &std::path::Path,
+    run_id: &str,
+) -> CaduceusResult<std::path::PathBuf> {
+    let runs_dir = state_dir.join("runs");
+    std::fs::create_dir_all(&runs_dir).map_err(|err| CaduceusError::StateCorrupt {
+        path: runs_dir.clone(),
+        message: format!("create_dir_all failed: {err}"),
+    })?;
+    let target = runs_dir.join(format!("{run_id}.result.json"));
+    let bytes = std::fs::read(worktree_result_path).map_err(|err| CaduceusError::StateCorrupt {
+        path: worktree_result_path.to_path_buf(),
+        message: format!("read result: {err}"),
+    })?;
+    write_atomic(&target, &bytes).map_err(|err| CaduceusError::StateCorrupt {
+        path: target.clone(),
+        message: format!("write_atomic result: {err}"),
+    })?;
+    Ok(target)
 }
 
 /// Write `data` to `path` atomically: write to

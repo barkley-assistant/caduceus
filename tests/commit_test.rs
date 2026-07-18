@@ -23,7 +23,8 @@ use std::sync::Arc;
 
 use caduceus::config::{Config, LoadContext, RawConfig};
 use caduceus::finalize::{
-    commit_code_and_finalize, FinalizeAction, FinalizeContext, FinalizeOutput, FinalizeRequest,
+    archive_worker_result, commit_code_and_finalize, FinalizeAction, FinalizeContext,
+    FinalizeOutput, FinalizeRequest,
 };
 use caduceus::github::Client;
 use caduceus::issue::IssueDetail;
@@ -527,20 +528,22 @@ fn commit_writes_result_to_runs_dir() {
     let ctx = make_context(&cfg, &wt, &issue, "run-result-copy");
     let runner = GitRunner::new(&cfg);
     let result = make_worker_result("feat: result copy");
-    let result_path = base.path().join("worker-result.json");
-    fs::write(&result_path, r#"{"status":"success"}"#).expect("write");
+    let worktree_result_path = base.path().join("worker-result.json");
+    fs::write(&worktree_result_path, r#"{"status":"success"}"#).expect("write");
+    // The archive step is now the tick's responsibility, not
+    // commit_code_result's.  Simulate the tick's archive before
+    // passing the runs/ path to finalization.
+    let archive_path =
+        archive_worker_result(&worktree_result_path, &cfg.state_dir, "run-result-copy")
+            .expect("archive");
     let _ =
-        commit_code_and_finalize(&ctx, &result, &runner, result_path.as_path()).expect("commit");
-    let target = cfg
-        .state_dir
-        .join("runs")
-        .join("run-result-copy.result.json");
+        commit_code_and_finalize(&ctx, &result, &runner, archive_path.as_path()).expect("commit");
     assert!(
-        target.exists(),
-        "result file should be copied to runs/, got: {}",
-        target.display()
+        archive_path.exists(),
+        "result file should be in runs/, got: {}",
+        archive_path.display()
     );
-    let bytes = fs::read(&target).expect("read");
+    let bytes = fs::read(&archive_path).expect("read");
     let text = String::from_utf8_lossy(&bytes);
     assert!(text.contains("\"success\""));
 }
