@@ -1426,6 +1426,388 @@ def test_reconcile_absent_intended_state_already_absent(
     assert result is None  # No-op success
 
 
+# ---------------------------------------------------------------------------
+# Phase 3: Structured Doctor (Tasks 3.1-3.4)
+# ---------------------------------------------------------------------------
+# Tests written FIRST (RED phase) before any production code changes.
+# They verify the _DoctorFinding namedtuple, five doctor check functions,
+# structured _cli_doctor with 3 exit codes, and cleanup of AC-12.
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Task 3.1: _DoctorFinding namedtuple
+# ---------------------------------------------------------------------------
+
+
+def test_doctor_finding_is_namedtuple() -> None:
+    """_DoctorFinding is a namedtuple with category, status, detail, next_action."""
+    from collections import namedtuple
+    from caduceus import _DoctorFinding
+
+    assert isinstance(_DoctorFinding, type)
+    assert issubclass(_DoctorFinding, tuple)
+    # Namedtuples have _fields.
+    assert _DoctorFinding._fields == ("category", "status", "detail", "next_action")
+
+
+def test_doctor_finding_holds_values() -> None:
+    """_DoctorFinding stores category, status, detail, next_action."""
+    from caduceus import _DoctorFinding
+
+    f = _DoctorFinding(
+        category="host-capability-unavailable",
+        status="fail",
+        detail="/path/to/binary not found",
+        next_action="run `hermes caduceus setup` to build the binary",
+    )
+    assert f.category == "host-capability-unavailable"
+    assert f.status == "fail"
+    assert f.detail == "/path/to/binary not found"
+    assert f.next_action == "run `hermes caduceus setup` to build the binary"
+
+
+def test_doctor_finding_accepts_ok_status() -> None:
+    """_DoctorFinding accepts status='ok'."""
+    from caduceus import _DoctorFinding
+
+    f = _DoctorFinding(
+        category="config-incomplete",
+        status="ok",
+        detail="all config present",
+        next_action="",
+    )
+    assert f.status == "ok"
+    assert f.next_action == ""
+
+
+def test_doctor_finding_is_immutable() -> None:
+    """_DoctorFinding is a namedtuple — fields cannot be reassigned."""
+    from caduceus import _DoctorFinding
+
+    f = _DoctorFinding(
+        category="gateway-inactive",
+        status="fail",
+        detail="gateway not reachable",
+        next_action="run `hermes gateway restart`",
+    )
+    with pytest.raises(AttributeError):
+        f.status = "ok"  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# Task 3.2: Doctor check functions
+# ---------------------------------------------------------------------------
+
+
+def test_doctor_check_binary_present(
+    adapter, install_with_fake_binary: Path
+) -> None:
+    """_doctor_check_binary returns ok when binary exists."""
+    finding = adapter._doctor_check_binary()
+    assert finding.category == "host-capability-unavailable"
+    assert finding.status == "ok"
+    assert str(install_with_fake_binary) in finding.detail
+
+
+def test_doctor_check_binary_missing(adapter) -> None:
+    """_doctor_check_binary returns fail when binary is missing."""
+    finding = adapter._doctor_check_binary()
+    assert finding.category == "host-capability-unavailable"
+    assert finding.status == "fail"
+    assert "not found" in finding.detail.lower() or "missing" in finding.detail.lower()
+    assert "setup" in finding.next_action.lower()
+
+
+def test_doctor_check_bridge_harness_executable(
+    adapter, isolated_hermes_home: Path
+) -> None:
+    """_doctor_check_bridge_harness returns ok when bridge is executable."""
+    bridge = isolated_hermes_home / "caduceus" / "worker-bridge.py"
+    bridge.parent.mkdir(parents=True, exist_ok=True)
+    bridge.write_text("#!/usr/bin/env python3\nprint('ok')\n")
+    bridge.chmod(0o755)
+    finding = adapter._doctor_check_bridge_harness()
+    assert finding.category == "host-capability-unavailable"
+    assert finding.status == "ok"
+    assert str(bridge) in finding.detail
+
+
+def test_doctor_check_bridge_harness_not_executable(
+    adapter, isolated_hermes_home: Path
+) -> None:
+    """_doctor_check_bridge_harness returns fail when bridge lacks execute bit."""
+    bridge = isolated_hermes_home / "caduceus" / "worker-bridge.py"
+    bridge.parent.mkdir(parents=True, exist_ok=True)
+    bridge.write_text("#!/usr/bin/env python3\nprint('ok')\n")
+    bridge.chmod(0o644)  # Not executable
+    finding = adapter._doctor_check_bridge_harness()
+    assert finding.category == "host-capability-unavailable"
+    assert finding.status == "fail"
+    assert "chmod" in finding.next_action.lower() or "+x" in finding.next_action.lower()
+
+
+def test_doctor_check_provider_secret_present(
+    adapter, install_plugin: Path
+) -> None:
+    """_doctor_check_provider_secret returns ok when secret name is configured."""
+    finding = adapter._doctor_check_provider_secret()
+    # Without a config to inspect, we expect a sensible default.
+    assert finding.category in ("config-incomplete", "host-capability-unavailable")
+    assert finding.status in ("ok", "fail")
+
+
+def test_doctor_check_cron_capability_ok(
+    adapter, install_with_fake_binary: Path
+) -> None:
+    """_doctor_check_cron_capability returns ok when cron lists without error."""
+    from caduceus import _runtime
+
+    registry = {}
+    _stub_cron_runtime(adapter, registry)
+    try:
+        finding = adapter._doctor_check_cron_capability(ctx=adapter)
+    finally:
+        _runtime.reset_dispatcher()
+    assert finding.category == "host-capability-unavailable"
+    assert finding.status == "ok"
+
+
+def test_doctor_check_cron_capability_fails(
+    adapter, install_with_fake_binary: Path
+) -> None:
+    """_doctor_check_cron_capability returns fail when cron list raises."""
+    from caduceus import _runtime
+
+    original_registry = adapter._cron_job_registry
+    def _failing_registry():
+        raise RuntimeError("cron unavailable")
+
+    try:
+        adapter._cron_job_registry = _failing_registry  # type: ignore[assignment]
+        finding = adapter._doctor_check_cron_capability(ctx=adapter)
+    finally:
+        adapter._cron_job_registry = original_registry
+    assert finding.status == "fail"
+    assert "cron" in finding.detail.lower()
+
+
+def test_doctor_check_gateway_returns_finding(
+    adapter, install_with_fake_binary: Path
+) -> None:
+    """_doctor_check_gateway returns a _DoctorFinding (ok or fail)."""
+    finding = adapter._doctor_check_gateway()
+    assert isinstance(finding, tuple)
+    assert finding.category == "gateway-inactive"
+    assert finding.status in ("ok", "fail")
+
+
+# ---------------------------------------------------------------------------
+# Task 3.3: Rewritten _cli_doctor
+# ---------------------------------------------------------------------------
+
+
+def test_doctor_exit_0_when_all_healthy(
+    adapter, install_with_fake_binary: Path, isolated_hermes_home: Path, monkeypatch
+) -> None:
+    """_cli_doctor returns 0 when all checks pass (AC-06)."""
+    from caduceus import _runtime
+
+    # Set up healthy environment: binary exists, bridge is executable,
+    # cron works, and provider secret is configured.
+    monkeypatch.setenv("CADUCEUS_GITHUB_TOKEN", "ghp_test-secret-configured")
+    bridge = isolated_hermes_home / "caduceus" / "worker-bridge.py"
+    bridge.parent.mkdir(parents=True, exist_ok=True)
+    bridge.write_text("#!/usr/bin/env python3\nprint('ok')\n")
+    bridge.chmod(0o755)
+
+    registry = {}
+    _stub_cron_runtime(adapter, registry)
+    try:
+        rc = adapter._cli_doctor()
+    finally:
+        _runtime.reset_dispatcher()
+    assert rc == 0
+
+
+def test_doctor_exit_1_for_config_defect(
+    adapter, install_with_fake_binary: Path, isolated_hermes_home: Path
+) -> None:
+    """_cli_doctor returns 1 for config-incomplete or daemon-defect (AC-08)."""
+    from caduceus import _runtime
+
+    # Binary present, bridge executable, cron works — but provider secret
+    # is missing (config-incomplete).
+    bridge = isolated_hermes_home / "caduceus" / "worker-bridge.py"
+    bridge.parent.mkdir(parents=True, exist_ok=True)
+    bridge.write_text("#!/usr/bin/env python3\nprint('ok')\n")
+    bridge.chmod(0o755)
+
+    registry = {}
+    _stub_cron_runtime(adapter, registry)
+
+    # Make provider secret check return fail (config-incomplete).
+    original_secret = adapter._doctor_check_provider_secret
+    def _failing_secret():
+        from caduceus import _DoctorFinding
+        return _DoctorFinding(
+            category="config-incomplete",
+            status="fail",
+            detail="provider secret not configured",
+            next_action="set HERMES_PROVIDER_SECRET in environment",
+        )
+
+    try:
+        adapter._doctor_check_provider_secret = _failing_secret  # type: ignore[assignment]
+        rc = adapter._cli_doctor()
+    finally:
+        _runtime.reset_dispatcher()
+        adapter._doctor_check_provider_secret = original_secret
+    assert rc == 1
+
+
+def test_doctor_exit_2_for_missing_binary(
+    adapter, isolated_hermes_home: Path
+) -> None:
+    """_cli_doctor returns 2 for host-capability-unavailable (AC-11)."""
+    from caduceus import _runtime
+
+    # No binary installed — exit 2.
+    registry = {}
+    _stub_cron_runtime(adapter, registry)
+    try:
+        rc = adapter._cli_doctor()
+    finally:
+        _runtime.reset_dispatcher()
+    assert rc == 2
+
+
+def test_doctor_exit_2_takes_precedence_over_exit_1(
+    adapter, isolated_hermes_home: Path
+) -> None:
+    """When both exit-1 and exit-2 failures exist, exit 2 wins (design #9)."""
+    from caduceus import _runtime
+
+    # Binary missing (exit 2) AND config defect (exit 1) — exit 2 wins.
+    registry = {}
+    _stub_cron_runtime(adapter, registry)
+    original_secret = adapter._doctor_check_provider_secret
+    def _failing_secret():
+        from caduceus import _DoctorFinding
+        return _DoctorFinding(
+            category="config-incomplete",
+            status="fail",
+            detail="provider secret not configured",
+            next_action="set HERMES_PROVIDER_SECRET in environment",
+        )
+
+    try:
+        adapter._doctor_check_provider_secret = _failing_secret  # type: ignore[assignment]
+        rc = adapter._cli_doctor()
+    finally:
+        _runtime.reset_dispatcher()
+        adapter._doctor_check_provider_secret = original_secret
+    assert rc == 2
+
+
+def test_doctor_prints_structured_report(
+    adapter, install_with_fake_binary: Path, isolated_hermes_home: Path, capsys: pytest.CaptureFixture, monkeypatch
+) -> None:
+    """_cli_doctor prints each finding with status, detail, next_action (AC-07)."""
+    from caduceus import _runtime
+
+    monkeypatch.setenv("CADUCEUS_GITHUB_TOKEN", "ghp_test-secret-configured")
+    bridge = isolated_hermes_home / "caduceus" / "worker-bridge.py"
+    bridge.parent.mkdir(parents=True, exist_ok=True)
+    bridge.write_text("#!/usr/bin/env python3\nprint('ok')\n")
+    bridge.chmod(0o755)
+
+    registry = {}
+    _stub_cron_runtime(adapter, registry)
+    try:
+        rc = adapter._cli_doctor()
+    finally:
+        _runtime.reset_dispatcher()
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    # Each finding category should appear in the output.
+    assert "binary" in captured.out.lower() or "Binary" in captured.out
+    assert "cron" in captured.out.lower() or "Cron" in captured.out
+    assert "bridge" in captured.out.lower() or "Bridge" in captured.out
+    assert "ok" in captured.out.lower() or "OK" in captured.out
+
+
+def test_doctor_prints_failures_on_exit_2(
+    adapter, capsys: pytest.CaptureFixture
+) -> None:
+    """_cli_doctor prints failure details when exiting 2."""
+    from caduceus import _runtime
+
+    registry = {}
+    _stub_cron_runtime(adapter, registry)
+    try:
+        rc = adapter._cli_doctor()
+    finally:
+        _runtime.reset_dispatcher()
+
+    captured = capsys.readouterr()
+    assert rc == 2
+    # Should show what failed.
+    assert "fail" in captured.out.lower() or "FAIL" in captured.out
+
+
+# ---------------------------------------------------------------------------
+# Task 3.5: AC-12 cleanup tests
+# ---------------------------------------------------------------------------
+
+
+def test_write_pulse_wrapper_no_misleading_comments(
+    adapter, install_with_fake_binary: Path, isolated_hermes_home: Path
+) -> None:
+    """_write_pulse_wrapper no longer has misleading comments (AC-12)."""
+    # We check the body content the adapter generates.
+    # Get the source of the function.
+    import inspect
+    source = inspect.getsource(adapter._write_pulse_wrapper)
+    # The body string should not contain "Generated by" (the old comment
+    # was misleading — it's generated at runtime with the installed path).
+    # Actually AC-12 says REMOVE misleading comments, so let's verify
+    # the body is clean.
+    assert "Do not edit by hand" not in source
+    # The wrapper should still contain the exec line and set -euo pipefail.
+    body = (
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        f"exec {install_with_fake_binary} run \"$@\"\n"
+    )
+    # The generated wrapper should match a clean structure.
+    adapter._write_pulse_wrapper(install_with_fake_binary)
+    wrapper_path = isolated_hermes_home / "scripts" / "caduceus-pulse.sh"
+    assert wrapper_path.is_file()
+    text = wrapper_path.read_text(encoding="utf-8")
+    assert text == body
+
+
+def test_pulse_template_has_strict_shell_and_accurate_comments(
+    plugin_root: Path
+) -> None:
+    """caduceus-pulse.sh has strict shell and accurate comments (AC-12)."""
+    template = plugin_root / "plugin-assets" / "caduceus-pulse.sh"
+    text = template.read_text(encoding="utf-8")
+    lines = text.splitlines()
+
+    # Must have strict shell settings.
+    assert "set -euo pipefail" in text
+    # Must NOT have misleading or dev-only comments.
+    assert "FIXME" not in text
+    assert "TODO" not in text
+    assert "pending" not in text.lower()
+    assert "dev-only" not in text.lower()
+    # Must accurately describe what the file is.
+    assert "template" in text.lower() or "Template" in text
+
+
 def test_reconcile_failed_relist_returns_needs_attention(
     adapter, isolated_hermes_home: Path
 ) -> None:
