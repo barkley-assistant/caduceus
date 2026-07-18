@@ -10,12 +10,11 @@ and is the v1.0 contract surface for `CONTRACTS.md` `CI-001`,
 `CI-002`, and `CI-003`. Do not edit it without updating the
 contract and the v1.0 plan task packet.
 
-## The four required checks
+## The three required checks
 
 | Job | Workflow | What it runs | Why it is required |
 |---|---|---|---|
-| `ci / rust-1.97` | `.github/workflows/ci.yml` | `cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked --all-targets` on Rust 1.97 (the pinned MSRV) | The project compiles, lints, and tests against the lowest-supported toolchain so a v1.0 operator on the MSRV does not hit a surprise. |
-| `ci / rust-stable` | `.github/workflows/ci.yml` | Same four-line gate on stable Rust | The daemon also has to work on the current stable toolchain; the MSRV gate does not catch a feature that compiles on stable but not on 1.97. |
+| `ci / rust-stable` | `.github/workflows/ci.yml` | `cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked --all-targets` on stable Rust | The project compiles, lints, and tests against the current stable toolchain. The MSRV is enforced by `Cargo.toml` (`rust-version = "1.97"`) at compile time. |
 | `ci / python` | `.github/workflows/ci.yml` | `pytest -q tests/hermes_plugin_test.py tests/bridge_test.py` | The two project-required test files cover the Hermes plugin adapter and the worker bridge; the gate runs exactly that pair. |
 | `ci / planning` | `.github/workflows/ci.yml` | `python3 -B planning/caduceus-v1.0/tools/validate_plan.py` | The v1.0 plan validator is the seal that catches an undocumented contract drift, an unsealed v0.1 tree, a missing acceptance ID, or a broken cross-link. |
 | `commit-policy / check` | `.github/workflows/commit-policy.yml` | `planning/caduceus-v1.0/tools/check_commit_messages.py --range <base>..<head>` | Enforces the `<type>(<scope>): <description>` shape from `CONTRACTS.md` `CI-003`. A repo that enforces squash merge validates the squash title; otherwise every commit subject is validated. |
@@ -27,16 +26,14 @@ settings; renaming a job breaks the required-check contract.
 
 | Workflow | Image | Timeout | Caching |
 |---|---|---|---|
-| `ci / rust-1.97` | `ubuntu-24.04` | 30 min | `~/.cargo/registry`, `~/.cargo/git`, `target` keyed on `Cargo.lock` |
-| `ci / rust-stable` | `ubuntu-24.04` | 30 min | Same |
+| `ci / rust-stable` | `ubuntu-24.04` | 30 min | `~/.cargo/registry`, `~/.cargo/git`, `target` keyed on `Cargo.lock` |
 | `ci / python` | `ubuntu-24.04` | 15 min | None (apt + pip only) |
 | `ci / planning` | `ubuntu-24.04` | 5 min | None |
 | `commit-policy / check` | `ubuntu-24.04` | 5 min | None |
 
-Both Rust jobs install rustup with the `--profile minimal` flag
-and pin the toolchain by SHA-able installer (not `rustup
-update`). The MSRV job pins `1.97.0`; the stable job pins
-`stable`. The `Cargo.lock` is committed; both jobs use
+The Rust job installs rustup with the `--profile minimal` flag
+and pins the toolchain by SHA-able installer (not `rustup
+update`). The `Cargo.lock` is committed; the job uses
 `--locked`. There is no `--ignore-rust-version` and no
 `RUSTC_BOOTSTRAP=1`; if a contributor needs an unstable
 feature they should land it on a feature branch and open a
@@ -46,8 +43,7 @@ PR with a tracked issue, not switch the project toolchain.
 
 | Artifact | Produced by | Retained |
 |---|---|---|
-| `target-rust-1.97` | `ci / rust-1.97` | 14 days |
-| `target-rust-stable` | (future) | 14 days |
+| `target-rust-stable` | `ci / rust-stable` | 14 days |
 | `pytest-junit` | `ci / python` | 14 days |
 
 Artifacts are uploaded with `if-no-files-found: ignore` so a

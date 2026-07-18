@@ -1,15 +1,16 @@
 # Canonical CI matrix for the Caduceus v1.0 plan.
 #
 # Implements CONTRACTS.md CI-001 and CI-002. Runs on every pull
-# request and every push to main. The matrix covers the pinned
-# MSRV (1.97) and stable Rust, with --locked in both jobs. The
-# Python gate runs the two project-required test files only:
-# tests/hermes_plugin_test.py and tests/bridge_test.py. The
-# planning validation step runs validate_plan.py from the v1.0
-# controller tools. Artifacts are retained for 14 days.
+# request and every push to main. The matrix runs on stable Rust
+# with --locked. The MSRV is documented in Cargo.toml
+# (rust-version = "1.97") and enforced at compile time — no
+# separate MSRV CI job is needed. The Python gate runs the two
+# project-required test files only: tests/hermes_plugin_test.py
+# and tests/bridge_test.py. The planning validation step runs
+# validate_plan.py from the v1.0 controller tools. Artifacts
+# are retained for 14 days.
 #
 # Required-check names:
-# - ci / rust-1.97
 # - ci / rust-stable
 # - ci / python
 # - ci / planning
@@ -61,62 +62,6 @@ permissions:
   contents: read
 
 jobs:
-  rust-msrv:
-    name: rust-1.97
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
-      - name: install Rust 1.97 (pinned MSRV)
-        run: |
-          set -euo pipefail
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-            | sh -s -- -y --default-toolchain 1.97.0 --profile minimal
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          # The minimal profile ships rustc + cargo only. The four-line
-          # gate runs cargo fmt --check and cargo clippy --locked, both
-          # of which need the rustfmt and clippy components. Add them
-          # explicitly so the gate is reproducible on every cold-cache
-          # first run. The local AGENTS.md gate is unaffected; this
-          # change only impacts CI.
-          rustup component add rustfmt clippy
-      - name: cache cargo registry and target
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: cargo-msrv-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            cargo-msrv-
-      - name: configure git identity for tests
-        run: |
-          set -euo pipefail
-          # Several tests in tests/repository_discovery_test.rs create
-          # a local clone and run `git commit` to verify discovery
-          # behavior. The GitHub-hosted runner has no global git
-          # identity, which makes those tests fail with
-          # "empty ident name". Set a local identity just for the
-          # duration of the job; nothing is pushed anywhere.
-          git config --global user.email "ci@caduceus.local"
-          git config --global user.name "caduceus-ci"
-      - name: fmt
-        run: cargo fmt --check
-      - name: clippy
-        run: cargo clippy --locked --all-targets -- -D warnings
-      - name: test
-        run: cargo test --locked --all-targets
-      - name: upload target
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: target-rust-1.97
-          path: target
-          retention-days: 14
-          if-no-files-found: ignore
-
   rust-stable:
     name: rust-stable
     runs-on: ubuntu-24.04
