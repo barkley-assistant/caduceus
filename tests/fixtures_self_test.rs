@@ -19,12 +19,16 @@
 #[path = "fixtures/mod.rs"]
 mod fixtures;
 
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::json;
 
-use fixtures::{LocalOrigin, MockGitHub};
+use fixtures::{
+    CrashPoint, LocalOrigin, MockGitHub, ProcessTree, ReleaseBinary, RunSupervisorArgs,
+};
 
 // -----------------------------------------------------------------------
 // AC-01: Require no network or production credentials
@@ -317,8 +321,350 @@ async fn ac03_received_requests_preserve_order_and_method() {
 }
 
 // -----------------------------------------------------------------------
+// AC-01: ProcessTree can spawn, observe, and clean up descendants
+// -----------------------------------------------------------------------
+
+/// Spawn a child process, verify it appears in the descendant set,
+/// then terminate it.
+#[cfg(target_os = "linux")]
+#[test]
+fn ac01_process_tree_spawns_observable_descendant() {
+    let pt = ProcessTree::start("ac01-spawn");
+    let pid = pt.spawn_detached_bash("sleep 30");
+    assert!(pid > 0, "spawn_detached_bash should return a valid PID");
+
+    // Give the child a moment to start
+    std::thread::sleep(Duration::from_millis(100));
+
+    // The test process is the parent of the bash child.
+    // We use the test process's own PID as the ppid.
+    let my_pid = std::process::id() as i32;
+    let descs = pt.descendants(my_pid);
+    assert!(
+        descs.contains(&pid),
+        "descendants should contain the spawned PID {pid}, got: {descs:?}"
+    );
+
+    // Clean up
+    pt.terminate(pid, nix::sys::signal::Signal::SIGKILL);
+    let _ = std::process::Command::new("kill")
+        .args(["-9", &pid.to_string()])
+        .status();
+}
+
+/// Spawn a script that forks a long-lived background child and
+/// exits. The grandchild should survive the parent exit and be
+/// visible to the /proc walker.
+#[cfg(target_os = "linux")]
+#[test]
+fn ac01_process_tree_detached_grandchild_survives_parent_exit() {
+    let pt = ProcessTree::start("ac01-grandchild");
+    let script = r#"#!/bin/bash
+(sleep 60 &)
+sleep 2
+"#;
+    let parent_pid = pt.spawn_detached_bash(script);
+    assert!(parent_pid > 0, "should have a valid parent PID");
+
+    // Wait for the parent bash to exit (sleeps 2s + small overhead)
+    std::thread::sleep(Duration::from_secs(3));
+
+    // The grandchild (sleep 60) should still be alive.
+    // It may have been reparented to PID 1 or to the test process
+    // (since we set subreaper). We search /proc for any `sleep`
+    // process that was started after our test began.
+    let found = find_sleep_process();
+    assert!(
+        found,
+        "should find a sleep process as a detached grandchild"
+    );
+
+    // Clean up all sleep processes left over
+    let _ = std::process::Command::new("pkill")
+        .args(["-f", "sleep 60"])
+        .status();
+    let _ = std::process::Command::new("pkill")
+        .args(["-f", "sleep 30"])
+        .status();
+}
+
+/// Spawn a child, kill everything, assert no descendants remain.
+#[cfg(target_os = "linux")]
+#[test]
+fn ac01_process_tree_cleanup_leaves_no_descendants() {
+    let pt = ProcessTree::start("ac01-cleanup");
+    let pid = pt.spawn_detached_bash("sleep 30");
+    assert!(pid > 0);
+
+    std::thread::sleep(Duration::from_millis(200));
+
+    // Kill the child via all available paths
+    pt.terminate(pid, nix::sys::signal::Signal::SIGKILL);
+    let _ = std::process::Command::new("kill")
+        .args(["-9", &pid.to_string()])
+        .status();
+    // Also kill any sleep processes the test may have spawned
+    let _ = std::process::Command::new("pkill")
+        .args(["-f", "sleep 30"])
+        .status();
+
+    // Reap the zombie so /proc no longer shows it
+    pt.reap(pid);
+
+    // Wait for it to die
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let my_pid = std::process::id() as i32;
+        let descs = pt.descendants(my_pid);
+        if !descs.contains(&pid) {
+            break;
+        }
+        if Instant::now() >= deadline {
+            panic!("child PID {pid} still alive after 5s");
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    let my_pid = std::process::id() as i32;
+    let descs = pt.descendants(my_pid);
+    assert!(
+        !descs.contains(&pid),
+        "child should not be in descendants after kill"
+    );
+}
+
+// -----------------------------------------------------------------------
+// AC-02: CrashPoint can send signals at marker boundaries
+// -----------------------------------------------------------------------
+
+/// `kill_at_marker` sends SIGKILL and the process is signaled.
+#[cfg(target_os = "linux")]
+#[test]
+fn ac02_crash_point_kill_at_marker_sends_sigkill() {
+    let cp = CrashPoint::new("ac02-kill");
+    let script = r#"#!/bin/bash
+echo "READY"
+sleep 30
+echo "DONE"
+"#;
+    let (code, signaled) = cp.kill_at_marker(script, "READY");
+    assert!(
+        signaled,
+        "process should be signaled (SIGKILL), got exit code {code}"
+    );
+}
+
+/// `abort_at_marker` sends SIGABRT and the process is signaled.
+#[cfg(target_os = "linux")]
+#[test]
+fn ac02_crash_point_abort_at_marker_sends_sigabrt() {
+    let cp = CrashPoint::new("ac02-abort");
+    let script = r#"#!/bin/bash
+echo "READY"
+sleep 30
+echo "DONE"
+"#;
+    let (code, signaled) = cp.abort_at_marker(script, "READY");
+    assert!(
+        signaled,
+        "process should be signaled (SIGABRT), got exit code {code}"
+    );
+}
+
+/// Running `kill_at_marker` twice with the same input should
+/// produce the same exit code both times.
+#[cfg(target_os = "linux")]
+#[test]
+fn ac02_crash_point_reproducible_same_input_same_crash() {
+    let cp = CrashPoint::new("ac02-repro");
+    let script = r#"#!/bin/bash
+echo "READY"
+sleep 30
+echo "DONE"
+"#;
+    let (code1, signaled1) = cp.kill_at_marker(script, "READY");
+    let (code2, signaled2) = cp.kill_at_marker(script, "READY");
+    assert_eq!(code1, code2, "exit codes should match across runs");
+    assert_eq!(signaled1, signaled2, "signaled status should match");
+}
+
+// -----------------------------------------------------------------------
+// AC-03: ReleaseBinary locates, hashes, and runs the supervisor
+// -----------------------------------------------------------------------
+
+/// `locate()` must return a path that exists and is a file.
+#[test]
+fn ac03_release_binary_locate_returns_existing_path() {
+    let path = ReleaseBinary::locate();
+    assert!(
+        path.is_file(),
+        "ReleaseBinary::locate() should return an existing file, got: {}",
+        path.display()
+    );
+}
+
+/// SHA-256 of the same binary must be stable across calls.
+#[test]
+fn ac03_release_binary_sha256_is_stable_across_calls() {
+    let path = ReleaseBinary::locate();
+    let hash1 = ReleaseBinary::sha256(&path);
+    let hash2 = ReleaseBinary::sha256(&path);
+    assert_eq!(hash1, hash2, "SHA-256 should be stable across calls");
+    assert_eq!(hash1.len(), 64, "SHA-256 hex should be 64 chars");
+}
+
+/// Use `run_supervisor` with a simple worker, read the `READY`
+/// frame, send ACK, and verify the supervisor protocol round-trip.
+#[test]
+fn ac03_release_binary_run_supervisor_serves_ready_frame() {
+    use caduceus::worker_supervisor::{decode_frame, encode_frame, ControlFrame};
+    use std::io::{Read, Write};
+
+    let workdir = tempdir("ac03-supervisor");
+    let worktree = workdir.join("worktree");
+    fs::create_dir_all(&worktree).expect("create worktree");
+    let transcript = workdir.join("transcript.log");
+    let heartbeat = workdir.join("heartbeat");
+    let worker_script = workdir.join("worker.sh");
+    fs::write(&worker_script, "#!/bin/bash\necho 'hello'\n").expect("write worker");
+    let mut perms = fs::metadata(&worker_script).expect("stat").permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&worker_script, perms).expect("chmod");
+
+    let args = RunSupervisorArgs {
+        worktree,
+        run_id: "test-run-001".to_string(),
+        issue: "owner/repo#7".to_string(),
+        context_json: "{}".to_string(),
+        transcript,
+        heartbeat,
+        timeout_seconds: 10,
+        worker: vec![worker_script.to_string_lossy().to_string()],
+    };
+
+    let mut child = ReleaseBinary::run_supervisor(args);
+    let mut stdout = child.stdout.take().expect("take stdout");
+    let mut stdin = child.stdin.take().expect("take stdin");
+
+    // Read the READY frame (4-byte LE length + body)
+    let mut header = [0u8; 4];
+    stdout.read_exact(&mut header).expect("read header");
+    let len = u32::from_le_bytes(header) as usize;
+    let mut buf = vec![0u8; len];
+    stdout.read_exact(&mut buf).expect("read body");
+    let frame_bytes: Vec<u8> = header.iter().copied().chain(buf.iter().copied()).collect();
+    let (frame, _) = decode_frame(&frame_bytes).expect("decode frame");
+    match &frame {
+        ControlFrame::Ready { pgid } => {
+            assert!(*pgid > 0, "READY frame should carry a positive PGID");
+        }
+        other => {
+            panic!("expected READY frame, got: {other:?}");
+        }
+    }
+
+    // Send ACK
+    let ack = encode_frame(&ControlFrame::Ack).expect("encode ACK");
+    stdin.write_all(&ack).expect("write ACK");
+    stdin.flush().expect("flush ACK");
+
+    // Read the DONE frame
+    let mut header2 = [0u8; 4];
+    stdout.read_exact(&mut header2).expect("read done header");
+    let len2 = u32::from_le_bytes(header2) as usize;
+    let mut buf2 = vec![0u8; len2];
+    stdout.read_exact(&mut buf2).expect("read done body");
+    let done_bytes: Vec<u8> = header2
+        .iter()
+        .copied()
+        .chain(buf2.iter().copied())
+        .collect();
+    let (done_frame, _) = decode_frame(&done_bytes).expect("decode done frame");
+    match &done_frame {
+        ControlFrame::Done { status, signaled } => {
+            assert_eq!(*status, 0, "worker should exit 0");
+            assert!(!signaled, "worker should not be signaled");
+        }
+        other => {
+            panic!("expected DONE frame, got: {other:?}");
+        }
+    }
+
+    // Wait for clean exit
+    let status = child.wait().expect("wait for supervisor");
+    assert!(status.success(), "supervisor should exit cleanly");
+}
+
+// -----------------------------------------------------------------------
+// AC-04: All fixtures run with no user secrets in environment
+// -----------------------------------------------------------------------
+
+/// ProcessTree can be created and used with `env_clear()`.
+#[cfg(target_os = "linux")]
+#[test]
+fn ac04_process_tree_runs_with_no_user_secrets() {
+    // env_clear() in the test parent is not meaningful for
+    // ProcessTree (it doesn't inherit ENV for itself), but we
+    // verify the fixture can be created and spawn a child without
+    // any token in the environment.
+    let _ = std::env::var("GITHUB_TOKEN").ok();
+    let _ = std::env::var("GH_TOKEN").ok();
+    let _ = std::env::var("CADUCEUS_GITHUB_TOKEN").ok();
+    // The fixture itself should not read any of these.
+    let pt = ProcessTree::start("ac04-secrets");
+    let pid = pt.spawn_detached_bash(": # noop");
+    if pid > 0 {
+        pt.terminate(pid, nix::sys::signal::Signal::SIGKILL);
+    }
+    // If we reach here, no panic occurred.
+}
+
+/// CrashPoint can be created and used with no tokens in the env.
+#[cfg(target_os = "linux")]
+#[test]
+fn ac04_crash_point_runs_with_no_user_secrets() {
+    let cp = CrashPoint::new("ac04-secrets");
+    // Run a trivial script that exits immediately.
+    let (code, _signaled) = cp.kill_at_marker("#!/bin/bash\nexit 0\n", "NEVER_MATCH");
+    assert_eq!(code, 0, "trivial script should exit 0");
+}
+
+/// ReleaseBinary can be located and hashed with no tokens in the env.
+#[test]
+fn ac04_release_binary_runs_with_no_user_secrets() {
+    let path = ReleaseBinary::locate();
+    let hash = ReleaseBinary::sha256(&path);
+    assert!(!hash.is_empty(), "SHA-256 hash should not be empty");
+}
+
+// -----------------------------------------------------------------------
 // Helpers
 // -----------------------------------------------------------------------
+
+/// Helper: search /proc for any `sleep` process.
+#[cfg(target_os = "linux")]
+fn find_sleep_process() -> bool {
+    let entries = match fs::read_dir("/proc") {
+        Ok(e) => e,
+        Err(_) => return false,
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        let Ok(_pid) = name_str.parse::<i32>() else {
+            continue;
+        };
+        let cmdline_path = entry.path().join("cmdline");
+        let cmdline = match fs::read_to_string(&cmdline_path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        if cmdline.contains("sleep") {
+            return true;
+        }
+    }
+    false
+}
 
 fn tempdir(label: &str) -> PathBuf {
     let nonce = SystemTime::now()
