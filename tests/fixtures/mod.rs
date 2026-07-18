@@ -16,13 +16,28 @@
 //! of those should leak into the production binary.
 
 #[cfg(test)]
+mod crash_point;
+#[cfg(test)]
 mod git_origin;
 #[cfg(test)]
 mod github;
+#[cfg(test)]
+mod process_tree;
+#[cfg(test)]
+mod release_binary;
 
+#[cfg(test)]
+#[allow(unused_imports)]
+pub use crash_point::CrashPoint;
 #[cfg(test)]
 #[allow(unused_imports)]
 pub use git_origin::LocalOrigin;
 #[cfg(test)]
 #[allow(unused_imports)]
 pub use github::{Counts, MockGitHub};
+#[cfg(test)]
+#[allow(unused_imports)]
+pub use process_tree::ProcessTree;
+#[cfg(test)]
+#[allow(unused_imports)]
+pub use release_binary::{ReleaseBinary, RunSupervisorArgs};

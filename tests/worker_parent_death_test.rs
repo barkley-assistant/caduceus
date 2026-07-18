@@ -15,6 +15,9 @@
 //! from Rust and exercise the EOF / TERM / KILL paths with
 //! deterministic POSIX shell helpers as the worker.
 
+#[path = "fixtures/mod.rs"]
+mod fixtures;
+
 use std::fs;
 use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
@@ -43,15 +46,7 @@ fn write_script(path: &PathBuf, body: &str) {
 }
 
 fn find_self_exe() -> PathBuf {
-    let mut here = std::env::current_exe().expect("current_exe");
-    loop {
-        if here.join("caduceus").is_file() {
-            return here.join("caduceus");
-        }
-        if !here.pop() {
-            panic!("could not find caduceus binary in target/debug");
-        }
-    }
+    fixtures::ReleaseBinary::locate()
 }
 
 fn spawn_supervisor(
