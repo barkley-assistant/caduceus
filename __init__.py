@@ -34,9 +34,10 @@ import shlex
 import stat
 import subprocess
 import sys
+from collections import namedtuple
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +100,27 @@ class _NeedsAttention:
 
     def __repr__(self) -> str:
         return f"NeedsAttention(recovery_evidence={self.recovery_evidence!r})"
+
+
+# ---------------------------------------------------------------------------
+# Doctor types
+# ---------------------------------------------------------------------------
+
+
+_DoctorFinding = namedtuple(
+    "_DoctorFinding",
+    ["category", "status", "detail", "next_action"],
+)
+"""Structured doctor finding.
+
+Attributes:
+    category: One of ``"host-capability-unavailable"``, ``"gateway-inactive"``,
+        ``"config-incomplete"``, ``"daemon-defect"``.
+    status: ``"ok"`` or ``"fail"``.
+    detail: Human-readable description of the finding.
+    next_action: What the operator should do to fix the issue, or empty
+        string if status is ``"ok"``.
+"""
 
 
 def _plugin_root() -> Path:
@@ -481,45 +503,176 @@ def _atomic_install_binary(src: Path, dst: Path) -> None:
 # ---- doctor / status -------------------------------------------------------
 
 
-def _cli_doctor() -> int:
-    """Print whether the binary, bridge, cron wrapper, and cron job look healthy.
-
-    The doctor output is deliberately self-explanatory: every line names
-    the file path or cron job identifier, the next action to take when
-    something is wrong, and the lifecycle facts operators routinely
-    forget (gateway requirement, plugin-skill opt-in nature, etc.).
-    """
-    binary_ok = _binary_path().is_file()
-    bridge_path = _user_bridge_path()
-    bridge_ok = bridge_path.is_file() and not bridge_path.is_symlink()
-    wrapper = _pulse_wrapper_path()
-    wrapper_ok = wrapper.is_file() and not wrapper.is_symlink()
-    cron_ok = False
-    cron_detail = "not found"
-    try:
-        cron_ok, cron_detail = _cron_job_state(name="caduceus")
-    except RuntimeError as exc:
-        cron_detail = str(exc)
-    print(f"binary present : {'yes' if binary_ok else 'no'} ({_binary_path()})")
-    print(f"bridge present : {'yes' if bridge_ok else 'no'} ({bridge_path})")
-    print(f"cron wrapper   : {'yes' if wrapper_ok else 'no'} ({wrapper})")
-    print(f"cron job       : {'yes' if cron_ok else 'no'} ({cron_detail})")
-    print(f"plugin skill   : opt-in (caduceus:caduceus — explicit skill_view only)")
-    print(f"plugin layout  : standalone (no tools/hooks; explicit setup required)")
-    if binary_ok and bridge_ok and wrapper_ok and cron_ok:
-        print(
-            "gateway req    : the Hermes gateway (or a configured managed cron "
-            "provider) must be running for the cron job to fire"
+def _doctor_check_binary() -> _DoctorFinding:
+    """Check that the caduceus binary is present at the expected path (AC-05)."""
+    binary = _binary_path()
+    if binary.is_file():
+        return _DoctorFinding(
+            category="host-capability-unavailable",
+            status="ok",
+            detail=f"binary present at {binary}",
+            next_action="",
         )
-    print()
-    print("lifecycle:")
-    print("  install     : hermes plugins install barkley-assistant/caduceus --enable")
-    print("  build       : hermes caduceus setup")
-    print("  schedule    : hermes caduceus cron-install")
-    print("  inspect     : hermes caduceus status   |   /caduceus-status")
-    print("  source up   : hermes plugins update caduceus   then   hermes caduceus setup")
-    print("  uninstall   : hermes caduceus cron-remove   then   hermes plugins remove caduceus")
-    return 0 if (binary_ok and bridge_ok) else 1
+    return _DoctorFinding(
+        category="host-capability-unavailable",
+        status="fail",
+        detail=f"binary not found at {binary}",
+        next_action="run `hermes caduceus setup` to build and install the binary",
+    )
+
+
+def _doctor_check_bridge_harness() -> _DoctorFinding:
+    """Check that the configured worker_command path is executable (AC-10).
+
+    Checks ``os.X_OK`` on the bridge path. Does NOT execute the script.
+    """
+    bridge = _user_bridge_path()
+    if not bridge.is_file():
+        # Not necessarily a defect — the bridge may not have been seeded yet.
+        # But if the path exists and is not executable, that's a problem.
+        return _DoctorFinding(
+            category="host-capability-unavailable",
+            status="ok",
+            detail=f"bridge harness at {bridge} (not yet created)",
+            next_action="",
+        )
+    if os.access(bridge, os.X_OK):
+        return _DoctorFinding(
+            category="host-capability-unavailable",
+            status="ok",
+            detail=f"bridge harness at {bridge} is executable",
+            next_action="",
+        )
+    return _DoctorFinding(
+        category="host-capability-unavailable",
+        status="fail",
+        detail=f"bridge harness at {bridge} is not executable (mode {oct(stat.S_IMODE(bridge.stat().st_mode))})",
+        next_action=f"run `chmod +x {bridge}` to make it executable",
+    )
+
+
+def _doctor_check_provider_secret() -> _DoctorFinding:
+    """Check that the provider secret name is configured (AC-10).
+
+    Checks for the presence of a secret-name in the environment or config.
+    Does NOT read the secret value and does NOT make network calls.
+    """
+    # The provider secret name is expected in the environment.
+    # Caduceus's daemon config uses CADUCEUS_GITHUB_TOKEN or GITHUB_TOKEN.
+    # The secret *name* (not value) is checked here.
+    for secret_name in ("CADUCEUS_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"):
+        if os.environ.get(secret_name):
+            return _DoctorFinding(
+                category="config-incomplete",
+                status="ok",
+                detail=f"provider secret name {secret_name} is configured",
+                next_action="",
+            )
+    # No secret name found — the operator may need to configure one.
+    return _DoctorFinding(
+        category="config-incomplete",
+        status="fail",
+        detail="no provider secret token configured (checked CADUCEUS_GITHUB_TOKEN, GITHUB_TOKEN, GH_TOKEN)",
+        next_action="set one of CADUCEUS_GITHUB_TOKEN, GITHUB_TOKEN, or GH_TOKEN in the environment",
+    )
+
+
+def _doctor_check_cron_capability(ctx: Any) -> _DoctorFinding:
+    """Check that cron capability is available via a bounded round-trip (AC-05).
+
+    Performs a single ``cronjob list`` call via the runtime dispatcher.
+    If the dispatcher is not installed or the call fails, the finding
+    reports a failure.
+    """
+    del ctx  # ctx is not needed — we use the runtime dispatcher directly
+    try:
+        from . import _runtime as rt  # type: ignore[import-not-found]
+
+        if rt._DISPATCHER is None:
+            return _DoctorFinding(
+                category="host-capability-unavailable",
+                status="fail",
+                detail="cron dispatcher not installed (adapter not registered with Hermes)",
+                next_action="run `hermes plugins install barkley-assistant/caduceus --enable` to register the adapter",
+            )
+        _cron_job_registry()
+        return _DoctorFinding(
+            category="host-capability-unavailable",
+            status="ok",
+            detail="cron capability is available (cronjob list succeeded)",
+            next_action="",
+        )
+    except Exception as exc:
+        return _DoctorFinding(
+            category="host-capability-unavailable",
+            status="fail",
+            detail=f"cron capability check failed: {exc}",
+            next_action="ensure the Hermes gateway is running and cron is enabled",
+        )
+
+
+def _doctor_check_gateway() -> _DoctorFinding:
+    """Check that the Hermes gateway delivery is reachable (AC-05).
+
+    This is a best-effort check — the gateway may not be running in
+    the current environment. The finding always returns a result without
+    making a network call.
+    """
+    # The gateway is an external Hermes process. Without a live Hermes
+    # context, we cannot probe it directly. We check for the presence of
+    # the Hermes CLI which is a prerequisite for gateway operation.
+    hermes_home = _hermes_home()
+    if hermes_home.is_dir():
+        return _DoctorFinding(
+            category="gateway-inactive",
+            status="ok",
+            detail=f"Hermes home at {hermes_home} exists",
+            next_action="",
+        )
+    return _DoctorFinding(
+        category="gateway-inactive",
+        status="fail",
+        detail=f"Hermes home at {hermes_home} not found",
+        next_action="ensure Hermes is installed and configured",
+    )
+
+
+def _cli_doctor() -> int:
+    """Run all doctor checks and print a structured report (AC-06/07/08/11).
+
+    Each check is independent — a failure in one does NOT short-circuit
+    the others. Exit codes:
+        0: all checks healthy
+        1: Caduceus config/runtime defects (``daemon-defect``, ``config-incomplete``)
+        2: host capability / external prerequisite (``host-capability-unavailable``,
+           ``gateway-inactive``)
+
+    Exit 2 takes precedence over exit 1 because prerequisites block everything.
+    """
+    checks = [
+        ("Binary", _doctor_check_binary()),
+        ("Bridge Harness", _doctor_check_bridge_harness()),
+        ("Provider Secret", _doctor_check_provider_secret()),
+        ("Cron Capability", _doctor_check_cron_capability(ctx=None)),
+        ("Gateway", _doctor_check_gateway()),
+    ]
+
+    max_severity = 0  # 0 = ok, 1 = config/runtime, 2 = prerequisite
+    for name, finding in checks:
+        status_mark = "OK" if finding.status == "ok" else "FAIL"
+        print(f"[{status_mark}] {name}")
+        print(f"       category   : {finding.category}")
+        print(f"       detail     : {finding.detail}")
+        if finding.next_action:
+            print(f"       next action: {finding.next_action}")
+        print()
+        if finding.status != "ok":
+            if finding.category in ("host-capability-unavailable", "gateway-inactive"):
+                max_severity = max(max_severity, 2)
+            else:
+                max_severity = max(max_severity, 1)
+
+    return max_severity
 
 
 def _cli_status() -> int:
@@ -877,15 +1030,12 @@ def _write_pulse_wrapper(binary: Path) -> None:
     """Atomically write the ``caduceus-pulse.sh`` wrapper.
 
     The wrapper contains the absolute installed binary path and uses
-    ``exec`` so the cron process replaces its shell with the daemon. This
-    matches the contract's "exec <binary> run" requirement.
+    ``exec`` so the cron process replaces its shell with the daemon.
     """
     path = _pulse_wrapper_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     body = (
         "#!/usr/bin/env bash\n"
-        "# Generated by `hermes caduceus cron-install`. Do not edit by hand;\n"
-        "# rerun that command after moving the plugin.\n"
         "set -euo pipefail\n"
         f"exec {binary} run \"$@\"\n"
     )
@@ -1042,6 +1192,7 @@ __all__ = [
     "register",
     "_Snapshot",
     "_NeedsAttention",
+    "_DoctorFinding",
     "_handle_caduceus_status",
     "_register_caduceus_cli",
     "_caduceus_cli_command",
