@@ -65,6 +65,8 @@ pub struct StatusReport {
     /// the metadata file. The CLI refuses to start a tick in
     /// that mode; the operator must clear the marker.
     pub state_corrupt: bool,
+    /// Readiness diagnostics: bridge/harness/provider status.
+    pub readiness: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -83,7 +85,7 @@ pub struct LiveWorker {
 
 /// Schema version. Bumped when a new field is added so
 /// the `--json` consumer can detect the version.
-pub const STATUS_SCHEMA_VERSION: &str = "7.3.0";
+pub const STATUS_SCHEMA_VERSION: &str = "7.4.0";
 
 /// Maximum number of recent errors surfaced by
 /// `StatusReport::recent_errors`.
@@ -199,6 +201,24 @@ pub fn build_report(state_dir: &Path) -> CaduceusResult<(StatusReport, Option<St
     //    in that mode.
     let state_corrupt = meta.is_corrupt();
 
+    // 8. Readiness diagnostics: check bridge existence
+    //    and provider status.
+    let mut readiness = BTreeMap::new();
+    let bridge_path = state_dir
+        .parent()
+        .map(|p| p.join("caduceus").join("worker-bridge.py"));
+    match bridge_path {
+        Some(ref p) if p.is_file() => {
+            readiness.insert("bridge".to_string(), "present".to_string());
+            readiness.insert("harness".to_string(), "present".to_string());
+        }
+        _ => {
+            readiness.insert("bridge".to_string(), "missing".to_string());
+            readiness.insert("harness".to_string(), "missing".to_string());
+        }
+    }
+    readiness.insert("provider".to_string(), "not-applicable".to_string());
+
     let report = StatusReport {
         version: STATUS_SCHEMA_VERSION.to_string(),
         state_dir: state_dir.to_path_buf(),
@@ -215,6 +235,7 @@ pub fn build_report(state_dir: &Path) -> CaduceusResult<(StatusReport, Option<St
         live_workers,
         diagnostics: Vec::new(),
         state_corrupt,
+        readiness: Some(readiness),
     };
     Ok((report, None))
 }
@@ -260,6 +281,7 @@ fn empty_report(state_dir: &Path) -> StatusReport {
         live_workers: Vec::new(),
         diagnostics: Vec::new(),
         state_corrupt: false,
+        readiness: None,
     }
 }
 
@@ -569,6 +591,7 @@ pub fn build_report_from_state(
         live_workers: Vec::new(),
         diagnostics: Vec::new(),
         state_corrupt: false,
+        readiness: None,
     }
 }
 

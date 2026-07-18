@@ -56,7 +56,7 @@ fn empty_config(state_dir: &Path) -> Config {
 
 #[test]
 fn schema_version_is_pinned() {
-    assert_eq!(STATUS_SCHEMA_VERSION, "7.3.0");
+    assert_eq!(STATUS_SCHEMA_VERSION, "7.4.0");
 }
 
 #[test]
