@@ -115,6 +115,43 @@ class FakePluginContext:
         self.dispatch_calls.append({"name": name, "args": dict(args)})
         return None
 
+    # -- cron capability install ---------------------------------------------
+
+    def install_cron_capability(self, category: str) -> None:
+        """Install a cron dispatcher callable for the given *category*.
+
+        Categories: well_formed, malformed, denied, timed_out, eof, crashed,
+        absent.  Uses ``_runtime.install_dispatcher()`` — does NOT modify
+        ``_runtime.py``.  The caller is responsible for calling
+        ``_runtime.reset_dispatcher()`` after the test.
+        """
+        from caduceus import _runtime
+
+        dispatchers: Dict[str, Any] = {
+            "well_formed": lambda name, args: {
+                "jobs": [{"id": "abc", "name": "caduceus", "schedule": "every 2m"}]
+            },
+            "malformed": lambda name, args: None,
+            "denied": lambda name, args: (_ for _ in ()).throw(
+                RuntimeError("cron denied")
+            ),
+            "timed_out": lambda name, args: (_ for _ in ()).throw(
+                TimeoutError("cron timed out")
+            ),
+            "eof": lambda name, args: {"jobs": []},
+            "crashed": lambda name, args: (_ for _ in ()).throw(
+                RuntimeError("cron crashed")
+            ),
+            "absent": lambda name, args: (
+                self.dispatch_calls.append({"name": name, "args": dict(args)})
+                or None
+            ),
+        }
+        fn = dispatchers.get(category)
+        if fn is None:
+            raise ValueError(f"unknown cron capability category: {category!r}")
+        _runtime.install_dispatcher(fn)
+
     # -- inspection helpers --------------------------------------------------
 
     def parse_cli(self, argv: List[str]) -> Any:
