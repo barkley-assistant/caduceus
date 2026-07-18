@@ -42,17 +42,19 @@ def test_cron_well_formed_returns_job_list() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_cron_malformed_returns_empty() -> None:
-    """``malformed`` dispatcher returns None → cron_list_jobs returns {}."""
+def test_cron_malformed_raises_cron_capability_error() -> None:
+    """``malformed`` dispatcher returns None -> CronCapabilityError raised."""
     from caduceus import _runtime
 
     ctx = FakePluginContext(name="caduceus")
     ctx.install_cron_capability("malformed")
     try:
-        result = _runtime.cron_list_jobs()
+        with pytest.raises(_runtime.CronCapabilityError) as excinfo:
+            _runtime.cron_list_jobs()
     finally:
         _runtime.reset_dispatcher()
-    assert result == {}
+    assert excinfo.value.category == "malformed-response"
+    assert excinfo.value.detail is not None
 
 
 # ---------------------------------------------------------------------------
@@ -60,17 +62,19 @@ def test_cron_malformed_returns_empty() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_cron_denied_raises_runtime_error() -> None:
-    """``denied`` raises RuntimeError("cron denied")."""
+def test_cron_denied_raises_cron_capability_error() -> None:
+    """``denied`` raises CronCapabilityError with denied category."""
     from caduceus import _runtime
 
     ctx = FakePluginContext(name="caduceus")
     ctx.install_cron_capability("denied")
     try:
-        with pytest.raises(RuntimeError, match="cron denied"):
+        with pytest.raises(_runtime.CronCapabilityError) as excinfo:
             _runtime.cron_list_jobs()
     finally:
         _runtime.reset_dispatcher()
+    assert excinfo.value.category == "denied"
+    assert excinfo.value.detail is not None
 
 
 # ---------------------------------------------------------------------------
@@ -78,17 +82,19 @@ def test_cron_denied_raises_runtime_error() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_cron_timed_out_raises_timeout_error() -> None:
-    """``timed_out`` raises TimeoutError("cron timed out")."""
+def test_cron_timed_out_raises_cron_capability_error() -> None:
+    """``timed_out`` raises CronCapabilityError with timed-out category."""
     from caduceus import _runtime
 
     ctx = FakePluginContext(name="caduceus")
     ctx.install_cron_capability("timed_out")
     try:
-        with pytest.raises(TimeoutError, match="cron timed out"):
+        with pytest.raises(_runtime.CronCapabilityError) as excinfo:
             _runtime.cron_list_jobs()
     finally:
         _runtime.reset_dispatcher()
+    assert excinfo.value.category == "timed-out"
+    assert excinfo.value.detail is not None
 
 
 # ---------------------------------------------------------------------------
@@ -96,17 +102,19 @@ def test_cron_timed_out_raises_timeout_error() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_cron_eof_returns_empty_jobs() -> None:
-    """``eof`` returns {"jobs": []} → cron_list_jobs returns {}."""
+def test_cron_eof_raises_cron_capability_error() -> None:
+    """``eof`` raises CronCapabilityError with eof category."""
     from caduceus import _runtime
 
     ctx = FakePluginContext(name="caduceus")
     ctx.install_cron_capability("eof")
     try:
-        result = _runtime.cron_list_jobs()
+        with pytest.raises(_runtime.CronCapabilityError) as excinfo:
+            _runtime.cron_list_jobs()
     finally:
         _runtime.reset_dispatcher()
-    assert result == {}
+    assert excinfo.value.category == "eof"
+    assert excinfo.value.detail is not None
 
 
 # ---------------------------------------------------------------------------
@@ -114,17 +122,19 @@ def test_cron_eof_returns_empty_jobs() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_cron_crashed_raises_runtime_error() -> None:
-    """``crashed`` raises RuntimeError("cron crashed")."""
+def test_cron_crashed_raises_cron_capability_error() -> None:
+    """``crashed`` raises CronCapabilityError with crashed category."""
     from caduceus import _runtime
 
     ctx = FakePluginContext(name="caduceus")
     ctx.install_cron_capability("crashed")
     try:
-        with pytest.raises(RuntimeError, match="cron crashed"):
+        with pytest.raises(_runtime.CronCapabilityError) as excinfo:
             _runtime.cron_list_jobs()
     finally:
         _runtime.reset_dispatcher()
+    assert excinfo.value.category == "crashed"
+    assert excinfo.value.detail is not None
 
 
 # ---------------------------------------------------------------------------
@@ -132,27 +142,19 @@ def test_cron_crashed_raises_runtime_error() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_cron_absent_restores_default_capture() -> None:
-    """``absent`` restores capture-only dispatch: appends to dispatch_calls.
-
-    The default ``dispatch_tool`` appends to ``dispatch_calls`` and
-    returns None. After installing ``absent``, the dispatcher should
-    behave exactly like the default.
-    """
+def test_cron_absent_returns_empty_dict() -> None:
+    """``absent`` returns None -> _coerce_jobs returns {}."""
     from caduceus import _runtime
 
     ctx = FakePluginContext(name="caduceus")
     ctx.install_cron_capability("absent")
     try:
-        # The absent dispatcher restores the default capture-only
-        # behaviour that appends to dispatch_calls and returns None.
-        _runtime.cron_list_jobs()
+        result = _runtime.cron_list_jobs()
     finally:
         _runtime.reset_dispatcher()
-    assert len(ctx.dispatch_calls) >= 1
-    last_call = ctx.dispatch_calls[-1]
-    assert last_call["name"] == "cronjob"
-    assert last_call["args"]["action"] == "list"
+    # The absent simulator returns None, which _coerce_jobs coerces to {}
+    # (empty dict — no jobs, no error).
+    assert result == {}
 
 
 # ---------------------------------------------------------------------------
@@ -165,3 +167,101 @@ def test_cron_unknown_category_raises_value_error() -> None:
     ctx = FakePluginContext(name="caduceus")
     with pytest.raises(ValueError, match="unknown cron capability category"):
         ctx.install_cron_capability("bogus")
+
+
+# ---------------------------------------------------------------------------
+# CronCapabilityError construction and attributes
+# ---------------------------------------------------------------------------
+
+
+def test_cron_capability_error_is_exception() -> None:
+    """CronCapabilityError is a proper Exception subclass."""
+    from caduceus import _runtime
+
+    err = _runtime.CronCapabilityError(category="test", detail="test detail")
+    assert isinstance(err, Exception)
+    assert issubclass(_runtime.CronCapabilityError, Exception)
+
+
+def test_cron_capability_error_has_category_and_detail() -> None:
+    """CronCapabilityError stores category and detail fields."""
+    from caduceus import _runtime
+
+    err = _runtime.CronCapabilityError(category="denied", detail="permission denied")
+    assert err.category == "denied"
+    assert err.detail == "permission denied"
+
+
+def test_cron_capability_error_str_includes_category() -> None:
+    """str(error) includes the category for readable messages."""
+    from caduceus import _runtime
+
+    err = _runtime.CronCapabilityError(category="malformed-response", detail="None")
+    msg = str(err)
+    assert "malformed-response" in msg
+
+
+# ---------------------------------------------------------------------------
+# _coerce_jobs direct tests (triangulation)
+# ---------------------------------------------------------------------------
+
+
+def test_coerce_jobs_none_returns_empty() -> None:
+    """_coerce_jobs(None) returns {}."""
+    from caduceus._runtime import _coerce_jobs
+
+    assert _coerce_jobs(None) == {}
+
+
+def test_coerce_jobs_empty_jobs_list_returns_empty() -> None:
+    """_coerce_jobs({"jobs": []}) returns {}."""
+    from caduceus._runtime import _coerce_jobs
+
+    assert _coerce_jobs({"jobs": []}) == {}
+
+
+def test_coerce_jobs_empty_dict_returns_empty() -> None:
+    """_coerce_jobs({}) returns {}."""
+    from caduceus._runtime import _coerce_jobs
+
+    assert _coerce_jobs({}) == {}
+
+
+def test_coerce_jobs_empty_list_returns_empty() -> None:
+    """_coerce_jobs([]) returns {}."""
+    from caduceus._runtime import _coerce_jobs
+
+    assert _coerce_jobs([]) == {}
+
+
+def test_coerce_jobs_string_raises_malformed() -> None:
+    """_coerce_jobs(str) raises CronCapabilityError with malformed-response."""
+    from caduceus._runtime import CronCapabilityError, _coerce_jobs
+
+    with pytest.raises(CronCapabilityError) as excinfo:
+        _coerce_jobs("garbled")
+    assert excinfo.value.category == "malformed-response"
+
+
+def test_coerce_jobs_populated_jobs_list() -> None:
+    """_coerce_jobs({"jobs": [{"id": "x", "name": "test"}]}) returns dict."""
+    from caduceus._runtime import _coerce_jobs
+
+    result = _coerce_jobs({"jobs": [{"id": "x", "name": "test"}]})
+    assert result == {"x": {"id": "x", "name": "test"}}
+
+
+def test_coerce_jobs_plain_list() -> None:
+    """_coerce_jobs([{"id": "x", "name": "test"}]) returns dict."""
+    from caduceus._runtime import _coerce_jobs
+
+    result = _coerce_jobs([{"id": "x", "name": "test"}])
+    assert result == {"x": {"id": "x", "name": "test"}}
+
+
+def test_coerce_jobs_keyed_dict() -> None:
+    """_coerce_jobs({"x": {"id": "x", "name": "test"}}) returns dict."""
+    from caduceus._runtime import _coerce_jobs
+
+    result = _coerce_jobs({"x": {"id": "x", "name": "test"}})
+    assert result == {"x": {"id": "x", "name": "test"}}

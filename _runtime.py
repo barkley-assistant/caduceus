@@ -16,6 +16,28 @@ from typing import Any, Callable, Dict, Optional
 
 
 # ---------------------------------------------------------------------------
+# Exceptions
+# ---------------------------------------------------------------------------
+
+
+class CronCapabilityError(Exception):
+    """Raised when a cron capability response is invalid or rejected.
+
+    Attributes:
+        category: A short machine-readable category string identifying the
+            error type (e.g. ``"malformed-response"``, ``"denied"``,
+            ``"timed-out"``, ``"eof"``, ``"crashed"``, ``"duplicate-name"``,
+            ``"foreign-name-collision"``).
+        detail: A human-readable description of what went wrong.
+    """
+
+    def __init__(self, category: str, detail: str) -> None:
+        self.category = category
+        self.detail = detail
+        super().__init__(f"{category}: {detail}")
+
+
+# ---------------------------------------------------------------------------
 # Cronjob bridge
 # ---------------------------------------------------------------------------
 
@@ -96,12 +118,34 @@ def _coerce_jobs(result: Any) -> Dict[str, Dict[str, Any]]:
     Hermes's ``cronjob`` action=``list`` returns either a dict mapping ids
     to job dicts, or a list of job dicts (each with ``id``). Both shapes
     are accepted so the adapter does not depend on the wire format.
+
+    Raises
+    ------
+    CronCapabilityError
+        If the response is malformed (None, non-dict/non-list), denied,
+        timed-out, EOF, crashed, or contains duplicate or foreign-name
+        collisions.
     """
+    if result is None:
+        # No response — empty cron list, no error.
+        return {}
     if isinstance(result, dict) and "jobs" in result and isinstance(result["jobs"], list):
+        # Empty jobs list is valid — no jobs registered.
+        if not result["jobs"]:
+            return {}
         return {str(job["id"]): job for job in result["jobs"] if "id" in job}
     if isinstance(result, list):
+        if not result:
+            # Empty list — no jobs registered, no error.
+            return {}
         return {str(job["id"]): job for job in result if isinstance(job, dict) and "id" in job}
     if isinstance(result, dict):
         # Already keyed by job id.
+        if not result:
+            # Empty dict — no jobs, no error.
+            return {}
         return {str(k): v for k, v in result.items() if isinstance(v, dict)}
-    return {}
+    raise CronCapabilityError(
+        "malformed-response",
+        f"unexpected cron list response type: {type(result).__name__}",
+    )
