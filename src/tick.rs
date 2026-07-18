@@ -34,7 +34,6 @@
 //!    finalization; teardown always runs.
 //! 10. Persist `last_tick_finished` and the final outcome.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
@@ -46,9 +45,10 @@ use crate::config::Config;
 use crate::context::{build_context, encode_context, BuildInputs};
 use crate::error::{CaduceusError, CaduceusResult};
 use crate::finalize::{
-    commit_code_and_finalize, dry_run_finalize, find_or_create_pr_and_finalize,
-    post_completion_and_close_and_finalize, post_investigation_comment_and_finalize,
-    push_and_finalize, FinalizeContext, FinalizeOutput, FinalizeRequest,
+    archive_worker_result, commit_code_and_finalize, dry_run_finalize,
+    find_or_create_pr_and_finalize, post_completion_and_close_and_finalize,
+    post_investigation_comment_and_finalize, push_and_finalize, FinalizeContext, FinalizeOutput,
+    FinalizeRequest,
 };
 use crate::github::{Client, RateLimitInfo, Response};
 use crate::logging;
@@ -456,27 +456,44 @@ async fn run_claim(
     }
     let _ = services.clock.now();
 
-    // 14. Read the worker result. An exit-0 bridge that
-    //     leaves no `worker-result.json` is a
-    //     worker-attributable failure.
-    let result_path = PathBuf::from(format!(
-        "{}/runs/{}.result.json",
-        cfg.state_dir.display(),
-        run_id
-    ));
-    let worker_result = match crate::worker::parse_result_file(&result_path, &claimed.entry.key) {
-        Ok(r) => r,
-        Err(_) => {
-            let err = CaduceusError::Worker {
-                context: "result",
-                stderr: "worker did not produce a valid worker-result.json".to_string(),
-            };
+    // 14. Reject when worker exited nonzero (RUN-001 AC-04).
+    if !supervisor_outcome.signaled && supervisor_outcome.status != 0 {
+        let err = CaduceusError::Worker {
+            context: "result",
+            stderr: format!(
+                "worker exited {} without producing a valid result",
+                supervisor_outcome.status
+            ),
+        };
+        let class = classify_error(&err);
+        return handle_infra_or_retry(cfg, guard, &err, class).await;
+    }
+
+    // 15. Read the worker result from the worktree (RUN-001 AC-02).
+    let worktree_result_path = worktree.path.join("worker-result.json");
+    let worker_result =
+        match crate::worker::parse_result_file(&worktree_result_path, &claimed.entry.key) {
+            Ok(r) => r,
+            Err(_) => {
+                let err = CaduceusError::Worker {
+                    context: "result",
+                    stderr: "worker did not produce a valid worker-result.json".to_string(),
+                };
+                let class = classify_error(&err);
+                return handle_infra_or_retry(cfg, guard, &err, class).await;
+            }
+        };
+
+    // 16. Archive the result before finalization (RUN-001 AC-03).
+    let archive_path = match archive_worker_result(&worktree_result_path, &cfg.state_dir, &run_id) {
+        Ok(p) => p,
+        Err(err) => {
             let class = classify_error(&err);
             return handle_infra_or_retry(cfg, guard, &err, class).await;
         }
     };
 
-    // 15. Run finalization.
+    // 17. Run finalization.
     let final_ctx = FinalizeContext {
         client: Arc::clone(&client),
         config: cfg.clone(),
@@ -493,7 +510,7 @@ async fn run_claim(
     };
 
     if cfg.dry_run {
-        let _ = dry_run_finalize(&final_ctx, &worker_result, &result_path, Vec::new())?;
+        let _ = dry_run_finalize(&final_ctx, &worker_result, &archive_path, Vec::new())?;
         let _ = guard.finish_preview().await;
         return Ok(TickOutcome::Processed);
     }
@@ -523,7 +540,7 @@ async fn run_claim(
         &final_ctx,
         &worker_result,
         &runner,
-        &result_path,
+        &archive_path,
         client.as_ref(),
     )
     .await
@@ -541,10 +558,10 @@ async fn run_code_finalize(
     ctx: &FinalizeContext,
     worker_result: &WorkerResult,
     runner: &GitRunner,
-    _result_path: &std::path::Path,
+    worker_result_path: &std::path::Path,
     client: &Client,
 ) -> CaduceusResult<FinalizeOutput> {
-    let _ = commit_code_and_finalize(ctx, worker_result, runner, _result_path)?;
+    let _ = commit_code_and_finalize(ctx, worker_result, runner, worker_result_path)?;
     push_and_finalize(ctx, runner).await?;
     find_or_create_pr_and_finalize(ctx, client, worker_result).await?;
     post_completion_and_close_and_finalize(ctx, client, worker_result).await?;

@@ -34,8 +34,6 @@
 //! `CaduceusError::Worker` so the structured logger and the
 //! queue retry logic can branch on the operation label.
 
-#![allow(dead_code)]
-
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::fs::OpenOptions;
@@ -91,11 +89,6 @@ const DENIED_EXACT_VARS: &[&str] = &[
     "CADUCEUS_GITHUB_TOKEN",
     "AUTO_ISSUE_GITHUB_TOKEN",
 ];
-
-/// Pattern-based denials for variables that contain a credential
-/// substring. The names are case-sensitive to match the rest of
-/// the contract.
-const DENIED_SUBSTRINGS: &[&str] = &["GITHUB", "TOKEN"];
 
 /// Daemon-internal secrets are any `CADUCEUS_*` variable that
 /// carries a credential or signing marker. The contract requires
@@ -430,14 +423,6 @@ fn require_absolute_utf8_path(path: &Path, field: &str) -> CaduceusResult<String
             path.display()
         ))),
     }
-}
-
-/// Resolve and validate `worker_command` from config + env. The
-/// implementation lives in `validate::resolve_executable`; this
-/// helper is retained so the worker module keeps a single entry
-/// point. Phase 5 wires the real caller.
-pub fn resolve_command(_cwd: &PathBuf) -> CaduceusResult<Vec<String>> {
-    Ok(Vec::new())
 }
 
 /// Parse + validate a `worker-result.json` file at *path* against
