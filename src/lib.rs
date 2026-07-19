@@ -23,6 +23,7 @@ pub mod issue;
 pub mod logging;
 pub mod meta;
 pub mod migrate;
+pub mod migrate_to_sqlite;
 pub mod orchestration;
 pub mod poll;
 pub mod prompt;
