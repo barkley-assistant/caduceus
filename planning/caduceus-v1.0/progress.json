@@ -188,7 +188,8 @@
       "handoff": "handoffs/phase-02.md"
     },
     "3": {
-      "status": "pending"
+      "status": "complete",
+      "handoff": "handoffs/phase-03.md"
     },
     "4": {
       "status": "pending"
