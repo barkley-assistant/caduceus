@@ -2435,6 +2435,7 @@ impl MinimalConfig for Config {
             github_token: None,
             api_base: DEFAULT_API_BASE.to_string(),
             dry_run: false,
+            worker_parallelism: 1,
             compiled_ignore_patterns: Vec::new(),
         }
     }
