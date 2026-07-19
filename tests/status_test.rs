@@ -67,7 +67,7 @@ fn idle_output_matches_readme_fixture() {
     // directory as `NoState` and surfaces the
     // "no state yet" hint.
     let cfg = empty_config(&dir.path().join("no-such-state"));
-    let out = report(&cfg.state_dir, false).expect("report");
+    let (out, _) = report(&cfg.state_dir, false).expect("report");
     let expected = format!(
         "caduceus status\n  state dir: {}\n  no state yet — run `caduceus run` to bootstrap\n",
         cfg.state_dir.display()
@@ -433,4 +433,141 @@ fn _queue_helpers_exist() {
     let _ = QUEUE_FILE_VERSION;
     let _ = ClaimToken::for_test;
     let _ = CaduceusError::Config;
+}
+
+// ---------------------------------------------------------------------------
+// Shell-level exit code tests — assert the process exit status
+// matches RUN-005. These use the real binary so they test the CLI
+// wiring, not just the library function.
+// ---------------------------------------------------------------------------
+
+use std::io::Write;
+use std::process::Command;
+
+/// Shell-level test: `caduceus status` exits 0 when the
+/// state directory exists and is healthy.
+#[test]
+fn status_exit_0_for_valid_state() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).expect("state dir");
+    // Bootstrap a valid meta store so the state is
+    // considered "healthy" (no diagnostic).
+    let _ = caduceus::meta::MetaStore::open(&state_dir).expect("open meta");
+
+    let config_path = dir.path().join("config.yaml");
+    // Provide a minimal valid config with worker_command
+    // so Config::load doesn't fail.
+    let config_body = format!(
+        "caduceus:\n  state_dir: {}\n  worker_command: ['/bin/true']\n",
+        state_dir.display().to_string().replace('\'', "")
+    );
+    let mut f = std::fs::File::create(&config_path).expect("create config");
+    write!(f, "{}", config_body).expect("write config");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_caduceus"))
+        .env("CADUCEUS_CONFIG", &config_path)
+        .args(["status"])
+        .output()
+        .expect("spawn caduceus status");
+    assert!(
+        output.status.success(),
+        "expected exit 0 for valid state; got {:?}, stderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// Shell-level test: `caduceus status` exits 2 when the
+/// state directory is missing (NoState).
+#[test]
+fn status_exit_2_for_missing_state() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state_dir = dir.path().join("no-such-state");
+
+    let config_path = dir.path().join("config.yaml");
+    let config_body = format!(
+        "caduceus:\n  state_dir: {}\n  worker_command: ['/bin/true']\n",
+        state_dir.display().to_string().replace('\'', "")
+    );
+    let mut f = std::fs::File::create(&config_path).expect("create config");
+    write!(f, "{}", config_body).expect("write config");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_caduceus"))
+        .env("CADUCEUS_CONFIG", &config_path)
+        .args(["status"])
+        .output()
+        .expect("spawn caduceus status");
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "expected exit 2 for missing state; got {:?}, stderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// Shell-level test: `caduceus status` exits 1 when the
+/// state metadata is corrupt.
+#[test]
+fn status_exit_1_for_corrupt_state() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).expect("state dir");
+    std::fs::write(state_dir.join("state_meta.json"), b"not json {").expect("write");
+
+    let config_path = dir.path().join("config.yaml");
+    let config_body = format!(
+        "caduceus:\n  state_dir: {}\n  worker_command: ['/bin/true']\n",
+        state_dir.display().to_string().replace('\'', "")
+    );
+    let mut f = std::fs::File::create(&config_path).expect("create config");
+    write!(f, "{}", config_body).expect("write config");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_caduceus"))
+        .env("CADUCEUS_CONFIG", &config_path)
+        .args(["status"])
+        .output()
+        .expect("spawn caduceus status");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "expected exit 1 for corrupt state; got {:?}, stderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// Shell-level test: `caduceus status` exits 1 when the
+/// queue data is corrupt.
+#[test]
+fn status_exit_1_for_corrupt_queue() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).expect("state dir");
+    // Bootstrap a valid meta so the meta check passes
+    // and the queue check fires.
+    let _ = caduceus::meta::MetaStore::open(&state_dir).expect("open meta");
+    std::fs::write(state_dir.join("state.json"), b"not json {").expect("write");
+
+    let config_path = dir.path().join("config.yaml");
+    let config_body = format!(
+        "caduceus:\n  state_dir: {}\n  worker_command: ['/bin/true']\n",
+        state_dir.display().to_string().replace('\'', "")
+    );
+    let mut f = std::fs::File::create(&config_path).expect("create config");
+    write!(f, "{}", config_body).expect("write config");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_caduceus"))
+        .env("CADUCEUS_CONFIG", &config_path)
+        .args(["status"])
+        .output()
+        .expect("spawn caduceus status");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "expected exit 1 for corrupt queue; got {:?}, stderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
