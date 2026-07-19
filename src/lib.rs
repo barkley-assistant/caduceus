@@ -28,6 +28,7 @@ pub mod orchestration;
 pub mod poll;
 pub mod prompt;
 pub mod queue;
+pub mod retention;
 pub mod signals;
 pub mod status;
 pub mod store;
