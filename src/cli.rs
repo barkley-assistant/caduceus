@@ -63,10 +63,13 @@ pub enum Command {
     MigrateState {
         /// Path to the legacy state directory.
         #[arg(long)]
-        from: std::path::PathBuf,
+        from: Option<std::path::PathBuf>,
         /// Report what would change without modifying anything.
         #[arg(long, default_value_t = false)]
         dry_run: bool,
+        /// Migrate to the SQLite state store.
+        #[arg(long, default_value_t = false, conflicts_with = "from")]
+        to_sqlite: bool,
     },
     /// Generate minimal non-secret configuration.
     #[command(name = "setup", about = "Generate minimal non-secret configuration")]
@@ -183,7 +186,21 @@ pub fn run() -> CaduceusResult<()> {
             }
             Ok(())
         }
-        Some(Command::MigrateState { from, dry_run }) => run_migrate_state(&from, dry_run),
+        Some(Command::MigrateState {
+            from,
+            dry_run,
+            to_sqlite,
+        }) => {
+            if to_sqlite {
+                run_migrate_state_to_sqlite(dry_run)
+            } else if let Some(from_path) = from {
+                run_migrate_state(&from_path, dry_run)
+            } else {
+                Err(CaduceusError::Config(
+                    "either --from <path> or --to-sqlite is required".to_string(),
+                ))
+            }
+        }
         Some(Command::Setup { dry_run }) => {
             let hermes_home = match std::env::var_os("HERMES_HOME") {
                 Some(h) => std::path::PathBuf::from(&h),
@@ -351,6 +368,33 @@ fn run_queue_reset(
         eprintln!(
             "warning: the remote branch and PR were NOT deleted; reconcile manually if appropriate"
         );
+    }
+    Ok(())
+}
+
+/// `caduceus migrate-state --to-sqlite [--dry-run]` —
+/// migrate the current JSON state to the SQLite store.
+fn run_migrate_state_to_sqlite(dry_run: bool) -> CaduceusResult<()> {
+    let config = match std::env::var_os("CADUCEUS_CONFIG") {
+        Some(path) => Config::load_from(std::path::Path::new(&path))?,
+        None => Config::load()?,
+    };
+    let state_dir = config.state_dir.clone();
+    let report = caduceus::migrate_to_sqlite::migrate_to_sqlite(
+        &state_dir,
+        dry_run,
+        caduceus::migrate_to_sqlite::LockPolicy::Acquire,
+    )?;
+    match &report.outcome {
+        caduceus::migrate_to_sqlite::SqliteMigrationOutcome::Migrated { entries } => {
+            println!("caduceus migrate-state: migrated {entries} entries to SQLite");
+        }
+        caduceus::migrate_to_sqlite::SqliteMigrationOutcome::DryRun { would_migrate } => {
+            println!("caduceus migrate-state: dry-run; would migrate {would_migrate} entries");
+        }
+        caduceus::migrate_to_sqlite::SqliteMigrationOutcome::AlreadyCurrent => {
+            println!("caduceus migrate-state: already current; no changes");
+        }
     }
     Ok(())
 }

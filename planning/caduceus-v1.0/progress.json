@@ -93,7 +93,8 @@
       "handoff": "handoffs/3.2.md"
     },
     "3.3": {
-      "status": "pending"
+      "status": "complete",
+      "handoff": "handoffs/3.3.md"
     },
     "3.4": {
       "status": "pending"
