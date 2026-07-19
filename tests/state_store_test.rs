@@ -68,6 +68,7 @@ fn entry(owner: &str, repo: &str, number: u64) -> QueueEntry {
         finalization: None,
         queued_at: Utc::now(),
         updated_at: Utc::now(),
+        generation: 1,
     }
 }
 
@@ -264,6 +265,7 @@ fn acquire_next_picks_fifo_by_queued_at() {
         finalization: None,
         queued_at: queued,
         updated_at: queued,
+        generation: 1,
     };
     // Order enqueued: 3 first, then 1, then 2.
     entries.insert(
@@ -323,6 +325,7 @@ fn acquire_next_skips_entries_with_future_next_attempt_at() {
         finalization: None,
         queued_at: now,
         updated_at: now,
+        generation: 1,
     };
     entries.insert(k1.display_key(), make(&k1, Some(future)));
     entries.insert(k2.display_key(), make(&k2, None));

@@ -100,6 +100,16 @@ pub enum QueueAction {
         #[arg(long, default_value_t = false)]
         force_finalization_reset: bool,
     },
+    /// Create a new generation for an issue (reopen or reprocess).
+    /// Increments the generation counter and moves the entry to
+    /// `Queued` if it was in a terminal phase.
+    Reprocess {
+        /// `owner/repo#number` identifier.
+        issue: String,
+        /// Print the planned change without applying it.
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
+    },
 }
 
 /// Drive the CLI from `main`.
@@ -133,6 +143,9 @@ pub fn run() -> CaduceusResult<()> {
                     force_finalization_reset,
                 },
         }) => run_queue_reset(&issue, dry_run, force_finalization_reset),
+        Some(Command::Queue {
+            action: QueueAction::Reprocess { issue, dry_run },
+        }) => run_queue_reprocess(&issue, dry_run),
         Some(Command::WorktreeGc {
             older_than_days,
             dry_run,
@@ -369,6 +382,49 @@ fn run_queue_reset(
             "warning: the remote branch and PR were NOT deleted; reconcile manually if appropriate"
         );
     }
+    Ok(())
+}
+
+/// `caduceus queue reprocess <issue>` — create a new generation
+/// for the issue, incrementing its generation counter and moving
+/// it back to `Queued` if it was in a terminal phase.
+fn run_queue_reprocess(issue: &str, dry_run: bool) -> CaduceusResult<()> {
+    use caduceus::issue::IssueKey;
+    use caduceus::queue::{QueueEntry, StateStore};
+
+    let config = match std::env::var_os("CADUCEUS_CONFIG") {
+        Some(path) => Config::load_from(std::path::Path::new(&path))?,
+        None => Config::load()?,
+    };
+    let key = IssueKey::parse(issue)
+        .map_err(|e| CaduceusError::Config(format!("invalid issue key: {e}")))?;
+    let state_dir = &config.state_dir;
+    let store = StateStore::open(state_dir)?;
+    let mut snap = store.snapshot()?;
+    let entry = snap.entry(&key).ok_or_else(|| CaduceusError::Queue {
+        context: "reprocess",
+        stderr: format!("entry {} not found in queue", key.display_key()),
+    })?;
+
+    // Increment the generation.
+    let new_generation = entry.generation.saturating_add(1);
+
+    if dry_run {
+        println!(
+            "reprocess {}: current generation={}, would set generation={}",
+            key.display_key(),
+            entry.generation,
+            new_generation,
+        );
+        return Ok(());
+    }
+
+    store.reprocess_entry(&key)?;
+    println!(
+        "reprocessed {}: new generation={}",
+        key.display_key(),
+        new_generation,
+    );
     Ok(())
 }
 

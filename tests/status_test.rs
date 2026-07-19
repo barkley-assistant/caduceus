@@ -421,6 +421,7 @@ fn entry(_now: DateTime<Utc>, phase: Phase, next_attempt_at: Option<DateTime<Utc
         finalization: None,
         queued_at: _now,
         updated_at: _now,
+        generation: 1,
     }
 }
 

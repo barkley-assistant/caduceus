@@ -45,6 +45,7 @@ fn sample_entry() -> QueueEntry {
         finalization: None,
         queued_at: Utc.with_ymd_and_hms(2026, 7, 13, 14, 0, 0).unwrap(),
         updated_at: Utc.with_ymd_and_hms(2026, 7, 13, 14, 0, 0).unwrap(),
+        generation: 1,
     }
 }
 
@@ -291,7 +292,7 @@ fn queue_state_with_version_zero_is_rejected() {
 fn queue_state_rejects_mismatched_map_key() {
     // Build a JSON document where the map key is uppercase but the
     // entry key is the canonical lowercase form.
-    let entry_json = r#"{"key":{"owner":"BarkleyAssistant","repo":"sandbox","number":42},"phase":"queued","ticket_type":"code","attempts":0,"last_error":null,"last_run_id":null,"next_attempt_at":null,"finalization":null,"queued_at":"2026-07-13T14:00:00Z","updated_at":"2026-07-13T14:00:00Z"}"#;
+    let entry_json = r#"{"key":{"owner":"BarkleyAssistant","repo":"sandbox","number":42},"phase":"queued","ticket_type":"code","attempts":0,"last_error":null,"last_run_id":null,"next_attempt_at":null,"finalization":null,"queued_at":"2026-07-13T14:00:00Z","updated_at":"2026-07-13T14:00:00Z","generation":1}"#;
     let bad =
         format!(r#"{{"version":1,"entries":{{"BarkleyAssistant/sandbox#42":{entry_json}}}}}"#);
     let err = parse_queue_state(&bad).expect_err("map key mismatch");

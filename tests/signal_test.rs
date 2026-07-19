@@ -121,6 +121,7 @@ fn seed_queued(state_dir: &Path, k: &IssueKey) {
         finalization: None,
         queued_at: Utc::now(),
         updated_at: Utc::now(),
+        generation: 1,
     };
     entries.insert(k.display_key(), e);
     let body = serialize_queue_state(&QueueState {

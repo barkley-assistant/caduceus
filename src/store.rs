@@ -52,7 +52,8 @@ CREATE TABLE IF NOT EXISTS queue_entries (
     next_attempt_at TEXT,
     finalization  TEXT,
     queued_at     TEXT NOT NULL,
-    updated_at    TEXT NOT NULL
+    updated_at    TEXT NOT NULL,
+    generation    INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS state_meta (
