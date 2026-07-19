@@ -18,6 +18,7 @@ pub mod error;
 pub mod finalize;
 pub mod fixtures;
 pub mod github;
+pub mod install;
 pub mod issue;
 pub mod logging;
 pub mod meta;
