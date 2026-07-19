@@ -19,6 +19,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use fs2::FileExt;
+use nix::unistd::pipe;
 use tokio::process::Command as TokioCommand;
 use url::Url;
 
@@ -57,6 +58,32 @@ pub const DENIED_INHERITED_VARS: &[&str] = &["GITHUB_TOKEN", "CADUCEUS_GITHUB_TO
 pub const DEFAULT_INHERITED_ALLOWLIST: &[&str] =
     &["PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM", "TMPDIR"];
 
+/// Outcome of one git subprocess invocation that preserves raw
+/// stdout bytes (for NUL-delimited `-z` output). Structurally
+/// identical to [`GitOutput`] but keeps the raw `Vec<u8>` instead
+/// of converting via `String::from_utf8_lossy`. Callers that need
+/// NUL-byte splitting use this variant.
+#[derive(Clone, Debug)]
+pub struct GitOutputRaw {
+    /// Raw stdout bytes, uncapped — the caller splits on NUL
+    /// before text-processing.
+    pub stdout: Vec<u8>,
+    /// Captured stderr (redacted of any credential substrings,
+    /// bounded by [`GIT_OUTPUT_BYTE_CAP`] with a truncation
+    /// marker).
+    pub stderr: String,
+    /// Process exit status. `None` when the process was killed by
+    /// a signal (e.g. our SIGKILL on timeout).
+    pub status: Option<i32>,
+    /// True when the invocation hit the configured
+    /// `git_timeout_seconds` ceiling and the runner had to
+    /// broadcast SIGKILL to the process group.
+    pub timed_out: bool,
+    /// True when the runner was cancelled via the shared
+    /// [`GitRunner::cancel`] mechanism.
+    pub cancelled: bool,
+}
+
 /// Outcome of one git subprocess invocation. The runner always
 /// returns this struct (never panics) so the caller can branch on
 /// `timed_out` / `cancelled` rather than guessing from exit codes.
@@ -94,6 +121,13 @@ struct GitRunnerInner {
     timeout: Duration,
     env_allowlist: Vec<String>,
     api_base: String,
+    /// Anonymous pipe read-fd for the GIT_ASKPASS credential
+    /// helper. When set, `build_command` sets `GIT_ASKPASS` and
+    /// `GIT_ASKPASS_FD` so the helper reads the PAT from this
+    /// fd. `None` when no PAT is available (e.g. public repo or
+    /// non-Unix fallback).
+    #[cfg(unix)]
+    credential_helper_fd: Option<std::os::unix::io::OwnedFd>,
     /// Atomic flag flipped by [`GitRunner::cancel`]. Every
     /// in-flight `run` checks the flag before returning so the
     /// daemon's SIGINT/SIGTERM handler can tear down pending git
@@ -123,11 +157,21 @@ impl GitRunner {
         } else {
             cfg.git_timeout_seconds
         };
+        // Set up the anonymous-pipe credential broker when a
+        // github_token is available. The PAT is written to the
+        // write end; the read end fd is stored for
+        // `build_command` to pass via `GIT_ASKPASS_FD`.
+        #[cfg(unix)]
+        let credential_helper_fd = Self::setup_credential_broker(cfg);
+        #[cfg(not(unix))]
+        let _credential_helper_fd: Option<std::os::unix::io::OwnedFd> = None;
         Self {
             inner: Arc::new(GitRunnerInner {
                 timeout: Duration::from_secs(timeout_seconds),
                 env_allowlist: extras,
                 api_base: cfg.api_base.clone(),
+                #[cfg(unix)]
+                credential_helper_fd,
                 cancelled: Arc::new(AtomicBool::new(false)),
             }),
         }
@@ -145,6 +189,34 @@ impl GitRunner {
     /// resets.
     pub fn reset_cancel(&self) {
         self.inner.cancelled.store(false, Ordering::SeqCst);
+    }
+
+    /// Set up the anonymous-pipe credential broker (Unix only).
+    /// Creates a pipe, writes the github_token (if present) to the
+    /// write end, closes the write end, and returns the read end fd.
+    /// When no token is configured, returns `None`.
+    #[cfg(unix)]
+    fn setup_credential_broker(cfg: &Config) -> Option<std::os::unix::io::OwnedFd> {
+        let token = cfg.github_token.as_ref()?;
+        let (read_fd, write_fd) = pipe().ok()?;
+        // Write the PAT followed by a newline into the pipe. The
+        // git-askpass helper reads this and outputs username/password.
+        let mut bytes = token.as_bytes().to_vec();
+        bytes.push(b'\n');
+        let _ = nix::unistd::write(&write_fd, &bytes);
+        // Close the write end — the read end stays open for the child.
+        drop(write_fd);
+        Some(read_fd)
+    }
+
+    /// Fallback credential broker for non-Unix platforms: write the
+    /// PAT to a temp file, return its path. The caller must unlink
+    /// after exec. (The daemon refuses non-Unix; this exists for
+    /// completeness.)
+    #[cfg(not(unix))]
+    fn setup_credential_broker(cfg: &Config) -> Option<std::path::PathBuf> {
+        let _ = cfg;
+        None
     }
 
     /// True when the runner has been asked to cancel.
@@ -178,7 +250,13 @@ impl GitRunner {
         cwd: Option<&Path>,
     ) -> CaduceusResult<GitOutput> {
         self.reset_cancel();
-        let mut command = build_command(args, cwd, &self.inner.env_allowlist);
+        let mut command = build_command(
+            args,
+            cwd,
+            &self.inner.env_allowlist,
+            #[cfg(unix)]
+            self.inner.credential_helper_fd.as_ref(),
+        );
         let timeout = self.inner.timeout;
         let cancelled = Arc::clone(&self.inner.cancelled);
         let start = std::time::Instant::now();
@@ -286,6 +364,120 @@ impl GitRunner {
         }
     }
 
+    /// Run `git` with the supplied args and return raw stdout bytes
+    /// (uncapped, un-lossy-converted). Callers use this for `-z`
+    /// (NUL-delimited) commands that need byte-level splitting.
+    /// The wait-loop, timeout, cancellation, env-scrubbing, and
+    /// process-group isolation are identical to [`run_in`].
+    pub async fn run_in_raw(
+        &self,
+        _cfg: &Config,
+        operation: &'static str,
+        args: &[&OsStr],
+        cwd: Option<&Path>,
+    ) -> CaduceusResult<GitOutputRaw> {
+        self.reset_cancel();
+        let mut command = build_command(
+            args,
+            cwd,
+            &self.inner.env_allowlist,
+            #[cfg(unix)]
+            self.inner.credential_helper_fd.as_ref(),
+        );
+        let timeout = self.inner.timeout;
+        let cancelled = Arc::clone(&self.inner.cancelled);
+        let start = std::time::Instant::now();
+
+        let child = command.spawn().map_err(|err| CaduceusError::Git {
+            operation,
+            stderr: scrub(&format!("spawn: {err}")),
+        })?;
+        let pid = child.id();
+
+        let mut child = child;
+        let outcome: Result<Result<std::process::Output, std::io::Error>, Outcome> = loop {
+            if cancelled.load(Ordering::SeqCst) {
+                kill_group(pid);
+                let _ = child.wait_with_output().await;
+                break Err(Outcome::Cancelled);
+            }
+            if start.elapsed() >= timeout {
+                kill_group(pid);
+                let _ = child.wait_with_output().await;
+                break Err(Outcome::TimedOut);
+            }
+            match child.try_wait() {
+                Ok(Some(_status)) => {
+                    let stdout = match child.stdout.take() {
+                        Some(mut s) => {
+                            use tokio::io::AsyncReadExt;
+                            let mut buf = Vec::new();
+                            let _ = s.read_to_end(&mut buf).await;
+                            buf
+                        }
+                        None => Vec::new(),
+                    };
+                    let stderr = match child.stderr.take() {
+                        Some(mut s) => {
+                            use tokio::io::AsyncReadExt;
+                            let mut buf = Vec::new();
+                            let _ = s.read_to_end(&mut buf).await;
+                            buf
+                        }
+                        None => Vec::new(),
+                    };
+                    let status = match child.wait().await {
+                        Ok(s) => s,
+                        Err(err) => break Err(Outcome::Error(err)),
+                    };
+                    let output = std::process::Output {
+                        status,
+                        stdout,
+                        stderr,
+                    };
+                    break Ok(Ok(output));
+                }
+                Ok(None) => tokio::time::sleep(Duration::from_millis(20)).await,
+                Err(err) => {
+                    kill_group(pid);
+                    break Err(Outcome::Error(err));
+                }
+            }
+        };
+
+        match outcome {
+            Ok(Ok(output)) => Ok(GitOutputRaw {
+                stdout: output.stdout,
+                stderr: redact_and_cap(&output.stderr),
+                status: output.status.code(),
+                timed_out: false,
+                cancelled: false,
+            }),
+            Ok(Err(err)) => Err(CaduceusError::Git {
+                operation,
+                stderr: scrub(&format!("wait: {err}")),
+            }),
+            Err(Outcome::Cancelled) => Ok(GitOutputRaw {
+                stdout: Vec::new(),
+                stderr: String::new(),
+                status: None,
+                timed_out: false,
+                cancelled: true,
+            }),
+            Err(Outcome::TimedOut) => Ok(GitOutputRaw {
+                stdout: Vec::new(),
+                stderr: format!("timed out after {}s", timeout.as_secs()),
+                status: None,
+                timed_out: true,
+                cancelled: false,
+            }),
+            Err(Outcome::Error(err)) => Err(CaduceusError::Git {
+                operation,
+                stderr: scrub(&format!("wait: {err}")),
+            }),
+        }
+    }
+
     /// Convenience: run a git command with [`OsStr`] literals.
     /// Equivalent to `run(operation, args)` for stringly-typed
     /// callers.
@@ -317,13 +509,59 @@ enum Outcome {
     Error(std::io::Error),
 }
 
+/// Write a credential helper script to a temp directory and return
+/// its path. The helper reads from the fd number passed via
+/// `GIT_ASKPASS_FD` and outputs the git-askpass protocol:
+///   username=abc
+///   password=<token>
+/// The script is a shell one-liner. Returns `None` on write failure.
+#[cfg(unix)]
+fn write_credential_helper(fd: &std::os::unix::io::OwnedFd) -> Option<std::path::PathBuf> {
+    use std::io::Write;
+    use std::os::unix::io::AsRawFd;
+    let fd_num = fd.as_raw_fd();
+    let tmp_dir = std::env::temp_dir();
+    let helper_path = tmp_dir.join(format!("caduceus-askpass-{}", std::process::id()));
+    let script = format!(
+        "#!/bin/sh\nread -r token <&{fd_num}\necho \"username=token\"\necho \"password=$token\"\n"
+    );
+    let mut file = std::fs::File::create(&helper_path).ok()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o700))
+            .ok()?;
+    }
+    file.write_all(script.as_bytes()).ok()?;
+    drop(file);
+    Some(helper_path)
+}
+
 /// Build a `tokio::process::Command` for the supplied `git`
 /// arguments with the runner's prompt-suppression, credential
-/// scrubbing, inherited allowlist, and process-group isolation
+/// scrubbing, inherited allowlist, process-group isolation,
+/// ambient-config neutralisation, and credential-broker env
 /// pre-applied. Centralised so every entry point (run / run_in
-/// / git_string) shares the same environment-handling logic.
-fn build_command(args: &[&OsStr], cwd: Option<&Path>, extras: &[String]) -> TokioCommand {
+/// / run_in_raw / git_string) shares the same environment-
+/// handling logic.
+///
+/// The following hardening is applied:
+/// * Ambient config neutralisation: `-c core.hooksPath=/dev/null`
+///   (prepended, AC-04), `GIT_CONFIG_NOSYSTEM=1` (env, AC-04),
+///   `GIT_DIR`/`GIT_WORK_TREE` set from `cwd` (AC-04).
+/// * Credential broker: `GIT_ASKPASS` and `GIT_ASKPASS_FD` set
+///   when *credential_fd* is `Some` (AC-05).
+fn build_command(
+    args: &[&OsStr],
+    cwd: Option<&Path>,
+    extras: &[String],
+    #[cfg(unix)] credential_fd: Option<&std::os::unix::io::OwnedFd>,
+) -> TokioCommand {
     let mut command = TokioCommand::new("git");
+    // Prepend `-c core.hooksPath=/dev/null` BEFORE user args so
+    // hooks can never fire.
+    command.arg("-c");
+    command.arg("core.hooksPath=/dev/null");
     command
         .args(args)
         .stdin(Stdio::null())
@@ -332,7 +570,14 @@ fn build_command(args: &[&OsStr], cwd: Option<&Path>, extras: &[String]) -> Toki
         .kill_on_drop(true);
     if let Some(c) = cwd {
         command.current_dir(c);
+        // Set GIT_DIR / GIT_WORK_TREE from the cwd so ambient
+        // GIT_DIR env vars cannot redirect operations.
+        command.env("GIT_DIR", c.join(".git"));
+        command.env("GIT_WORK_TREE", c);
     }
+    // Suppress system/user level config so no ambient
+    // credential helper or hook can influence the operation.
+    command.env("GIT_CONFIG_NOSYSTEM", "1");
     // Process-group isolation: every git subprocess runs as
     // its own process-group leader so the runner can broadcast
     // SIGKILL/SIGTERM to the whole group on timeout /
@@ -368,6 +613,24 @@ fn build_command(args: &[&OsStr], cwd: Option<&Path>, extras: &[String]) -> Toki
     for name in extras {
         if let Some(value) = std::env::var_os(name) {
             command.env(name, value);
+        }
+    }
+    // Credential broker: when a credential helper fd is configured,
+    // set GIT_ASKPASS to a helper that reads from the fd. The
+    // helper is a shell one-liner stored in the implicit env.
+    // We use a built-in helper path: the daemon writes a small
+    // helper script to tmp and references it via GIT_ASKPASS.
+    // The fd number is passed via GIT_ASKPASS_FD.
+    // (This is done after the allowlist so the env vars stick.)
+    #[cfg(unix)]
+    if let Some(fd) = credential_fd {
+        use std::os::unix::io::AsRawFd;
+        // Write a helper script that reads from the fd and outputs
+        // the git-askpass protocol. The script is a shell one-liner.
+        let helper_path = write_credential_helper(fd);
+        if let Some(path) = helper_path {
+            command.env("GIT_ASKPASS", path.to_string_lossy().as_ref());
+            command.env("GIT_ASKPASS_FD", fd.as_raw_fd().to_string());
         }
     }
     command

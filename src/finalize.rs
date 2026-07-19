@@ -36,6 +36,7 @@ use crate::config::Config;
 use crate::error::{CaduceusError, CaduceusResult, VoiceError};
 use crate::issue::IssueKey;
 use crate::worker::WorkerResult;
+use crate::worktree::GitRunner;
 /// Default outbound-comment max bytes when the operator has not
 /// overridden the limit. GitHub caps comment bodies at 65 536 bytes
 /// in API v3; the daemon defaults to the same number so a comment
@@ -302,7 +303,7 @@ pub fn commit_code_result(
     worker_result_path: &std::path::Path,
 ) -> CaduceusResult<CommitOutcome> {
     // 1. Verify HEAD == base_oid.
-    let head_oid = git_rev_in(&ctx.worktree.path, "HEAD")?;
+    let head_oid = git_rev_in(&ctx.worktree.path, "HEAD", runner)?;
     if head_oid != ctx.worktree.base_oid {
         return Err(CaduceusError::Worker {
             context: "commit",
@@ -313,7 +314,7 @@ pub fn commit_code_result(
         });
     }
     // 2. Status --porcelain=v2 -z.
-    let entries = git_status_v2(&ctx.worktree.path)?;
+    let entries = git_status_v2(&ctx.worktree.path, runner)?;
     // 3-4. Filter.
     let mut validated: Vec<String> = Vec::new();
     let mut has_changes = false;
@@ -332,13 +333,29 @@ pub fn commit_code_result(
                 stderr: format!("worker touched .git/: {}", entry.path),
             });
         }
-        // Reject escaping symlinks: if the path on disk
-        // is a symlink whose target is absolute or starts
-        // with `..`, the worker is trying to escape the
-        // worktree.
+        // Reject escaping symlinks: resolve the path via
+        // `canonicalize` and verify it stays inside the
+        // worktree root. This catches symlink-escape attacks
+        // that use absolute or `..` paths that resolve outside
+        // the worktree (AC-03).
         let full_path = ctx.worktree.path.join(&entry.path);
-        if let Ok(target) = std::fs::symlink_metadata(&full_path) {
-            if target.file_type().is_symlink() {
+        let canonical_worktree =
+            std::fs::canonicalize(&ctx.worktree.path).unwrap_or_else(|_| ctx.worktree.path.clone());
+        let canonical_path =
+            std::fs::canonicalize(&full_path).unwrap_or_else(|_| full_path.clone());
+        if !canonical_path.starts_with(&canonical_worktree) {
+            return Err(CaduceusError::Worker {
+                context: "commit",
+                stderr: format!(
+                    "worker created an escaping symlink: {} resolves outside worktree",
+                    entry.path,
+                ),
+            });
+        }
+        // Also check the raw symlink target for direct `..` or
+        // absolute targets (belt-and-braces on top of canonicalize).
+        if let Ok(meta) = std::fs::symlink_metadata(&full_path) {
+            if meta.file_type().is_symlink() {
                 if let Ok(link) = std::fs::read_link(&full_path) {
                     if link.starts_with("..") || link.is_absolute() {
                         return Err(CaduceusError::Worker {
@@ -380,6 +397,22 @@ pub fn commit_code_result(
     })
 }
 
+/// Block on an async future from a sync context. Tries to use the
+/// current Tokio runtime handle; if none is available, creates a
+/// single-threaded runtime.
+fn drive_block_on<F: std::future::Future>(f: F) -> F::Output {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => handle.block_on(f),
+        Err(_) => {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("drive_block_on: create runtime");
+            rt.block_on(f)
+        }
+    }
+}
+
 /// A single `git status --porcelain=v2 -z` entry. The
 /// format is a NUL-separated list of header + path bytes;
 /// we only carry the fields the daemon needs.
@@ -401,26 +434,30 @@ struct GitStatusEntry {
 /// between records and the untracked-records section
 /// after a NUL terminator; this parser handles the
 /// document shape end-to-end.
-fn git_status_v2(workdir: &std::path::Path) -> CaduceusResult<Vec<GitStatusEntry>> {
-    let out = std::process::Command::new("git")
-        .args(["status", "--porcelain=v2", "-z", "--untracked-files=all"])
-        .current_dir(workdir)
-        .output()
-        .map_err(|err| CaduceusError::StateCorrupt {
-            path: workdir.to_path_buf(),
-            message: format!("spawn git status: {err}"),
-        })?;
-    if !out.status.success() {
+fn git_status_v2(
+    workdir: &std::path::Path,
+    runner: &GitRunner,
+) -> CaduceusResult<Vec<GitStatusEntry>> {
+    let args: &[&std::ffi::OsStr] = &[
+        std::ffi::OsStr::new("status"),
+        std::ffi::OsStr::new("--porcelain=v2"),
+        std::ffi::OsStr::new("-z"),
+        std::ffi::OsStr::new("--untracked-files=all"),
+    ];
+    let output = drive_block_on(runner.run_in_raw(
+        &Config::test_defaults(std::path::Path::new("/tmp")),
+        "status",
+        args,
+        Some(workdir),
+    ))?;
+    if !matches!(output.status, Some(0)) {
         return Err(CaduceusError::StateCorrupt {
             path: workdir.to_path_buf(),
-            message: format!(
-                "git status failed: {}",
-                String::from_utf8_lossy(&out.stderr)
-            ),
+            message: format!("git status failed: {}", output.stderr),
         });
     }
     // Split on NUL. Trailing empty is dropped.
-    let parts: Vec<&[u8]> = out
+    let parts: Vec<&[u8]> = output
         .stdout
         .split(|b| *b == 0)
         .filter(|b| !b.is_empty())
@@ -497,50 +534,54 @@ fn git_status_v2(workdir: &std::path::Path) -> CaduceusResult<Vec<GitStatusEntry
 /// Run `git rev-parse <rev>` in *workdir* and return the
 /// trimmed OID. Used to compare against the worktree's
 /// recorded `base_oid`.
-fn git_rev_in(workdir: &std::path::Path, rev: &str) -> CaduceusResult<String> {
-    let out = std::process::Command::new("git")
-        .args(["rev-parse", rev])
-        .current_dir(workdir)
-        .output()
-        .map_err(|err| CaduceusError::StateCorrupt {
-            path: workdir.to_path_buf(),
-            message: format!("spawn git rev-parse: {err}"),
-        })?;
-    if !out.status.success() {
+async fn git_rev_in_async(
+    workdir: &std::path::Path,
+    rev: &str,
+    runner: &GitRunner,
+) -> CaduceusResult<String> {
+    let args: &[&std::ffi::OsStr] = &[std::ffi::OsStr::new("rev-parse"), std::ffi::OsStr::new(rev)];
+    let output = runner
+        .run_in(
+            &Config::test_defaults(std::path::Path::new("/tmp")),
+            "rev-parse",
+            args,
+            Some(workdir),
+        )
+        .await?;
+    if !matches!(output.status, Some(0)) {
         return Err(CaduceusError::StateCorrupt {
             path: workdir.to_path_buf(),
-            message: format!(
-                "git rev-parse failed: {}",
-                String::from_utf8_lossy(&out.stderr)
-            ),
+            message: format!("git rev-parse failed: {}", output.stderr),
         });
     }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    Ok(output.stdout.trim().to_string())
+}
+
+/// Sync wrapper for `git_rev_in_async` — used by the sync
+/// `commit_code_result` function.
+fn git_rev_in(workdir: &std::path::Path, rev: &str, runner: &GitRunner) -> CaduceusResult<String> {
+    drive_block_on(git_rev_in_async(workdir, rev, runner))
 }
 
 /// `git add --all -- <path>` for a single validated
 /// path. The daemon adds paths one at a time so a
 /// per-path failure is surfaced precisely.
-fn git_add(
-    workdir: &std::path::Path,
-    path: &str,
-    _runner: &crate::worktree::GitRunner,
-) -> CaduceusResult<()> {
-    let out = std::process::Command::new("git")
-        .args(["add", "--", path])
-        .current_dir(workdir)
-        .output()
-        .map_err(|err| CaduceusError::StateCorrupt {
-            path: workdir.to_path_buf(),
-            message: format!("spawn git add: {err}"),
-        })?;
-    if !out.status.success() {
+fn git_add(workdir: &std::path::Path, path: &str, runner: &GitRunner) -> CaduceusResult<()> {
+    let args: &[&std::ffi::OsStr] = &[
+        std::ffi::OsStr::new("add"),
+        std::ffi::OsStr::new("--"),
+        std::ffi::OsStr::new(path),
+    ];
+    let output = drive_block_on(runner.run_in(
+        &Config::test_defaults(std::path::Path::new("/tmp")),
+        "add",
+        args,
+        Some(workdir),
+    ))?;
+    if !matches!(output.status, Some(0)) {
         return Err(CaduceusError::StateCorrupt {
             path: workdir.to_path_buf(),
-            message: format!(
-                "git add {path} failed: {}",
-                String::from_utf8_lossy(&out.stderr)
-            ),
+            message: format!("git add {path} failed: {}", output.stderr),
         });
     }
     Ok(())
@@ -553,34 +594,32 @@ fn git_commit(
     message: &str,
     user_name: &str,
     user_email: &str,
-    _runner: &crate::worktree::GitRunner,
+    runner: &GitRunner,
 ) -> CaduceusResult<String> {
-    let out = std::process::Command::new("git")
-        .args([
-            "-c",
-            &format!("user.name={user_name}"),
-            "-c",
-            &format!("user.email={user_email}"),
-            "commit",
-            "-m",
-            message,
-        ])
-        .current_dir(workdir)
-        .output()
-        .map_err(|err| CaduceusError::StateCorrupt {
-            path: workdir.to_path_buf(),
-            message: format!("spawn git commit: {err}"),
-        })?;
-    if !out.status.success() {
+    let name_arg = format!("user.name={user_name}");
+    let email_arg = format!("user.email={user_email}");
+    let args: &[&std::ffi::OsStr] = &[
+        std::ffi::OsStr::new("-c"),
+        std::ffi::OsStr::new(&name_arg),
+        std::ffi::OsStr::new("-c"),
+        std::ffi::OsStr::new(&email_arg),
+        std::ffi::OsStr::new("commit"),
+        std::ffi::OsStr::new("-m"),
+        std::ffi::OsStr::new(message),
+    ];
+    let output = drive_block_on(runner.run_in(
+        &Config::test_defaults(std::path::Path::new("/tmp")),
+        "commit",
+        args,
+        Some(workdir),
+    ))?;
+    if !matches!(output.status, Some(0)) {
         return Err(CaduceusError::StateCorrupt {
             path: workdir.to_path_buf(),
-            message: format!(
-                "git commit failed: {}",
-                String::from_utf8_lossy(&out.stderr)
-            ),
+            message: format!("git commit failed: {}", output.stderr),
         });
     }
-    git_rev_in(workdir, "HEAD")
+    git_rev_in(workdir, "HEAD", runner)
 }
 
 /// Inspect the worktree, validate the changes, and
@@ -669,7 +708,7 @@ pub async fn push_daemon_branch(
     runner: &crate::worktree::GitRunner,
 ) -> CaduceusResult<PushOutcome> {
     let branch = ctx.worktree.branch_name.clone();
-    let local_oid = git_rev_in(&ctx.worktree.path, "HEAD")?;
+    let local_oid = git_rev_in_async(&ctx.worktree.path, "HEAD", runner).await?;
     let remote_url = ctx.repository.remote_url.as_str();
     // 1. Query the remote for the current ref.
     let remote_oid = match ls_remote_branch(remote_url, &branch, runner).await? {
@@ -705,7 +744,7 @@ pub async fn push_daemon_branch(
             // is the proposed new-tip. We treat the
             // remote as an ancestor iff `local_oid` is
             // reachable from `remote_oid`.
-            if is_ancestor(&ctx.worktree.path, &remote_oid, &local_oid).await? {
+            if is_ancestor(&ctx.worktree.path, &remote_oid, &local_oid, runner).await? {
                 // 2c. Fast-forward.
                 run_push(
                     remote_url,
@@ -843,16 +882,23 @@ async fn is_ancestor(
     workdir: &std::path::Path,
     remote_oid: &str,
     local_oid: &str,
+    runner: &GitRunner,
 ) -> CaduceusResult<bool> {
-    let out = std::process::Command::new("git")
-        .args(["merge-base", "--is-ancestor", remote_oid, local_oid])
-        .current_dir(workdir)
-        .output()
-        .map_err(|err| CaduceusError::Push {
-            context: "merge-base",
-            stderr: format!("spawn: {err}"),
-        })?;
-    Ok(out.status.success())
+    let args: &[&std::ffi::OsStr] = &[
+        std::ffi::OsStr::new("merge-base"),
+        std::ffi::OsStr::new("--is-ancestor"),
+        std::ffi::OsStr::new(remote_oid),
+        std::ffi::OsStr::new(local_oid),
+    ];
+    let output = runner
+        .run_in(
+            &Config::test_defaults(std::path::Path::new("/tmp")),
+            "merge-base",
+            args,
+            Some(workdir),
+        )
+        .await?;
+    Ok(output.status == Some(0))
 }
 
 // ---------------------------------------------------------------------------
