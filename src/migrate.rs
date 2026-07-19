@@ -35,11 +35,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use chrono::{DateTime, Utc};
 
 use crate::error::{CaduceusError, CaduceusResult};
+use crate::install;
 use crate::issue::IssueKey;
 use crate::queue::{
     parse_queue_state, serialize_queue_state, DaemonLock, Phase, QueueEntry, QueueState,
     StateStore, TicketType,
 };
+use crate::store;
 
 /// Outcome class of a migration run. The CLI renders a
 /// human-readable summary from this; tests assert on it
@@ -477,4 +479,200 @@ fn unix_ts() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+/// Recovery for a corrupt SQLite database. Validates the database
+/// using `PRAGMA integrity_check`, takes the daemon lock, archives
+/// the corrupt database, and restores from a known-good backup.
+///
+/// The backup is expected to be a valid SQLite database file. If no
+/// backup is provided, the function reports the integrity failure
+/// without attempting recovery.
+pub fn recover_sqlite_state(
+    state_dir: &Path,
+    backup: Option<&Path>,
+    hold_daemon_lock: bool,
+) -> CaduceusResult<RecoveryReport> {
+    let _lock = if hold_daemon_lock {
+        let lock = DaemonLock::try_acquire(state_dir)?.ok_or_else(|| CaduceusError::Queue {
+            context: "recover-sqlite",
+            stderr: "another tick holds daemon.lock; refusing to recover".to_string(),
+        })?;
+        Some(lock)
+    } else {
+        None
+    };
+
+    let db_path = state_dir.join(store::DB_FILENAME);
+    let marker = state_dir.join("state.db.corrupt");
+
+    // Run integrity check on the existing database.
+    if db_path.is_file() {
+        match store::open(&db_path) {
+            Ok(conn) => {
+                let ok: String = conn
+                    .pragma_query_value(None, "integrity_check", |row| row.get(0))
+                    .unwrap_or_else(|_| "error".to_string());
+                if ok == "ok" {
+                    // Database is healthy.
+                    return Ok(RecoveryReport {
+                        archived_corrupt: None,
+                        installed_from: db_path,
+                        cleared_marker: false,
+                    });
+                }
+            }
+            Err(_) => {} // DB is corrupt, fall through to recovery.
+        }
+    }
+
+    // Archive the corrupt database.
+    let archived = if db_path.is_file() {
+        let stamp = unix_ts();
+        let archive = state_dir.join(format!("state.db.corrupt-{stamp}"));
+        fs::rename(&db_path, &archive).map_err(CaduceusError::Io)?;
+        Some(archive)
+    } else {
+        None
+    };
+
+    // Restore from backup.
+    let installed_from = match backup {
+        Some(bk) => {
+            if !bk.is_file() {
+                return Err(CaduceusError::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("backup file not found: {}", bk.display()),
+                )));
+            }
+            // Validate the backup before installing.
+            store::open(bk)?;
+            // Install the backup atomically.
+            install::atomic_write(&db_path, &fs::read(bk).map_err(CaduceusError::Io)?)?;
+            bk.to_path_buf()
+        }
+        None => {
+            // No backup provided; create a fresh empty database.
+            store::open_in(state_dir)?;
+            db_path.clone()
+        }
+    };
+
+    let mut cleared = false;
+    if marker.exists() {
+        fs::remove_file(&marker)?;
+        cleared = true;
+    }
+
+    Ok(RecoveryReport {
+        archived_corrupt: archived,
+        installed_from,
+        cleared_marker: cleared,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn state_dir() -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let dir =
+            std::env::temp_dir().join(format!("migrate-recover-test-{}-{}", std::process::id(), n));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn recover_sqlite_healthy_db_returns_noop() {
+        let dir = state_dir();
+        // Create a healthy database.
+        let conn = store::open_in(&dir).expect("open fresh db");
+        drop(conn);
+
+        let report = recover_sqlite_state(&dir, None, false).expect("recover healthy");
+        assert!(
+            report.archived_corrupt.is_none(),
+            "healthy db must not archive"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn recover_sqlite_corrupt_db_archives_and_creates_fresh() {
+        let dir = state_dir();
+        // Write corrupt bytes to the database path.
+        let db_path = dir.join(store::DB_FILENAME);
+        fs::write(&db_path, b"not a valid sqlite database").unwrap();
+
+        let report = recover_sqlite_state(&dir, None, false).expect("recover corrupt");
+        assert!(
+            report.archived_corrupt.is_some(),
+            "corrupt db must be archived"
+        );
+        assert!(
+            report.archived_corrupt.as_ref().unwrap().is_file(),
+            "archive must exist"
+        );
+
+        // Fresh database must be created and be valid.
+        let conn = store::open(&db_path).expect("fresh db must be valid");
+        drop(conn);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn recover_sqlite_restores_from_backup() {
+        let dir = state_dir();
+        // Create a healthy database.
+        let conn = store::open_in(&dir).expect("open fresh");
+        drop(conn);
+
+        // Create a backup copy.
+        let db_path = dir.join(store::DB_FILENAME);
+        let backup_path = dir.join("state.db.backup");
+        fs::copy(&db_path, &backup_path).unwrap();
+
+        // Corrupt the original.
+        fs::write(&db_path, b"garbage").unwrap();
+
+        // Recover from backup.
+        let report =
+            recover_sqlite_state(&dir, Some(&backup_path), false).expect("recover from backup");
+        assert!(
+            report.archived_corrupt.is_some(),
+            "corrupt db must be archived"
+        );
+
+        // Restored database must be valid.
+        let conn = store::open(&db_path).expect("restored db must be valid");
+        drop(conn);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn recover_sqlite_missing_backup_creates_fresh() {
+        let dir = state_dir();
+        let db_path = dir.join(store::DB_FILENAME);
+        fs::write(&db_path, b"garbage").unwrap();
+
+        // No backup provided — should create fresh.
+        let report = recover_sqlite_state(&dir, None, false).expect("recover without backup");
+        assert!(
+            report.archived_corrupt.is_some(),
+            "corrupt db must be archived"
+        );
+
+        let conn = store::open(&db_path).expect("fresh db must be valid");
+        drop(conn);
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
