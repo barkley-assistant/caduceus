@@ -29,6 +29,7 @@ pub mod prompt;
 pub mod queue;
 pub mod signals;
 pub mod status;
+pub mod store;
 pub mod tick;
 pub mod validate;
 pub mod verify;
