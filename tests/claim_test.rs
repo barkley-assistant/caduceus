@@ -64,6 +64,7 @@ fn seed_entry(owner: &str, repo: &str, number: u64) -> QueueEntry {
         finalization: None,
         queued_at: Utc::now(),
         updated_at: Utc::now(),
+        generation: 1,
     }
 }
 

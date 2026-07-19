@@ -142,6 +142,7 @@ fn make_entry(key: IssueKey, phase: Phase) -> QueueEntry {
         finalization: None,
         queued_at: Utc::now(),
         updated_at: Utc::now(),
+        generation: 1,
     }
 }
 

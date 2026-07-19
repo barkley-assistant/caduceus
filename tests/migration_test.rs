@@ -283,6 +283,7 @@ fn already_current_state_is_idempotent_no_op() {
             finalization: None,
             queued_at: Utc.with_ymd_and_hms(2026, 7, 1, 0, 0, 0).unwrap(),
             updated_at: Utc.with_ymd_and_hms(2026, 7, 1, 0, 0, 0).unwrap(),
+            generation: 1,
         },
     );
     fs::write(
@@ -359,6 +360,7 @@ fn recovery_validates_supplied_file_under_daemon_lock_and_clears_marker() {
             finalization: None,
             queued_at: Utc.with_ymd_and_hms(2026, 7, 14, 0, 0, 0).unwrap(),
             updated_at: Utc.with_ymd_and_hms(2026, 7, 14, 0, 0, 0).unwrap(),
+            generation: 1,
         },
     );
     fs::write(&repaired, serialize_queue_state(&state).unwrap()).unwrap();
@@ -448,6 +450,7 @@ fn recovery_refuses_when_corrupt_original_cannot_be_archived() {
             finalization: None,
             queued_at: Utc.with_ymd_and_hms(2026, 7, 14, 0, 0, 0).unwrap(),
             updated_at: Utc.with_ymd_and_hms(2026, 7, 14, 0, 0, 0).unwrap(),
+            generation: 1,
         },
     );
     fs::write(&repaired, serialize_queue_state(&state).unwrap()).unwrap();

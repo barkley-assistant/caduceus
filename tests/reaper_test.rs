@@ -83,6 +83,7 @@ fn enqueue_in_progress(state_dir: &Path, key: &IssueKey, attempts: u32) {
         finalization: None,
         queued_at: now,
         updated_at: now,
+        generation: 1,
     };
     let state = QueueState {
         version: 1,
@@ -107,6 +108,7 @@ fn enqueue_in_phase(state_dir: &Path, key: &IssueKey, phase: Phase) {
         finalization: None,
         queued_at: now,
         updated_at: now,
+        generation: 1,
     };
     let state = QueueState {
         version: 1,

@@ -133,6 +133,7 @@ pub struct QueueEntry {
     pub finalization: Option<FinalizationCheckpoint>,
     pub queued_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub generation: u32,
 }
 
 /// Versioned queue file.
@@ -464,6 +465,7 @@ impl StateStore {
                         finalization: None,
                         queued_at: now,
                         updated_at: now,
+                        generation: 1,
                     };
                     state.entries.insert(key.display_key(), entry);
                     EnqueueOutcome::Inserted
@@ -775,6 +777,32 @@ impl StateStore {
     ) -> CaduceusResult<Option<FinalizationCheckpoint>> {
         let snap = self.snapshot()?;
         Ok(snap.entry(key).and_then(|e| e.finalization.clone()))
+    }
+
+    /// Create a new generation for an entry: increment generation,
+    /// reset phase to `Queued`, and clear run-tracking fields.
+    pub fn reprocess_entry(&self, key: &IssueKey) -> CaduceusResult<()> {
+        self.with_exclusive(|store| {
+            let mut state = store.load_validated()?;
+            let target = key.display_key();
+            let entry = state
+                .entries
+                .values_mut()
+                .find(|e| e.key.display_key() == target)
+                .ok_or_else(|| CaduceusError::Queue {
+                    context: "reprocess",
+                    stderr: format!("no entry for {target}"),
+                })?;
+            entry.phase = Phase::Queued;
+            entry.attempts = 0;
+            entry.last_error = None;
+            entry.last_run_id = None;
+            entry.next_attempt_at = None;
+            entry.generation = entry.generation.saturating_add(1);
+            entry.updated_at = Utc::now();
+            store.persist(&state)?;
+            Ok(())
+        })
     }
 
     // --- internal helpers ---------------------------------------------------
