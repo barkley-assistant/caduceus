@@ -66,6 +66,7 @@ fn spawn_supervisor(
     cmd.arg("--transcript").arg(transcript);
     cmd.arg("--heartbeat").arg(heartbeat);
     cmd.arg("--timeout").arg(timeout_seconds.to_string());
+    cmd.arg("--transcript-max-bytes").arg("1048576");
     cmd.arg("--").arg(worker);
     cmd.env_clear();
     cmd.stdin(Stdio::piped());

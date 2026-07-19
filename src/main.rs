@@ -73,7 +73,9 @@ fn run_supervisor_mode() -> CaduceusResult<()> {
     use std::io::{Read, Write};
     use std::path::PathBuf;
 
-    use caduceus::worker_supervisor::{detach_session, encode_frame, ControlFrame};
+    use caduceus::worker_supervisor::{
+        detach_session, encode_frame, BoundedTranscriptWriter, ControlFrame,
+    };
 
     let mut args = std::env::args_os().skip(1);
     let mut worktree: Option<PathBuf> = None;
@@ -83,6 +85,7 @@ fn run_supervisor_mode() -> CaduceusResult<()> {
     let mut transcript_path: Option<PathBuf> = None;
     let mut heartbeat_path: Option<PathBuf> = None;
     let mut _timeout_seconds: u64 = 3600;
+    let mut transcript_max_bytes: u64 = 10 * 1024 * 1024;
     let mut worker_command: Vec<String> = Vec::new();
 
     while let Some(arg) = args.next() {
@@ -101,6 +104,12 @@ fn run_supervisor_mode() -> CaduceusResult<()> {
                     .next()
                     .and_then(|a| a.to_string_lossy().parse::<u64>().ok())
                     .unwrap_or(3600)
+            }
+            "--transcript-max-bytes" => {
+                transcript_max_bytes = args
+                    .next()
+                    .and_then(|a| a.to_string_lossy().parse::<u64>().ok())
+                    .unwrap_or(10 * 1024 * 1024)
             }
             "--" => {
                 for rest in args {
@@ -302,30 +311,26 @@ fn run_supervisor_mode() -> CaduceusResult<()> {
         }
     });
 
-    // Forward worker stderr (which carries the worker's
-    // stdout stream) to the transcript. The supervisor's
-    // stdout carries the framed control protocol only.
-    let mut worker_stderr = child.stderr.take();
-    let transcript_for_write = std::fs::OpenOptions::new()
-        .append(true)
-        .open(&transcript_path)
-        .ok();
+    // Forward worker stderr to the bounded transcript writer.
+    let worker_stderr = child.stderr.take();
+    let mut writer = BoundedTranscriptWriter::new(transcript_path.clone(), transcript_max_bytes)
+        .map_err(|err| {
+            tracing::warn!(error = %err, "failed to open transcript");
+            err
+        })?;
 
     let tx_err = std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
-        if let Some(s) = worker_stderr.as_mut() {
-            while let Ok(n) = s.read(&mut buf) {
-                if n == 0 {
-                    break;
-                }
-                if let Some(f) = transcript_for_write.as_ref() {
-                    if let Ok(mut w) = f.try_clone() {
-                        let _ = w.write_all(&buf[..n]);
-                        let _ = w.flush();
-                    }
+        if let Some(mut s) = worker_stderr {
+            loop {
+                match s.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => writer.write_bytes(&buf[..n]),
+                    Err(_) => break,
                 }
             }
         }
+        writer
     });
 
     // Wait for the worker.
@@ -335,20 +340,22 @@ fn run_supervisor_mode() -> CaduceusResult<()> {
             context: "supervisor:worker_wait",
             stderr: format!("wait: {err}"),
         })?;
-    let _ = tx_err.join();
-    // The killer thread exits when it sees EOF on stdin;
-    // the daemon should close stdin once it has read DONE.
-    // We don't join it — it's a fire-and-forget background
-    // observer.
+    // Join the stderr drain thread and get the writer back.
+    let writer = tx_err.join().map_err(|_| caduceus::CaduceusError::Worker {
+        context: "supervisor",
+        stderr: "transcript writer thread panicked".to_string(),
+    })?;
 
-    // Send `DONE` over our stdout so the daemon sees the
-    // exit code.
+    // Finalize transcript — report truncation/write failures.
+    // Must happen before DONE so invalid runs never succeed (AC-03).
+    writer.finalize()?;
+
+    // Send `DONE` over our stdout so the daemon sees the exit code.
     let done = encode_frame(&ControlFrame::Done {
         status: status.code().unwrap_or(1),
         signaled: status.code().is_none(),
     })?;
-    let _ = std::io::stdout().write_all(&done);
-    let _ = std::io::stdout().flush();
-
+    std::io::stdout().write_all(&done).ok();
+    std::io::stdout().flush().ok();
     Ok(())
 }

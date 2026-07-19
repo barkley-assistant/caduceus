@@ -403,6 +403,83 @@ pub fn truncate_transcript(path: &Path, max_bytes: u64) -> CaduceusResult<bool> 
     Ok(true)
 }
 
+// ---------------------------------------------------------------------------
+// BoundedTranscriptWriter — bounded stderr capture
+// ---------------------------------------------------------------------------
+
+/// Bounded writer that wraps a transcript file with a byte cap.
+/// Writes that would exceed the cap trigger truncation; subsequent
+/// writes are still appended (to keep the drain running) but the
+/// truncated flag is set. On `finalize()`, reports truncation or
+/// write failures as an error so the caller can surface them.
+#[derive(Debug)]
+pub struct BoundedTranscriptWriter {
+    pub file: File,
+    path: PathBuf,
+    max_bytes: u64,
+    pub truncated: bool,
+    pub write_failures: u64,
+}
+
+impl BoundedTranscriptWriter {
+    /// Create a new bounded writer. Opens the transcript file via
+    /// [`open_transcript`]; errors propagate.
+    pub fn new(path: PathBuf, max_bytes: u64) -> CaduceusResult<Self> {
+        let file = open_transcript(&path)?;
+        Ok(Self {
+            file,
+            path,
+            max_bytes,
+            truncated: false,
+            write_failures: 0,
+        })
+    }
+
+    /// Append *bytes* to the transcript. On I/O error, increments
+    /// `write_failures` and returns (does NOT propagate — the drain
+    /// must keep running). After a successful append, checks the file
+    /// size; if it exceeds `max_bytes`, calls [`truncate_transcript`]
+    /// and sets `truncated = true`.
+    pub fn write_bytes(&mut self, bytes: &[u8]) {
+        if append_transcript(&mut self.file, bytes).is_err() {
+            self.write_failures += 1;
+            return;
+        }
+        let _ = self.file.flush();
+        if !self.truncated {
+            if let Ok(meta) = fs::symlink_metadata(&self.path) {
+                if meta.len() > self.max_bytes {
+                    if let Ok(true) = truncate_transcript(&self.path, self.max_bytes) {
+                        self.truncated = true;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Finalize the transcript. Returns:
+    /// - `Err(CaduceusError::Worker { context: "supervisor:transcript:truncated", .. })`
+    ///   if the transcript was truncated (takes precedence).
+    /// - `Err(CaduceusError::Worker { context: "supervisor:transcript:write_failures", .. })`
+    ///   if there were write failures.
+    /// - `Ok(())` otherwise.
+    pub fn finalize(self) -> CaduceusResult<()> {
+        if self.truncated {
+            return Err(CaduceusError::Worker {
+                context: "supervisor:transcript:truncated",
+                stderr: format!("transcript truncated at {} bytes", self.max_bytes),
+            });
+        }
+        if self.write_failures > 0 {
+            return Err(CaduceusError::Worker {
+                context: "supervisor:transcript:write_failures",
+                stderr: format!("{} write failure(s)", self.write_failures),
+            });
+        }
+        Ok(())
+    }
+}
+
 fn set_mode(path: &Path, mode: u32) -> CaduceusResult<()> {
     let meta = fs::symlink_metadata(path).map_err(|err| CaduceusError::Worker {
         context: "supervisor:setup",
@@ -754,6 +831,7 @@ pub fn build_supervisor_command(
     transcript_path: &Path,
     heartbeat_path: &Path,
     timeout_seconds: u64,
+    transcript_max_bytes: u64,
 ) -> Command {
     let mut cmd = Command::new(self_exe);
     cmd.arg(HIDDEN_COMMAND);
@@ -765,6 +843,8 @@ pub fn build_supervisor_command(
     cmd.arg("--transcript").arg(transcript_path);
     cmd.arg("--heartbeat").arg(heartbeat_path);
     cmd.arg("--timeout").arg(timeout_seconds.to_string());
+    cmd.arg("--transcript-max-bytes")
+        .arg(transcript_max_bytes.to_string());
     for arg in worker_command {
         cmd.arg("--").arg(arg);
     }
@@ -962,6 +1042,7 @@ async fn run_supervisor(
         &paths.transcript_path,
         &paths.heartbeat_path,
         cfg.worker_timeout_seconds,
+        cfg.transcript_max_bytes,
     );
 
     // Convert to a tokio command for async I/O. The
@@ -1137,39 +1218,38 @@ async fn run_supervisor(
         })
     };
 
-    // Stderr drain — write into the transcript.
+    // Stderr drain — write into the transcript, bounded by
+    // cfg.transcript_max_bytes.
     if let Some(mut stderr) = stderr {
         let path = paths.transcript_path.clone();
         let max_bytes = cfg.transcript_max_bytes;
         let _drain_task = tokio::spawn(async move {
             let mut buf = vec![0u8; 4096];
-            let mut file = match tokio::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)
-                .await
-            {
-                Ok(f) => f,
+            let writer = match BoundedTranscriptWriter::new(path.clone(), max_bytes) {
+                Ok(w) => std::sync::Arc::new(std::sync::Mutex::new(w)),
                 Err(_) => return,
             };
             loop {
                 match stderr.read(&mut buf).await {
                     Ok(0) => break,
                     Ok(n) => {
-                        file.write_all(&buf[..n]).await.ok();
-                        file.flush().await.ok();
+                        let chunk = buf[..n].to_vec();
+                        let w = writer.clone();
+                        let _ = tokio::task::spawn_blocking(move || {
+                            let mut guard = w.lock().unwrap();
+                            guard.write_bytes(&chunk);
+                        })
+                        .await;
                     }
                     Err(_) => break,
                 }
             }
-            // Truncate if needed.
-            if let Ok(meta) = tokio::fs::metadata(&path).await {
-                if meta.len() > max_bytes {
-                    let _ = tokio::task::spawn_blocking(move || {
-                        let _ = truncate_transcript(&path, max_bytes);
-                    })
-                    .await;
-                }
+            let guard = std::sync::Arc::try_unwrap(writer)
+                .unwrap_or_else(|_| panic!("writer arc still referenced"))
+                .into_inner()
+                .unwrap_or_else(|e| e.into_inner());
+            if let Err(err) = guard.finalize() {
+                tracing::warn!(error = %err, "transcript finalize");
             }
         });
     }
@@ -1339,7 +1419,124 @@ mod inline_tests {
         assert_eq!(meta.permissions().mode() & 0o777, 0o700);
     }
 
-    // The remaining tests exercise the process-identity helpers that
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn bounded_writer_new_creates_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("bw.log");
+        let writer = BoundedTranscriptWriter::new(path.clone(), 1024).expect("new");
+        assert!(path.is_file(), "file must exist");
+        let meta = std::fs::metadata(&path).expect("stat");
+        assert_eq!(
+            meta.permissions().mode() & 0o777,
+            0o600,
+            "file mode must be 0600, got {:o}",
+            meta.permissions().mode()
+        );
+        drop(writer);
+    }
+
+    #[test]
+    fn bounded_writer_under_limit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("bw_under.log");
+        let mut writer = BoundedTranscriptWriter::new(path.clone(), 1024).expect("new");
+        let data = vec![b'a'; 100];
+        writer.write_bytes(&data);
+        assert!(!writer.truncated, "should not be truncated");
+        writer.finalize().expect("finalize should succeed");
+    }
+
+    #[test]
+    fn bounded_writer_exact_fit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("bw_exact.log");
+        let mut writer = BoundedTranscriptWriter::new(path.clone(), 100).expect("new");
+        let data = vec![b'a'; 100];
+        writer.write_bytes(&data);
+        assert!(!writer.truncated, "exact fit should not truncate");
+        writer.finalize().expect("finalize should succeed");
+    }
+
+    #[test]
+    fn bounded_writer_over_limit_sets_truncated() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("bw_over.log");
+        let mut writer = BoundedTranscriptWriter::new(path.clone(), 50).expect("new");
+        let data = vec![b'a'; 100];
+        writer.write_bytes(&data);
+        assert!(writer.truncated, "should be truncated");
+        let err = writer.finalize().expect_err("finalize should fail");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("truncated"),
+            "error must mention truncated, got {msg}"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn bounded_writer_write_failure() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("bw_fail.log");
+        let mut writer = BoundedTranscriptWriter::new(path.clone(), 1024).expect("new");
+        // Write some bytes first.
+        writer.write_bytes(b"first write");
+        // Replace the file handle with /dev/full so writes fail.
+        writer.file = std::fs::File::open("/dev/full").expect("open /dev/full");
+        writer.write_bytes(b"this should fail");
+        assert!(
+            writer.write_failures > 0,
+            "write_failures should be > 0, got {}",
+            writer.write_failures
+        );
+        let err = writer.finalize().expect_err("finalize should fail");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("write_failures"),
+            "error must mention write_failures, got {msg}"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn bounded_writer_truncation_takes_precedence() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("bw_prec.log");
+        let mut writer = BoundedTranscriptWriter::new(path.clone(), 50).expect("new");
+        // Write enough to trigger truncation.
+        let data = vec![b'a'; 100];
+        writer.write_bytes(&data);
+        assert!(writer.truncated, "should be truncated");
+        // Now replace file handle with /dev/full so further writes fail.
+        writer.file = std::fs::File::open("/dev/full").expect("open /dev/full");
+        writer.write_bytes(b"more data");
+        assert!(
+            writer.write_failures > 0,
+            "write_failures should be > 0, got {}",
+            writer.write_failures
+        );
+        let err = writer.finalize().expect_err("finalize should fail");
+        let msg = format!("{err:?}");
+        // Truncation takes precedence over write_failures.
+        assert!(
+            msg.contains("truncated"),
+            "error must mention truncated, got {msg}"
+        );
+    }
+
+    #[test]
+    fn bounded_writer_max_bytes_zero() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("bw_zero.log");
+        let mut writer = BoundedTranscriptWriter::new(path.clone(), 0).expect("new");
+        let data = vec![b'a'; 10];
+        writer.write_bytes(&data);
+        assert!(
+            writer.truncated,
+            "max_bytes=0: any write should set truncated"
+        );
+    }
     // later units use to verify a worker PID has not been reused before
     // signalling. They are Linux-only because they read /proc/<pid>/stat.
     #[cfg(target_os = "linux")]
