@@ -83,6 +83,7 @@ fn drive_supervisor(
     cmd.arg("--transcript").arg(transcript);
     cmd.arg("--heartbeat").arg(heartbeat);
     cmd.arg("--timeout").arg(timeout_seconds.to_string());
+    cmd.arg("--transcript-max-bytes").arg("1048576");
     cmd.arg("--").arg(helper);
     cmd.env_clear();
     cmd.stdin(Stdio::piped());
@@ -451,6 +452,7 @@ sleep 30
     cmd.arg("--transcript").arg(&transcript);
     cmd.arg("--heartbeat").arg(&heartbeat);
     cmd.arg("--timeout").arg("60");
+    cmd.arg("--transcript-max-bytes").arg("1048576");
     cmd.arg("--").arg(&helper);
     cmd.env_clear();
     cmd.stdin(Stdio::piped());

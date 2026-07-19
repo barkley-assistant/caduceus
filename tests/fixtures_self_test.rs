@@ -539,6 +539,7 @@ fn ac03_release_binary_run_supervisor_serves_ready_frame() {
         transcript,
         heartbeat,
         timeout_seconds: 10,
+        transcript_max_bytes: 1048576,
         worker: vec![worker_script.to_string_lossy().to_string()],
     };
 

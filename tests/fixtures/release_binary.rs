@@ -44,6 +44,8 @@ pub struct RunSupervisorArgs {
     pub heartbeat: PathBuf,
     /// Hard timeout in seconds.
     pub timeout_seconds: u64,
+    /// Transcript max bytes before truncation.
+    pub transcript_max_bytes: u64,
     /// Worker command and its arguments.
     pub worker: Vec<String>,
 }
@@ -107,6 +109,8 @@ impl ReleaseBinary {
         cmd.arg("--transcript").arg(&args.transcript);
         cmd.arg("--heartbeat").arg(&args.heartbeat);
         cmd.arg("--timeout").arg(args.timeout_seconds.to_string());
+        cmd.arg("--transcript-max-bytes")
+            .arg(args.transcript_max_bytes.to_string());
         for w in &args.worker {
             cmd.arg("--").arg(w);
         }
