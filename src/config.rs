@@ -50,6 +50,7 @@ pub const DEFAULT_RETRY_BACKOFF_SECONDS: u64 = 300;
 pub const DEFAULT_TICKET_LABEL_CODE: &str = "🤖 auto-fix";
 pub const DEFAULT_TICKET_LABEL_INVESTIGATION: &str = "🤖 auto-fix-investigate";
 pub const DEFAULT_API_BASE: &str = "https://api.github.com";
+pub const DEFAULT_WORKER_PARALLELISM: u32 = 1;
 
 /// Caduceus configuration. Field semantics are pinned in `CONTRACTS.md`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -78,6 +79,8 @@ pub struct Config {
     pub github_token: Option<String>,
     pub api_base: String,
     pub dry_run: bool,
+    /// Maximum number of concurrent worker processes. Default 1.
+    pub worker_parallelism: u32,
     /// Compiled regexes for `comment_ignore_patterns`. Populated by
     /// [`Config::from_raw`]; not part of the YAML schema.
     #[serde(skip)]
@@ -116,6 +119,7 @@ pub struct RawConfig {
     pub github_token: Option<String>,
     pub api_base: Option<String>,
     pub dry_run: Option<bool>,
+    pub worker_parallelism: Option<u32>,
 }
 
 /// Load context — used to resolve paths and the default worker command
@@ -495,6 +499,7 @@ impl Config {
             github_token: raw.github_token.and_then(|s| non_empty(Some(&s))),
             api_base,
             dry_run,
+            worker_parallelism: raw.worker_parallelism.unwrap_or(DEFAULT_WORKER_PARALLELISM),
             compiled_ignore_patterns,
         })
     }
@@ -530,6 +535,7 @@ impl Config {
             github_token: None,
             api_base: DEFAULT_API_BASE.to_string(),
             dry_run: false,
+            worker_parallelism: DEFAULT_WORKER_PARALLELISM,
             compiled_ignore_patterns: Vec::new(),
         }
     }
