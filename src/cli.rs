@@ -158,11 +158,28 @@ pub fn run() -> CaduceusResult<()> {
                 Some(path) => caduceus::config::Config::load_from(std::path::Path::new(&path))?,
                 None => caduceus::config::Config::load()?,
             };
-            let output = caduceus::status::report(&config.state_dir, json)?;
+            let (output, diagnostic) = caduceus::status::report(&config.state_dir, json)?;
             if json {
                 println!("{output}");
             } else {
                 print!("{output}");
+            }
+            // Map the diagnostic to the documented exit code
+            // per RUN-005:
+            //   - No diagnostic → exit 0 (valid rendered state)
+            //   - NoState → exit 2 (missing state)
+            //   - CorruptState or CorruptQueue → exit 1
+            match diagnostic {
+                Some(caduceus::status::StatusDiagnostic::NoState) => {
+                    std::process::exit(2);
+                }
+                Some(
+                    caduceus::status::StatusDiagnostic::CorruptState { .. }
+                    | caduceus::status::StatusDiagnostic::CorruptQueue { .. },
+                ) => {
+                    std::process::exit(1);
+                }
+                None => {}
             }
             Ok(())
         }

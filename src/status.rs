@@ -530,8 +530,9 @@ pub fn render_json(report: &StatusReport) -> CaduceusResult<String> {
 /// Public entry point that powers `caduceus status`. The
 /// reporter is read-only; it does not take the daemon
 /// lock. The CLI host passes `--json` to switch output
-/// format.
-pub fn report(state_dir: &Path, json: bool) -> CaduceusResult<String> {
+/// format, and maps the returned diagnostic to the
+/// correct process exit code per `RUN-005`.
+pub fn report(state_dir: &Path, json: bool) -> CaduceusResult<(String, Option<StatusDiagnostic>)> {
     let (report, diagnostic) = build_report(state_dir)?;
     if json {
         // The JSON output embeds the diagnostic as a
@@ -549,10 +550,11 @@ pub fn report(state_dir: &Path, json: bool) -> CaduceusResult<String> {
             },
             "report": report,
         });
-        serde_json::to_string_pretty(&payload)
-            .map_err(|err| CaduceusError::Other(format!("serialise status report: {err}")))
+        let output = serde_json::to_string_pretty(&payload)
+            .map_err(|err| CaduceusError::Other(format!("serialise status report: {err}")))?;
+        Ok((output, diagnostic))
     } else {
-        Ok(render_human(&report, diagnostic.as_ref()))
+        Ok((render_human(&report, diagnostic.as_ref()), diagnostic))
     }
 }
 
