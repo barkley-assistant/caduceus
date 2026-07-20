@@ -508,21 +508,18 @@ pub fn recover_sqlite_state(
 
     // Run integrity check on the existing database.
     if db_path.is_file() {
-        match store::open(&db_path) {
-            Ok(conn) => {
-                let ok: String = conn
-                    .pragma_query_value(None, "integrity_check", |row| row.get(0))
-                    .unwrap_or_else(|_| "error".to_string());
-                if ok == "ok" {
-                    // Database is healthy.
-                    return Ok(RecoveryReport {
-                        archived_corrupt: None,
-                        installed_from: db_path,
-                        cleared_marker: false,
-                    });
-                }
+        if let Ok(conn) = store::open(&db_path) {
+            let ok: String = conn
+                .pragma_query_value(None, "integrity_check", |row| row.get(0))
+                .unwrap_or_else(|_| "error".to_string());
+            if ok == "ok" {
+                // Database is healthy.
+                return Ok(RecoveryReport {
+                    archived_corrupt: None,
+                    installed_from: db_path,
+                    cleared_marker: false,
+                });
             }
-            Err(_) => {} // DB is corrupt, fall through to recovery.
         }
     }
 
