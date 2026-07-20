@@ -126,6 +126,23 @@ pub enum CaduceusError {
     #[error("corrupt state file at {}: {message}", path.display())]
     StateCorrupt { path: PathBuf, message: String },
 
+    /// Reconciliation of an external side effect failed: the
+    /// remote marker disagrees with the local checkpoint. The
+    /// operator must inspect the run and resolve the conflict.
+    #[error("reconciliation failed for {stage}: {details}")]
+    ReconciliationFailed { stage: String, details: String },
+
+    /// A conflicting remote marker was found during
+    /// reconciliation. The generation transitions to
+    /// `NeedsAttention` so the operator can inspect and
+    /// resolve.
+    #[error("conflicting remote marker for {stage}: expected {expected}, found {actual}")]
+    ConflictingMarker {
+        stage: String,
+        expected: String,
+        actual: String,
+    },
+
     #[error("operation cancelled")]
     Cancelled,
 
@@ -200,6 +217,19 @@ impl fmt::Debug for CaduceusError {
                 "StateCorrupt {{ path: {:?}, message: {} }}",
                 path,
                 scrub(message)
+            ),
+            CaduceusError::ReconciliationFailed { stage, details } => format!(
+                "ReconciliationFailed {{ stage: {:?}, details: {} }}",
+                stage,
+                scrub(details)
+            ),
+            CaduceusError::ConflictingMarker {
+                stage,
+                expected,
+                actual,
+            } => format!(
+                "ConflictingMarker {{ stage: {:?}, expected: {:?}, actual: {:?} }}",
+                stage, expected, actual
             ),
             CaduceusError::Cancelled => "Cancelled".to_string(),
             CaduceusError::Other(s) => format!("Other({})", scrub(s)),

@@ -81,6 +81,11 @@ pub enum Phase {
     Done,
     Failed,
     Skipped,
+    /// Conflicting remote markers or ambiguous side effects
+    /// during reconciliation. The operator must inspect and
+    /// manually resolve before the entry can be re-queued.
+    /// Added by Task 4.2 (FINAL-001 contract).
+    NeedsAttention,
 }
 
 /// Ticket kind selected by the trigger label.
@@ -755,7 +760,7 @@ impl StateStore {
             // `Skipped`. Anything else (including `Done` and
             // `InProgress`) is an explicit operator error.
             match entry.phase {
-                Phase::Failed | Phase::Skipped => {}
+                Phase::Failed | Phase::Skipped | Phase::NeedsAttention => {}
                 other => {
                     return Err(CaduceusError::Queue {
                         context: "reset",

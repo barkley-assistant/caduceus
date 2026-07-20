@@ -732,6 +732,157 @@ impl Client {
         let text = String::from_utf8_lossy(&body_bytes).into_owned();
         Err(map_status(status, text))
     }
+
+    /// PATCH a JSON body to *url_path* under the configured
+    /// `api_base`. Follows the same pattern as [`Client::post`]
+    /// but uses the HTTP PATCH method. Returns the response
+    /// verbatim on 2xx or 304.
+    pub async fn patch(
+        &self,
+        url_path: &str,
+        accept: &str,
+        body: &[u8],
+    ) -> CaduceusResult<Response> {
+        let (path_only, query) = split_query(url_path);
+        let mut url = self.base_url.clone();
+        join_path(&mut url, path_only)?;
+        if !query.is_empty() {
+            url.set_query(Some(query));
+        }
+        self.patch_url(&url, accept, body).await
+    }
+
+    /// Same as [`Client::patch`] but with a fully-qualified URL.
+    pub async fn patch_url(
+        &self,
+        url: &Url,
+        accept: &str,
+        body: &[u8],
+    ) -> CaduceusResult<Response> {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            USER_AGENT,
+            header_value(&format!(
+                "{USER_AGENT_PREFIX}/{}",
+                env!("CARGO_PKG_VERSION")
+            )),
+        );
+        headers.insert(ACCEPT, header_value(accept));
+        headers.insert(
+            HeaderName::from_static("x-github-api-version"),
+            header_value(GITHUB_API_VERSION_VALUE),
+        );
+        headers.insert(
+            HeaderName::from_static("content-type"),
+            header_value("application/json"),
+        );
+        if url.scheme() == self.base_url.scheme()
+            && url.host_str() == self.base_url.host_str()
+            && url.port_or_known_default() == self.base_url.port_or_known_default()
+        {
+            if let Some(token) = &self.token {
+                headers.insert(AUTHORIZATION, header_value(&format!("Bearer {token}")));
+            }
+        }
+        let response = self
+            .inner
+            .patch(url.as_str())
+            .headers(headers)
+            .body(body.to_vec())
+            .send()
+            .await?;
+        let status = response.status().as_u16();
+        let headers_snapshot = response.headers().clone();
+        let body_bytes = match read_bounded_body(response).await {
+            Ok(b) => b,
+            Err(CaduceusError::Other(msg)) if msg == BODY_TOO_LARGE_SENTINEL => {
+                return Err(CaduceusError::Other(format!(
+                    "response body exceeds {} bytes",
+                    MAX_BODY_BYTES
+                )));
+            }
+            Err(err) => return Err(err),
+        };
+        if (200..300).contains(&status) || status == 304 {
+            return Ok(Response {
+                status,
+                final_url: url.to_string(),
+                body: body_bytes,
+                headers: headers_snapshot,
+                from_cache: false,
+            });
+        }
+        let text = String::from_utf8_lossy(&body_bytes).into_owned();
+        Err(map_status(status, text))
+    }
+
+    /// DELETE the resource at *url_path* under the configured
+    /// `api_base`. Follows the same pattern as [`Client::post`]
+    /// but uses the HTTP DELETE method. Returns the response
+    /// verbatim on 2xx or 304 (204 No Content is a valid success).
+    pub async fn delete(&self, url_path: &str, accept: &str) -> CaduceusResult<Response> {
+        let (path_only, query) = split_query(url_path);
+        let mut url = self.base_url.clone();
+        join_path(&mut url, path_only)?;
+        if !query.is_empty() {
+            url.set_query(Some(query));
+        }
+        self.delete_url(&url, accept).await
+    }
+
+    /// Same as [`Client::delete`] but with a fully-qualified URL.
+    pub async fn delete_url(&self, url: &Url, accept: &str) -> CaduceusResult<Response> {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            USER_AGENT,
+            header_value(&format!(
+                "{USER_AGENT_PREFIX}/{}",
+                env!("CARGO_PKG_VERSION")
+            )),
+        );
+        headers.insert(ACCEPT, header_value(accept));
+        headers.insert(
+            HeaderName::from_static("x-github-api-version"),
+            header_value(GITHUB_API_VERSION_VALUE),
+        );
+        if url.scheme() == self.base_url.scheme()
+            && url.host_str() == self.base_url.host_str()
+            && url.port_or_known_default() == self.base_url.port_or_known_default()
+        {
+            if let Some(token) = &self.token {
+                headers.insert(AUTHORIZATION, header_value(&format!("Bearer {token}")));
+            }
+        }
+        let response = self
+            .inner
+            .delete(url.as_str())
+            .headers(headers)
+            .send()
+            .await?;
+        let status = response.status().as_u16();
+        let headers_snapshot = response.headers().clone();
+        let body_bytes = match read_bounded_body(response).await {
+            Ok(b) => b,
+            Err(CaduceusError::Other(msg)) if msg == BODY_TOO_LARGE_SENTINEL => {
+                return Err(CaduceusError::Other(format!(
+                    "response body exceeds {} bytes",
+                    MAX_BODY_BYTES
+                )));
+            }
+            Err(err) => return Err(err),
+        };
+        if (200..300).contains(&status) || status == 304 {
+            return Ok(Response {
+                status,
+                final_url: url.to_string(),
+                body: body_bytes,
+                headers: headers_snapshot,
+                from_cache: false,
+            });
+        }
+        let text = String::from_utf8_lossy(&body_bytes).into_owned();
+        Err(map_status(status, text))
+    }
 }
 
 const BODY_TOO_LARGE_SENTINEL: &str = "caduceus::github::body_too_large";
