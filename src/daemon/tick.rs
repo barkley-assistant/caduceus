@@ -56,8 +56,12 @@ use crate::infra::config::Config;
 use crate::infra::error::{CaduceusError, CaduceusResult};
 use crate::logging;
 use crate::signals;
+use crate::state::checkpoints::{
+    delete_checkpoints_for_run, last_checkpoint_for_run, persist_checkpoint,
+};
 use crate::state::meta::{CadenceDecision, CadenceGate, MetaStore, TickOutcome};
 use crate::state::queue::{ClaimedEntry, DaemonLock, Phase, StateStore, TicketType};
+use crate::state::store;
 use crate::worker::context::{build_context, encode_context, BuildInputs};
 use crate::worker::prompt::{build_prompt, write_prompt};
 use crate::worker::WorkerResult;
@@ -317,12 +321,38 @@ async fn run_claim(
     http_status: &mut Option<u16>,
 ) -> CaduceusResult<TickOutcome> {
     // 7a. If the entry already has a finalization checkpoint,
-    //     jump to the resume stage. Phase 6 owns the resume
-    //     helper; today we return Idle304 as a safe default
-    //     until the resume helper is wired in (Task 7.5
-    //     exercises the end-to-end path).
+    //     jump to the resume stage and re-enter the pipeline
+    //     at the first uncompleted stage.
     if claimed.entry.finalization.is_some() {
-        return Ok(TickOutcome::Idle304);
+        let conn = store::open_in(&cfg.state_dir)?;
+        let run_id = claimed
+            .entry
+            .last_run_id
+            .as_deref()
+            .unwrap_or_else(|| guard.run_id());
+        match resume_from_checkpoint(&conn, run_id)? {
+            ResumeAction::Skip(stage) => {
+                return run_resume_finalization(
+                    cfg,
+                    services,
+                    _store,
+                    _meta,
+                    client,
+                    claimed,
+                    guard,
+                    cancellation,
+                    http_status,
+                    stage,
+                )
+                .await;
+            }
+            ResumeAction::AlreadyDone => {
+                return Ok(TickOutcome::Processed);
+            }
+            ResumeAction::StartFresh => {
+                // Fall through to normal flow
+            }
+        }
     }
 
     // 7b. Verify the trigger label.
@@ -560,6 +590,229 @@ async fn run_claim(
     Ok(TickOutcome::Processed)
 }
 
+// ---------------------------------------------------------------------------
+// Checkpoint resume helpers
+// ---------------------------------------------------------------------------
+
+/// Decides what to do when a run already has durable checkpoints.
+enum ResumeAction {
+    /// Skip to the next uncompleted stage and resume from there.
+    Skip(crate::state::queue::FinalizationStage),
+    /// All stages are already complete; no work needed.
+    AlreadyDone,
+    /// No checkpoint found; start fresh.
+    StartFresh,
+}
+
+/// Reads the last checkpoint for a run and returns the appropriate resume
+/// action.
+fn resume_from_checkpoint(
+    conn: &rusqlite::Connection,
+    run_id: &str,
+) -> CaduceusResult<ResumeAction> {
+    match last_checkpoint_for_run(conn, run_id)? {
+        None => Ok(ResumeAction::StartFresh),
+        Some(cp) => {
+            let stage = match cp.stage_enum() {
+                Some(s) => s,
+                None => return Ok(ResumeAction::StartFresh),
+            };
+            match stage {
+                crate::state::queue::FinalizationStage::Done => Ok(ResumeAction::AlreadyDone),
+                other => Ok(ResumeAction::Skip(next_stage_after(other))),
+            }
+        }
+    }
+}
+
+/// Returns the next stage in the FINAL-001 sequence.
+fn next_stage_after(
+    stage: crate::state::queue::FinalizationStage,
+) -> crate::state::queue::FinalizationStage {
+    use crate::state::queue::FinalizationStage::*;
+    match stage {
+        ResultValidated => Committed,
+        Committed => Pushed,
+        Pushed => PrCreated,
+        PrCreated => Commented,
+        Commented => AwaitingReview,
+        AwaitingReview => Done,
+        Done => Done,
+        InvestigationReady => InvestigationCommented,
+        InvestigationCommented => Done,
+    }
+}
+
+/// Re-enters the finalization pipeline at the given resume stage, skipping
+/// all earlier stages. Opens a fresh SQLite connection for checkpoint writes.
+#[allow(clippy::too_many_arguments)]
+async fn run_resume_finalization(
+    cfg: Config,
+    services: &Services,
+    _store: &StateStore,
+    _meta: &MetaStore,
+    client: Arc<Client>,
+    claimed: ClaimedEntry,
+    guard: &mut ActiveRunGuard,
+    cancellation: CancellationToken,
+    _http_status: &mut Option<u16>,
+    resume_stage: crate::state::queue::FinalizationStage,
+) -> CaduceusResult<TickOutcome> {
+    use crate::state::queue::FinalizationStage::*;
+
+    // Build the minimal context needed for finalization.
+    let run_id = guard.run_id().to_string();
+    let runner = services.git.runner().clone();
+    let repository = match find_main_clone(&cfg, &runner, &claimed.entry.key).await {
+        Ok(r) => r,
+        Err(err) => {
+            let class = classify_error(&err);
+            return handle_infra_or_retry(cfg, guard, &err, class).await;
+        }
+    };
+
+    let worktree =
+        match create_worktree(&cfg, &runner, &repository, &claimed.entry.key, &run_id).await {
+            Ok(wt) => wt,
+            Err(err) => {
+                let class = classify_error(&err);
+                return handle_infra_or_retry(cfg, guard, &err, class).await;
+            }
+        };
+
+    // Check for cancellation
+    if cancellation.is_cancelled() {
+        return Ok(TickOutcome::Cancelled);
+    }
+
+    // Fetch the issue detail
+    let issue = match crate::github::issue::fetch_issue_detail(
+        client.as_ref(),
+        &claimed.entry.key,
+        &cfg.feedback_author_allowlist,
+    )
+    .await
+    {
+        Ok(d) => d,
+        Err(err) => {
+            let class = classify_error(&err);
+            return handle_infra_or_retry(cfg, guard, &err, class).await;
+        }
+    };
+
+    // Build the finalization context
+    let ctx = FinalizeContext {
+        client,
+        config: cfg.clone(),
+        repository,
+        issue,
+        claim: claimed.claim,
+        run_id: run_id.clone(),
+        worktree: worktree.clone(),
+        result: FinalizeRequest {
+            issue: claimed.entry.key.clone(),
+            branch_name: worktree.branch_name.clone(),
+            worktree_path: worktree.path.clone(),
+        },
+    };
+
+    // Open SQLite connection for checkpoint writes
+    let conn = match store::open_in(&ctx.config.state_dir) {
+        Ok(c) => c,
+        Err(err) => {
+            let class = classify_error(&err);
+            return handle_infra_or_retry(ctx.config.clone(), guard, &err, class).await;
+        }
+    };
+
+    // Resume at the appropriate stage
+    // We need a worker_result to pass to the step functions. On resume, we
+    // read the worker result from disk.
+    let result_path = ctx
+        .config
+        .state_dir
+        .join("runs")
+        .join(format!("{}.result.json", ctx.run_id));
+    let worker_result = match std::fs::read_to_string(&result_path) {
+        Ok(json) => match serde_json::from_str::<WorkerResult>(&json) {
+            Ok(wr) => wr,
+            Err(err) => {
+                return Err(CaduceusError::StateCorrupt {
+                    path: result_path,
+                    message: format!("failed to deserialize worker result for resume: {err}"),
+                });
+            }
+        },
+        Err(err) => {
+            return Err(CaduceusError::Io(err));
+        }
+    };
+
+    let archive_path = match archive_worker_result(&result_path, &ctx.config.state_dir, &ctx.run_id)
+    {
+        Ok(p) => p,
+        Err(err) => {
+            let class = classify_error(&err);
+            return handle_infra_or_retry(ctx.config.clone(), guard, &err, class).await;
+        }
+    };
+
+    match resume_stage {
+        ResultValidated => {
+            persist_checkpoint(&conn, &ctx.run_id, ResultValidated, None)?;
+            let _ = commit_code_and_finalize(&ctx, &worker_result, &runner, &archive_path)?;
+            persist_checkpoint(&conn, &ctx.run_id, Committed, None)?;
+            push_and_finalize(&ctx, &runner).await?;
+            persist_checkpoint(&conn, &ctx.run_id, Pushed, None)?;
+            find_or_create_pr_and_finalize(&ctx, ctx.client.as_ref(), &worker_result).await?;
+            persist_checkpoint(&conn, &ctx.run_id, PrCreated, None)?;
+            post_completion_and_close_and_finalize(&ctx, ctx.client.as_ref(), &worker_result)
+                .await?;
+        }
+        Committed => {
+            persist_checkpoint(&conn, &ctx.run_id, Committed, None)?;
+            push_and_finalize(&ctx, &runner).await?;
+            persist_checkpoint(&conn, &ctx.run_id, Pushed, None)?;
+            find_or_create_pr_and_finalize(&ctx, ctx.client.as_ref(), &worker_result).await?;
+            persist_checkpoint(&conn, &ctx.run_id, PrCreated, None)?;
+            post_completion_and_close_and_finalize(&ctx, ctx.client.as_ref(), &worker_result)
+                .await?;
+        }
+        Pushed => {
+            persist_checkpoint(&conn, &ctx.run_id, Pushed, None)?;
+            find_or_create_pr_and_finalize(&ctx, ctx.client.as_ref(), &worker_result).await?;
+            persist_checkpoint(&conn, &ctx.run_id, PrCreated, None)?;
+            post_completion_and_close_and_finalize(&ctx, ctx.client.as_ref(), &worker_result)
+                .await?;
+        }
+        PrCreated => {
+            persist_checkpoint(&conn, &ctx.run_id, PrCreated, None)?;
+            post_completion_and_close_and_finalize(&ctx, ctx.client.as_ref(), &worker_result)
+                .await?;
+        }
+        Commented | AwaitingReview | Done => {
+            // All stages complete; persist terminal checkpoints
+            persist_checkpoint(&conn, &ctx.run_id, Commented, None)?;
+            persist_checkpoint(&conn, &ctx.run_id, AwaitingReview, None)?;
+            persist_checkpoint(&conn, &ctx.run_id, Done, None)?;
+        }
+        InvestigationReady | InvestigationCommented => {
+            // Pass through — investigation stages handled by separate path
+        }
+    }
+
+    // Terminal checkpoints
+    persist_checkpoint(&conn, &ctx.run_id, Commented, None)?;
+    persist_checkpoint(&conn, &ctx.run_id, AwaitingReview, None)?;
+    persist_checkpoint(&conn, &ctx.run_id, Done, None)?;
+
+    // Clean up
+    let _ = delete_checkpoints_for_run(&conn, &ctx.run_id);
+
+    guard.finish_success().await?;
+    Ok(TickOutcome::Processed)
+}
+
 async fn run_code_finalize(
     ctx: &FinalizeContext,
     worker_result: &WorkerResult,
@@ -567,12 +820,73 @@ async fn run_code_finalize(
     worker_result_path: &std::path::Path,
     client: &Client,
 ) -> CaduceusResult<FinalizeOutput> {
+    let conn = store::open_in(&ctx.config.state_dir)?;
+
+    // Stage 1: ResultValidated — about to commit
+    persist_checkpoint(
+        &conn,
+        &ctx.run_id,
+        crate::state::queue::FinalizationStage::ResultValidated,
+        None,
+    )?;
     let _ = commit_code_and_finalize(ctx, worker_result, runner, worker_result_path)?;
+
+    // Stage 2: Committed — about to push
+    persist_checkpoint(
+        &conn,
+        &ctx.run_id,
+        crate::state::queue::FinalizationStage::Committed,
+        None,
+    )?;
     push_and_finalize(ctx, runner).await?;
+
+    // Stage 3: Pushed — about to create PR
+    persist_checkpoint(
+        &conn,
+        &ctx.run_id,
+        crate::state::queue::FinalizationStage::Pushed,
+        None,
+    )?;
     find_or_create_pr_and_finalize(ctx, client, worker_result).await?;
+
+    // Stage 4: PrCreated — about to post comment / close
+    persist_checkpoint(
+        &conn,
+        &ctx.run_id,
+        crate::state::queue::FinalizationStage::PrCreated,
+        None,
+    )?;
     post_completion_and_close_and_finalize(ctx, client, worker_result).await?;
+
+    // Stage 5: Commented — comment posted
+    persist_checkpoint(
+        &conn,
+        &ctx.run_id,
+        crate::state::queue::FinalizationStage::Commented,
+        None,
+    )?;
+
+    // Stage 6: AwaitingReview — waiting for human merge
+    persist_checkpoint(
+        &conn,
+        &ctx.run_id,
+        crate::state::queue::FinalizationStage::AwaitingReview,
+        None,
+    )?;
+
+    // Stage 7: Done — finalization complete
+    persist_checkpoint(
+        &conn,
+        &ctx.run_id,
+        crate::state::queue::FinalizationStage::Done,
+        None,
+    )?;
+
+    // Clean up checkpoints
+    let _ = delete_checkpoints_for_run(&conn, &ctx.run_id);
+
     Ok(FinalizeOutput {
-        action: crate::finalize::FinalizeAction::Commented,
+        action: crate::finalize::FinalizeAction::Done,
         pr_url: None,
         idempotency_observations: Vec::new(),
     })
