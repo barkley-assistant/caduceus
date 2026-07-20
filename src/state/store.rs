@@ -23,7 +23,7 @@ use std::path::PathBuf;
 
 use rusqlite::{params, Connection, Transaction};
 
-use crate::error::{CaduceusError, CaduceusResult};
+use crate::infra::error::{CaduceusError, CaduceusResult};
 
 /// Current schema version. Bumping it is a breaking change — the
 /// store refuses to open a database with a *higher* version.

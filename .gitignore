@@ -26,12 +26,27 @@ config.local.*
 .env
 .env.local
 
-# Caduceus runtime state (when run locally)
-state/
-runs/
+# Caduceus runtime artefacts.
+#
+# The runtime daemon writes its durable state to a `state/` directory
+# at the repo root and transient run output to `runs/`. These were
+# gitignored with unrooted `state/` and `runs/` patterns historically,
+# which silently shadowed any `src/state/` or `src/runs/` module
+# directories the source tree might grow. After the v0.1 -> v1.0
+# module restructure (issue #13) added `src/state/`, that shadow
+# would have prevented the new module from ever being committed.
+# Use the rooted form so the pattern only matches at repo root.
+#
+# If a runtime artefact ever needs to live elsewhere, add a separate
+# explicit rule rather than falling back to an unrooted pattern.
+#
+/state/
+/runs/
+
+# Operator-generated prompt documents; not part of the daemon.
+# Rooted for the same reason as the runtime artefacts above.
+prompts/
+/prompts/
 
 # Cargo lock for libraries (keep for binaries)
 # Cargo.lock
-
-# Operator-generated prompt documents; not part of the daemon.
-prompts/

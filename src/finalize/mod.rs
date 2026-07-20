@@ -32,9 +32,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::github::Client;
 
-use crate::config::Config;
-use crate::error::{CaduceusError, CaduceusResult, VoiceError};
-use crate::issue::IssueKey;
+use crate::github::issue::IssueKey;
+use crate::infra::config::Config;
+use crate::infra::error::{CaduceusError, CaduceusResult, VoiceError};
 use crate::worker::WorkerResult;
 use crate::worktree::GitRunner;
 /// Default outbound-comment max bytes when the operator has not
@@ -66,7 +66,7 @@ pub struct FinalizeRequest {
 /// earlier tasks can compile against it.
 ///
 /// `client` is the shared `Arc<Client>` produced by the
-/// daemon's [`crate::orchestration::Services::production`]
+/// daemon's [`crate::daemon::orchestration::Services::production`]
 /// helper. Phase 6 already owns the concrete HTTP surface; the
 /// shared `Arc` lets the daemon, the status reporter, and the
 /// finalization stages share one connection pool + persistent
@@ -82,7 +82,7 @@ pub struct FinalizeContext {
     /// Shared GitHub API client. The `Arc<Client>` is the
     /// production value; the previous `()` placeholder is
     /// removed because Phase 7's orchestrator shares the
-    /// same client through the [`crate::orchestration::Services`]
+    /// same client through the [`crate::daemon::orchestration::Services`]
     /// bundle.
     pub client: Arc<Client>,
     /// Live daemon config (allowlist, timeouts, …).
@@ -90,10 +90,10 @@ pub struct FinalizeContext {
     /// Local repository metadata (path, base branch, remote URL).
     pub repository: crate::worktree::RepositoryInfo,
     /// Issue the run is finalising.
-    pub issue: crate::issue::IssueDetail,
+    pub issue: crate::github::issue::IssueDetail,
     /// Active run's claim token (proves the caller is the
     /// daemon, not a stray worker).
-    pub claim: crate::queue::ClaimToken,
+    pub claim: crate::state::queue::ClaimToken,
     /// Active run id.
     pub run_id: String,
     /// Active worktree handle. Task 5.0 keeps the existing
@@ -822,7 +822,7 @@ async fn ls_remote_branch(
     if !matches!(output.status, Some(0)) {
         return Err(CaduceusError::Push {
             context: "ls-remote",
-            stderr: crate::error::scrub(&output.stderr),
+            stderr: crate::infra::error::scrub(&output.stderr),
         });
     }
     let stdout = &output.stdout;
@@ -867,7 +867,7 @@ async fn run_push(
     if !matches!(output.status, Some(0)) {
         return Err(CaduceusError::Push {
             context: "push",
-            stderr: crate::error::scrub(&output.stderr),
+            stderr: crate::infra::error::scrub(&output.stderr),
         });
     }
     let _ = local_oid; // kept for logging symmetry
@@ -1866,20 +1866,8 @@ pub fn build_pr_title(result: &WorkerResult, cfg: &Config) -> CaduceusResult<Str
     Ok(result.pull_request_title.clone())
 }
 
-/// Render the artifact section as a fenced-JSON block.
-///
-/// The output is the empty string when the worker emitted no
-/// artifacts. Otherwise the block is:
-/// ```text
-/// <caption>
-///
-/// ```fence
-/// <json>
-/// ```
-/// ```
-/// where `<fence>` is a backtick run whose length is one
-/// longer than the longest backtick run in the JSON. The
-/// caption lists the artifact count.
+/// Render the worker-emitted artifacts as a Markdown block, or
+/// return the empty string when there are no artifacts.
 fn render_artifacts(artifacts: &std::collections::BTreeMap<String, serde_json::Value>) -> String {
     if artifacts.is_empty() {
         return String::new();
@@ -1888,6 +1876,8 @@ fn render_artifacts(artifacts: &std::collections::BTreeMap<String, serde_json::V
     // Deterministic order: BTreeMap iterates in key order.
     let json_value = serde_json::json!(artifacts);
     json.push_str(&serde_json::to_string_pretty(&json_value).expect("serialize json"));
+    // The fence length is one greater than the longest backtick
+    // run in the JSON, so the artifact block can never close itself.
     let fence = dynamic_fence_length(&json);
     let mut fence_str = String::with_capacity(fence);
     for _ in 0..fence {

@@ -23,9 +23,9 @@ use nix::unistd::pipe;
 use tokio::process::Command as TokioCommand;
 use url::Url;
 
-use crate::config::Config;
-use crate::error::{scrub, CaduceusError, CaduceusResult};
-use crate::issue::IssueKey;
+use crate::github::issue::IssueKey;
+use crate::infra::config::Config;
+use crate::infra::error::{scrub, CaduceusError, CaduceusResult};
 
 // ---------------------------------------------------------------------------
 // GitRunner — the single entry point for every git subprocess.
@@ -2052,7 +2052,7 @@ pub async fn gc(config: &Config, older_than_days: u64, dry_run: bool) -> Caduceu
             // remove(). The branch_name in the handle is
             // advisory only; remove() inspects ref state.
             let wt = Worktree {
-                issue: crate::issue::IssueKey {
+                issue: crate::github::issue::IssueKey {
                     owner: owner.clone(),
                     repo: name.clone(),
                     number: 0,
@@ -2204,7 +2204,9 @@ async fn collect_in_use_worktree_paths(
                 continue;
             }
             if let Ok(bytes) = std::fs::read(&path) {
-                if let Ok(body) = serde_json::from_slice::<crate::queue::ClaimFileBody>(&bytes) {
+                if let Ok(body) =
+                    serde_json::from_slice::<crate::state::queue::ClaimFileBody>(&bytes)
+                {
                     if let Some(wt) = body.worktree_path {
                         if let Ok(c) = std::fs::canonicalize(&wt) {
                             paths.insert(c);
@@ -2279,10 +2281,10 @@ async fn collect_in_use_worktree_paths(
 /// mapping lives in the queue state and is consulted via
 /// the claim scan above.
 fn watched_repo_paths() -> Vec<PathBuf> {
-    let cfg = match crate::config::Config::load() {
+    let cfg = match crate::infra::config::Config::load() {
         Ok(c) => c,
         Err(_) => match std::env::var_os("CADUCEUS_CONFIG") {
-            Some(p) => match crate::config::Config::load_from(std::path::Path::new(&p)) {
+            Some(p) => match crate::infra::config::Config::load_from(std::path::Path::new(&p)) {
                 Ok(c) => c,
                 Err(_) => return Vec::new(),
             },

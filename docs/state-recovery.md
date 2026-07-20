@@ -79,7 +79,7 @@ skip steps.
      archives the corrupt original, atomically
      installs the repaired file, and only then clears
      the corruption marker. The canonical source for
-     this API is `src/migrate.rs` in the Caduceus
+     this API is `src/state/migrate.rs` in the Caduceus
      source tree; the v1.0 plan routes programmatic
      recovery through Task 3.4.
    - **Direct install:** if you understand what

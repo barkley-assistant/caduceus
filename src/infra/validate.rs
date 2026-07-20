@@ -25,8 +25,8 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::config::Config;
-use crate::error::{CaduceusError, CaduceusResult};
+use crate::infra::config::Config;
+use crate::infra::error::{CaduceusError, CaduceusResult};
 
 /// Outcome of a single preflight check. The variants are public so
 /// the structured logger can emit them as discrete fields without

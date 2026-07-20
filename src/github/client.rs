@@ -20,12 +20,12 @@ use reqwest::redirect::Policy;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use crate::config::Config;
-use crate::error::{CaduceusError, CaduceusResult, VoiceError};
 use crate::finalize::{
     validate_comment, validate_pr_body, validate_pr_title, validate_public_text,
 };
-use crate::issue::IssueKey;
+use crate::github::issue::IssueKey;
+use crate::infra::config::Config;
+use crate::infra::error::{CaduceusError, CaduceusResult, VoiceError};
 
 /// HTTP header name for the GitHub API version pin.
 pub const GITHUB_API_VERSION_HEADER: &str = "X-GitHub-Api-Version";
@@ -756,7 +756,7 @@ fn map_status(status: u16, message: String) -> CaduceusError {
     // documented credential names; the daemon's structured logger
     // and any test failure render through `Display`, so we must
     // scrub here regardless of how the variant is later rendered.
-    let scrubbed = crate::error::scrub(&message);
+    let scrubbed = crate::infra::error::scrub(&message);
     match status {
         401 | 403 | 404 | 500 => CaduceusError::GitHubApi {
             status,

@@ -47,9 +47,9 @@ use std::collections::BTreeMap;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::config::Config;
-use crate::error::{CaduceusError, CaduceusResult};
-use crate::issue::{IssueDetail, IssueKey};
+use crate::github::issue::{IssueDetail, IssueKey};
+use crate::infra::config::Config;
+use crate::infra::error::{CaduceusError, CaduceusResult};
 
 /// Current context-JSON schema version. Bumped on any breaking
 /// change to the wire shape.
@@ -524,7 +524,7 @@ fn approx_json_array_len<T: Serialize + Clone>(key: &str, items: &[T]) -> Caduce
 #[cfg(test)]
 mod inline_tests {
     use super::*;
-    use crate::issue::{IssueComment, IssueEvent};
+    use crate::github::issue::{IssueComment, IssueEvent};
     use regex::Regex;
 
     fn sample_detail() -> IssueDetail {
@@ -814,17 +814,17 @@ mod inline_tests {
         // Use the full config-from-raw path with a Hermes
         // context that pre-resolves the worker command so the
         // standalone-install check does not fire.
-        let raw_config = crate::config::RawConfig {
+        let raw_config = crate::infra::config::RawConfig {
             comment_ignore_patterns: Some(vec!["[invalid".to_string()]),
             worker_command: Some(vec!["python3".to_string(), "bridge.py".to_string()]),
             ..Default::default()
         };
-        let ctx_holder = crate::config::LoadContext {
+        let ctx_holder = crate::infra::config::LoadContext {
             plugin_root: Some(std::env::temp_dir()),
             ..Default::default()
         };
-        let err =
-            crate::config::Config::from_raw(raw_config, &ctx_holder).expect_err("must reject");
+        let err = crate::infra::config::Config::from_raw(raw_config, &ctx_holder)
+            .expect_err("must reject");
         let msg = format!("{err:?}");
         assert!(
             msg.contains("invalid regex") || msg.contains("comment_ignore_patterns"),

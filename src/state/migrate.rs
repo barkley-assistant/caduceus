@@ -34,10 +34,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Utc};
 
-use crate::error::{CaduceusError, CaduceusResult};
+use crate::github::issue::IssueKey;
+use crate::infra::error::{CaduceusError, CaduceusResult};
 use crate::install;
-use crate::issue::IssueKey;
-use crate::queue::{
+use crate::state::queue::{
     parse_queue_state, serialize_queue_state, DaemonLock, Phase, QueueEntry, QueueState,
     StateStore, TicketType,
 };

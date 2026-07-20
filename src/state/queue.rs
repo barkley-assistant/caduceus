@@ -47,8 +47,8 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::error::{CaduceusError, CaduceusResult};
-use crate::issue::IssueKey;
+use crate::github::issue::IssueKey;
+use crate::infra::error::{CaduceusError, CaduceusResult};
 
 /// Canonical queue-file schema version. Bumping it is a breaking
 /// change — the daemon refuses any other value. Tested by

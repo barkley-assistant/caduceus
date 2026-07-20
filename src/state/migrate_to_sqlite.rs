@@ -9,7 +9,7 @@ use std::path::Path;
 use chrono::Utc;
 use rusqlite::params;
 
-use crate::error::{CaduceusError, CaduceusResult};
+use crate::infra::error::{CaduceusError, CaduceusResult};
 use crate::store;
 
 /// Whether to acquire the daemon lock during migration.
@@ -54,7 +54,7 @@ pub fn migrate_to_sqlite(
 ) -> CaduceusResult<SqliteMigrationReport> {
     // Acquire the daemon lock to prevent concurrent ticks.
     if lock_policy == LockPolicy::Acquire && !dry_run {
-        let _lock = crate::queue::DaemonLock::try_acquire(state_dir)?.ok_or_else(|| {
+        let _lock = crate::state::queue::DaemonLock::try_acquire(state_dir)?.ok_or_else(|| {
             CaduceusError::Queue {
                 context: "migrate-to-sqlite",
                 stderr: "another tick holds daemon.lock; refusing to migrate".to_string(),
@@ -63,7 +63,7 @@ pub fn migrate_to_sqlite(
     }
 
     // Read JSON queue state.
-    let state_path = state_dir.join(crate::queue::STATE_FILENAME);
+    let state_path = state_dir.join(crate::state::queue::STATE_FILENAME);
     let json_entries: Vec<(String, serde_json::Value)> = if state_path.exists() {
         let body = std::fs::read(&state_path).map_err(|e| CaduceusError::StateCorrupt {
             path: state_path.clone(),
@@ -243,7 +243,7 @@ mod tests {
     }
 
     fn write_state_json(dir: &Path, body: &str) {
-        fs::write(dir.join(crate::queue::STATE_FILENAME), body).expect("write state.json");
+        fs::write(dir.join(crate::state::queue::STATE_FILENAME), body).expect("write state.json");
     }
 
     #[test]
@@ -346,7 +346,7 @@ mod tests {
 
         migrate_to_sqlite(&dir, false, LockPolicy::Skip).expect("migrate");
         assert!(
-            dir.join(crate::queue::STATE_FILENAME).is_file(),
+            dir.join(crate::state::queue::STATE_FILENAME).is_file(),
             "JSON state must be preserved as backup"
         );
         let _ = fs::remove_dir_all(&dir);
