@@ -129,7 +129,8 @@
       "handoff": "handoffs/4.3.md"
     },
     "4.4": {
-      "status": "pending"
+      "status": "in_progress",
+      "updated_at": "2026-07-20T16:40:27.945176+00:00"
     },
     "5.1": {
       "status": "pending"
