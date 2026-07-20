@@ -2439,6 +2439,8 @@ impl MinimalConfig for Config {
             dry_run: false,
             worker_parallelism: 1,
             compiled_ignore_patterns: Vec::new(),
+            scheduler_lease_ttl_seconds: 60,
+            scheduler_transaction_budget_ms: 100,
         }
     }
 }

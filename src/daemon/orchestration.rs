@@ -389,6 +389,9 @@ pub fn classify_error(err: &CaduceusError) -> FailureClass {
         CaduceusError::ConflictingMarker { .. } => FailureClass::Worker,
         CaduceusError::Config(_) => FailureClass::Infrastructure,
         CaduceusError::TokenResolution(_) => FailureClass::Infrastructure,
+        CaduceusError::LeadershipContended { .. } => FailureClass::Infrastructure,
+        CaduceusError::LeaseStale { .. } => FailureClass::Infrastructure,
+        CaduceusError::FencingTokenRegression { .. } => FailureClass::Infrastructure,
 
         // Generic Other — content / schema / public-voice / worker
         // result validation land here. Voice rejections and
@@ -868,7 +871,7 @@ mod inline_tests {
         // Every CaduceusError variant is classified. If a new
         // variant is added without a `classify_error` arm,
         // this match will fail to compile.
-        let variants: [CaduceusError; 17] = [
+        let variants: [CaduceusError; 20] = [
             CaduceusError::Config("x".into()),
             CaduceusError::Io(std::io::Error::other("x")),
             CaduceusError::Json(serde_json::from_str::<u8>("not-a-number").unwrap_err()),
@@ -921,6 +924,19 @@ mod inline_tests {
             CaduceusError::Worker {
                 context: "http",
                 stderr: "transport".into(),
+            },
+            CaduceusError::LeadershipContended {
+                context: "acquire",
+                stderr: "contended".into(),
+            },
+            CaduceusError::LeaseStale {
+                context: "renew",
+                stderr: "expired".into(),
+            },
+            CaduceusError::FencingTokenRegression {
+                issue_key: "owner/repo#1".into(),
+                stale_token: 1,
+                current_token: 3,
             },
         ];
         for v in &variants {

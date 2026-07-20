@@ -51,6 +51,8 @@ pub const DEFAULT_TICKET_LABEL_CODE: &str = "🤖 auto-fix";
 pub const DEFAULT_TICKET_LABEL_INVESTIGATION: &str = "🤖 auto-fix-investigate";
 pub const DEFAULT_API_BASE: &str = "https://api.github.com";
 pub const DEFAULT_WORKER_PARALLELISM: u32 = 1;
+pub const DEFAULT_SCHEDULER_LEASE_TTL_SECONDS: u64 = 60;
+pub const DEFAULT_SCHEDULER_TRANSACTION_BUDGET_MS: u64 = 100;
 
 /// Caduceus configuration. Field semantics are pinned in `CONTRACTS.md`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -85,6 +87,11 @@ pub struct Config {
     /// [`Config::from_raw`]; not part of the YAML schema.
     #[serde(skip)]
     pub compiled_ignore_patterns: Vec<Regex>,
+    /// TTL in seconds for scheduler leases. Default 60.
+    pub scheduler_lease_ttl_seconds: u64,
+    /// Maximum time in milliseconds for a scheduler transaction.
+    /// Default 100.
+    pub scheduler_transaction_budget_ms: u64,
 }
 
 /// Loose deserialisation layer used to read the YAML before the source
@@ -120,6 +127,8 @@ pub struct RawConfig {
     pub api_base: Option<String>,
     pub dry_run: Option<bool>,
     pub worker_parallelism: Option<u32>,
+    pub scheduler_lease_ttl_seconds: Option<u64>,
+    pub scheduler_transaction_budget_ms: Option<u64>,
 }
 
 /// Load context — used to resolve paths and the default worker command
@@ -501,6 +510,12 @@ impl Config {
             dry_run,
             worker_parallelism: raw.worker_parallelism.unwrap_or(DEFAULT_WORKER_PARALLELISM),
             compiled_ignore_patterns,
+            scheduler_lease_ttl_seconds: raw
+                .scheduler_lease_ttl_seconds
+                .unwrap_or(DEFAULT_SCHEDULER_LEASE_TTL_SECONDS),
+            scheduler_transaction_budget_ms: raw
+                .scheduler_transaction_budget_ms
+                .unwrap_or(DEFAULT_SCHEDULER_TRANSACTION_BUDGET_MS),
         })
     }
 
@@ -537,6 +552,8 @@ impl Config {
             dry_run: false,
             worker_parallelism: DEFAULT_WORKER_PARALLELISM,
             compiled_ignore_patterns: Vec::new(),
+            scheduler_lease_ttl_seconds: DEFAULT_SCHEDULER_LEASE_TTL_SECONDS,
+            scheduler_transaction_budget_ms: DEFAULT_SCHEDULER_TRANSACTION_BUDGET_MS,
         }
     }
 
