@@ -1,0 +1,78 @@
+schema: spec-driven
+
+context: |
+  Tech stack: Rust 2021 (MSRV 1.97), single-crate binary+library, tokio async runtime.
+    Python stdlib-only Hermes plugin adapter at repo root (__init__.py).
+    No JavaScript, no Go, no Makefile. No pyproject.toml — Python uses
+    system-installed pytest directly.
+  Architecture: Subdirectories under src/ map to domain boundaries per
+    docs/architecture.md — github/, worker/, state/, daemon/, worktree/,
+    finalize/, cli/, infra/. Hermes plugin adapter at repo root registers
+    skill, slash command, and CLI subcommands. Worker bridge template at
+    plugin-assets/worker-bridge.py.
+  Testing: Rust tests in tests/*_test.rs (no inline #[test] in src/).
+    Python tests in tests/hermes_plugin_test.py and tests/bridge_test.py
+    using pytest 9.0.2. CI runs cargo fmt --check, cargo clippy -D warnings,
+    cargo test --locked --all-targets, and pytest -q on the two Python files.
+  Style: rustfmt for Rust, Ruff defaults for Python. Conventional Commits
+    1.0.0 with required scope. 80-char soft-wrap for Markdown prose.
+    #![forbid(unsafe_code)] and #![warn(missing_debug_implementations)].
+    No inline test modules under src/.
+
+strict_tdd: true
+
+testing:
+  runner:
+    - command: cargo test --locked --all-targets
+      framework: Rust built-in #[test]
+    - command: pytest -q tests/hermes_plugin_test.py tests/bridge_test.py
+      framework: pytest 9.0.2
+  layers:
+    unit: { available: true, tool: cargo test }
+    integration: { available: true, tool: cargo test (wiremock, assert_fs, tempfile) }
+    e2e: { available: false, tool: — }
+  coverage:
+    available: false
+    command: —
+  quality:
+    linter: { available: true, command: cargo clippy --locked --all-targets -- -D warnings }
+    type_checker: { available: false, command: — }
+    formatter: { available: true, command: cargo fmt --check }
+    python_linter: { available: true, command: pytest (Ruff defaults implicit) }
+  detected_at: "2026-07-20"
+
+rules:
+  proposal:
+    - Include rollback plan for risky changes
+    - Reference the GitHub issue linked to the change
+  specs:
+    - Use Given/When/Then for scenarios
+    - Use RFC 2119 keywords (MUST, SHALL, SHOULD, MAY)
+  design:
+    - Include sequence diagrams for complex flows
+    - Document architecture decisions with rationale
+    - Respect existing module boundaries under src/
+  tasks:
+    - Group by phase, use hierarchical numbering
+    - Keep tasks completable in one session
+    - Each task must reference a test file
+  apply:
+    guidelines:
+      - Follow existing code patterns
+      - Never add todo!() or unimplemented!()
+      - No inline test modules under src/
+      - Tests go in tests/ as <subject>_test.rs or <subject>_test.py
+    tdd: true
+    test_command: cargo test --locked --all-targets
+  verify:
+    test_command: cargo test --locked --all-targets
+    python_test_command: pytest -q tests/hermes_plugin_test.py tests/bridge_test.py
+    build_command: cargo build --locked
+    coverage_threshold: 0
+    pre_push:
+      - cargo fmt --check
+      - cargo clippy --locked --all-targets -- -D warnings
+      - cargo test --locked --all-targets
+      - pytest -q tests/hermes_plugin_test.py tests/bridge_test.py
+  archive:
+    - Warn before merging destructive deltas
