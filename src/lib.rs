@@ -98,6 +98,7 @@ pub use crate::daemon::orchestration::{
 };
 pub use crate::github::issue::{IssueDetail, IssueKey};
 pub use crate::infra::error::{CaduceusError, CaduceusResult};
+pub use crate::scheduler::{Admission, Pool, PoolState};
 pub use crate::state::queue::{
     ClaimToken, ClaimedEntry, DaemonLock, EnqueueOutcome, FinalizationCheckpoint,
     FinalizationStage, Phase, QueueEntry, QueueState, ResetOutcome, StateStore, TicketType,

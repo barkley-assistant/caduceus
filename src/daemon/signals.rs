@@ -1,14 +1,14 @@
 //! Unix signal handling for operator-initiated shutdown.
 //!
 //! The orchestrator installs listeners for `SIGINT` and `SIGTERM`
-//! before invoking the canonical tick. The first signal cancels
-//! the shared [`tokio_util::sync::CancellationToken`] so the
-//! active tick, the supervisor, and the worker session all wind
-//! down cooperatively through the contractually-documented
-//! requeue / cleanup path. A second signal received before
-//! cleanup completes escalates to immediate self-`SIGKILL`, which
-//! the operating system delivers to every descendant the daemon
-//! owns.
+//! before invoking the canonical tick. The first signal triggers
+//! a graceful worker pool drain, then cancels the shared
+//! [`tokio_util::sync::CancellationToken`] so the active tick, the
+//! supervisor, and the worker session all wind down cooperatively
+//! through the contractually-documented requeue / cleanup path.
+//! A second signal received before cleanup completes escalates to
+//! immediate self-`SIGKILL`, which the operating system delivers
+//! to every descendant the daemon owns.
 //!
 //! The crate's `#![forbid(unsafe_code)]` policy forbids unsafe
 //! blocks, so all signal syscalls are routed through the safe
@@ -25,11 +25,14 @@
 //! `CONTRACTS.md`. The state files are not mutated by the
 //! listener itself.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
+
+use crate::scheduler::Pool;
 
 /// Kind of signal the listener received. Used for diagnostic
 /// logging; the operator-shutdown semantics are identical for
@@ -103,16 +106,35 @@ pub async fn wait_for_signal() -> std::io::Result<SignalKind> {
 /// signal escalates to self-kill; under a single signal the
 /// caller drops the future to leave the listener running in
 /// the background.
-pub async fn listen(cancellation: CancellationToken) -> std::io::Result<()> {
-    // First signal: cancel and wait briefly for cooperative
-    // shutdown. If a second signal arrives inside the grace
-    // window, escalate to self-`SIGKILL` so the operating
+///
+/// Before cancelling the token, the listener triggers a graceful
+/// worker pool drain so in-flight workers have a chance to
+/// complete within the configured drain timeout.
+pub async fn listen(pool: Arc<Pool>, cancellation: CancellationToken) -> std::io::Result<()> {
+    // First signal: start drain, then cancel and wait briefly for
+    // cooperative shutdown. If a second signal arrives inside the
+    // grace window, escalate to self-`SIGKILL` so the operating
     // system reaps every descendant immediately.
     let first = wait_for_signal().await?;
     info!(
         signal = first.label(),
-        "operator signal received; cancelling tick"
+        "operator signal received; draining worker pool"
     );
+
+    // Initiate the worker pool drain. This sets the draining flag
+    // and waits for in-flight workers to complete up to the
+    // configured drain timeout.
+    let timed_out_run_ids = pool.drain().await;
+    if timed_out_run_ids.is_empty() {
+        info!("worker pool drain completed");
+    } else {
+        warn!(
+        timed_out_run_ids = ?timed_out_run_ids,
+        "worker pool drain timed out for some runs"
+        );
+    }
+
+    info!("cancelling tick after drain");
     cancellation.cancel();
 
     let deadline = Instant::now() + ESCALATE_GRACE;

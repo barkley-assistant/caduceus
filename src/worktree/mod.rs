@@ -2441,6 +2441,8 @@ impl MinimalConfig for Config {
             compiled_ignore_patterns: Vec::new(),
             scheduler_lease_ttl_seconds: 60,
             scheduler_transaction_budget_ms: 100,
+            drain_timeout_seconds: 30,
+            backpressure_budget_ms: 5000,
         }
     }
 }

@@ -54,7 +54,7 @@ use crate::github::{Client, RateLimitInfo, Response};
 use crate::infra::config::Config;
 use crate::infra::error::{CaduceusError, CaduceusResult};
 use crate::logging;
-use crate::scheduler::LeaderToken;
+use crate::scheduler::{DrainConfig, LeaderToken, Pool};
 use crate::signals;
 use crate::state::checkpoints::{last_checkpoint_for_run, persist_checkpoint};
 use crate::state::meta::{CadenceDecision, CadenceGate, MetaStore, TickOutcome};
@@ -97,22 +97,27 @@ pub fn run_blocking(cfg: Config) -> CaduceusResult<TickOutcome> {
         .build()
         .map_err(|err| CaduceusError::Other(format!("build tokio runtime: {err}")))?;
     let cancellation = CancellationToken::new();
+    let pool = Arc::new(Pool::new(
+        cfg.worker_parallelism,
+        DrainConfig::from_seconds_and_ms(cfg.drain_timeout_seconds, cfg.backpressure_budget_ms),
+    ));
     rt.block_on(async move {
         tokio::select! {
-            outcome = run_with_config(cfg, cancellation.clone()) => outcome,
-            // The signal listener's first signal cancels the
-            // shared token, so the tick side returns on its own
-            // with `TickOutcome::Cancelled`. The listener itself
-            // continues to await a possible second signal so
-            // the orchestrator can escalate to immediate kill.
-            res = signals::listen(cancellation.clone()) => {
-                match res {
-                    Ok(()) => Ok(TickOutcome::Cancelled),
-                    Err(err) => Err(CaduceusError::Other(format!(
-                        "signal listener: {err}"
-                    ))),
-                }
-            }
+        outcome = run_with_config(cfg, Arc::clone(&pool), cancellation.clone()) => outcome,
+        // The signal listener's first signal drains the worker
+        // pool and then cancels the shared token, so the tick
+        // side returns on its own with `TickOutcome::Cancelled`.
+        // The listener itself continues to await a possible
+        // second signal so the orchestrator can escalate to
+        // immediate kill.
+        res = signals::listen(pool, cancellation.clone()) => {
+        match res {
+        Ok(()) => Ok(TickOutcome::Cancelled),
+        Err(err) => Err(CaduceusError::Other(format!(
+        "signal listener: {err}"
+        ))),
+        }
+        }
         }
     })
 }
@@ -124,6 +129,7 @@ pub fn run_blocking(cfg: Config) -> CaduceusResult<TickOutcome> {
 /// [`run`].
 pub async fn run_with_config(
     cfg: Config,
+    pool: Arc<Pool>,
     cancellation: CancellationToken,
 ) -> CaduceusResult<TickOutcome> {
     let clock: Arc<dyn crate::daemon::orchestration::Clock> = Arc::new(SystemClock);
@@ -134,8 +140,9 @@ pub async fn run_with_config(
         Arc::clone(&client),
         git,
         Arc::new(crate::daemon::orchestration::ProcessSupervisorAdapter),
+        Arc::clone(&pool),
     );
-    tick(cfg, services, cancellation).await
+    tick(cfg, services, pool, cancellation).await
 }
 
 /// The canonical per-tick controller. Takes ownership of the
@@ -145,6 +152,7 @@ pub async fn run_with_config(
 pub async fn tick(
     cfg: Config,
     services: Services,
+    pool: Arc<Pool>,
     cancellation: CancellationToken,
 ) -> CaduceusResult<TickOutcome> {
     let state_dir = cfg.state_dir.clone();
@@ -282,14 +290,30 @@ pub async fn tick(
         }
     };
 
+    // 6.5. Admit the entry to the worker pool. This gates the
+    //  global concurrency and per-repo exclusion before any
+    //  setup or worker dispatch occurs.
+    let repo_key = format!("{}/{}", claimed.entry.key.owner, claimed.entry.key.repo);
+    if let Err(err) = pool.admit(&repo_key).await {
+        // PoolSaturated is an infrastructure failure; requeue with
+        // backoff and surface as NeedsAttention.
+        let log_path = state_dir.join("processor.log");
+        let mut guard = ActiveRunGuard::new(claimed.claim.clone(), Arc::clone(&store), log_path);
+        let class = classify_error(&err);
+        let outcome = handle_infra_or_retry(cfg, &mut guard, &err, class).await?;
+        finish_tick_outcome(&gate, &meta, now, outcome, None, Some(&err))?;
+        return Ok(outcome);
+    }
+
     // 7. Build the guard and run the work, finalization, and
-    //    teardown phases inside one explicit cleanup scope.
+    //  teardown phases inside one explicit cleanup scope.
     let log_path = state_dir.join("processor.log");
     let mut guard = ActiveRunGuard::new(claimed.claim.clone(), Arc::clone(&store), log_path);
     let mut http_status: Option<u16> = None;
     let outcome = run_claim(
         cfg,
         &services,
+        Arc::clone(&pool),
         store.as_ref(),
         &meta,
         client,
@@ -329,6 +353,7 @@ struct Outcome304(bool);
 async fn run_claim(
     cfg: Config,
     services: &Services,
+    _pool: Arc<Pool>,
     store: &StateStore,
     _meta: &MetaStore,
     client: Arc<Client>,
