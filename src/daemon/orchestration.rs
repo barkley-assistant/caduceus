@@ -385,6 +385,8 @@ pub fn classify_error(err: &CaduceusError) -> FailureClass {
         CaduceusError::Worktree { .. } => FailureClass::Infrastructure,
         CaduceusError::Queue { .. } => FailureClass::Infrastructure,
         CaduceusError::StateCorrupt { .. } => FailureClass::Infrastructure,
+        CaduceusError::ReconciliationFailed { .. } => FailureClass::Infrastructure,
+        CaduceusError::ConflictingMarker { .. } => FailureClass::Worker,
         CaduceusError::Config(_) => FailureClass::Infrastructure,
         CaduceusError::TokenResolution(_) => FailureClass::Infrastructure,
 

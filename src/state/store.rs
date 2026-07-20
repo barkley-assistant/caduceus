@@ -27,7 +27,13 @@ use crate::infra::error::{CaduceusError, CaduceusResult};
 
 /// Current schema version. Bumping it is a breaking change — the
 /// store refuses to open a database with a *higher* version.
-pub const SCHEMA_VERSION: i64 = 1;
+///
+/// ## v2 (Task 4.2)
+///
+/// - `checkpoints` table gains `operation_id TEXT` and
+///   `remote_marker TEXT` columns for durable operation IDs and
+///   remote reconciliation markers. Existing rows get NULL.
+pub const SCHEMA_VERSION: i64 = 2;
 
 /// Name of the SQLite database file inside the state directory.
 pub const DB_FILENAME: &str = "state.db";
@@ -76,6 +82,8 @@ CREATE TABLE IF NOT EXISTS checkpoints (
     stage           TEXT NOT NULL,
     checkpoint_data TEXT,
     created_at      TEXT NOT NULL,
+    operation_id    TEXT,
+    remote_marker   TEXT,
     PRIMARY KEY (run_id, stage)
 );
 
@@ -153,8 +161,8 @@ pub fn open(path: &Path) -> CaduceusResult<Connection> {
         }
 
         if existing_version < SCHEMA_VERSION {
-            // Future task: run migration from existing_version to
-            // SCHEMA_VERSION. For now, just apply missing tables.
+            // Run migration from existing_version to SCHEMA_VERSION.
+            migrate_v1_to_v2(&conn, &db_path, existing_version)?;
             apply_schema(&conn, &db_path)?;
             record_version(&conn, &db_path)?;
         }
@@ -223,6 +231,28 @@ fn record_version_in_tx(tx: &Transaction, db_path: &Path) -> CaduceusResult<()> 
     .map_err(|e| CaduceusError::StateCorrupt {
         path: db_path.to_path_buf(),
         message: format!("cannot record schema version in tx: {e}"),
+    })?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Migration: v1 → v2
+// ---------------------------------------------------------------------------
+
+/// Migrate from schema v1 to v2 by adding the `operation_id` and
+/// `remote_marker` columns to the `checkpoints` table. Both columns
+/// are nullable so existing rows get NULL defaults.
+fn migrate_v1_to_v2(conn: &Connection, db_path: &Path, from_version: i64) -> CaduceusResult<()> {
+    if from_version >= 2 {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "ALTER TABLE checkpoints ADD COLUMN operation_id TEXT;
+         ALTER TABLE checkpoints ADD COLUMN remote_marker TEXT;",
+    )
+    .map_err(|e| CaduceusError::StateCorrupt {
+        path: db_path.to_path_buf(),
+        message: format!("v1→v2 migration failed: {e}"),
     })?;
     Ok(())
 }

@@ -54,7 +54,7 @@ fn persist_all_seven_checkpoints() {
 
     let run_id = "test-run-001";
     for stage in ALL_STAGES {
-        persist_checkpoint(&conn, run_id, *stage, None).expect("persist checkpoint");
+        persist_checkpoint(&conn, run_id, *stage, None, None, None).expect("persist checkpoint");
     }
 
     // Verify all seven are present in the correct order.
@@ -87,7 +87,7 @@ fn checkpoints_are_chronologically_ordered() {
 
     let run_id = "test-run-002";
     for stage in ALL_STAGES {
-        persist_checkpoint(&conn, run_id, *stage, None).expect("persist checkpoint");
+        persist_checkpoint(&conn, run_id, *stage, None, None, None).expect("persist checkpoint");
     }
 
     let rows: Vec<CheckpointRow> = checkpoint_for_run(&conn, run_id).expect("query checkpoints");
@@ -125,7 +125,7 @@ fn resume_returns_last_checkpoint() {
     let run_id = "test-run-003";
     // Write the first three checkpoints to simulate a crash after Pushed.
     for stage in &ALL_STAGES[..3] {
-        persist_checkpoint(&conn, run_id, *stage, None).expect("persist checkpoint");
+        persist_checkpoint(&conn, run_id, *stage, None, None, None).expect("persist checkpoint");
     }
 
     // Resume: we should get Pushed (the last durable checkpoint).
@@ -167,8 +167,15 @@ fn persist_checkpoint_with_operation_data() {
 
     let run_id = "test-run-004";
     let data = r#"{"commit_oid":"abc123","branch":"feat/test"}"#;
-    persist_checkpoint(&conn, run_id, FinalizationStage::Committed, Some(data))
-        .expect("persist checkpoint with data");
+    persist_checkpoint(
+        &conn,
+        run_id,
+        FinalizationStage::Committed,
+        Some(data),
+        None,
+        None,
+    )
+    .expect("persist checkpoint with data");
 
     let rows: Vec<CheckpointRow> = checkpoint_for_run(&conn, run_id).expect("query checkpoints");
 
@@ -197,10 +204,24 @@ fn repersist_same_stage_overwrites() {
     let data_v1 = r#"{"version":1}"#;
     let data_v2 = r#"{"version":2}"#;
 
-    persist_checkpoint(&conn, run_id, FinalizationStage::Committed, Some(data_v1))
-        .expect("persist v1");
-    persist_checkpoint(&conn, run_id, FinalizationStage::Committed, Some(data_v2))
-        .expect("persist v2");
+    persist_checkpoint(
+        &conn,
+        run_id,
+        FinalizationStage::Committed,
+        Some(data_v1),
+        None,
+        None,
+    )
+    .expect("persist v1");
+    persist_checkpoint(
+        &conn,
+        run_id,
+        FinalizationStage::Committed,
+        Some(data_v2),
+        None,
+        None,
+    )
+    .expect("persist v2");
 
     let rows: Vec<CheckpointRow> = checkpoint_for_run(&conn, run_id).expect("query checkpoints");
 

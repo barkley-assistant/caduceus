@@ -759,42 +759,42 @@ async fn run_resume_finalization(
 
     match resume_stage {
         ResultValidated => {
-            persist_checkpoint(&conn, &ctx.run_id, ResultValidated, None)?;
+            persist_checkpoint(&conn, &ctx.run_id, ResultValidated, None, None, None)?;
             let _ = commit_code_and_finalize(&ctx, &worker_result, &runner, &archive_path)?;
-            persist_checkpoint(&conn, &ctx.run_id, Committed, None)?;
+            persist_checkpoint(&conn, &ctx.run_id, Committed, None, None, None)?;
             push_and_finalize(&ctx, &runner).await?;
-            persist_checkpoint(&conn, &ctx.run_id, Pushed, None)?;
+            persist_checkpoint(&conn, &ctx.run_id, Pushed, None, None, None)?;
             find_or_create_pr_and_finalize(&ctx, ctx.client.as_ref(), &worker_result).await?;
-            persist_checkpoint(&conn, &ctx.run_id, PrCreated, None)?;
+            persist_checkpoint(&conn, &ctx.run_id, PrCreated, None, None, None)?;
             post_completion_and_close_and_finalize(&ctx, ctx.client.as_ref(), &worker_result)
                 .await?;
         }
         Committed => {
-            persist_checkpoint(&conn, &ctx.run_id, Committed, None)?;
+            persist_checkpoint(&conn, &ctx.run_id, Committed, None, None, None)?;
             push_and_finalize(&ctx, &runner).await?;
-            persist_checkpoint(&conn, &ctx.run_id, Pushed, None)?;
+            persist_checkpoint(&conn, &ctx.run_id, Pushed, None, None, None)?;
             find_or_create_pr_and_finalize(&ctx, ctx.client.as_ref(), &worker_result).await?;
-            persist_checkpoint(&conn, &ctx.run_id, PrCreated, None)?;
+            persist_checkpoint(&conn, &ctx.run_id, PrCreated, None, None, None)?;
             post_completion_and_close_and_finalize(&ctx, ctx.client.as_ref(), &worker_result)
                 .await?;
         }
         Pushed => {
-            persist_checkpoint(&conn, &ctx.run_id, Pushed, None)?;
+            persist_checkpoint(&conn, &ctx.run_id, Pushed, None, None, None)?;
             find_or_create_pr_and_finalize(&ctx, ctx.client.as_ref(), &worker_result).await?;
-            persist_checkpoint(&conn, &ctx.run_id, PrCreated, None)?;
+            persist_checkpoint(&conn, &ctx.run_id, PrCreated, None, None, None)?;
             post_completion_and_close_and_finalize(&ctx, ctx.client.as_ref(), &worker_result)
                 .await?;
         }
         PrCreated => {
-            persist_checkpoint(&conn, &ctx.run_id, PrCreated, None)?;
+            persist_checkpoint(&conn, &ctx.run_id, PrCreated, None, None, None)?;
             post_completion_and_close_and_finalize(&ctx, ctx.client.as_ref(), &worker_result)
                 .await?;
         }
         Commented | AwaitingReview | Done => {
             // All stages complete; persist terminal checkpoints
-            persist_checkpoint(&conn, &ctx.run_id, Commented, None)?;
-            persist_checkpoint(&conn, &ctx.run_id, AwaitingReview, None)?;
-            persist_checkpoint(&conn, &ctx.run_id, Done, None)?;
+            persist_checkpoint(&conn, &ctx.run_id, Commented, None, None, None)?;
+            persist_checkpoint(&conn, &ctx.run_id, AwaitingReview, None, None, None)?;
+            persist_checkpoint(&conn, &ctx.run_id, Done, None, None, None)?;
         }
         InvestigationReady | InvestigationCommented => {
             // Pass through — investigation stages handled by separate path
@@ -802,9 +802,9 @@ async fn run_resume_finalization(
     }
 
     // Terminal checkpoints
-    persist_checkpoint(&conn, &ctx.run_id, Commented, None)?;
-    persist_checkpoint(&conn, &ctx.run_id, AwaitingReview, None)?;
-    persist_checkpoint(&conn, &ctx.run_id, Done, None)?;
+    persist_checkpoint(&conn, &ctx.run_id, Commented, None, None, None)?;
+    persist_checkpoint(&conn, &ctx.run_id, AwaitingReview, None, None, None)?;
+    persist_checkpoint(&conn, &ctx.run_id, Done, None, None, None)?;
 
     // Clean up
     let _ = delete_checkpoints_for_run(&conn, &ctx.run_id);
@@ -828,6 +828,8 @@ async fn run_code_finalize(
         &ctx.run_id,
         crate::state::queue::FinalizationStage::ResultValidated,
         None,
+        None,
+        None,
     )?;
     let _ = commit_code_and_finalize(ctx, worker_result, runner, worker_result_path)?;
 
@@ -836,6 +838,8 @@ async fn run_code_finalize(
         &conn,
         &ctx.run_id,
         crate::state::queue::FinalizationStage::Committed,
+        None,
+        None,
         None,
     )?;
     push_and_finalize(ctx, runner).await?;
@@ -846,6 +850,8 @@ async fn run_code_finalize(
         &ctx.run_id,
         crate::state::queue::FinalizationStage::Pushed,
         None,
+        None,
+        None,
     )?;
     find_or_create_pr_and_finalize(ctx, client, worker_result).await?;
 
@@ -854,6 +860,8 @@ async fn run_code_finalize(
         &conn,
         &ctx.run_id,
         crate::state::queue::FinalizationStage::PrCreated,
+        None,
+        None,
         None,
     )?;
     post_completion_and_close_and_finalize(ctx, client, worker_result).await?;
@@ -864,6 +872,8 @@ async fn run_code_finalize(
         &ctx.run_id,
         crate::state::queue::FinalizationStage::Commented,
         None,
+        None,
+        None,
     )?;
 
     // Stage 6: AwaitingReview — waiting for human merge
@@ -872,6 +882,8 @@ async fn run_code_finalize(
         &ctx.run_id,
         crate::state::queue::FinalizationStage::AwaitingReview,
         None,
+        None,
+        None,
     )?;
 
     // Stage 7: Done — finalization complete
@@ -879,6 +891,8 @@ async fn run_code_finalize(
         &conn,
         &ctx.run_id,
         crate::state::queue::FinalizationStage::Done,
+        None,
+        None,
         None,
     )?;
 
@@ -978,6 +992,7 @@ fn map_phase_to_outcome(phase: Phase) -> TickOutcome {
             TickOutcome::Processed
         }
         Phase::Failed => TickOutcome::Failed,
+        Phase::NeedsAttention => TickOutcome::Failed,
     }
 }
 

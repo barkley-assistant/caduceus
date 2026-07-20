@@ -247,6 +247,7 @@ const PHASE_VARIANTS: &[Phase] = &[
     Phase::Done,
     Phase::Failed,
     Phase::Skipped,
+    Phase::NeedsAttention,
 ];
 
 fn phase_label(phase: Phase) -> &'static str {
@@ -257,6 +258,7 @@ fn phase_label(phase: Phase) -> &'static str {
         Phase::Done => "done",
         Phase::Failed => "failed",
         Phase::Skipped => "skipped",
+        Phase::NeedsAttention => "needs_attention",
     }
 }
 

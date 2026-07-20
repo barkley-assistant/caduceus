@@ -42,6 +42,15 @@ pub struct CheckpointRow {
     pub checkpoint_data: Option<String>,
     /// RFC-3339 timestamp of when the checkpoint was created.
     pub created_at: String,
+    /// Durable operation ID derived from the run and stage
+    /// (Task 4.2, FINAL-001). Persisted before the external
+    /// effect fires. NULL for pre-migration checkpoints.
+    pub operation_id: Option<String>,
+    /// Exact remote marker (e.g. commit SHA, PR number,
+    /// comment ID) used for reconciliation. Persisted after
+    /// the external effect succeeds. NULL for pre-migration
+    /// checkpoints.
+    pub remote_marker: Option<String>,
 }
 
 impl CheckpointRow {
@@ -61,6 +70,14 @@ impl CheckpointRow {
 /// operation-specific markers (commit OID, PR number, etc.).
 /// It must be `None` or a valid JSON string.
 ///
+/// `operation_id` is the durable operation ID derived from the
+/// run and stage (Task 4.2, FINAL-001). Persisted *before* the
+/// external effect fires.
+///
+/// `remote_marker` is the exact remote marker (e.g. commit SHA,
+/// PR number, comment ID) persisted *after* the external effect
+/// succeeds, used for reconciliation.
+///
 /// ## Crash guarantee
 ///
 /// The checkpoint is written and committed *before* the caller
@@ -73,14 +90,16 @@ pub fn persist_checkpoint(
     run_id: &str,
     stage: FinalizationStage,
     checkpoint_data: Option<&str>,
+    operation_id: Option<&str>,
+    remote_marker: Option<&str>,
 ) -> CaduceusResult<()> {
     let now = chrono::Utc::now().to_rfc3339();
     let stage_str = stage.as_str();
 
     conn.execute(
-        "INSERT OR REPLACE INTO checkpoints (run_id, stage, checkpoint_data, created_at)
-         VALUES (?1, ?2, ?3, ?4)",
-        params![run_id, stage_str, checkpoint_data, now],
+        "INSERT OR REPLACE INTO checkpoints (run_id, stage, checkpoint_data, created_at, operation_id, remote_marker)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![run_id, stage_str, checkpoint_data, now, operation_id, remote_marker],
     )
     .map_err(|e| CaduceusError::StateCorrupt {
         path: std::path::PathBuf::from("<checkpoints>"),
@@ -96,7 +115,7 @@ pub fn persist_checkpoint(
 /// Returns an empty vec when the run has no checkpoints.
 pub fn checkpoint_for_run(conn: &Connection, run_id: &str) -> CaduceusResult<Vec<CheckpointRow>> {
     let mut stmt = conn
-        .prepare("SELECT run_id, stage, checkpoint_data, created_at FROM checkpoints WHERE run_id = ?1 ORDER BY created_at ASC")
+        .prepare("SELECT run_id, stage, checkpoint_data, created_at, operation_id, remote_marker FROM checkpoints WHERE run_id = ?1 ORDER BY created_at ASC")
         .map_err(|e| CaduceusError::StateCorrupt {
             path: std::path::PathBuf::from("<checkpoints>"),
             message: format!("cannot prepare checkpoint query: {e}"),
@@ -109,6 +128,8 @@ pub fn checkpoint_for_run(conn: &Connection, run_id: &str) -> CaduceusResult<Vec
                 stage: row.get(1)?,
                 checkpoint_data: row.get(2)?,
                 created_at: row.get(3)?,
+                operation_id: row.get(4)?,
+                remote_marker: row.get(5)?,
             })
         })
         .map_err(|e| CaduceusError::StateCorrupt {
@@ -129,7 +150,7 @@ pub fn last_checkpoint_for_run(
 ) -> CaduceusResult<Option<CheckpointRow>> {
     let mut stmt = conn
         .prepare(
-            "SELECT run_id, stage, checkpoint_data, created_at FROM checkpoints \
+            "SELECT run_id, stage, checkpoint_data, created_at, operation_id, remote_marker FROM checkpoints \
              WHERE run_id = ?1 ORDER BY created_at DESC LIMIT 1",
         )
         .map_err(|e| CaduceusError::StateCorrupt {
@@ -144,6 +165,8 @@ pub fn last_checkpoint_for_run(
                 stage: row.get(1)?,
                 checkpoint_data: row.get(2)?,
                 created_at: row.get(3)?,
+                operation_id: row.get(4)?,
+                remote_marker: row.get(5)?,
             })
         })
         .ok();
@@ -198,8 +221,17 @@ mod tests {
         let conn = store::open(&db).expect("open db");
 
         let run_id = "unit-run-1";
-        persist_checkpoint(&conn, run_id, FinalizationStage::Committed, None).expect("persist");
-        persist_checkpoint(&conn, run_id, FinalizationStage::Pushed, None).expect("persist");
+        persist_checkpoint(
+            &conn,
+            run_id,
+            FinalizationStage::Committed,
+            None,
+            None,
+            None,
+        )
+        .expect("persist");
+        persist_checkpoint(&conn, run_id, FinalizationStage::Pushed, None, None, None)
+            .expect("persist");
 
         let rows: Vec<CheckpointRow> = checkpoint_for_run(&conn, run_id).expect("query");
         assert_eq!(rows.len(), 2);
@@ -237,10 +269,24 @@ mod tests {
         let conn = store::open(&db).expect("open db");
 
         let run_id = "unit-run-overwrite";
-        persist_checkpoint(&conn, run_id, FinalizationStage::Pushed, Some(r#"{"v":1}"#))
-            .expect("persist v1");
-        persist_checkpoint(&conn, run_id, FinalizationStage::Pushed, Some(r#"{"v":2}"#))
-            .expect("persist v2");
+        persist_checkpoint(
+            &conn,
+            run_id,
+            FinalizationStage::Pushed,
+            Some(r#"{"v":1}"#),
+            None,
+            None,
+        )
+        .expect("persist v1");
+        persist_checkpoint(
+            &conn,
+            run_id,
+            FinalizationStage::Pushed,
+            Some(r#"{"v":2}"#),
+            None,
+            None,
+        )
+        .expect("persist v2");
 
         let rows: Vec<CheckpointRow> = checkpoint_for_run(&conn, run_id).expect("query");
         assert_eq!(rows.len(), 1);
@@ -258,8 +304,17 @@ mod tests {
         let conn = store::open(&db).expect("open db");
 
         let run_id = "unit-run-del";
-        persist_checkpoint(&conn, run_id, FinalizationStage::Committed, None).expect("persist");
-        persist_checkpoint(&conn, run_id, FinalizationStage::Pushed, None).expect("persist");
+        persist_checkpoint(
+            &conn,
+            run_id,
+            FinalizationStage::Committed,
+            None,
+            None,
+            None,
+        )
+        .expect("persist");
+        persist_checkpoint(&conn, run_id, FinalizationStage::Pushed, None, None, None)
+            .expect("persist");
 
         super::delete_checkpoints_for_run(&conn, run_id).expect("delete");
 
