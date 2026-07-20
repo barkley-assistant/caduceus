@@ -41,23 +41,25 @@ use tokio_util::sync::CancellationToken;
 use tracing::info;
 use ulid::Ulid;
 
-use crate::config::Config;
-use crate::context::{build_context, encode_context, BuildInputs};
-use crate::error::{CaduceusError, CaduceusResult};
+use crate::daemon::orchestration::{
+    classify_error, ActiveRunGuard, FailureClass, Services, SystemClock,
+};
 use crate::finalize::{
     archive_worker_result, commit_code_and_finalize, dry_run_finalize,
     find_or_create_pr_and_finalize, post_completion_and_close_and_finalize,
     post_investigation_comment_and_finalize, push_and_finalize, FinalizeContext, FinalizeOutput,
     FinalizeRequest,
 };
+use crate::github::poll::{discover_watched_repos, merge_outcomes, poll_code, poll_investigation};
 use crate::github::{Client, RateLimitInfo, Response};
+use crate::infra::config::Config;
+use crate::infra::error::{CaduceusError, CaduceusResult};
 use crate::logging;
-use crate::meta::{CadenceDecision, CadenceGate, MetaStore, TickOutcome};
-use crate::orchestration::{classify_error, ActiveRunGuard, FailureClass, Services, SystemClock};
-use crate::poll::{discover_watched_repos, merge_outcomes, poll_code, poll_investigation};
-use crate::prompt::{build_prompt, write_prompt};
-use crate::queue::{ClaimedEntry, DaemonLock, Phase, StateStore, TicketType};
 use crate::signals;
+use crate::state::meta::{CadenceDecision, CadenceGate, MetaStore, TickOutcome};
+use crate::state::queue::{ClaimedEntry, DaemonLock, Phase, StateStore, TicketType};
+use crate::worker::context::{build_context, encode_context, BuildInputs};
+use crate::worker::prompt::{build_prompt, write_prompt};
 use crate::worker::WorkerResult;
 use crate::worktree::{create as create_worktree, find_main_clone, GitRunner};
 
@@ -122,14 +124,14 @@ pub async fn run_with_config(
     cfg: Config,
     cancellation: CancellationToken,
 ) -> CaduceusResult<TickOutcome> {
-    let clock: Arc<dyn crate::orchestration::Clock> = Arc::new(SystemClock);
+    let clock: Arc<dyn crate::daemon::orchestration::Clock> = Arc::new(SystemClock);
     let client = Arc::new(Client::with_config(&cfg)?);
     let git = GitRunner::new(&cfg);
     let services = Services::production(
         clock,
         Arc::clone(&client),
         git,
-        Arc::new(crate::orchestration::ProcessSupervisorAdapter),
+        Arc::new(crate::daemon::orchestration::ProcessSupervisorAdapter),
     );
     tick(cfg, services, cancellation).await
 }
@@ -181,8 +183,12 @@ pub async fn tick(
 
     // 3. Reap stale claims / abandoned worktrees.
     let store = Arc::new(StateStore::open(&state_dir)?);
-    let _ = crate::queue::reap_stale_claims(&state_dir, services.clock.now(), cfg.stale_run_hours)
-        .await;
+    let _ = crate::state::queue::reap_stale_claims(
+        &state_dir,
+        services.clock.now(),
+        cfg.stale_run_hours,
+    )
+    .await;
 
     // 4. Build the GitHub client and discover watched repos.
     let client: Arc<Client> = Arc::clone(services.github.inner());
@@ -335,7 +341,7 @@ async fn run_claim(
     }
 
     // 8. Fetch the issue detail.
-    let issue = match crate::issue::fetch_issue_detail(
+    let issue = match crate::github::issue::fetch_issue_detail(
         client.as_ref(),
         &claimed.entry.key,
         &cfg.feedback_author_allowlist,
@@ -598,7 +604,7 @@ async fn poll_repo(
 
 fn enqueue_summaries(
     store: &StateStore,
-    summaries: &[crate::poll::IssueSummary],
+    summaries: &[crate::github::poll::IssueSummary],
     dry_run: bool,
 ) -> Option<DateTime<Utc>> {
     let mut earliest: Option<DateTime<Utc>> = None;
@@ -736,7 +742,7 @@ fn finish_tick_failure(
     )
 }
 
-fn dummy_rate_limit_info(obs: &crate::meta::RateLimitObservation) -> RateLimitInfo {
+fn dummy_rate_limit_info(obs: &crate::state::meta::RateLimitObservation) -> RateLimitInfo {
     RateLimitInfo {
         remaining: obs.remaining,
         limit: obs.limit,

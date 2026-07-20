@@ -45,8 +45,8 @@ use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::{CaduceusError, CaduceusResult};
-use crate::issue::IssueKey;
+use crate::github::issue::IssueKey;
+use crate::infra::error::{CaduceusError, CaduceusResult};
 
 /// Hard cap on the worker-result file size per `CONTRACTS.md`
 /// "Worker environment and result".

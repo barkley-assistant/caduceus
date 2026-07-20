@@ -10,7 +10,7 @@
 //! `README.md`, and the `__init__.py` adapter docs, then asserts that
 //! each public artifact references these names verbatim. The set is
 //! exhaustive on the daemon side: every key listed here has a matching
-//! `pub` field on `crate::config::Config` and every env var listed here
+//! `pub` field on `crate::infra::config::Config` and every env var listed here
 //! is emitted (or denied) by `crate::worker::sanitized_env`.
 //!
 //! **Edit discipline.** These fixtures are part of the v0.1 normative
@@ -21,7 +21,7 @@
 //! Don't add to this list casually.
 
 /// Canonical `Config` field names. Mirrors the public surface of
-/// `crate::config::Config`. These names appear in
+/// `crate::infra::config::Config`. These names appear in
 /// `~/.config/caduceus/config.yaml`, `~/.hermes/config.yaml` under a
 /// `caduceus:` section, and the daemon's documentation. The list is
 /// sorted lexicographically so operators grep-ing docs find every key.

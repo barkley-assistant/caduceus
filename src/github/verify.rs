@@ -10,11 +10,11 @@
 
 use serde::Deserialize;
 
-use crate::config::Config;
-use crate::error::{CaduceusError, CaduceusResult};
+use crate::github::issue::IssueKey;
 use crate::github::{Client, ACCEPT_VALUE};
-use crate::issue::IssueKey;
-use crate::queue::TicketType;
+use crate::infra::config::Config;
+use crate::infra::error::{CaduceusError, CaduceusResult};
+use crate::state::queue::TicketType;
 
 /// Result of a single verification attempt.
 ///

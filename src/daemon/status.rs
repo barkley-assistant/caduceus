@@ -19,11 +19,11 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
-use crate::error::{CaduceusError, CaduceusResult};
-use crate::issue::IssueKey;
-use crate::meta::{MetaStore, StateMeta, TickOutcome};
-use crate::queue::{Phase, QueueEntry, QueueState, StateStore, TicketType};
-use crate::worker_supervisor::{read_heartbeat_record, Heartbeat};
+use crate::github::issue::IssueKey;
+use crate::infra::error::{CaduceusError, CaduceusResult};
+use crate::state::meta::{MetaStore, StateMeta, TickOutcome};
+use crate::state::queue::{Phase, QueueEntry, QueueState, StateStore, TicketType};
+use crate::worker::supervisor::{read_heartbeat_record, Heartbeat};
 
 /// Distinct diagnostic the reporter can surface. The CLI
 /// surfaces a missing state directory as a friendly hint to
@@ -58,7 +58,7 @@ pub struct StatusReport {
     pub next_head: Option<String>,
     pub next_head_earliest_eligibility: Option<DateTime<Utc>>,
     pub recent_errors: Vec<String>,
-    pub rate_limit: Option<super::meta::RateLimitObservation>,
+    pub rate_limit: Option<crate::state::meta::RateLimitObservation>,
     pub live_workers: Vec<LiveWorker>,
     pub diagnostics: Vec<String>,
     /// `true` when the daemon recorded a corrupt-marker on
@@ -633,7 +633,7 @@ pub fn live_worker_from_heartbeat(record: &Heartbeat, now: DateTime<Utc>) -> Liv
 #[allow(dead_code)]
 pub fn sample_heartbeat(run_id: &str, issue: IssueKey, now: DateTime<Utc>) -> Heartbeat {
     Heartbeat {
-        version: crate::worker_supervisor::HEARTBEAT_FILE_VERSION,
+        version: crate::worker::supervisor::HEARTBEAT_FILE_VERSION,
         run_id: run_id.to_string(),
         pid: std::process::id(),
         started_at: now,

@@ -13,11 +13,11 @@ use reqwest::header::LINK;
 use serde::Deserialize;
 use url::Url;
 
-use crate::config::{is_valid_repo_slug, Config};
-use crate::error::{CaduceusError, CaduceusResult};
+use crate::github::issue::IssueKey;
 use crate::github::{rate_limit_from_headers, Client, Response, ACCEPT_VALUE};
-use crate::issue::IssueKey;
-use crate::queue::TicketType;
+use crate::infra::config::{is_valid_repo_slug, Config};
+use crate::infra::error::{CaduceusError, CaduceusResult};
+use crate::state::queue::TicketType;
 
 /// Hard maximum pages the daemon will follow on a single paginated
 /// endpoint. The contract requires an error rather than silent

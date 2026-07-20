@@ -11,7 +11,7 @@ use std::path::Path;
 #[cfg(test)]
 use std::path::PathBuf;
 
-use crate::error::CaduceusResult;
+use crate::infra::error::CaduceusResult;
 
 /// Prune backup and corruption-archive files older than
 /// `retention_days`. Preserves:

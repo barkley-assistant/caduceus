@@ -20,7 +20,7 @@
 //!   completes a transition.
 //!
 //! The shape of the canonical worker entry point
-//! ([`crate::worker_supervisor::supervise`]), the canonical
+//! ([`crate::worker::supervisor::supervise`]), the canonical
 //! worktree handle ([`crate::worktree::Worktree`]), and the
 //! canonical finalization context ([`crate::finalize::FinalizeContext`])
 //! are owned by their respective modules; this module's
@@ -34,11 +34,11 @@ use chrono::{DateTime, Utc};
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
-use crate::error::{CaduceusError, CaduceusResult};
+use crate::github::issue::IssueKey;
 use crate::github::Client;
-use crate::issue::IssueKey;
-use crate::queue::{ClaimToken, Phase, QueueEntry, StateStore};
-use crate::worker_supervisor::SupervisorOutcome;
+use crate::infra::error::{CaduceusError, CaduceusResult};
+use crate::state::queue::{ClaimToken, Phase, QueueEntry, StateStore};
+use crate::worker::supervisor::SupervisorOutcome;
 use crate::worktree::{GitRunner, Worktree};
 
 // ---------------------------------------------------------------------------
@@ -140,7 +140,7 @@ impl Git for GitRunnerAdapter {
 }
 
 /// Trait abstraction over the worker process supervisor. Production
-/// callers wrap [`crate::worker_supervisor::supervise`] in
+/// callers wrap [`crate::worker::supervisor::supervise`] in
 /// [`ProcessSupervisorAdapter`]; tests use a trait object whose
 /// `supervise` returns a canned [`SupervisorOutcome`].
 #[allow(clippy::too_many_arguments)]
@@ -151,7 +151,7 @@ pub trait ProcessSupervisor: Send + Sync {
     fn supervise<'a>(
         &'a self,
         self_exe: &'a Path,
-        cfg: &'a crate::config::Config,
+        cfg: &'a crate::infra::config::Config,
         issue: &'a IssueKey,
         worktree: &'a Path,
         run_id: &'a str,
@@ -172,7 +172,7 @@ impl ProcessSupervisor for ProcessSupervisorAdapter {
     fn supervise<'a>(
         &'a self,
         self_exe: &'a Path,
-        cfg: &'a crate::config::Config,
+        cfg: &'a crate::infra::config::Config,
         issue: &'a IssueKey,
         worktree: &'a Path,
         run_id: &'a str,
@@ -182,7 +182,7 @@ impl ProcessSupervisor for ProcessSupervisorAdapter {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = CaduceusResult<SupervisorOutcome>> + Send + 'a>,
     > {
-        Box::pin(crate::worker_supervisor::supervise(
+        Box::pin(crate::worker::supervisor::supervise(
             self_exe,
             cfg,
             issue,
@@ -298,10 +298,10 @@ impl FailureClass {
     /// failures). Returns `None` for the classes that must
     /// surface as `Failed` (worker-attributable and
     /// unclassified infrastructure failures).
-    pub fn non_fatal_outcome(&self) -> Option<crate::meta::TickOutcome> {
+    pub fn non_fatal_outcome(&self) -> Option<crate::state::meta::TickOutcome> {
         match self {
-            FailureClass::RateLimit { .. } => Some(crate::meta::TickOutcome::RateLimited),
-            FailureClass::Cancellation => Some(crate::meta::TickOutcome::Cancelled),
+            FailureClass::RateLimit { .. } => Some(crate::state::meta::TickOutcome::RateLimited),
+            FailureClass::Cancellation => Some(crate::state::meta::TickOutcome::Cancelled),
             FailureClass::Worker | FailureClass::Infrastructure => None,
         }
     }
@@ -333,14 +333,14 @@ pub fn failure_class_predicates_for_tests(class: FailureClass) -> (bool, bool, b
 }
 
 /// Test seam: outcome mapping for [`FailureClass`]. Returns
-/// the [`meta::TickOutcome`](crate::meta::TickOutcome) the
+/// the [`meta::TickOutcome`](crate::state::meta::TickOutcome) the
 /// orchestrator surfaces for each failure class. Mirrors the
 /// private [`outcome_for_class`] helper used by the tick.
-pub fn outcome_for_class_for_tests(class: FailureClass) -> crate::meta::TickOutcome {
+pub fn outcome_for_class_for_tests(class: FailureClass) -> crate::state::meta::TickOutcome {
     match class {
-        FailureClass::RateLimit { .. } => crate::meta::TickOutcome::RateLimited,
-        FailureClass::Cancellation => crate::meta::TickOutcome::Cancelled,
-        _ => crate::meta::TickOutcome::Failed,
+        FailureClass::RateLimit { .. } => crate::state::meta::TickOutcome::RateLimited,
+        FailureClass::Cancellation => crate::state::meta::TickOutcome::Cancelled,
+        _ => crate::state::meta::TickOutcome::Failed,
     }
 }
 
@@ -793,8 +793,8 @@ static KEY_PLACEHOLDER: IssueKey = IssueKey {
 #[cfg(test)]
 mod inline_tests {
     use super::*;
-    use crate::config::Config;
-    use crate::queue::{ClaimFileBody, ClaimToken, CLAIM_FILE_VERSION};
+    use crate::infra::config::Config;
+    use crate::state::queue::{ClaimFileBody, ClaimToken, CLAIM_FILE_VERSION};
 
     fn cfg() -> Config {
         Config::test_defaults(std::path::Path::new("/tmp"))

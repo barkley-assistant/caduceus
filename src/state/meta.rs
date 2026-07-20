@@ -46,9 +46,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::error::{CaduceusError, CaduceusResult};
+use crate::github::issue::IssueKey;
 use crate::github::RateLimitInfo;
-use crate::issue::IssueKey;
+use crate::infra::error::{CaduceusError, CaduceusResult};
 
 /// Current metadata envelope version. Bumping this is a breaking
 /// change — older files produce a `StateCorrupt` error.

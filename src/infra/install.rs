@@ -22,7 +22,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use crate::error::CaduceusResult;
+use crate::infra::error::CaduceusResult;
 
 /// Write `data` to `path` atomically: write to a temp file, sync, then
 /// rename over the target. The temp file is created in the same
@@ -39,7 +39,7 @@ use crate::error::CaduceusResult;
 /// temp name is still unique per call).
 pub fn atomic_write(path: &Path, data: &[u8]) -> CaduceusResult<()> {
     let dir = path.parent().ok_or_else(|| {
-        crate::error::CaduceusError::Io(io::Error::new(
+        crate::infra::error::CaduceusError::Io(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("path has no parent directory: {}", path.display()),
         ))
@@ -47,7 +47,7 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> CaduceusResult<()> {
 
     // Ensure the parent directory exists.
     fs::create_dir_all(dir).map_err(|e| {
-        crate::error::CaduceusError::Io(io::Error::new(
+        crate::infra::error::CaduceusError::Io(io::Error::new(
             e.kind(),
             format!(
                 "cannot create parent directory for atomic write: {}",
@@ -58,7 +58,7 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> CaduceusResult<()> {
 
     let tmp_path = temp_path(path);
     let mut tmp = fs::File::create(&tmp_path).map_err(|e| {
-        crate::error::CaduceusError::Io(io::Error::new(
+        crate::infra::error::CaduceusError::Io(io::Error::new(
             e.kind(),
             format!(
                 "cannot create temp file for atomic write: {}",
@@ -68,7 +68,7 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> CaduceusResult<()> {
     })?;
 
     tmp.write_all(data).map_err(|e| {
-        crate::error::CaduceusError::Io(io::Error::new(
+        crate::infra::error::CaduceusError::Io(io::Error::new(
             e.kind(),
             format!("cannot write data to temp file: {}", tmp_path.display()),
         ))
@@ -76,7 +76,7 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> CaduceusResult<()> {
 
     // Flush data to storage.
     tmp.sync_all().map_err(|e| {
-        crate::error::CaduceusError::Io(io::Error::new(
+        crate::infra::error::CaduceusError::Io(io::Error::new(
             e.kind(),
             format!("cannot sync temp file: {}", tmp_path.display()),
         ))
@@ -88,7 +88,7 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> CaduceusResult<()> {
 
     // Atomic rename over the target.
     fs::rename(&tmp_path, path).map_err(|e| {
-        crate::error::CaduceusError::Io(io::Error::new(
+        crate::infra::error::CaduceusError::Io(io::Error::new(
             e.kind(),
             format!(
                 "cannot rename temp file to target: {} -> {}",

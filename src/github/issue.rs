@@ -12,8 +12,8 @@ use futures_util::future::try_join3;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use crate::error::{CaduceusError, CaduceusResult};
 use crate::github::{Client, Response, ACCEPT_VALUE};
+use crate::infra::error::{CaduceusError, CaduceusResult};
 
 /// GitHub-canonical issue identifier: `(owner, repo, number)`.
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]

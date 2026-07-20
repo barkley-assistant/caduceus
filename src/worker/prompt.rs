@@ -38,9 +38,9 @@ use std::io::Write as _;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
-use crate::error::{CaduceusError, CaduceusResult};
-use crate::issue::IssueDetail;
-use crate::queue::TicketType;
+use crate::github::issue::IssueDetail;
+use crate::infra::error::{CaduceusError, CaduceusResult};
+use crate::state::queue::TicketType;
 
 /// Maximum size of the encoded prompt file, in bytes.
 pub const MAX_PROMPT_BYTES: usize = 2 * 1024 * 1024;
@@ -405,8 +405,8 @@ fn ticket_type_label(t: TicketType) -> &'static str {
 #[cfg(test)]
 mod inline_tests {
     use super::*;
-    use crate::issue::IssueKey;
-    use crate::issue::{IssueComment, IssueEvent};
+    use crate::github::issue::IssueKey;
+    use crate::github::issue::{IssueComment, IssueEvent};
     use chrono::{TimeZone, Utc};
     use std::os::unix::fs::PermissionsExt;
 
