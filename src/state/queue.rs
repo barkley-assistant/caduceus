@@ -78,6 +78,10 @@ pub enum Phase {
     Queued,
     InProgress,
     Previewed,
+    /// The daemon posted a completion comment and is waiting for
+    /// human review of the PR before closing. The entry is polled
+    /// by [`poll_awaiting_review_entries`] on each tick.
+    AwaitingReview,
     Done,
     Failed,
     Skipped,
@@ -624,6 +628,99 @@ impl StateStore {
         self.complete_with(claim, Phase::Previewed)
     }
 
+    /// Transition an entry to AwaitingReview phase (key-based).
+    ///
+    /// The daemon calls this after posting the completion comment
+    /// on an issue, but before any Done/close transition. The
+    /// entry stays visible for polling by
+    /// [`crate::daemon::tick::poll_awaiting_review_entries`] which
+    /// checks the PR merge status on subsequent ticks.
+    ///
+    /// This method is intentionally key-based (not claim-based)
+    /// because the entry may not be InProgress when the transition
+    /// is applied — the claim lifecycle has already released the
+    /// worker's worktree.
+    pub fn complete_awaiting_review(&self, key: &IssueKey) -> CaduceusResult<()> {
+        self.with_exclusive(|store| {
+            let mut state = store.load_validated()?;
+            let target = key.display_key();
+            let entry = state
+                .entries
+                .values_mut()
+                .find(|e| e.key.display_key() == target)
+                .ok_or_else(|| CaduceusError::Queue {
+                    context: "complete_awaiting_review",
+                    stderr: format!("no entry for {target}"),
+                })?;
+            entry.phase = Phase::AwaitingReview;
+            entry.updated_at = Utc::now();
+            store.persist(&state)?;
+            Ok(())
+        })
+    }
+
+    /// Route an AwaitingReview entry to NeedsAttention with a
+    /// diagnostic reason (e.g. PR was closed without merging).
+    pub fn route_to_needs_attention(&self, key: &IssueKey, reason: &str) -> CaduceusResult<()> {
+        self.with_exclusive(|store| {
+            let mut state = store.load_validated()?;
+            let target = key.display_key();
+            let entry = state
+                .entries
+                .values_mut()
+                .find(|e| e.key.display_key() == target)
+                .ok_or_else(|| CaduceusError::Queue {
+                    context: "route_to_needs_attention",
+                    stderr: format!("no entry for {target}"),
+                })?;
+            if entry.phase != Phase::AwaitingReview {
+                return Err(CaduceusError::Queue {
+                    context: "route_to_needs_attention",
+                    stderr: format!(
+                        "entry {target} is {:?}, must be AwaitingReview",
+                        entry.phase
+                    ),
+                });
+            }
+            entry.phase = Phase::NeedsAttention;
+            entry.last_error = Some(reason.to_string());
+            entry.updated_at = Utc::now();
+            store.persist(&state)?;
+            Ok(())
+        })
+    }
+
+    /// Transition an AwaitingReview entry to Done because the PR
+    /// was merged. Only succeeds when the current phase is
+    /// [`Phase::AwaitingReview`]; returns an error otherwise.
+    pub fn resolve_awaiting_review_as_done(&self, key: &IssueKey) -> CaduceusResult<()> {
+        self.with_exclusive(|store| {
+            let mut state = store.load_validated()?;
+            let target = key.display_key();
+            let entry = state
+                .entries
+                .values_mut()
+                .find(|e| e.key.display_key() == target)
+                .ok_or_else(|| CaduceusError::Queue {
+                    context: "resolve_awaiting_review_as_done",
+                    stderr: format!("no entry for {target}"),
+                })?;
+            if entry.phase != Phase::AwaitingReview {
+                return Err(CaduceusError::Queue {
+                    context: "resolve_awaiting_review_as_done",
+                    stderr: format!(
+                        "entry {target} is {:?}, must be AwaitingReview",
+                        entry.phase
+                    ),
+                });
+            }
+            entry.phase = Phase::Done;
+            entry.updated_at = Utc::now();
+            store.persist(&state)?;
+            Ok(())
+        })
+    }
+
     /// Retry-or-fail terminal transition. With ``budget`` total
     /// allowed attempts the convention is: attempts 1..budget-1
     /// return to ``Queued`` with ``next_attempt_at = now +
@@ -833,6 +930,17 @@ impl StateStore {
                     context: "reprocess",
                     stderr: format!("no entry for {target}"),
                 })?;
+            // Refuse to reprocess entries awaiting human review — the
+            // operator must inspect and resolve the PR status first.
+            if entry.phase == Phase::AwaitingReview {
+                return Err(CaduceusError::Queue {
+                    context: "reprocess",
+                    stderr: format!(
+                        "refusing to reprocess entry {target}: phase is AwaitingReview, \
+  human review must complete first"
+                    ),
+                });
+            }
             entry.phase = Phase::Queued;
             entry.attempts = 0;
             entry.last_error = None;
@@ -1248,7 +1356,7 @@ fn sync_dir(dir: &Path) -> CaduceusResult<()> {
     Ok(())
 }
 
-fn unlink_claim_best_effort(claims_dir: &Path, claim: &ClaimToken) {
+pub fn unlink_claim_best_effort(claims_dir: &Path, claim: &ClaimToken) {
     let path = claim.claim_path();
     match fs::remove_file(&path) {
         Ok(()) => {

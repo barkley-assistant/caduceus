@@ -883,6 +883,17 @@ impl Client {
         let text = String::from_utf8_lossy(&body_bytes).into_owned();
         Err(map_status(status, text))
     }
+
+    /// Refuse to enable auto-merge on a pull request. This is the
+    /// runtime defence for AC-04 ("Never auto-merge"). Every code
+    /// path that would call the GitHub merge API must route through
+    /// this method first — it always returns an error.
+    ///
+    /// The returned error carries the contract message from
+    /// CONTRACTS.md FINAL-001 AC-04.
+    pub fn enable_auto_merge(&self) -> CaduceusResult<()> {
+        crate::runtime::audit::refuse_auto_merge()
+    }
 }
 
 const BODY_TOO_LARGE_SENTINEL: &str = "caduceus::github::body_too_large";
