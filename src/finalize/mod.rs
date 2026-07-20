@@ -133,10 +133,13 @@ pub struct FinalizeOutput {
 #[serde(deny_unknown_fields)]
 pub enum FinalizeAction {
     #[default]
+    ResultValidated,
     Committed,
     Pushed,
     PrCreated,
     Commented,
+    AwaitingReview,
+    Done,
     Closed,
     InvestigationReady,
     InvestigationCommented,

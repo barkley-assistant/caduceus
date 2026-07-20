@@ -14,6 +14,7 @@
 //! - [`migrate_to_sqlite`] — `caduceus migrate-state --to-sqlite`.
 //! - [`retention`] — backup and corruption-archive pruning.
 
+pub mod checkpoints;
 pub mod meta;
 pub mod migrate;
 pub mod migrate_to_sqlite;
@@ -28,4 +29,9 @@ pub use crate::state::queue::{
     parse_queue_state, serialize_queue_state, ClaimFileBody, ClaimToken, ClaimedEntry, DaemonLock,
     EnqueueOutcome, FinalizationCheckpoint, FinalizationStage, Phase, QueueEntry, QueueState,
     ResetOutcome, StateStore, TicketType,
+};
+
+pub use crate::state::checkpoints::{
+    checkpoint_for_run, delete_checkpoint, delete_checkpoints_for_run, last_checkpoint_for_run,
+    persist_checkpoint, CheckpointRow,
 };

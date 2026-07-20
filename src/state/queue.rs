@@ -98,12 +98,47 @@ pub enum TicketType {
 #[serde(rename_all = "snake_case")]
 #[serde(deny_unknown_fields)]
 pub enum FinalizationStage {
+    ResultValidated,
     Committed,
     Pushed,
     PrCreated,
     Commented,
+    AwaitingReview,
+    Done,
     InvestigationReady,
     InvestigationCommented,
+}
+
+impl FinalizationStage {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::ResultValidated => "result_validated",
+            Self::Committed => "committed",
+            Self::Pushed => "pushed",
+            Self::PrCreated => "pr_created",
+            Self::Commented => "commented",
+            Self::AwaitingReview => "awaiting_review",
+            Self::Done => "done",
+            Self::InvestigationReady => "investigation_ready",
+            Self::InvestigationCommented => "investigation_commented",
+        }
+    }
+
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Option<Self> {
+        Some(match s {
+            "result_validated" => Self::ResultValidated,
+            "committed" => Self::Committed,
+            "pushed" => Self::Pushed,
+            "pr_created" => Self::PrCreated,
+            "commented" => Self::Commented,
+            "awaiting_review" => Self::AwaitingReview,
+            "done" => Self::Done,
+            "investigation_ready" => Self::InvestigationReady,
+            "investigation_commented" => Self::InvestigationCommented,
+            _ => return None,
+        })
+    }
 }
 
 /// Checkpoint used for crash-safe resumption of finalization.
