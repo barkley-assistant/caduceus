@@ -590,6 +590,19 @@ impl ActiveRunGuard {
         Ok(())
     }
 
+    /// Transition an InProgress entry to AwaitingReview after the
+    /// completion comment has been posted and the daemon is waiting
+    /// for human PR review. Releases the claim file.
+    pub async fn finish_awaiting_review(&mut self) -> CaduceusResult<()> {
+        self.store.complete_awaiting_review(&self.issue_key)?;
+        // The claim file is now stale (entry is no longer InProgress).
+        // Clean it up best-effort; the reaper handles orphans.
+        let claim = self.take_claim();
+        crate::state::queue::unlink_claim_best_effort(&self.store.claims_dir(), &claim);
+        self.mark_finished().await;
+        Ok(())
+    }
+
     /// Retry-or-fail terminal transition. Increments `attempts`
     /// and either returns to `Queued` (with backoff) or
     /// transitions to terminal `Failed`. The new phase is

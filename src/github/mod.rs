@@ -10,6 +10,7 @@
 
 pub mod client;
 pub mod issue;
+pub mod merge_detect;
 pub mod poll;
 pub mod verify;
 
@@ -26,6 +27,7 @@ pub use crate::github::client::{
     USER_AGENT_PREFIX,
 };
 pub use crate::github::issue::{IssueComment, IssueDetail, IssueEvent, IssueKey};
+pub use crate::github::merge_detect::{poll_pr_merge_status, MergeStatus};
 pub use crate::github::poll::{
     discover_watched_repos, poll_code, IssuePollDiagnostic, IssuePollOutcome,
     IssueSummary as PollIssueSummary,
