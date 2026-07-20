@@ -28,6 +28,7 @@ pub mod daemon;
 pub mod finalize;
 pub mod github;
 pub mod infra;
+pub mod runtime;
 pub mod state;
 pub mod worker;
 pub mod worktree;
@@ -62,6 +63,12 @@ pub use crate::worker::supervisor;
 pub use crate::worker::supervisor as worker_supervisor;
 // `crate::worker::` itself is the multi-file dir; `crate::worker_supervisor`
 // was the pre-restructure name for what is now `crate::worker::supervisor`.
+
+// Finalize re-exports --------------------------------------------------------
+pub use crate::finalize::{post_completion_and_close_and_finalize, post_completion_only};
+
+// Runtime re-exports ---------------------------------------------------------
+pub use crate::runtime::audit;
 
 // State re-exports ---------------------------------------------------------
 pub use crate::state::meta;

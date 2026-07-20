@@ -46,9 +46,8 @@ use crate::daemon::orchestration::{
 };
 use crate::finalize::{
     archive_worker_result, commit_code_and_finalize, dry_run_finalize,
-    find_or_create_pr_and_finalize, post_completion_and_close_and_finalize,
-    post_investigation_comment_and_finalize, push_and_finalize, FinalizeContext, FinalizeOutput,
-    FinalizeRequest,
+    find_or_create_pr_and_finalize, post_completion_only, post_investigation_comment_and_finalize,
+    push_and_finalize, FinalizeContext, FinalizeOutput, FinalizeRequest,
 };
 use crate::github::poll::{discover_watched_repos, merge_outcomes, poll_code, poll_investigation};
 use crate::github::{Client, RateLimitInfo, Response};
@@ -56,11 +55,9 @@ use crate::infra::config::Config;
 use crate::infra::error::{CaduceusError, CaduceusResult};
 use crate::logging;
 use crate::signals;
-use crate::state::checkpoints::{
-    delete_checkpoints_for_run, last_checkpoint_for_run, persist_checkpoint,
-};
+use crate::state::checkpoints::{last_checkpoint_for_run, persist_checkpoint};
 use crate::state::meta::{CadenceDecision, CadenceGate, MetaStore, TickOutcome};
-use crate::state::queue::{ClaimedEntry, DaemonLock, Phase, StateStore, TicketType};
+use crate::state::queue::{ClaimedEntry, DaemonLock, Phase, QueueEntry, StateStore, TicketType};
 use crate::state::store;
 use crate::worker::context::{build_context, encode_context, BuildInputs};
 use crate::worker::prompt::{build_prompt, write_prompt};
@@ -194,6 +191,12 @@ pub async fn tick(
     )
     .await;
 
+    // 3.5. Poll awaiting-review entries for PR merge status.
+    let poll_client: Arc<Client> = Arc::clone(services.github.inner());
+    if let Err(err) = poll_awaiting_review_entries(store.as_ref(), poll_client.as_ref()).await {
+        tracing::warn!(error = %err, "awaiting-review poll failed (best-effort)");
+    }
+
     // 4. Build the GitHub client and discover watched repos.
     let client: Arc<Client> = Arc::clone(services.github.inner());
     let repos = match discover_watched_repos(client.as_ref(), &cfg).await {
@@ -312,7 +315,7 @@ struct Outcome304(bool);
 async fn run_claim(
     cfg: Config,
     services: &Services,
-    _store: &StateStore,
+    store: &StateStore,
     _meta: &MetaStore,
     client: Arc<Client>,
     claimed: ClaimedEntry,
@@ -335,7 +338,7 @@ async fn run_claim(
                 return run_resume_finalization(
                     cfg,
                     services,
-                    _store,
+                    store,
                     _meta,
                     client,
                     claimed,
@@ -571,13 +574,14 @@ async fn run_claim(
         }
     }
 
-    // Code finalization: commit, push, PR, comment, close.
+    // Code finalization: commit, push, PR, comment, await review.
     if let Err(err) = run_code_finalize(
         &final_ctx,
         &worker_result,
         &runner,
         &archive_path,
         client.as_ref(),
+        store,
     )
     .await
     {
@@ -586,7 +590,7 @@ async fn run_claim(
         return handle_infra_or_retry(cfg, guard, &err, class).await;
     }
 
-    guard.finish_success().await?;
+    guard.finish_awaiting_review().await?;
     Ok(TickOutcome::Processed)
 }
 
@@ -766,8 +770,9 @@ async fn run_resume_finalization(
             persist_checkpoint(&conn, &ctx.run_id, Pushed, None, None, None)?;
             find_or_create_pr_and_finalize(&ctx, ctx.client.as_ref(), &worker_result).await?;
             persist_checkpoint(&conn, &ctx.run_id, PrCreated, None, None, None)?;
-            post_completion_and_close_and_finalize(&ctx, ctx.client.as_ref(), &worker_result)
-                .await?;
+            post_completion_only(&ctx, ctx.client.as_ref(), &worker_result).await?;
+            persist_checkpoint(&conn, &ctx.run_id, Commented, None, None, None)?;
+            persist_checkpoint(&conn, &ctx.run_id, AwaitingReview, None, None, None)?;
         }
         Committed => {
             persist_checkpoint(&conn, &ctx.run_id, Committed, None, None, None)?;
@@ -775,39 +780,35 @@ async fn run_resume_finalization(
             persist_checkpoint(&conn, &ctx.run_id, Pushed, None, None, None)?;
             find_or_create_pr_and_finalize(&ctx, ctx.client.as_ref(), &worker_result).await?;
             persist_checkpoint(&conn, &ctx.run_id, PrCreated, None, None, None)?;
-            post_completion_and_close_and_finalize(&ctx, ctx.client.as_ref(), &worker_result)
-                .await?;
+            post_completion_only(&ctx, ctx.client.as_ref(), &worker_result).await?;
+            persist_checkpoint(&conn, &ctx.run_id, Commented, None, None, None)?;
+            persist_checkpoint(&conn, &ctx.run_id, AwaitingReview, None, None, None)?;
         }
         Pushed => {
             persist_checkpoint(&conn, &ctx.run_id, Pushed, None, None, None)?;
             find_or_create_pr_and_finalize(&ctx, ctx.client.as_ref(), &worker_result).await?;
             persist_checkpoint(&conn, &ctx.run_id, PrCreated, None, None, None)?;
-            post_completion_and_close_and_finalize(&ctx, ctx.client.as_ref(), &worker_result)
-                .await?;
+            post_completion_only(&ctx, ctx.client.as_ref(), &worker_result).await?;
+            persist_checkpoint(&conn, &ctx.run_id, Commented, None, None, None)?;
+            persist_checkpoint(&conn, &ctx.run_id, AwaitingReview, None, None, None)?;
         }
         PrCreated => {
             persist_checkpoint(&conn, &ctx.run_id, PrCreated, None, None, None)?;
-            post_completion_and_close_and_finalize(&ctx, ctx.client.as_ref(), &worker_result)
-                .await?;
-        }
-        Commented | AwaitingReview | Done => {
-            // All stages complete; persist terminal checkpoints
+            post_completion_only(&ctx, ctx.client.as_ref(), &worker_result).await?;
             persist_checkpoint(&conn, &ctx.run_id, Commented, None, None, None)?;
             persist_checkpoint(&conn, &ctx.run_id, AwaitingReview, None, None, None)?;
-            persist_checkpoint(&conn, &ctx.run_id, Done, None, None, None)?;
+        }
+        Commented | AwaitingReview | Done => {
+            // The comment is already posted; no further action needed.
+            // Persist the AwaitingReview checkpoint (the poller will
+            // handle the terminal transition when the PR is merged).
+            persist_checkpoint(&conn, &ctx.run_id, Commented, None, None, None)?;
+            persist_checkpoint(&conn, &ctx.run_id, AwaitingReview, None, None, None)?;
         }
         InvestigationReady | InvestigationCommented => {
             // Pass through — investigation stages handled by separate path
         }
     }
-
-    // Terminal checkpoints
-    persist_checkpoint(&conn, &ctx.run_id, Commented, None, None, None)?;
-    persist_checkpoint(&conn, &ctx.run_id, AwaitingReview, None, None, None)?;
-    persist_checkpoint(&conn, &ctx.run_id, Done, None, None, None)?;
-
-    // Clean up
-    let _ = delete_checkpoints_for_run(&conn, &ctx.run_id);
 
     guard.finish_success().await?;
     Ok(TickOutcome::Processed)
@@ -819,6 +820,7 @@ async fn run_code_finalize(
     runner: &GitRunner,
     worker_result_path: &std::path::Path,
     client: &Client,
+    store: &StateStore,
 ) -> CaduceusResult<FinalizeOutput> {
     let conn = store::open_in(&ctx.config.state_dir)?;
 
@@ -855,7 +857,7 @@ async fn run_code_finalize(
     )?;
     find_or_create_pr_and_finalize(ctx, client, worker_result).await?;
 
-    // Stage 4: PrCreated — about to post comment / close
+    // Stage 4: PrCreated — about to post completion comment
     persist_checkpoint(
         &conn,
         &ctx.run_id,
@@ -864,7 +866,10 @@ async fn run_code_finalize(
         None,
         None,
     )?;
-    post_completion_and_close_and_finalize(ctx, client, worker_result).await?;
+
+    // Post the completion comment but do NOT close the issue.
+    // The issue stays open until human review merges the PR.
+    post_completion_only(ctx, client, worker_result).await?;
 
     // Stage 5: Commented — comment posted
     persist_checkpoint(
@@ -876,6 +881,10 @@ async fn run_code_finalize(
         None,
     )?;
 
+    // Transition queue entry to AwaitingReview so the polling
+    // loop can track the PR merge status.
+    store.complete_awaiting_review(&ctx.issue.key)?;
+
     // Stage 6: AwaitingReview — waiting for human merge
     persist_checkpoint(
         &conn,
@@ -886,24 +895,108 @@ async fn run_code_finalize(
         None,
     )?;
 
-    // Stage 7: Done — finalization complete
-    persist_checkpoint(
-        &conn,
-        &ctx.run_id,
-        crate::state::queue::FinalizationStage::Done,
-        None,
-        None,
-        None,
-    )?;
-
-    // Clean up checkpoints
-    let _ = delete_checkpoints_for_run(&conn, &ctx.run_id);
-
+    // Return WITHOUT Done checkpoint or close — the human
+    // review lifecycle handles the terminal transition.
     Ok(FinalizeOutput {
-        action: crate::finalize::FinalizeAction::Done,
+        action: crate::finalize::FinalizeAction::AwaitingReview,
         pr_url: None,
-        idempotency_observations: Vec::new(),
+        idempotency_observations: vec![
+            "awaiting_review".to_string(),
+            format!("issue={}", ctx.issue.key.display_key()),
+        ],
     })
+}
+
+// ---------------------------------------------------------------------------
+// Awaiting-review poller — checks PR merge status for entries in
+// AwaitingReview phase and applies transitions.
+// ---------------------------------------------------------------------------
+
+/// Scan the queue for entries in [`Phase::AwaitingReview`] and poll
+/// each entry's PR merge status. Applies transitions:
+///
+/// * PR merged → `Done` (via `store.complete`)
+/// * PR closed without merge → `NeedsAttention` (via `store.route_to_needs_attention`)
+/// * PR still open → no-op
+///
+/// The function is best-effort: a single failed poll does not block
+/// the rest of the scan. Per-entry errors are logged and collected.
+async fn poll_awaiting_review_entries(store: &StateStore, client: &Client) -> CaduceusResult<()> {
+    let snap = store.snapshot()?;
+    let awaiting: Vec<QueueEntry> = snap
+        .entries
+        .values()
+        .filter(|e| e.phase == Phase::AwaitingReview)
+        .filter(|e| {
+            // Only poll entries that have a finalization checkpoint
+            // with a PR number.
+            e.finalization.as_ref().and_then(|f| f.pr_number).is_some()
+        })
+        .cloned()
+        .collect();
+
+    for entry in &awaiting {
+        let key = &entry.key;
+        let pr_number = entry
+            .finalization
+            .as_ref()
+            .and_then(|f| f.pr_number)
+            .expect("filtered above");
+
+        match crate::github::merge_detect::poll_pr_merge_status(
+            client, &key.owner, &key.repo, pr_number,
+        )
+        .await
+        {
+            Ok(crate::github::merge_detect::MergeStatus::Merged { .. }) => {
+                info!(
+                issue = %key.display_key(),
+                pr = %pr_number,
+                "PR merged; transitioning to Done"
+                );
+                if let Err(err) = store.resolve_awaiting_review_as_done(key) {
+                    tracing::warn!(
+                    error = %err,
+                    issue = %key.display_key(),
+                    "failed to mark merged PR as Done"
+                    );
+                }
+            }
+            Ok(crate::github::merge_detect::MergeStatus::ClosedWithoutMerge) => {
+                info!(
+                issue = %key.display_key(),
+                pr = %pr_number,
+                "PR closed without merge; routing to NeedsAttention"
+                );
+                if let Err(err) = store.route_to_needs_attention(
+                    key,
+                    &format!("PR #{pr_number} was closed without merge — operator must inspect"),
+                ) {
+                    tracing::warn!(
+                    error = %err,
+                    issue = %key.display_key(),
+                    "failed to route closed PR to NeedsAttention"
+                    );
+                }
+            }
+            Ok(
+                crate::github::merge_detect::MergeStatus::StillOpen
+                | crate::github::merge_detect::MergeStatus::NotFound,
+            ) => {
+                // Still waiting for human review, or PR not found yet.
+                // No-op.
+            }
+            Err(err) => {
+                tracing::warn!(
+                error = %err,
+                issue = %key.display_key(),
+                "failed to poll PR merge status"
+                );
+            }
+        }
+    }
+
+    Ok(())
 }
 
 async fn poll_repo(
@@ -988,9 +1081,12 @@ fn outcome_for_class(class: FailureClass) -> TickOutcome {
 
 fn map_phase_to_outcome(phase: Phase) -> TickOutcome {
     match phase {
-        Phase::Queued | Phase::InProgress | Phase::Previewed | Phase::Done | Phase::Skipped => {
-            TickOutcome::Processed
-        }
+        Phase::Queued
+        | Phase::InProgress
+        | Phase::Previewed
+        | Phase::AwaitingReview
+        | Phase::Done
+        | Phase::Skipped => TickOutcome::Processed,
         Phase::Failed => TickOutcome::Failed,
         Phase::NeedsAttention => TickOutcome::Failed,
     }

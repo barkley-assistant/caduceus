@@ -1272,6 +1272,80 @@ pub async fn post_completion_and_close_and_finalize(
     })
 }
 
+/// Post the completion comment without closing the issue.
+///
+/// This is the non-terminal variant used by the human-review
+/// lifecycle (Task 4.3). The comment is posted idempotently
+/// (the marker check prevents double-posting), but the issue
+/// is left open so the operator can review and merge the PR.
+///
+/// 1. Validates the comment body through the public-voice rule.
+/// 2. Lists the issue's comments and looks for a marker
+///    matching the current `run_id`.
+/// 3. If absent, POSTs the comment.
+///
+/// Returns a [`FinalizeOutput`] with `action = Commented` and
+/// no close information.
+pub async fn post_completion_only(
+    ctx: &FinalizeContext,
+    client: &crate::github::Client,
+    worker_result: &WorkerResult,
+) -> CaduceusResult<FinalizeOutput> {
+    // 1. Validate the comment body.
+    let summary = &worker_result.summary;
+    crate::finalize::validate_comment(summary, &ctx.config)
+        .map_err(crate::finalize::terminal_from_voice)?;
+    let issue = &ctx.issue.key;
+    let owner = issue.owner.as_str();
+    let repo = issue.repo.as_str();
+    let number = issue.number;
+    let run_id = &ctx.run_id;
+
+    // 2. List existing comments and look for the marker.
+    let list_path = format!("/repos/{owner}/{repo}/issues/{number}/comments");
+    let resp = client
+        .get(&list_path, "application/vnd.github+json")
+        .await?;
+    if !matches!(resp.status, 200) {
+        return Err(CaduceusError::GitHubApi {
+            status: resp.status,
+            message: format!("list comments failed: {}", resp.status),
+        });
+    }
+    let comments: Vec<serde_json::Value> = serde_json::from_slice(&resp.body)
+        .map_err(|err| CaduceusError::Other(format!("malformed comments list: {err}")))?;
+    let marker_prefix = format!("{}{}", COMPLETION_MARKER_PREFIX, run_id);
+    let existing = comments.iter().any(|c| {
+        c.get("body")
+            .and_then(|b| b.as_str())
+            .map(|s| s.starts_with(&marker_prefix))
+            .unwrap_or(false)
+    });
+
+    // 3. If absent, post the completion comment.
+    let comment_posted = !existing;
+    if !existing {
+        let body = render_completion_comment(worker_result, run_id);
+        let body_bytes = serde_json::to_vec(&serde_json::json!({ "body": body }))
+            .map_err(|err| CaduceusError::Other(format!("serialize comment body: {err}")))?;
+        let resp = client
+            .post(&list_path, "application/vnd.github+json", &body_bytes)
+            .await?;
+        if !matches!(resp.status, 201) {
+            return Err(CaduceusError::GitHubApi {
+                status: resp.status,
+                message: format!("create comment failed: {}", resp.status),
+            });
+        }
+    }
+
+    Ok(FinalizeOutput {
+        action: FinalizeAction::Commented,
+        pr_url: None,
+        idempotency_observations: vec![format!("comment_posted={comment_posted}")],
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Reconcile helpers (Task 4.2 — FINAL-001)
 // ---------------------------------------------------------------------------
