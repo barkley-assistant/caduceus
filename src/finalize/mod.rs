@@ -1866,20 +1866,8 @@ pub fn build_pr_title(result: &WorkerResult, cfg: &Config) -> CaduceusResult<Str
     Ok(result.pull_request_title.clone())
 }
 
-/// Render the artifact section as a fenced-JSON block.
-///
-/// The output is the empty string when the worker emitted no
-/// artifacts. Otherwise the block is:
-/// ```text
-/// <caption>
-///
-/// ```fence
-/// <json>
-/// ```
-/// ```
-/// where `<fence>` is a backtick run whose length is one
-/// longer than the longest backtick run in the JSON. The
-/// caption lists the artifact count.
+/// Render the worker-emitted artifacts as a Markdown block, or
+/// return the empty string when there are no artifacts.
 fn render_artifacts(artifacts: &std::collections::BTreeMap<String, serde_json::Value>) -> String {
     if artifacts.is_empty() {
         return String::new();
@@ -1888,6 +1876,8 @@ fn render_artifacts(artifacts: &std::collections::BTreeMap<String, serde_json::V
     // Deterministic order: BTreeMap iterates in key order.
     let json_value = serde_json::json!(artifacts);
     json.push_str(&serde_json::to_string_pretty(&json_value).expect("serialize json"));
+    // The fence length is one greater than the longest backtick
+    // run in the JSON, so the artifact block can never close itself.
     let fence = dynamic_fence_length(&json);
     let mut fence_str = String::with_capacity(fence);
     for _ in 0..fence {
