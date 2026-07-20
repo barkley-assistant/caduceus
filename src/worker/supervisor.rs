@@ -63,8 +63,8 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command as TokioCommand};
 
-use crate::error::{CaduceusError, CaduceusResult};
-use crate::issue::IssueKey;
+use crate::github::issue::IssueKey;
+use crate::infra::error::{CaduceusError, CaduceusResult};
 
 // ---------------------------------------------------------------------------
 // Hidden command name
@@ -958,7 +958,7 @@ where
 #[allow(clippy::too_many_arguments)]
 pub async fn supervise(
     self_exe: &Path,
-    cfg: &crate::config::Config,
+    cfg: &crate::infra::config::Config,
     issue: &IssueKey,
     worktree: &Path,
     run_id: &str,
@@ -1023,7 +1023,7 @@ pub async fn supervise(
 #[allow(clippy::too_many_arguments)]
 async fn run_supervisor(
     self_exe: &Path,
-    cfg: &crate::config::Config,
+    cfg: &crate::infra::config::Config,
     issue: &IssueKey,
     worktree: &Path,
     run_id: &str,

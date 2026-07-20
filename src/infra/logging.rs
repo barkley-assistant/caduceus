@@ -34,7 +34,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::Layer;
 
-use crate::error::{CaduceusError, CaduceusResult};
+use crate::infra::error::{CaduceusError, CaduceusResult};
 
 /// Process-wide flag tracking whether [`init`] has run in this
 /// process. The flag is sticky for the life of the process: once

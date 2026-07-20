@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-use crate::error::{CaduceusError, CaduceusResult};
+use crate::infra::error::{CaduceusError, CaduceusResult};
 
 /// GitHub credential variable names that must never appear in the
 /// worker environment allowlist, even if the operator explicitly adds
@@ -1246,7 +1246,8 @@ pub fn is_valid_repo_slug(repo: &str) -> bool {
     if repo_name.contains('/') {
         return false;
     }
-    crate::issue::validate_owner(owner).is_ok() && crate::issue::validate_repo(repo_name).is_ok()
+    crate::github::issue::validate_owner(owner).is_ok()
+        && crate::github::issue::validate_repo(repo_name).is_ok()
 }
 
 fn validate_worker_command(cmd: &[String], errors: &mut Vec<String>) {

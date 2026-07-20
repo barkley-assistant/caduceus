@@ -128,7 +128,7 @@ fn extract_bridge_required_env_vars(source: &str) -> BTreeSet<String> {
     names
 }
 
-/// Extract every `Config` struct field name from `src/config.rs`.
+/// Extract every `Config` struct field name from `src/infra/config.rs`.
 fn extract_daemon_config_fields(source: &str) -> BTreeSet<String> {
     let mut fields = BTreeSet::new();
     let mut in_struct = false;
@@ -174,7 +174,7 @@ fn extract_daemon_config_fields(source: &str) -> BTreeSet<String> {
 /// daemon's tests assert them directly; this cross-doc test only
 /// requires that the canonical fixture covers the contract.
 fn extract_daemon_worker_env_names() -> BTreeSet<String> {
-    let source = read_repo_file("src/worker.rs");
+    let source = read_repo_file("src/worker/worker_contract.rs");
     let mut names = BTreeSet::new();
     for line in source.lines() {
         let trimmed = line.trim_start();
@@ -241,7 +241,7 @@ fn extract_python_manifest_field_allowlist() -> BTreeSet<String> {
 
 #[test]
 fn daemon_config_struct_matches_canonical_fixture() {
-    let source = read_repo_file("src/config.rs");
+    let source = read_repo_file("src/infra/config.rs");
     let struct_fields = extract_daemon_config_fields(&source);
 
     let mut missing: Vec<&str> = Vec::new();
@@ -370,7 +370,7 @@ fn bridge_does_not_write_state_heartbeats_or_results() {
 
 #[test]
 fn worker_default_allowlist_matches_canonical_constants() {
-    let source = read_repo_file("src/worker.rs");
+    let source = read_repo_file("src/worker/worker_contract.rs");
     for name in DEFAULT_ALLOWLIST_EXACT_ENV_NAMES {
         let needle = format!("\"{name}\"");
         assert!(
