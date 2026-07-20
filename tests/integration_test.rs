@@ -474,10 +474,10 @@ async fn scenario_two_concurrent_binaries_only_one_makes_http_calls() {
     let worker = WorkerScript::write(&state.state_dir, "#!/bin/sh\nexit 0\n");
     state.write_config(&worker, 60, false);
 
-    // Hold a daemon lock in the shared state dir so the
+    // Hold a scheduler lock in the shared state dir so the
     // second daemon short-circuits to `SkippedConcurrent`
     // without making any HTTP calls.
-    let lock_path = state.state_dir.join("daemon.lock");
+    let lock_path = state.state_dir.join("scheduler.lock");
     {
         let lock_file = fs::OpenOptions::new()
             .create(true)
