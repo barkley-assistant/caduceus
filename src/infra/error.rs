@@ -143,6 +143,40 @@ pub enum CaduceusError {
         actual: String,
     },
 
+    /// Scheduler leadership was contended. The context is a stable
+    /// operation label (e.g. ``"acquire"``); stderr carries the
+    /// captured error detail.
+    #[error("scheduler leadership contended: {context}: {stderr}")]
+    LeadershipContended {
+        context: &'static str,
+        stderr: String,
+    },
+
+    /// Lease operation failed because the lease is not held, is
+    /// expired, or the caller is not the current owner. The context
+    /// is a stable label (e.g. ``"renew"``, ``"release"``); stderr
+    /// carries the detail.
+    #[error("lease {context} failure: {stderr}")]
+    LeaseStale {
+        context: &'static str,
+        stderr: String,
+    },
+
+    /// A mutation was attempted with a fencing token that is lower
+    /// than the lease's current token, indicating the caller is a
+    /// recovered prior holder whose lease has expired but whose
+    /// cached token is stale. The error carries both the stale and
+    /// current tokens for diagnostics.
+    #[error(
+        "fencing token regression for {issue_key}: stale token \
+         {stale_token} < current token {current_token}"
+    )]
+    FencingTokenRegression {
+        issue_key: String,
+        stale_token: u64,
+        current_token: u64,
+    },
+
     #[error("operation cancelled")]
     Cancelled,
 
@@ -230,6 +264,24 @@ impl fmt::Debug for CaduceusError {
             } => format!(
                 "ConflictingMarker {{ stage: {:?}, expected: {:?}, actual: {:?} }}",
                 stage, expected, actual
+            ),
+            CaduceusError::LeadershipContended { context, stderr } => format!(
+                "LeadershipContended {{ context: {:?}, stderr: {} }}",
+                context,
+                scrub(stderr)
+            ),
+            CaduceusError::LeaseStale { context, stderr } => format!(
+                "LeaseStale {{ context: {:?}, stderr: {} }}",
+                context,
+                scrub(stderr)
+            ),
+            CaduceusError::FencingTokenRegression {
+                issue_key,
+                stale_token,
+                current_token,
+            } => format!(
+                "FencingTokenRegression {{ issue_key: {:?}, stale_token: {}, current_token: {} }}",
+                issue_key, stale_token, current_token
             ),
             CaduceusError::Cancelled => "Cancelled".to_string(),
             CaduceusError::Other(s) => format!("Other({})", scrub(s)),

@@ -54,10 +54,11 @@ use crate::github::{Client, RateLimitInfo, Response};
 use crate::infra::config::Config;
 use crate::infra::error::{CaduceusError, CaduceusResult};
 use crate::logging;
+use crate::scheduler::LeaderToken;
 use crate::signals;
 use crate::state::checkpoints::{last_checkpoint_for_run, persist_checkpoint};
 use crate::state::meta::{CadenceDecision, CadenceGate, MetaStore, TickOutcome};
-use crate::state::queue::{ClaimedEntry, DaemonLock, Phase, QueueEntry, StateStore, TicketType};
+use crate::state::queue::{ClaimedEntry, Phase, QueueEntry, StateStore, TicketType};
 use crate::state::store;
 use crate::worker::context::{build_context, encode_context, BuildInputs};
 use crate::worker::prompt::{build_prompt, write_prompt};
@@ -148,19 +149,27 @@ pub async fn tick(
 ) -> CaduceusResult<TickOutcome> {
     let state_dir = cfg.state_dir.clone();
 
-    // 1. Try the whole-tick lock.
-    let _daemon_lock = match DaemonLock::try_acquire(&state_dir)? {
-        Some(lock) => lock,
+    // 1. Check scheduler leadership. If another tick holds the
+    //    scheduler lock, skip (concurrent). Unlike the old
+    //    whole-tick DaemonLock, the scheduler lock is held only
+    //    during short state-mutation transactions, not the
+    //    entire tick.
+    let _leader_guard = match LeaderToken::try_acquire(&state_dir)? {
+        Some(token) => token,
         None => {
-            info!("concurrent tick holds daemon.lock; skipping");
+            info!("concurrent tick holds scheduler lock; skipping");
             return Ok(TickOutcome::SkippedConcurrent);
         }
     };
+    // Drop the leader token immediately — we only checked for
+    // contention. State-mutation sections below acquire the
+    // lock again via `LeaderToken::with_lock`.
+    drop(_leader_guard);
 
     // 2. Open the metadata + state stores and enforce the
     //    rate-limit and cadence gates.
-    let meta = MetaStore::open(&state_dir)?;
-    let gate = CadenceGate::open(&state_dir)?;
+    let meta = LeaderToken::with_lock(&state_dir, || MetaStore::open(&state_dir))?;
+    let gate = LeaderToken::with_lock(&state_dir, || CadenceGate::open(&state_dir))?;
     let now = services.clock.now();
     gate.record_tick_started(now)?;
     let precheck = gate.precheck(now, cfg.poll_interval_seconds);
@@ -183,7 +192,9 @@ pub async fn tick(
     }
 
     // 3. Reap stale claims / abandoned worktrees.
-    let store = Arc::new(StateStore::open(&state_dir)?);
+    let store = Arc::new(LeaderToken::with_lock(&state_dir, || {
+        StateStore::open(&state_dir)
+    })?);
     let _ = crate::state::queue::reap_stale_claims(
         &state_dir,
         services.clock.now(),
@@ -254,19 +265,22 @@ pub async fn tick(
 
     // 6. Acquire the next eligible entry.
     let run_id_candidate = Ulid::new().to_string();
-    let claimed =
-        match store.acquire_next(&run_id_candidate, std::process::id(), services.clock.now())? {
-            Some(c) => c,
-            None => {
-                let outcome = if any_304 && !any_200 {
-                    TickOutcome::Idle304
-                } else {
-                    TickOutcome::IdleEmpty
-                };
-                finish_tick_outcome(&gate, &meta, now, outcome, None, None)?;
-                return Ok(outcome);
-            }
-        };
+    let store_clone = Arc::clone(&store);
+    let clock_now = services.clock.now();
+    let claimed = match LeaderToken::with_lock(&state_dir, || {
+        store_clone.acquire_next(&run_id_candidate, std::process::id(), clock_now)
+    })? {
+        Some(c) => c,
+        None => {
+            let outcome = if any_304 && !any_200 {
+                TickOutcome::Idle304
+            } else {
+                TickOutcome::IdleEmpty
+            };
+            finish_tick_outcome(&gate, &meta, now, outcome, None, None)?;
+            return Ok(outcome);
+        }
+    };
 
     // 7. Build the guard and run the work, finalization, and
     //    teardown phases inside one explicit cleanup scope.

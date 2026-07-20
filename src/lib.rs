@@ -29,6 +29,7 @@ pub mod finalize;
 pub mod github;
 pub mod infra;
 pub mod runtime;
+pub mod scheduler;
 pub mod state;
 pub mod worker;
 pub mod worktree;

@@ -33,7 +33,12 @@ use crate::infra::error::{CaduceusError, CaduceusResult};
 /// - `checkpoints` table gains `operation_id TEXT` and
 ///   `remote_marker TEXT` columns for durable operation IDs and
 ///   remote reconciliation markers. Existing rows get NULL.
-pub const SCHEMA_VERSION: i64 = 2;
+///
+/// ## v3 (Task 5.1)
+///
+/// - `leases` table for per-issue fenced leases with fencing
+///   tokens, owner tracking, and expiry.
+pub const SCHEMA_VERSION: i64 = 3;
 
 /// Name of the SQLite database file inside the state directory.
 pub const DB_FILENAME: &str = "state.db";
@@ -93,6 +98,14 @@ CREATE TABLE IF NOT EXISTS circuit_breakers (
     last_failure_at TEXT,
     opened_at      TEXT,
     FOREIGN KEY (issue_key) REFERENCES queue_entries(issue_key)
+);
+
+CREATE TABLE IF NOT EXISTS leases (
+    issue_key     TEXT PRIMARY KEY,
+    owner_id      TEXT NOT NULL,
+    fencing_token INTEGER NOT NULL,
+    expires_at    INTEGER NOT NULL,
+    state         TEXT NOT NULL CHECK(state IN ('held', 'released', 'expired'))
 );
 ";
 
@@ -163,6 +176,7 @@ pub fn open(path: &Path) -> CaduceusResult<Connection> {
         if existing_version < SCHEMA_VERSION {
             // Run migration from existing_version to SCHEMA_VERSION.
             migrate_v1_to_v2(&conn, &db_path, existing_version)?;
+            migrate_v2_to_v3(&conn, &db_path, existing_version)?;
             apply_schema(&conn, &db_path)?;
             record_version(&conn, &db_path)?;
         }
@@ -258,6 +272,24 @@ fn migrate_v1_to_v2(conn: &Connection, db_path: &Path, from_version: i64) -> Cad
 }
 
 // ---------------------------------------------------------------------------
+// Migration: v2 → v3
+// ---------------------------------------------------------------------------
+
+/// Migrate from schema v2 to v3. The `leases` table is created by
+/// `apply_schema`, so this is a no-op migration that exists for
+/// the migration wiring convention.
+fn migrate_v2_to_v3(conn: &Connection, db_path: &Path, from_version: i64) -> CaduceusResult<()> {
+    if from_version >= 3 {
+        return Ok(());
+    }
+    // The `leases` table is created by `apply_schema` via `SCHEMA_SQL`.
+    // No ALTER TABLE statements are needed for v2→v3.
+    let _ = conn;
+    let _ = db_path;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Convenience accessors
 // ---------------------------------------------------------------------------
 
@@ -340,6 +372,7 @@ mod tests {
         assert!(tables.contains(&"claims".to_string()));
         assert!(tables.contains(&"checkpoints".to_string()));
         assert!(tables.contains(&"circuit_breakers".to_string()));
+        assert!(tables.contains(&"leases".to_string()));
         assert!(tables.contains(&"schema_version".to_string()));
 
         conn.close().expect("close");
@@ -425,6 +458,50 @@ mod tests {
             assert_eq!(version, SCHEMA_VERSION);
             conn.close().expect("close");
         }
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn migrate_v2_to_v3_adds_leases_table() {
+        // Create a v2 database by opening with SCHEMA_VERSION=2,
+        // then verify that a v3 open adds the leases table.
+        let path = db_path();
+        {
+            // Force SCHEMA_VERSION to 2 by creating the database
+            // without the leases table.
+            let conn = Connection::open(&path).expect("open raw");
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL, migrated_at TEXT NOT NULL);
+                 INSERT INTO schema_version (version, migrated_at) VALUES (2, '2026-01-01T00:00:00Z');",
+            )
+            .expect("init v2 schema");
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS queue_entries (issue_key TEXT PRIMARY KEY, phase TEXT NOT NULL, ticket_type TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, last_run_id TEXT, next_attempt_at TEXT, finalization TEXT, queued_at TEXT NOT NULL, updated_at TEXT NOT NULL, generation INTEGER NOT NULL DEFAULT 1);
+                 CREATE TABLE IF NOT EXISTS state_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 CREATE TABLE IF NOT EXISTS claims (claim_id TEXT PRIMARY KEY, issue_key TEXT NOT NULL, worker_pid INTEGER, token TEXT NOT NULL, claimed_at TEXT NOT NULL, expires_at TEXT NOT NULL);
+                 CREATE TABLE IF NOT EXISTS checkpoints (run_id TEXT NOT NULL, stage TEXT NOT NULL, checkpoint_data TEXT, created_at TEXT NOT NULL, operation_id TEXT, remote_marker TEXT, PRIMARY KEY (run_id, stage));
+                 CREATE TABLE IF NOT EXISTS circuit_breakers (issue_key TEXT PRIMARY KEY, failure_count INTEGER NOT NULL DEFAULT 0, last_failure_at TEXT, opened_at TEXT);",
+            )
+            .expect("create v2 tables");
+            conn.close().expect("close");
+        }
+        // Re-open with current SCHEMA_VERSION (3) — the migration
+        // should add the leases table.
+        let conn = open(&path).expect("open v3");
+
+        let tables: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            .expect("prepare")
+            .query_map([], |row| row.get(0))
+            .expect("query")
+            .filter_map(|r| r.ok())
+            .collect();
+
+        assert!(
+            tables.contains(&"leases".to_string()),
+            "leases table must exist after v2→v3 migration; tables: {tables:?}"
+        );
+        conn.close().expect("close");
         let _ = fs::remove_file(&path);
     }
 }
