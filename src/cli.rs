@@ -390,7 +390,7 @@ fn run_queue_reset(
 /// it back to `Queued` if it was in a terminal phase.
 fn run_queue_reprocess(issue: &str, dry_run: bool) -> CaduceusResult<()> {
     use caduceus::issue::IssueKey;
-    use caduceus::queue::{QueueEntry, StateStore};
+    use caduceus::queue::StateStore;
 
     let config = match std::env::var_os("CADUCEUS_CONFIG") {
         Some(path) => Config::load_from(std::path::Path::new(&path))?,
@@ -400,7 +400,7 @@ fn run_queue_reprocess(issue: &str, dry_run: bool) -> CaduceusResult<()> {
         .map_err(|e| CaduceusError::Config(format!("invalid issue key: {e}")))?;
     let state_dir = &config.state_dir;
     let store = StateStore::open(state_dir)?;
-    let mut snap = store.snapshot()?;
+    let snap = store.snapshot()?;
     let entry = snap.entry(&key).ok_or_else(|| CaduceusError::Queue {
         context: "reprocess",
         stderr: format!("entry {} not found in queue", key.display_key()),
