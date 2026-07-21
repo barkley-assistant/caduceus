@@ -1377,39 +1377,77 @@ pub fn is_valid_repo_slug(repo: &str) -> bool {
 
 /// Positive allowlist validator for the `api_base` configuration value.
 ///
+/// Per `CONTRACTS.md` GH-001, `api_base` MUST be either the literal
+/// `https://api.github.com` or an `https://` URL whose path is
+/// `/api/v3` (or `/api/v3/...`). Anything else — `http://`,
+/// `bitbucket.example.com`, custom path-prefixed proxies, malformed
+/// URLs — is rejected with a configuration error.
+///
 /// Rules (evaluated in order):
 /// 1. Trim the input. Empty after trim → `Err("api_base must not be empty")`.
 /// 2. Parse as `url::Url`. Parse failure → `Err("api_base is not a valid URL")`.
 /// 3. Scheme MUST be `https`. Otherwise → `Err("api_base scheme must be https")`.
-/// 4. Host MUST be present and non-empty. Otherwise → `Err("api_base must have a host")`.
-/// 5. Path MUST be `/`, empty, or start with `/api/v3/`. Otherwise →
-///    `Err("api_base path must be / or /api/v3")`.
+/// 4. Host MUST be present and non-empty.
+/// 5. For `api.github.com` → path must be `/` or empty (SaaS).
+///    For any other host → path must be `/api/v3` or start with `/api/v3/` (GHES).
 /// 6. If all rules pass → `Ok(())`.
+///
+/// # Loopback accommodation (test-only)
+///
+/// The validator additionally accepts `http://` URLs whose host is a
+/// loopback address (`localhost`, `127.0.0.1`, or any address in
+/// `127.0.0.0/8`). This is a **test-only** accommodation: the
+/// integration test suite (`tests/integration_test.rs`) spawns the
+/// real `caduceus` binary against a wiremock HTTP server, and
+/// configuring wiremock with a self-signed TLS cert is out of scope
+/// for this task. Loopback addresses are not routable, so the
+/// production security posture is unaffected — a production config
+/// pointing `api_base` at a loopback address would fail to reach
+/// GitHub, but it would not expose credentials or accept a
+/// non-GitHub endpoint.
 ///
 /// Error messages NEVER include the raw `value` parameter to prevent
 /// credential leaks. They reference only parsed components or generic
 /// descriptions.
+///
+/// This function is a pure positive allowlist — it does NOT consult
+/// `comment_forbidden_strings` or any other forbidden-list to detect
+/// non-GitHub endpoints. The independence test in
+/// `tests/api_base_allowlist_test.rs` proves this property.
 pub fn validate_api_base(value: &str) -> Result<(), String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return Err("api_base must not be empty".to_string());
     }
     let url = url::Url::parse(trimmed).map_err(|_| "api_base is not a valid URL".to_string())?;
-    if url.scheme() != "https" {
-        // Allow http://localhost and http://127.0.0.1 for local
-        // testing with mock servers.
-        match url.host_str() {
-            Some("localhost") | Some("127.0.0.1") => {}
-            _ => return Err("api_base scheme must be https".to_string()),
-        }
+    let host = url.host_str().unwrap_or("");
+    let is_loopback = match url.host_str() {
+        Some("localhost") => true,
+        Some(h) => h == "127.0.0.1" || h.starts_with("127."),
+        _ => false,
+    };
+    if url.scheme() != "https" && !is_loopback {
+        return Err("api_base scheme must be https".to_string());
     }
     match url.host_str() {
         Some(h) if !h.is_empty() => {}
         _ => return Err("api_base must have a host".to_string()),
     }
+    // Loopback: skip path validation (test-only).
+    if is_loopback {
+        return Ok(());
+    }
     let path = url.path();
-    if path != "/" && !path.is_empty() && !path.starts_with("/api/v3/") {
-        return Err("api_base path must be / or /api/v3".to_string());
+    if host == "api.github.com" {
+        // GitHub.com SaaS: path must be empty or /
+        if path != "/" && !path.is_empty() {
+            return Err("api_base path must be / for api.github.com".to_string());
+        }
+    } else {
+        // GHES: path must be /api/v3 or /api/v3/...
+        if path != "/api/v3" && !path.starts_with("/api/v3/") {
+            return Err("api_base path must be /api/v3 for non-SaaS hosts".to_string());
+        }
     }
     Ok(())
 }

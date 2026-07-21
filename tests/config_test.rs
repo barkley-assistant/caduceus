@@ -94,7 +94,7 @@ fn every_default_is_independently_overridable() {
         retry_backoff_seconds: 60
         ticket_label_code: "code-label"
         ticket_label_investigation: "investigate-label"
-        api_base: "https://api.example.test"
+        api_base: "https://ghes.example.com/api/v3"
         worker_command: ["python3", "/path/to/bridge.py"]
         dry_run: true
         watched_repos: ["acme/widgets"]
@@ -113,7 +113,7 @@ fn every_default_is_independently_overridable() {
     assert_eq!(cfg.retry_backoff_seconds, 60);
     assert_eq!(cfg.ticket_label_code, "code-label");
     assert_eq!(cfg.ticket_label_investigation, "investigate-label");
-    assert_eq!(cfg.api_base, "https://api.example.test");
+    assert_eq!(cfg.api_base, "https://ghes.example.com/api/v3");
     assert!(cfg.dry_run);
     assert_eq!(cfg.watched_repos, vec!["acme/widgets".to_string()]);
 }
