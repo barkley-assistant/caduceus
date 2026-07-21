@@ -257,6 +257,61 @@ pub enum CaduceusError {
     #[error("OCI execution is not implemented yet (Task 6.2)")]
     OciNotImplementedYet,
 
+    /// The configured OCI CLI binary was not found in PATH.
+    #[error("OCI CLI not found: {cli}")]
+    OciCliNotFound { cli: String },
+
+    /// The OCI engine (Docker/Podman daemon) is not reachable.
+    #[error("OCI engine unavailable: {detail}")]
+    OciEngineUnavailable { detail: String },
+
+    /// Image pull failed.
+    #[error("OCI pull failed for {image}: {stderr}")]
+    OciPullFailed { image: String, stderr: String },
+
+    /// Container create step failed.
+    #[error("OCI create failed: {context}: {stderr}")]
+    OciCreateFailed {
+        context: &'static str,
+        stderr: String,
+    },
+
+    /// Container start step failed.
+    #[error("OCI start failed: {context}: {stderr}")]
+    OciStartFailed {
+        context: &'static str,
+        stderr: String,
+    },
+
+    /// Container wait step failed.
+    #[error("OCI wait failed: {context}: {stderr}")]
+    OciWaitFailed {
+        context: &'static str,
+        stderr: String,
+    },
+
+    /// Container stop step failed.
+    #[error("OCI stop failed: {context}: {stderr}")]
+    OciStopFailed {
+        context: &'static str,
+        stderr: String,
+    },
+
+    /// Container remove step failed.
+    #[error("OCI remove failed: {context}: {stderr}")]
+    OciRemoveFailed {
+        context: &'static str,
+        stderr: String,
+    },
+
+    /// A mount path not in the declared allow-list was requested.
+    #[error("OCI undeclared mount: {path}")]
+    OciUndeclaredMount { path: String },
+
+    /// A potential secret leak was detected in OCI output.
+    #[error("OCI secret leak suspected at {path}")]
+    OciSecretLeakSuspected { path: String },
+
     /// Trusted-host execution was selected but the operator has not
     /// explicitly acknowledged reduced containment. This fires at
     /// `Config::load` BEFORE any subprocess is spawned, so a daemon
@@ -421,6 +476,58 @@ impl fmt::Debug for CaduceusError {
                 path, expected, observed
             ),
             CaduceusError::OciNotImplementedYet => "OciNotImplementedYet".to_string(),
+  CaduceusError::OciCliNotFound { cli } => {
+  format!("OciCliNotFound {{ cli: {:?} }}", cli)
+  }
+  CaduceusError::OciEngineUnavailable { detail } => {
+  format!("OciEngineUnavailable {{ detail: {} }}", scrub(detail))
+  }
+  CaduceusError::OciPullFailed { image, stderr } => format!(
+  "OciPullFailed {{ image: {:?}, stderr: {} }}",
+  image,
+  scrub(stderr)
+  ),
+  CaduceusError::OciCreateFailed { context, stderr } => {
+  format!(
+  "OciCreateFailed {{ context: {:?}, stderr: {} }}",
+  context,
+  scrub(stderr)
+  )
+  }
+  CaduceusError::OciStartFailed { context, stderr } => {
+  format!(
+  "OciStartFailed {{ context: {:?}, stderr: {} }}",
+  context,
+  scrub(stderr)
+  )
+  }
+  CaduceusError::OciWaitFailed { context, stderr } => {
+  format!(
+  "OciWaitFailed {{ context: {:?}, stderr: {} }}",
+  context,
+  scrub(stderr)
+  )
+  }
+  CaduceusError::OciStopFailed { context, stderr } => {
+  format!(
+  "OciStopFailed {{ context: {:?}, stderr: {} }}",
+  context,
+  scrub(stderr)
+  )
+  }
+  CaduceusError::OciRemoveFailed { context, stderr } => {
+  format!(
+  "OciRemoveFailed {{ context: {:?}, stderr: {} }}",
+  context,
+  scrub(stderr)
+  )
+  }
+  CaduceusError::OciUndeclaredMount { path } => {
+  format!("OciUndeclaredMount {{ path: {:?} }}", path)
+  }
+  CaduceusError::OciSecretLeakSuspected { path } => {
+  format!("OciSecretLeakSuspected {{ path: {:?} }}", path)
+  }
             CaduceusError::ReducedContainmentNotAcknowledged => {
                 "ReducedContainmentNotAcknowledged".to_string()
             }

@@ -44,7 +44,13 @@ use crate::infra::error::{CaduceusError, CaduceusResult};
 /// - `circuit_state` table replaces dead `circuit_breakers` table.
 ///   Keyed by `(scope, scope_id)` for per-provider and
 ///   per-repository circuit state.
-pub const SCHEMA_VERSION: i64 = 4;
+///
+/// ## v5 (Task 6.2)
+///
+/// - `oci_runs` table for per-container lifecycle state tracking.
+///   Keyed by `run_id` with indices on `container_id`, `daemon_id`,
+///   and `state`.
+pub const SCHEMA_VERSION: i64 = 5;
 
 /// Name of the SQLite database file inside the state directory.
 pub const DB_FILENAME: &str = "state.db";
@@ -110,12 +116,28 @@ CREATE TABLE IF NOT EXISTS circuit_state (
 );
 
 CREATE TABLE IF NOT EXISTS leases (
-    issue_key     TEXT PRIMARY KEY,
-    owner_id      TEXT NOT NULL,
-    fencing_token INTEGER NOT NULL,
-    expires_at    INTEGER NOT NULL,
-    state         TEXT NOT NULL CHECK(state IN ('held', 'released', 'expired'))
+  issue_key  TEXT PRIMARY KEY,
+  owner_id  TEXT NOT NULL,
+  fencing_token INTEGER NOT NULL,
+  expires_at  INTEGER NOT NULL,
+  state  TEXT NOT NULL CHECK(state IN ('held', 'released', 'expired'))
 );
+
+CREATE TABLE IF NOT EXISTS oci_runs (
+  run_id  TEXT PRIMARY KEY,
+  container_id  TEXT,
+  state  TEXT NOT NULL,
+  engine  TEXT NOT NULL,
+  created_at  TEXT NOT NULL,
+  updated_at  TEXT NOT NULL,
+  daemon_id TEXT NOT NULL,
+  issue_id  TEXT NOT NULL,
+  worker_command_sha256 TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_oci_runs_container_id ON oci_runs(container_id);
+CREATE INDEX IF NOT EXISTS idx_oci_runs_daemon_id ON oci_runs(daemon_id);
+CREATE INDEX IF NOT EXISTS idx_oci_runs_state ON oci_runs(state);
 ";
 
 // ---------------------------------------------------------------------------
@@ -187,6 +209,7 @@ pub fn open(path: &Path) -> CaduceusResult<Connection> {
             migrate_v1_to_v2(&conn, &db_path, existing_version)?;
             migrate_v2_to_v3(&conn, &db_path, existing_version)?;
             migrate_v3_to_v4(&conn, &db_path, existing_version)?;
+            migrate_v4_to_v5(&conn, &db_path, existing_version)?;
             apply_schema(&conn, &db_path)?;
             record_version(&conn, &db_path)?;
         }
@@ -318,6 +341,24 @@ fn migrate_v3_to_v4(conn: &Connection, db_path: &Path, from_version: i64) -> Cad
 }
 
 // ---------------------------------------------------------------------------
+// Migration: v4 → v5
+// ---------------------------------------------------------------------------
+
+/// Migrate from schema v4 to v5. The `oci_runs` table is created by
+/// `apply_schema`, so this is a no-op migration that exists for the
+/// migration wiring convention.
+fn migrate_v4_to_v5(conn: &Connection, db_path: &Path, from_version: i64) -> CaduceusResult<()> {
+    if from_version >= 5 {
+        return Ok(());
+    }
+    // The `oci_runs` table is created by `apply_schema` via `SCHEMA_SQL`.
+    // No ALTER TABLE statements are needed for v4→v5.
+    let _ = conn;
+    let _ = db_path;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Convenience accessors
 // ---------------------------------------------------------------------------
 
@@ -401,6 +442,7 @@ mod tests {
         assert!(tables.contains(&"checkpoints".to_string()));
         assert!(tables.contains(&"circuit_state".to_string()));
         assert!(tables.contains(&"leases".to_string()));
+        assert!(tables.contains(&"oci_runs".to_string()));
         assert!(tables.contains(&"schema_version".to_string()));
 
         conn.close().expect("close");

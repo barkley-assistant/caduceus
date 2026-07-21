@@ -447,6 +447,16 @@ pub fn classify_error(err: &CaduceusError) -> FailureClass {
         // orchestrator treats them as infrastructure so they do
         // not count against the worker retry budget.
         CaduceusError::OciNotImplementedYet => FailureClass::Infrastructure,
+        CaduceusError::OciCliNotFound { .. } => FailureClass::Infrastructure,
+        CaduceusError::OciEngineUnavailable { .. } => FailureClass::Infrastructure,
+        CaduceusError::OciPullFailed { .. } => FailureClass::Infrastructure,
+        CaduceusError::OciCreateFailed { .. } => FailureClass::Infrastructure,
+        CaduceusError::OciStartFailed { .. } => FailureClass::Infrastructure,
+        CaduceusError::OciWaitFailed { .. } => FailureClass::Infrastructure,
+        CaduceusError::OciStopFailed { .. } => FailureClass::Infrastructure,
+        CaduceusError::OciRemoveFailed { .. } => FailureClass::Infrastructure,
+        CaduceusError::OciUndeclaredMount { .. } => FailureClass::Worker,
+        CaduceusError::OciSecretLeakSuspected { .. } => FailureClass::Infrastructure,
         CaduceusError::ReducedContainmentNotAcknowledged => FailureClass::Infrastructure,
 
         // Generic Other — content / schema / public-voice / worker
@@ -1023,7 +1033,7 @@ mod inline_tests {
         // Every CaduceusError variant is classified. If a new
         // variant is added without a `classify_error` arm,
         // this match will fail to compile.
-        let variants: [CaduceusError; 28] = [
+        let variants: [CaduceusError; 39] = [
             CaduceusError::Config("x".into()),
             CaduceusError::Io(std::io::Error::other("x")),
             CaduceusError::Json(serde_json::from_str::<u8>("not-a-number").unwrap_err()),
@@ -1123,6 +1133,43 @@ mod inline_tests {
                 path: PathBuf::from("/tmp/x"),
                 expected: 0o700,
                 observed: 0o755,
+            },
+            CaduceusError::OciNotImplementedYet,
+            CaduceusError::OciCliNotFound {
+                cli: "docker".into(),
+            },
+            CaduceusError::OciEngineUnavailable {
+                detail: "Cannot connect".into(),
+            },
+            CaduceusError::OciPullFailed {
+                image: "img".into(),
+                stderr: "pull failed".into(),
+            },
+            CaduceusError::OciCreateFailed {
+                context: "create",
+                stderr: "err".into(),
+            },
+            CaduceusError::OciStartFailed {
+                context: "start",
+                stderr: "err".into(),
+            },
+            CaduceusError::OciWaitFailed {
+                context: "wait",
+                stderr: "err".into(),
+            },
+            CaduceusError::OciStopFailed {
+                context: "stop",
+                stderr: "err".into(),
+            },
+            CaduceusError::OciRemoveFailed {
+                context: "remove",
+                stderr: "err".into(),
+            },
+            CaduceusError::OciUndeclaredMount {
+                path: "/tmp/x".into(),
+            },
+            CaduceusError::OciSecretLeakSuspected {
+                path: "/tmp/x".into(),
             },
         ];
         for v in &variants {

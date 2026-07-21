@@ -77,6 +77,9 @@ fn oci_loads_cleanly() {
         state_dir: Some(tmp.path().to_path_buf()),
         executor_mode: Some(ExecutorKind::Oci),
         reduced_containment_acknowledged: Some(true),
+        oci_image_digest: Some(
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+        ),
         ..Default::default()
     };
     let cfg = Config::from_raw(raw, &ctx(tmp.path())).expect("Oci must load");

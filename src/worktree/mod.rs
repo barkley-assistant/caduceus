@@ -2475,6 +2475,15 @@ impl MinimalConfig for Config {
             repo_storage_root: PathBuf::from("/tmp/repos"),
             executor_mode: crate::executor::ExecutorKind::TrustedHost,
             reduced_containment_acknowledged: true,
+            oci_cli: PathBuf::from("docker"),
+            oci_image_digest:
+                "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                    .to_string(),
+            oci_pull_policy: crate::infra::config::OciPullPolicy::Never,
+            oci_stop_timeout_seconds: crate::infra::config::DEFAULT_OCI_STOP_TIMEOUT_SECONDS,
+            oci_kill_timeout_seconds: crate::infra::config::DEFAULT_OCI_KILL_TIMEOUT_SECONDS,
+            oci_reconcile_timeout_seconds:
+                crate::infra::config::DEFAULT_OCI_RECONCILE_TIMEOUT_SECONDS,
         }
     }
 }
