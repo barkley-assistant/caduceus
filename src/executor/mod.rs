@@ -35,6 +35,7 @@ use self::trusted_host::TrustedHostExecutor;
 
 pub mod oci;
 pub mod oci_args;
+pub mod secret_transport;
 pub mod trusted_host;
 
 // ---------------------------------------------------------------------------

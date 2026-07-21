@@ -135,3 +135,8 @@ edition = "2021"
 name = "oci_args_test"
 path = "tests/executor/oci_args_test.rs"
 edition = "2021"
+
+[[test]]
+name = "oci_secret_transport_test"
+path = "tests/executor/oci_secret_transport_test.rs"
+edition = "2021"
