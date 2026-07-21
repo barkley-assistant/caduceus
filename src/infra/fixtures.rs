@@ -29,6 +29,7 @@ pub const CANONICAL_CONFIG_KEYS: &[&str] = &[
     "api_base",
     "comment_forbidden_strings",
     "comment_ignore_patterns",
+    "discovery_max_pages",
     "dry_run",
     "feedback_author_allowlist",
     "github_token",

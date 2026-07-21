@@ -94,7 +94,7 @@ fn every_default_is_independently_overridable() {
         retry_backoff_seconds: 60
         ticket_label_code: "code-label"
         ticket_label_investigation: "investigate-label"
-        api_base: "https://api.example.test"
+        api_base: "https://ghes.example.com/api/v3"
         worker_command: ["python3", "/path/to/bridge.py"]
         dry_run: true
         watched_repos: ["acme/widgets"]
@@ -113,7 +113,7 @@ fn every_default_is_independently_overridable() {
     assert_eq!(cfg.retry_backoff_seconds, 60);
     assert_eq!(cfg.ticket_label_code, "code-label");
     assert_eq!(cfg.ticket_label_investigation, "investigate-label");
-    assert_eq!(cfg.api_base, "https://api.example.test");
+    assert_eq!(cfg.api_base, "https://ghes.example.com/api/v3");
     assert!(cfg.dry_run);
     assert_eq!(cfg.watched_repos, vec!["acme/widgets".to_string()]);
 }
@@ -647,6 +647,103 @@ fn hermes_primary_install_resolves_default_bridge() {
     assert!(
         bridge_arg.ends_with("worker-bridge.py"),
         "got: {bridge_arg}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test helpers
+// ---------------------------------------------------------------------------
+// api_base allowlist integration tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn api_base_accepts_github_com_saas() {
+    let root = tempdir("api-gh-saas");
+    let yaml = r#"
+        api_base: "https://api.github.com"
+        worker_command: ["python3", "bridge.py"]
+        "#;
+    let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
+    Config::from_raw(raw, &ctx(&root)).expect("https://api.github.com must be accepted");
+}
+
+#[test]
+fn api_base_accepts_ghes_path() {
+    let root = tempdir("api-ghes");
+    let yaml = r#"
+        api_base: "https://ghes.example.com/api/v3"
+        worker_command: ["python3", "bridge.py"]
+        "#;
+    let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
+    Config::from_raw(raw, &ctx(&root)).expect("GHES api_base must be accepted");
+}
+
+#[test]
+fn api_base_rejects_http_scheme() {
+    let root = tempdir("api-http");
+    let yaml = r#"
+        api_base: "http://api.github.com"
+        worker_command: ["python3", "bridge.py"]
+        "#;
+    let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
+    let err = Config::from_raw(raw, &ctx(&root)).expect_err("http scheme must be rejected");
+    let msg = format!("{err:?}");
+    assert!(msg.contains("scheme must be https"), "got: {msg}");
+}
+
+#[test]
+fn api_base_rejects_bitbucket_host() {
+    let root = tempdir("api-bitbucket");
+    let yaml = r#"
+        api_base: "https://bitbucket.example.com"
+        worker_command: ["python3", "bridge.py"]
+        "#;
+    let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
+    let err = Config::from_raw(raw, &ctx(&root)).expect_err("bitbucket must be rejected");
+    let msg = format!("{err:?}");
+    assert!(msg.contains("path must be /api/v3"), "got: {msg}");
+}
+
+// ---------------------------------------------------------------------------
+// discovery_max_pages integration tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn discovery_max_pages_is_set_from_raw() {
+    let root = tempdir("dmp-set");
+    let yaml = r#"
+        discovery_max_pages: 7
+        worker_command: ["python3", "bridge.py"]
+        "#;
+    let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
+    let cfg = Config::from_raw(raw, &ctx(&root)).expect("config validates");
+    assert_eq!(cfg.discovery_max_pages, 7);
+}
+
+#[test]
+fn discovery_max_pages_defaults_to_20() {
+    let root = tempdir("dmp-default");
+    let yaml = r#"
+        worker_command: ["python3", "bridge.py"]
+        "#;
+    let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
+    let cfg = Config::from_raw(raw, &ctx(&root)).expect("config validates");
+    assert_eq!(cfg.discovery_max_pages, 20);
+}
+
+#[test]
+fn discovery_max_pages_zero_rejected() {
+    let root = tempdir("dmp-zero");
+    let yaml = r#"
+        discovery_max_pages: 0
+        worker_command: ["python3", "bridge.py"]
+        "#;
+    let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
+    let err = Config::from_raw(raw, &ctx(&root)).expect_err("0 must be rejected");
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("discovery_max_pages must be > 0"),
+        "got: {msg}"
     );
 }
 
