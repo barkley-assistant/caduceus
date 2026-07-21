@@ -62,6 +62,21 @@ path = "tests/scheduler/pool_test.rs"
 edition = "2021"
 
 [[test]]
+name = "circuit_test"
+path = "tests/scheduler/circuit_test.rs"
+edition = "2021"
+
+[[test]]
+name = "failure_separation_test"
+path = "tests/scheduler/failure_separation_test.rs"
+edition = "2021"
+
+[[test]]
+name = "circuit_dispatch_test"
+path = "tests/scheduler/circuit_dispatch_test.rs"
+edition = "2021"
+
+[[test]]
 name = "drain_test"
 path = "tests/daemon/drain_test.rs"
 edition = "2021"

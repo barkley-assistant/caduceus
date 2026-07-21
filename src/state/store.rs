@@ -38,7 +38,13 @@ use crate::infra::error::{CaduceusError, CaduceusResult};
 ///
 /// - `leases` table for per-issue fenced leases with fencing
 ///   tokens, owner tracking, and expiry.
-pub const SCHEMA_VERSION: i64 = 3;
+///
+/// ## v4 (Task 5.3)
+///
+/// - `circuit_state` table replaces dead `circuit_breakers` table.
+///   Keyed by `(scope, scope_id)` for per-provider and
+///   per-repository circuit state.
+pub const SCHEMA_VERSION: i64 = 4;
 
 /// Name of the SQLite database file inside the state directory.
 pub const DB_FILENAME: &str = "state.db";
@@ -92,12 +98,15 @@ CREATE TABLE IF NOT EXISTS checkpoints (
     PRIMARY KEY (run_id, stage)
 );
 
-CREATE TABLE IF NOT EXISTS circuit_breakers (
-    issue_key      TEXT PRIMARY KEY,
-    failure_count  INTEGER NOT NULL DEFAULT 0,
-    last_failure_at TEXT,
-    opened_at      TEXT,
-    FOREIGN KEY (issue_key) REFERENCES queue_entries(issue_key)
+CREATE TABLE IF NOT EXISTS circuit_state (
+    scope TEXT NOT NULL,
+    scope_id TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'closed',
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    last_failure_at INTEGER,
+    opened_at INTEGER,
+    last_probe_at INTEGER,
+    PRIMARY KEY (scope, scope_id)
 );
 
 CREATE TABLE IF NOT EXISTS leases (
@@ -177,6 +186,7 @@ pub fn open(path: &Path) -> CaduceusResult<Connection> {
             // Run migration from existing_version to SCHEMA_VERSION.
             migrate_v1_to_v2(&conn, &db_path, existing_version)?;
             migrate_v2_to_v3(&conn, &db_path, existing_version)?;
+            migrate_v3_to_v4(&conn, &db_path, existing_version)?;
             apply_schema(&conn, &db_path)?;
             record_version(&conn, &db_path)?;
         }
@@ -290,6 +300,24 @@ fn migrate_v2_to_v3(conn: &Connection, db_path: &Path, from_version: i64) -> Cad
 }
 
 // ---------------------------------------------------------------------------
+// Migration: v3 → v4
+// ---------------------------------------------------------------------------
+
+/// Migrate from schema v3 to v4. Drops the dead `circuit_breakers`
+/// table and creates the new `circuit_state` table via `apply_schema`.
+fn migrate_v3_to_v4(conn: &Connection, db_path: &Path, from_version: i64) -> CaduceusResult<()> {
+    if from_version >= 4 {
+        return Ok(());
+    }
+    conn.execute_batch("DROP TABLE IF EXISTS circuit_breakers;")
+        .map_err(|e| CaduceusError::StateCorrupt {
+            path: db_path.to_path_buf(),
+            message: format!("v3→v4 migration failed: {e}"),
+        })?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Convenience accessors
 // ---------------------------------------------------------------------------
 
@@ -371,7 +399,7 @@ mod tests {
         assert!(tables.contains(&"state_meta".to_string()));
         assert!(tables.contains(&"claims".to_string()));
         assert!(tables.contains(&"checkpoints".to_string()));
-        assert!(tables.contains(&"circuit_breakers".to_string()));
+        assert!(tables.contains(&"circuit_state".to_string()));
         assert!(tables.contains(&"leases".to_string()));
         assert!(tables.contains(&"schema_version".to_string()));
 
@@ -485,9 +513,9 @@ mod tests {
             .expect("create v2 tables");
             conn.close().expect("close");
         }
-        // Re-open with current SCHEMA_VERSION (3) — the migration
-        // should add the leases table.
-        let conn = open(&path).expect("open v3");
+        // Re-open with current SCHEMA_VERSION (4) — the migration
+        // should add the circuit_state table and drop circuit_breakers.
+        let conn = open(&path).expect("open v4");
 
         let tables: Vec<String> = conn
             .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
@@ -498,8 +526,63 @@ mod tests {
             .collect();
 
         assert!(
+            tables.contains(&"circuit_state".to_string()),
+            "circuit_state table must exist after v2→v4 migration; tables: {tables:?}"
+        );
+        assert!(
+            !tables.contains(&"circuit_breakers".to_string()),
+            "circuit_breakers table must be dropped after v2→v4 migration; tables: {tables:?}"
+        );
+        assert!(
             tables.contains(&"leases".to_string()),
-            "leases table must exist after v2→v3 migration; tables: {tables:?}"
+            "leases table must exist after v2→v4 migration; tables: {tables:?}"
+        );
+        conn.close().expect("close");
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn migrate_v3_to_v4_adds_circuit_state_and_drops_circuit_breakers() {
+        // Create a v3 database with both circuit_breakers but no circuit_state,
+        // then verify that a v4 open adds circuit_state and drops circuit_breakers.
+        let path = db_path();
+        {
+            let conn = Connection::open(&path).expect("open raw");
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL, migrated_at TEXT NOT NULL);
+                 INSERT INTO schema_version (version, migrated_at) VALUES (3, '2026-01-01T00:00:00Z');",
+            )
+            .expect("init v3 schema");
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS queue_entries (issue_key TEXT PRIMARY KEY, phase TEXT NOT NULL, ticket_type TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, last_run_id TEXT, next_attempt_at TEXT, finalization TEXT, queued_at TEXT NOT NULL, updated_at TEXT NOT NULL, generation INTEGER NOT NULL DEFAULT 1);
+                 CREATE TABLE IF NOT EXISTS state_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 CREATE TABLE IF NOT EXISTS claims (claim_id TEXT PRIMARY KEY, issue_key TEXT NOT NULL, worker_pid INTEGER, token TEXT NOT NULL, claimed_at TEXT NOT NULL, expires_at TEXT NOT NULL);
+                 CREATE TABLE IF NOT EXISTS checkpoints (run_id TEXT NOT NULL, stage TEXT NOT NULL, checkpoint_data TEXT, created_at TEXT NOT NULL, operation_id TEXT, remote_marker TEXT, PRIMARY KEY (run_id, stage));
+                 CREATE TABLE IF NOT EXISTS circuit_breakers (issue_key TEXT PRIMARY KEY, failure_count INTEGER NOT NULL DEFAULT 0, last_failure_at TEXT, opened_at TEXT);
+                 CREATE TABLE IF NOT EXISTS leases (issue_key TEXT PRIMARY KEY, owner_id TEXT NOT NULL, fencing_token INTEGER NOT NULL, expires_at INTEGER NOT NULL, state TEXT NOT NULL CHECK(state IN ('held', 'released', 'expired')));",
+            )
+            .expect("create v3 tables");
+            conn.close().expect("close");
+        }
+        // Re-open with current SCHEMA_VERSION (4) — migration should add circuit_state
+        // and drop circuit_breakers.
+        let conn = open(&path).expect("open v4");
+
+        let tables: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            .expect("prepare")
+            .query_map([], |row| row.get(0))
+            .expect("query")
+            .filter_map(|r| r.ok())
+            .collect();
+
+        assert!(
+            tables.contains(&"circuit_state".to_string()),
+            "circuit_state table must exist after v3→v4 migration; tables: {tables:?}"
+        );
+        assert!(
+            !tables.contains(&"circuit_breakers".to_string()),
+            "circuit_breakers table must be dropped after v3→v4 migration; tables: {tables:?}"
         );
         conn.close().expect("close");
         let _ = fs::remove_file(&path);
