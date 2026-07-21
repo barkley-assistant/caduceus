@@ -80,6 +80,7 @@ fn test_spec(run_id: &str) -> ExecutorSpec {
         context_json: r#"{"x":1}"#.to_string(),
         worker_command: vec!["python3".to_string(), "bridge.py".to_string()],
         cancellation: CancellationToken::new(),
+        network_profile: None,
     }
 }
 

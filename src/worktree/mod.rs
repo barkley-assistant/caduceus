@@ -2484,6 +2484,9 @@ impl MinimalConfig for Config {
             oci_kill_timeout_seconds: crate::infra::config::DEFAULT_OCI_KILL_TIMEOUT_SECONDS,
             oci_reconcile_timeout_seconds:
                 crate::infra::config::DEFAULT_OCI_RECONCILE_TIMEOUT_SECONDS,
+            network_profiles: std::collections::HashMap::new(),
+            secret_grants: Vec::new(),
+            upgrade_choice: None,
         }
     }
 }

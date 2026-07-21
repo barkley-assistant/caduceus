@@ -19,6 +19,7 @@ use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
 use crate::executor::oci_args::{build_argv, MountSpec, OciEngine};
+use crate::executor::policy::EnforcedSpec;
 use crate::executor::ExecutorSpec;
 use crate::infra::config::Config;
 use crate::infra::error::{CaduceusError, CaduceusResult};
@@ -173,6 +174,122 @@ pub async fn run(
         _ => {
             // Best-effort — if remove fails (e.g. engine gone), the
             // reconciliation pass will clean up.
+        }
+    }
+
+    Ok(SupervisorOutcome {
+        status: exit_code,
+        signaled: false,
+        timed_out: false,
+        cancelled: false,
+    })
+}
+
+/// Run the OCI container lifecycle with a pre-built argv from
+/// the isolation policy.
+///
+/// The `enforced` parameter carries the full argv, secret handles,
+/// and optional git snapshot path. This is the entry point used by
+/// [`OciExecutor::run`] after [`IsolationPolicy::enforce`] has been
+/// called.
+pub async fn run_with_argv(
+    cfg: &Config,
+    spec: &ExecutorSpec,
+    state: &dyn OciRunState,
+    enforced: EnforcedSpec,
+    cancellation: CancellationToken,
+) -> CaduceusResult<SupervisorOutcome> {
+    let engine = OciEngine::from_binary_name(&cfg.oci_cli.to_string_lossy());
+    let argv = enforced.argv;
+
+    // Insert a Created state row.
+    let now = chrono::Utc::now().to_rfc3339();
+    let row = ContainerRunRow {
+        run_id: spec.run_id.clone(),
+        container_id: None,
+        state: OciLifecycleState::Created,
+        engine: format!("{engine:?}"),
+        created_at: now.clone(),
+        updated_at: now.clone(),
+        daemon_id: derive_daemon_id(cfg),
+        issue_id: spec.issue.display_key(),
+        worker_command_sha256: sha256_of(&spec.worker_command.join(" ")),
+    };
+    state.insert(&row)?;
+
+    // Step 1: create
+    let container_id = run_cli("create", &argv, "create", &cancellation).await?;
+
+    // Record container_id
+    let mut row = row;
+    row.container_id = Some(container_id.clone());
+    state.update_state(&spec.run_id, &OciLifecycleState::Created)?;
+
+    // Step 2: start
+    let start_argv = vec![
+        cfg.oci_cli.to_string_lossy().to_string(),
+        "start".to_string(),
+        container_id.clone(),
+    ];
+    run_cli("start", &start_argv, "start", &cancellation).await?;
+    state.update_state(&spec.run_id, &OciLifecycleState::Running)?;
+
+    // Step 3: wait
+    let wait_argv = vec![
+        cfg.oci_cli.to_string_lossy().to_string(),
+        "wait".to_string(),
+        container_id.clone(),
+    ];
+    let wait_output = run_cli_with_output("wait", &wait_argv, "wait", &cancellation).await?;
+    let exit_code = parse_exit_code(&wait_output);
+    state.update_state(&spec.run_id, &OciLifecycleState::Exited(exit_code))?;
+
+    // Step 4: stop (graceful, bounded)
+    let _stop_timeout = Duration::from_secs(cfg.oci_stop_timeout_seconds);
+    let stop_argv = vec![
+        cfg.oci_cli.to_string_lossy().to_string(),
+        "stop".to_string(),
+        "--time".to_string(),
+        cfg.oci_stop_timeout_seconds.to_string(),
+        container_id.clone(),
+    ];
+    match run_cli("stop", &stop_argv, "stop", &cancellation).await {
+        Ok(_) => {
+            state.update_state(&spec.run_id, &OciLifecycleState::Stopped)?;
+        }
+        Err(e) => {
+            // If stop fails (e.g. container already gone), log and continue.
+            // Kill as fallback.
+            let kill_argv = vec![
+                cfg.oci_cli.to_string_lossy().to_string(),
+                "kill".to_string(),
+                container_id.clone(),
+            ];
+            let _ = run_cli("kill", &kill_argv, "kill", &cancellation).await;
+            state.update_state(&spec.run_id, &OciLifecycleState::Killed)?;
+            return Err(e);
+        }
+    }
+
+    // Step 5: remove
+    let remove_argv = vec![
+        cfg.oci_cli.to_string_lossy().to_string(),
+        "rm".to_string(),
+        "--force".to_string(),
+        container_id.clone(),
+    ];
+    let remove_timeout = Duration::from_secs(cfg.oci_kill_timeout_seconds);
+    match timeout(
+        remove_timeout,
+        run_cli("rm", &remove_argv, "remove", &cancellation),
+    )
+    .await
+    {
+        Ok(Ok(_)) => {
+            state.update_state(&spec.run_id, &OciLifecycleState::Removed)?;
+        }
+        _ => {
+            // Best-effort — if remove fails, reconciliation cleans up.
         }
     }
 
@@ -447,6 +564,7 @@ mod inline_tests {
             context_json: "{}".to_string(),
             worker_command: vec!["python3".to_string()],
             cancellation: CancellationToken::new(),
+            network_profile: None,
         };
         let mounts = default_mounts(&spec);
         assert!(!mounts.is_empty());
