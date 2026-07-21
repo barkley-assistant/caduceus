@@ -411,6 +411,15 @@ pub fn classify_error(err: &CaduceusError) -> FailureClass {
         CaduceusError::CircuitOpen { .. } => FailureClass::Infrastructure,
         CaduceusError::MaxDegradedAgeExceeded { .. } => FailureClass::Infrastructure,
 
+        // New variants for daemon-owned repo storage (Task 5.4).
+        // See REPO-ERROR-001: SymlinkedStorageRoot and
+        // ModeNotPreserved are Infrastructure; WorktreeReuseAfterFailure
+        // is Worker because the worker left the worktree in an
+        // unsafe state.
+        CaduceusError::SymlinkedStorageRoot { .. } => FailureClass::Infrastructure,
+        CaduceusError::WorktreeReuseAfterFailure { .. } => FailureClass::Worker,
+        CaduceusError::ModeNotPreserved { .. } => FailureClass::Infrastructure,
+
         // Generic Other — content / schema / public-voice / worker
         // result validation land here. Voice rejections and
         // content-shape failures are worker-attributable.
@@ -956,6 +965,28 @@ mod inline_tests {
             timed_out_run_ids: vec!["run-1".into()],
         };
         assert_eq!(classify_error(&err), FailureClass::Cancellation);
+
+        // SymlinkedStorageRoot — infrastructure
+        let err = CaduceusError::SymlinkedStorageRoot {
+            path: PathBuf::from("/tmp/link"),
+        };
+        assert_eq!(classify_error(&err), FailureClass::Infrastructure);
+
+        // WorktreeReuseAfterFailure — worker
+        let err = CaduceusError::WorktreeReuseAfterFailure {
+            run_id: "deadbeef".into(),
+            worktree_path: PathBuf::from("/tmp/failed"),
+            last_state: "Failed".into(),
+        };
+        assert_eq!(classify_error(&err), FailureClass::Worker);
+
+        // ModeNotPreserved — infrastructure
+        let err = CaduceusError::ModeNotPreserved {
+            path: PathBuf::from("/tmp/x"),
+            expected: 0o700,
+            observed: 0o755,
+        };
+        assert_eq!(classify_error(&err), FailureClass::Infrastructure);
     }
 
     #[test]
@@ -963,7 +994,7 @@ mod inline_tests {
         // Every CaduceusError variant is classified. If a new
         // variant is added without a `classify_error` arm,
         // this match will fail to compile.
-        let variants: [CaduceusError; 25] = [
+        let variants: [CaduceusError; 28] = [
             CaduceusError::Config("x".into()),
             CaduceusError::Io(std::io::Error::other("x")),
             CaduceusError::Json(serde_json::from_str::<u8>("not-a-number").unwrap_err()),
@@ -1050,6 +1081,19 @@ mod inline_tests {
                 scope: "repository",
                 scope_id: "owner/repo".into(),
                 opened_at: 1000000,
+            },
+            CaduceusError::SymlinkedStorageRoot {
+                path: PathBuf::from("/tmp/link"),
+            },
+            CaduceusError::WorktreeReuseAfterFailure {
+                run_id: "deadbeef".into(),
+                worktree_path: PathBuf::from("/tmp/failed"),
+                last_state: "Failed".into(),
+            },
+            CaduceusError::ModeNotPreserved {
+                path: PathBuf::from("/tmp/x"),
+                expected: 0o700,
+                observed: 0o755,
             },
         ];
         for v in &variants {

@@ -28,6 +28,7 @@ pub mod daemon;
 pub mod finalize;
 pub mod github;
 pub mod infra;
+pub mod repo;
 pub mod runtime;
 pub mod scheduler;
 pub mod state;
@@ -98,6 +99,7 @@ pub use crate::daemon::orchestration::{
 };
 pub use crate::github::issue::{IssueDetail, IssueKey};
 pub use crate::infra::error::{CaduceusError, CaduceusResult};
+pub use crate::repo::worktree::Worktree as RepoWorktree;
 pub use crate::scheduler::{Admission, CircuitStore, Pool, PoolState};
 pub use crate::state::queue::{
     ClaimToken, ClaimedEntry, DaemonLock, EnqueueOutcome, FinalizationCheckpoint,
