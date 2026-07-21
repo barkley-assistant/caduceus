@@ -197,6 +197,26 @@ pub enum CaduceusError {
     #[error("drain timed out for run(s): {timed_out_run_ids:?}")]
     DrainTimeout { timed_out_run_ids: Vec<String> },
 
+    /// The circuit is open for the given scope and scope_id.
+    /// `retry_after` is the number of seconds until the circuit
+    /// transitions to half-open for a probe.
+    #[error("circuit open for {scope}:{scope_id}, retry after {retry_after}s (probe_in_flight={probe_in_flight})")]
+    CircuitOpen {
+        scope: &'static str,
+        scope_id: String,
+        retry_after: i64,
+        probe_in_flight: bool,
+    },
+
+    /// The circuit has been open longer than the max degraded age.
+    /// The associated work must transition to NeedsAttention.
+    #[error("max degraded age exceeded for {scope}:{scope_id}, opened at {opened_at}")]
+    MaxDegradedAgeExceeded {
+        scope: &'static str,
+        scope_id: String,
+        opened_at: i64,
+    },
+
     #[error("{0}")]
     Other(String),
 }
@@ -314,6 +334,23 @@ impl fmt::Debug for CaduceusError {
             CaduceusError::DrainTimeout { timed_out_run_ids } => format!(
                 "DrainTimeout {{ timed_out_run_ids: {:?} }}",
                 timed_out_run_ids
+            ),
+            CaduceusError::CircuitOpen {
+                scope,
+                scope_id,
+                retry_after,
+                probe_in_flight,
+            } => format!(
+                "CircuitOpen {{ scope: {:?}, scope_id: {:?}, retry_after: {}, probe_in_flight: {} }}",
+                scope, scope_id, retry_after, probe_in_flight
+            ),
+            CaduceusError::MaxDegradedAgeExceeded {
+                scope,
+                scope_id,
+                opened_at,
+            } => format!(
+                "MaxDegradedAgeExceeded {{ scope: {:?}, scope_id: {:?}, opened_at: {} }}",
+                scope, scope_id, opened_at
             ),
             CaduceusError::Other(s) => format!("Other({})", scrub(s)),
         };

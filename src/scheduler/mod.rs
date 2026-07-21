@@ -10,11 +10,14 @@
 //! exclusion and graceful drain. The [`exclusion`] module provides
 //! the per-repo exclusion map used by the pool.
 
+pub mod circuit;
 pub mod exclusion;
 mod leadership;
 mod leases;
 pub mod pool;
 
+pub use circuit::CircuitStore;
+pub use exclusion::RepoExclusionMap;
 pub use leadership::LeaderToken;
 pub use leases::LeaseStore;
 pub use pool::{Admission, DrainConfig, Pool, PoolState};

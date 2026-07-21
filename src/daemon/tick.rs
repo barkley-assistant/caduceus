@@ -54,6 +54,7 @@ use crate::github::{Client, RateLimitInfo, Response};
 use crate::infra::config::Config;
 use crate::infra::error::{CaduceusError, CaduceusResult};
 use crate::logging;
+use crate::scheduler::circuit::{AdmissionResult, CircuitConfig, CircuitStore};
 use crate::scheduler::{DrainConfig, LeaderToken, Pool};
 use crate::signals;
 use crate::state::checkpoints::{last_checkpoint_for_run, persist_checkpoint};
@@ -210,6 +211,10 @@ pub async fn tick(
     )
     .await;
 
+    // 3.6. Open the SQLite state store for circuit breaker access.
+    let sqlite_conn = crate::state::store::open_in(&state_dir)?;
+    let circuit_store = CircuitStore::new(sqlite_conn, CircuitConfig::from_config(&cfg));
+
     // 3.5. Poll awaiting-review entries for PR merge status.
     let poll_client: Arc<Client> = Arc::clone(services.github.inner());
     if let Err(err) = poll_awaiting_review_entries(store.as_ref(), poll_client.as_ref()).await {
@@ -290,7 +295,40 @@ pub async fn tick(
         }
     };
 
-    // 6.5. Admit the entry to the worker pool. This gates the
+    // 6.5. Check the circuit breaker before admitting the entry
+    //  to the worker pool. If the circuit is open for the repo
+    //  or the provider, route to NeedsAttention.
+    let repo_key = format!("{}/{}", claimed.entry.key.owner, claimed.entry.key.repo);
+    let repo_admit = circuit_store.try_admit("repository", &repo_key, services.clock.as_ref())?;
+    let provider_admit = circuit_store.try_admit("provider", "github", services.clock.as_ref())?;
+
+    let circuit_blocked = matches!(
+        (&repo_admit, &provider_admit),
+        (
+            AdmissionResult::CircuitOpen { .. } | AdmissionResult::MaxDegradedAgeExceeded,
+            _
+        ) | (
+            _,
+            AdmissionResult::CircuitOpen { .. } | AdmissionResult::MaxDegradedAgeExceeded
+        )
+    );
+
+    if circuit_blocked {
+        let log_path = state_dir.join("processor.log");
+        let mut guard = ActiveRunGuard::new(claimed.claim.clone(), Arc::clone(&store), log_path);
+        let err = CaduceusError::CircuitOpen {
+            scope: "repository",
+            scope_id: repo_key.clone(),
+            retry_after: 1800,
+            probe_in_flight: false,
+        };
+        let class = classify_error(&err);
+        let outcome = handle_infra_or_retry(cfg, &mut guard, &err, class).await?;
+        finish_tick_outcome(&gate, &meta, now, outcome, None, Some(&err))?;
+        return Ok(outcome);
+    }
+
+    // 6.6. Admit the entry to the worker pool. This gates the
     //  global concurrency and per-repo exclusion before any
     //  setup or worker dispatch occurs.
     let repo_key = format!("{}/{}", claimed.entry.key.owner, claimed.entry.key.repo);

@@ -93,12 +93,12 @@ pub use crate::daemon::tick;
 // --------------------------------------------------------------------------
 
 pub use crate::daemon::orchestration::{
-    ActiveRunGuard, Clock, FailureClass, FinishOutcome, Git, GithubClient, ProcessSupervisor,
-    ProcessSupervisorAdapter, Services, SystemClock,
+    ActiveRunGuard, Clock, FailureClass, FakeClock, FinishOutcome, Git, GithubClient,
+    ProcessSupervisor, ProcessSupervisorAdapter, Services, SystemClock,
 };
 pub use crate::github::issue::{IssueDetail, IssueKey};
 pub use crate::infra::error::{CaduceusError, CaduceusResult};
-pub use crate::scheduler::{Admission, Pool, PoolState};
+pub use crate::scheduler::{Admission, CircuitStore, Pool, PoolState};
 pub use crate::state::queue::{
     ClaimToken, ClaimedEntry, DaemonLock, EnqueueOutcome, FinalizationCheckpoint,
     FinalizationStage, Phase, QueueEntry, QueueState, ResetOutcome, StateStore, TicketType,
