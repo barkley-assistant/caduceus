@@ -8,6 +8,7 @@
 
 use std::fmt;
 use std::str::FromStr;
+use std::sync::Mutex;
 
 use rusqlite::{params, Connection};
 
@@ -95,12 +96,53 @@ pub struct ContainerRunRow {
 }
 
 // ---------------------------------------------------------------------------
+// OciRunState trait
+// ---------------------------------------------------------------------------
+
+/// Trait abstracting the `oci_runs` table for the lifecycle module.
+/// Production uses [`OciRunDao`]; tests use a fake.
+pub trait OciRunState: Send + Sync {
+    /// Insert a new container run row.
+    fn insert(&self, row: &ContainerRunRow) -> CaduceusResult<()>;
+    /// Update the state of an existing container run.
+    fn update_state(&self, run_id: &str, state: &OciLifecycleState) -> CaduceusResult<()>;
+    /// List all rows whose state is `PendingReconciliation`.
+    fn list_pending_reconciliation(&self) -> CaduceusResult<Vec<ContainerRunRow>>;
+    /// Get a single container run by its run_id.
+    fn get(&self, run_id: &str) -> CaduceusResult<Option<ContainerRunRow>>;
+    /// Delete a container run by run_id.
+    fn delete(&self, run_id: &str) -> CaduceusResult<()>;
+}
+
+impl OciRunState for OciRunDao {
+    fn insert(&self, row: &ContainerRunRow) -> CaduceusResult<()> {
+        OciRunDao::insert(self, row)
+    }
+
+    fn update_state(&self, run_id: &str, state: &OciLifecycleState) -> CaduceusResult<()> {
+        OciRunDao::update_state(self, run_id, state)
+    }
+
+    fn list_pending_reconciliation(&self) -> CaduceusResult<Vec<ContainerRunRow>> {
+        OciRunDao::list_pending_reconciliation(self)
+    }
+
+    fn get(&self, run_id: &str) -> CaduceusResult<Option<ContainerRunRow>> {
+        OciRunDao::get(self, run_id)
+    }
+
+    fn delete(&self, run_id: &str) -> CaduceusResult<()> {
+        OciRunDao::delete(self, run_id)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // OciRunDao
 // ---------------------------------------------------------------------------
 
 /// Data-access object for the `oci_runs` table.
 pub struct OciRunDao {
-    conn: Connection,
+    conn: Mutex<Connection>,
 }
 
 impl std::fmt::Debug for OciRunDao {
@@ -112,55 +154,57 @@ impl std::fmt::Debug for OciRunDao {
 impl OciRunDao {
     /// Wrap an open SQLite connection.
     pub fn new(conn: Connection) -> Self {
-        Self { conn }
+        Self {
+            conn: Mutex::new(conn),
+        }
     }
 
     /// Insert a new container run row.
     pub fn insert(&self, row: &ContainerRunRow) -> CaduceusResult<()> {
-        self.conn
-            .execute(
-                "INSERT INTO oci_runs (run_id, container_id, state, engine, \
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO oci_runs (run_id, container_id, state, engine, \
   created_at, updated_at, daemon_id, issue_id, \
   worker_command_sha256) \
   VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                params![
-                    row.run_id,
-                    row.container_id,
-                    row.state.to_string(),
-                    row.engine,
-                    row.created_at,
-                    row.updated_at,
-                    row.daemon_id,
-                    row.issue_id,
-                    row.worker_command_sha256,
-                ],
-            )
-            .map_err(|e| CaduceusError::StateCorrupt {
-                path: ":memory:".into(),
-                message: format!("oci_run insert: {e}"),
-            })?;
+            params![
+                row.run_id,
+                row.container_id,
+                row.state.to_string(),
+                row.engine,
+                row.created_at,
+                row.updated_at,
+                row.daemon_id,
+                row.issue_id,
+                row.worker_command_sha256,
+            ],
+        )
+        .map_err(|e| CaduceusError::StateCorrupt {
+            path: ":memory:".into(),
+            message: format!("oci_run insert: {e}"),
+        })?;
         Ok(())
     }
 
     /// Update the state of an existing container run.
     pub fn update_state(&self, run_id: &str, state: &OciLifecycleState) -> CaduceusResult<()> {
         let now = chrono::Utc::now().to_rfc3339();
-        self.conn
-            .execute(
-                "UPDATE oci_runs SET state = ?1, updated_at = ?2 WHERE run_id = ?3",
-                params![state.to_string(), now, run_id],
-            )
-            .map_err(|e| CaduceusError::StateCorrupt {
-                path: ":memory:".into(),
-                message: format!("oci_run update_state: {e}"),
-            })?;
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE oci_runs SET state = ?1, updated_at = ?2 WHERE run_id = ?3",
+            params![state.to_string(), now, run_id],
+        )
+        .map_err(|e| CaduceusError::StateCorrupt {
+            path: ":memory:".into(),
+            message: format!("oci_run update_state: {e}"),
+        })?;
         Ok(())
     }
 
     /// List all rows whose state is `PendingReconciliation`.
     pub fn list_pending_reconciliation(&self) -> CaduceusResult<Vec<ContainerRunRow>> {
-        let mut stmt = self
-            .conn
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
             .prepare(
                 "SELECT run_id, container_id, state, engine, created_at, \
   updated_at, daemon_id, issue_id, worker_command_sha256 \
@@ -203,8 +247,8 @@ impl OciRunDao {
 
     /// Get a single container run by its run_id.
     pub fn get(&self, run_id: &str) -> CaduceusResult<Option<ContainerRunRow>> {
-        let mut stmt = self
-            .conn
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
             .prepare(
                 "SELECT run_id, container_id, state, engine, created_at, \
   updated_at, daemon_id, issue_id, worker_command_sha256 \
@@ -247,8 +291,8 @@ impl OciRunDao {
 
     /// Delete a container run by run_id.
     pub fn delete(&self, run_id: &str) -> CaduceusResult<()> {
-        self.conn
-            .execute("DELETE FROM oci_runs WHERE run_id = ?1", params![run_id])
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM oci_runs WHERE run_id = ?1", params![run_id])
             .map_err(|e| CaduceusError::StateCorrupt {
                 path: ":memory:".into(),
                 message: format!("oci_run delete: {e}"),

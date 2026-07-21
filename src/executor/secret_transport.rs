@@ -117,7 +117,7 @@ mod inline_tests {
 
     #[test]
     fn file_exists_after_write() {
-        let values = vec![("TEST".to_string(), "val".to_string())];
+        let values = vec![("EXIST".to_string(), "val".to_string())];
         let handle = EphemeralSecretFile::write(&values).expect("write");
         assert!(handle.paths()[0].exists(), "file must exist");
         drop(handle);
@@ -125,7 +125,7 @@ mod inline_tests {
 
     #[test]
     fn file_removed_on_drop() {
-        let values = vec![("TEST".to_string(), "val".to_string())];
+        let values = vec![("DROP".to_string(), "val".to_string())];
         let path = {
             let handle = EphemeralSecretFile::write(&values).expect("write");
             handle.paths()[0].clone()
@@ -135,7 +135,7 @@ mod inline_tests {
 
     #[test]
     fn file_removed_after_panic() {
-        let values = vec![("TEST".to_string(), "val".to_string())];
+        let values = vec![("PANIC".to_string(), "val".to_string())];
         let path = {
             let handle = EphemeralSecretFile::write(&values).expect("write");
             let p = handle.paths()[0].clone();

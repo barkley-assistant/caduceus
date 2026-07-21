@@ -446,9 +446,9 @@ pub fn classify_error(err: &CaduceusError) -> FailureClass {
         // config-validation or unsupported-mode selection; the
         // orchestrator treats them as infrastructure so they do
         // not count against the worker retry budget.
-        CaduceusError::OciNotImplementedYet => FailureClass::Infrastructure,
         CaduceusError::OciCliNotFound { .. } => FailureClass::Infrastructure,
         CaduceusError::OciEngineUnavailable { .. } => FailureClass::Infrastructure,
+        CaduceusError::OciMismatchedCliVersion { .. } => FailureClass::Infrastructure,
         CaduceusError::OciPullFailed { .. } => FailureClass::Infrastructure,
         CaduceusError::OciCreateFailed { .. } => FailureClass::Infrastructure,
         CaduceusError::OciStartFailed { .. } => FailureClass::Infrastructure,
@@ -457,6 +457,7 @@ pub fn classify_error(err: &CaduceusError) -> FailureClass {
         CaduceusError::OciRemoveFailed { .. } => FailureClass::Infrastructure,
         CaduceusError::OciUndeclaredMount { .. } => FailureClass::Worker,
         CaduceusError::OciSecretLeakSuspected { .. } => FailureClass::Infrastructure,
+        CaduceusError::OciSecretLeakDetected { .. } => FailureClass::Infrastructure,
         CaduceusError::ReducedContainmentNotAcknowledged => FailureClass::Infrastructure,
 
         // Generic Other — content / schema / public-voice / worker
@@ -1033,7 +1034,7 @@ mod inline_tests {
         // Every CaduceusError variant is classified. If a new
         // variant is added without a `classify_error` arm,
         // this match will fail to compile.
-        let variants: [CaduceusError; 39] = [
+        let variants: [CaduceusError; 40] = [
             CaduceusError::Config("x".into()),
             CaduceusError::Io(std::io::Error::other("x")),
             CaduceusError::Json(serde_json::from_str::<u8>("not-a-number").unwrap_err()),
@@ -1134,12 +1135,14 @@ mod inline_tests {
                 expected: 0o700,
                 observed: 0o755,
             },
-            CaduceusError::OciNotImplementedYet,
             CaduceusError::OciCliNotFound {
                 cli: "docker".into(),
             },
             CaduceusError::OciEngineUnavailable {
                 detail: "Cannot connect".into(),
+            },
+            CaduceusError::OciMismatchedCliVersion {
+                detail: "too old".into(),
             },
             CaduceusError::OciPullFailed {
                 image: "img".into(),
@@ -1170,6 +1173,9 @@ mod inline_tests {
             },
             CaduceusError::OciSecretLeakSuspected {
                 path: "/tmp/x".into(),
+            },
+            CaduceusError::OciSecretLeakDetected {
+                run_id: "run-1".into(),
             },
         ];
         for v in &variants {

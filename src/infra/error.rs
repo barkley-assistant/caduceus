@@ -249,14 +249,6 @@ pub enum CaduceusError {
         observed: u32,
     },
 
-    /// The OCI executor mode was selected at runtime, but the OCI
-    /// implementation is not yet wired up. Task 6.2 is the unblocking
-    /// work unit. The error surfaces at `OciExecutor::run` (not at
-    /// `Config::load`) so operators can stage an Oci config while
-    /// keeping a working TrustedHost install elsewhere.
-    #[error("OCI execution is not implemented yet (Task 6.2)")]
-    OciNotImplementedYet,
-
     /// The configured OCI CLI binary was not found in PATH.
     #[error("OCI CLI not found: {cli}")]
     OciCliNotFound { cli: String },
@@ -264,6 +256,10 @@ pub enum CaduceusError {
     /// The OCI engine (Docker/Podman daemon) is not reachable.
     #[error("OCI engine unavailable: {detail}")]
     OciEngineUnavailable { detail: String },
+
+    /// The OCI CLI version is incompatible with the daemon's contract.
+    #[error("OCI CLI version mismatch: {detail}")]
+    OciMismatchedCliVersion { detail: String },
 
     /// Image pull failed.
     #[error("OCI pull failed for {image}: {stderr}")]
@@ -311,6 +307,11 @@ pub enum CaduceusError {
     /// A potential secret leak was detected in OCI output.
     #[error("OCI secret leak suspected at {path}")]
     OciSecretLeakSuspected { path: String },
+
+    /// A secret value was found in OCI output after the container
+    /// completed. This is a confirmed leak, not a suspicion.
+    #[error("OCI secret leak detected in output for {run_id}")]
+    OciSecretLeakDetected { run_id: String },
 
     /// Trusted-host execution was selected but the operator has not
     /// explicitly acknowledged reduced containment. This fires at
@@ -475,12 +476,14 @@ impl fmt::Debug for CaduceusError {
                 "ModeNotPreserved {{ path: {:?}, expected: {:o}, observed: {:o} }}",
                 path, expected, observed
             ),
-            CaduceusError::OciNotImplementedYet => "OciNotImplementedYet".to_string(),
-  CaduceusError::OciCliNotFound { cli } => {
+            CaduceusError::OciCliNotFound { cli } => {
   format!("OciCliNotFound {{ cli: {:?} }}", cli)
   }
   CaduceusError::OciEngineUnavailable { detail } => {
   format!("OciEngineUnavailable {{ detail: {} }}", scrub(detail))
+  }
+  CaduceusError::OciMismatchedCliVersion { detail } => {
+  format!("OciMismatchedCliVersion {{ detail: {} }}", scrub(detail))
   }
   CaduceusError::OciPullFailed { image, stderr } => format!(
   "OciPullFailed {{ image: {:?}, stderr: {} }}",
@@ -527,6 +530,9 @@ impl fmt::Debug for CaduceusError {
   }
   CaduceusError::OciSecretLeakSuspected { path } => {
   format!("OciSecretLeakSuspected {{ path: {:?} }}", path)
+  }
+  CaduceusError::OciSecretLeakDetected { run_id } => {
+  format!("OciSecretLeakDetected {{ run_id: {:?} }}", run_id)
   }
             CaduceusError::ReducedContainmentNotAcknowledged => {
                 "ReducedContainmentNotAcknowledged".to_string()
