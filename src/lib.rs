@@ -95,8 +95,8 @@ pub use crate::daemon::tick;
 // --------------------------------------------------------------------------
 
 pub use crate::daemon::orchestration::{
-    ActiveRunGuard, Clock, FailureClass, FakeClock, FinishOutcome, Git, GithubClient,
-    ProcessSupervisor, ProcessSupervisorAdapter, Services, SystemClock,
+    ActiveRunGuard, Clock, FailureClass, FakeClock, FinishOutcome, Git, GithubClient, Services,
+    SystemClock,
 };
 pub use crate::github::issue::{IssueDetail, IssueKey};
 pub use crate::infra::error::{CaduceusError, CaduceusResult};

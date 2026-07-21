@@ -4,10 +4,11 @@
 //! passes between phases:
 //!
 //! * [`Services`] — the bundle of dependency-injection traits
-//!   (`clock`, `github`, `git`, `process`) used only where deterministic
+//!   (`clock`, `github`, `git`, `executor`) used only where deterministic
 //!   testing requires them. Production adapters are thin wrappers
 //!   around the concrete types owned by [`crate::config`],
 //!   [`crate::github`], [`crate::worktree`], and
+//!   [`crate::worker::supervisor`].
 //!   [`crate::worker_supervisor`].
 //! * [`FailureClass`] and [`classify_error`] — the exhaustive
 //!   mapping from a [`CaduceusError`] to the four failure classes
@@ -147,82 +148,21 @@ impl Git for GitRunnerAdapter {
     }
 }
 
-/// Trait abstraction over the worker process supervisor. Production
-/// callers wrap [`crate::worker::supervisor::supervise`] in
-/// [`ProcessSupervisorAdapter`]; tests use a trait object whose
-/// `supervise` returns a canned [`SupervisorOutcome`].
-#[allow(clippy::too_many_arguments)]
-pub trait ProcessSupervisor: Send + Sync {
-    /// Spawn the worker under the canonical supervision contract.
-    /// Returns a [`SupervisorOutcome`] on success or a
-    /// [`CaduceusError::Worker`] on supervision failure.
-    fn supervise<'a>(
-        &'a self,
-        self_exe: &'a Path,
-        cfg: &'a crate::infra::config::Config,
-        issue: &'a IssueKey,
-        worktree: &'a Path,
-        run_id: &'a str,
-        context_json: &'a str,
-        worker_command: &'a [String],
-        cancellation: tokio_util::sync::CancellationToken,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = CaduceusResult<SupervisorOutcome>> + Send + 'a>,
-    >;
-}
-
-/// Production process supervisor adapter.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct ProcessSupervisorAdapter;
-
-#[allow(clippy::too_many_arguments)]
-impl ProcessSupervisor for ProcessSupervisorAdapter {
-    fn supervise<'a>(
-        &'a self,
-        self_exe: &'a Path,
-        cfg: &'a crate::infra::config::Config,
-        issue: &'a IssueKey,
-        worktree: &'a Path,
-        run_id: &'a str,
-        context_json: &'a str,
-        worker_command: &'a [String],
-        cancellation: tokio_util::sync::CancellationToken,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = CaduceusResult<SupervisorOutcome>> + Send + 'a>,
-    > {
-        Box::pin(crate::worker::supervisor::supervise(
-            self_exe,
-            cfg,
-            issue,
-            worktree,
-            run_id,
-            context_json,
-            worker_command,
-            cancellation,
-        ))
-    }
-}
-
 /// Bundle of dependencies the orchestrator needs for one tick.
 /// The bundle is the canonical point of injection: production
 /// constructs one of these per daemon process; tests construct
 /// one per test with mock adapters.
 ///
 /// `executor` is the `Arc<dyn Executor>` that the tick dispatch
-/// site uses to spawn workers. It replaces the prior direct
-/// `services.process.supervise(...)` call so the trait object
-/// seam is the single point of dispatch (Task 6.2 will plug
-/// `OciExecutor` into the same field).
-///
-/// `process` is retained as a transitional field — Task 6.2
-/// removes it once the dispatch is fully owned by the executor.
+/// site uses to spawn workers. The trait object seam is the
+/// single point of dispatch — `TrustedHostExecutor` and
+/// `OciExecutor` both implement the `Executor` trait.
 #[derive(Clone)]
 pub struct Services {
     pub clock: Arc<dyn Clock>,
     pub github: Arc<dyn GithubClient>,
     pub git: Arc<dyn Git>,
     pub executor: Arc<dyn crate::executor::Executor>,
-    pub process: Arc<dyn ProcessSupervisor>,
     pub pool: Arc<Pool>,
 }
 
@@ -233,7 +173,6 @@ impl std::fmt::Debug for Services {
             .field("github", &"Arc<dyn GithubClient>")
             .field("git", &"Arc<dyn Git>")
             .field("executor", &"Arc<dyn Executor>")
-            .field("process", &"Arc<dyn ProcessSupervisor>")
             .field("pool", &"Arc<Pool>")
             .finish()
     }
@@ -249,7 +188,6 @@ impl Services {
         clock: Arc<dyn Clock>,
         github: Arc<Client>,
         git: GitRunner,
-        process: Arc<dyn ProcessSupervisor>,
         pool: Arc<Pool>,
     ) -> Self {
         let executor = crate::executor::executor_for_config(cfg);
@@ -258,7 +196,6 @@ impl Services {
             github: Arc::new(GithubClientAdapter::new(github)),
             git: Arc::new(GitRunnerAdapter::new(git)),
             executor,
-            process,
             pool,
         }
     }
@@ -272,7 +209,6 @@ impl Services {
         github: Arc<dyn GithubClient>,
         git: Arc<dyn Git>,
         executor: Arc<dyn crate::executor::Executor>,
-        process: Arc<dyn ProcessSupervisor>,
         pool: Arc<Pool>,
     ) -> Self {
         Self {
@@ -280,7 +216,6 @@ impl Services {
             github,
             git,
             executor,
-            process,
             pool,
         }
     }
@@ -592,7 +527,7 @@ impl ActiveRunGuard {
     }
 
     /// Record the worker's supervisor outcome. The orchestrator
-    /// calls this once `services.process.supervise` returns.
+    /// calls this once `services.executor.run` returns.
     pub async fn attach_supervisor(&self, outcome: SupervisorOutcome) {
         let mut slot = self.supervisor.lock().await;
         *slot = Some(outcome);
@@ -1254,7 +1189,7 @@ mod inline_tests {
     #[test]
     fn services_production_helper_compiles() {
         // The constructor wires the four adapters. We can't
-        // call services.process.supervise here because that
+        // call services.executor.run here because that
         // would spawn a worker; the test only verifies the
         // type compiles and the field accessors work.
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
