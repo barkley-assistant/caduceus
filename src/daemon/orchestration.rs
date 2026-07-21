@@ -52,6 +52,12 @@ use crate::worktree::{GitRunner, Worktree};
 pub trait Clock: Send + Sync {
     /// The current wall-clock time in UTC.
     fn now(&self) -> DateTime<Utc>;
+
+    /// The current Unix timestamp in seconds. Default impl delegates
+    /// to `now().timestamp()` so existing implementors get it for free.
+    fn now_unix(&self) -> i64 {
+        self.now().timestamp()
+    }
 }
 
 /// Production wall-clock adapter.
@@ -402,6 +408,8 @@ pub fn classify_error(err: &CaduceusError) -> FailureClass {
         CaduceusError::PoolSaturated { .. } => FailureClass::Infrastructure,
         CaduceusError::RepositoryExclusionHeld { .. } => FailureClass::Infrastructure,
         CaduceusError::DrainTimeout { .. } => FailureClass::Cancellation,
+        CaduceusError::CircuitOpen { .. } => FailureClass::Infrastructure,
+        CaduceusError::MaxDegradedAgeExceeded { .. } => FailureClass::Infrastructure,
 
         // Generic Other — content / schema / public-voice / worker
         // result validation land here. Voice rejections and
@@ -814,6 +822,61 @@ static KEY_PLACEHOLDER: IssueKey = IssueKey {
     number: 0,
 };
 
+/// Controllable clock for deterministic testing. Holds an
+/// `Arc<Mutex<i64>>` so clones share the same time source.
+/// Use [`FakeClock::advance`] and [`FakeClock::set`] to control
+/// the reported time.
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Clone, Debug)]
+pub struct FakeClock {
+    now_unix: std::sync::Arc<std::sync::Mutex<i64>>,
+}
+
+impl FakeClock {
+    /// Create a new fake clock at Unix epoch 0.
+    pub fn new() -> Self {
+        Self {
+            now_unix: std::sync::Arc::new(std::sync::Mutex::new(0)),
+        }
+    }
+
+    /// Create a new fake clock at the given Unix timestamp.
+    pub fn at(unix: i64) -> Self {
+        Self {
+            now_unix: std::sync::Arc::new(std::sync::Mutex::new(unix)),
+        }
+    }
+
+    /// Advance the clock by `seconds`.
+    pub fn advance(&self, seconds: i64) {
+        let mut val = self.now_unix.lock().expect("fake clock lock");
+        *val += seconds;
+    }
+
+    /// Set the clock to an exact Unix timestamp.
+    pub fn set(&self, unix: i64) {
+        let mut val = self.now_unix.lock().expect("fake clock lock");
+        *val = unix;
+    }
+
+    fn read(&self) -> i64 {
+        *self.now_unix.lock().expect("fake clock lock")
+    }
+}
+
+impl Default for FakeClock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Clock for FakeClock {
+    fn now(&self) -> DateTime<Utc> {
+        let unix = self.read();
+        DateTime::from_timestamp(unix, 0).unwrap_or_default()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Inline tests
 // ---------------------------------------------------------------------------
@@ -900,7 +963,7 @@ mod inline_tests {
         // Every CaduceusError variant is classified. If a new
         // variant is added without a `classify_error` arm,
         // this match will fail to compile.
-        let variants: [CaduceusError; 23] = [
+        let variants: [CaduceusError; 25] = [
             CaduceusError::Config("x".into()),
             CaduceusError::Io(std::io::Error::other("x")),
             CaduceusError::Json(serde_json::from_str::<u8>("not-a-number").unwrap_err()),
@@ -976,6 +1039,17 @@ mod inline_tests {
             },
             CaduceusError::DrainTimeout {
                 timed_out_run_ids: vec!["run-1".into()],
+            },
+            CaduceusError::CircuitOpen {
+                scope: "provider",
+                scope_id: "github".into(),
+                retry_after: 1800,
+                probe_in_flight: false,
+            },
+            CaduceusError::MaxDegradedAgeExceeded {
+                scope: "repository",
+                scope_id: "owner/repo".into(),
+                opened_at: 1000000,
             },
         ];
         for v in &variants {
@@ -1060,5 +1134,39 @@ mod inline_tests {
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
         let _ = clock.now();
         let _cfg = cfg();
+    }
+
+    #[test]
+    fn fake_clock_default_starts_at_epoch() {
+        let fc = FakeClock::new();
+        assert_eq!(fc.now_unix(), 0);
+    }
+
+    #[test]
+    fn fake_clock_advance_works() {
+        let fc = FakeClock::new();
+        fc.advance(100);
+        assert_eq!(fc.now_unix(), 100);
+    }
+
+    #[test]
+    fn fake_clock_set_works() {
+        let fc = FakeClock::new();
+        fc.set(999);
+        assert_eq!(fc.now_unix(), 999);
+    }
+
+    #[test]
+    fn fake_clock_clones_share_time() {
+        let fc = FakeClock::new();
+        let fc2 = fc.clone();
+        fc.advance(50);
+        assert_eq!(fc2.now_unix(), 50);
+    }
+
+    #[test]
+    fn fake_clock_now_returns_correct_datetime() {
+        let fc = FakeClock::at(946684800); // 2000-01-01T00:00:00Z
+        assert_eq!(fc.now().timestamp(), 946684800);
     }
 }

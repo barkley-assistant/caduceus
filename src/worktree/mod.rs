@@ -2443,6 +2443,10 @@ impl MinimalConfig for Config {
             scheduler_transaction_budget_ms: 100,
             drain_timeout_seconds: 30,
             backpressure_budget_ms: 5000,
+            circuit_failure_threshold: 3,
+            circuit_backoff_seconds: vec![30, 120, 600],
+            circuit_open_interval_seconds: 1800,
+            circuit_max_degraded_seconds: 86400,
         }
     }
 }

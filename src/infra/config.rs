@@ -55,6 +55,10 @@ pub const DEFAULT_SCHEDULER_LEASE_TTL_SECONDS: u64 = 60;
 pub const DEFAULT_SCHEDULER_TRANSACTION_BUDGET_MS: u64 = 100;
 pub const DEFAULT_DRAIN_TIMEOUT_SECONDS: u64 = 30;
 pub const DEFAULT_BACKPRESSURE_BUDGET_MS: u64 = 5000;
+pub const DEFAULT_CIRCUIT_FAILURE_THRESHOLD: u32 = 3;
+pub const DEFAULT_CIRCUIT_BACKOFF_SECONDS: &[u64] = &[30, 120, 600];
+pub const DEFAULT_CIRCUIT_OPEN_INTERVAL_SECONDS: u64 = 1800;
+pub const DEFAULT_CIRCUIT_MAX_DEGRADED_SECONDS: u64 = 86400;
 
 /// Caduceus configuration. Field semantics are pinned in `CONTRACTS.md`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -100,6 +104,18 @@ pub struct Config {
     /// Maximum time in milliseconds to wait for a semaphore permit
     /// before returning PoolSaturated. Default 5000.
     pub backpressure_budget_ms: u64,
+    /// Number of consecutive infrastructure failures before the circuit
+    /// opens. Default 3.
+    pub circuit_failure_threshold: u32,
+    /// Exponential backoff stages in seconds for circuit breaker retry.
+    /// Default [30, 120, 600].
+    pub circuit_backoff_seconds: Vec<u64>,
+    /// Seconds after which an open circuit transitions to half-open for
+    /// a probe. Default 1800 (30 min).
+    pub circuit_open_interval_seconds: u64,
+    /// Maximum seconds a circuit can remain open before the work is
+    /// escalated to NeedsAttention. Default 86400 (24h).
+    pub circuit_max_degraded_seconds: u64,
 }
 
 /// Loose deserialisation layer used to read the YAML before the source
@@ -139,6 +155,10 @@ pub struct RawConfig {
     pub scheduler_transaction_budget_ms: Option<u64>,
     pub drain_timeout_seconds: Option<u64>,
     pub backpressure_budget_ms: Option<u64>,
+    pub circuit_failure_threshold: Option<u32>,
+    pub circuit_backoff_seconds: Option<Vec<u64>>,
+    pub circuit_open_interval_seconds: Option<u64>,
+    pub circuit_max_degraded_seconds: Option<u64>,
 }
 
 /// Load context — used to resolve paths and the default worker command
@@ -532,6 +552,44 @@ impl Config {
             backpressure_budget_ms: raw
                 .backpressure_budget_ms
                 .unwrap_or(DEFAULT_BACKPRESSURE_BUDGET_MS),
+
+            // Circuit breaker config
+            circuit_failure_threshold: {
+                let v = raw
+                    .circuit_failure_threshold
+                    .unwrap_or(DEFAULT_CIRCUIT_FAILURE_THRESHOLD);
+                if v == 0 {
+                    errors.push("circuit_failure_threshold must be > 0".to_string());
+                }
+                v
+            },
+            circuit_backoff_seconds: {
+                let v = raw
+                    .circuit_backoff_seconds
+                    .unwrap_or_else(|| DEFAULT_CIRCUIT_BACKOFF_SECONDS.to_vec());
+                if v.is_empty() {
+                    errors.push("circuit_backoff_seconds must not be empty".to_string());
+                }
+                v
+            },
+            circuit_open_interval_seconds: {
+                let v = raw
+                    .circuit_open_interval_seconds
+                    .unwrap_or(DEFAULT_CIRCUIT_OPEN_INTERVAL_SECONDS);
+                if v == 0 {
+                    errors.push("circuit_open_interval_seconds must be > 0".to_string());
+                }
+                v
+            },
+            circuit_max_degraded_seconds: {
+                let v = raw
+                    .circuit_max_degraded_seconds
+                    .unwrap_or(DEFAULT_CIRCUIT_MAX_DEGRADED_SECONDS);
+                if v == 0 {
+                    errors.push("circuit_max_degraded_seconds must be > 0".to_string());
+                }
+                v
+            },
         })
     }
 
@@ -572,6 +630,10 @@ impl Config {
             scheduler_transaction_budget_ms: DEFAULT_SCHEDULER_TRANSACTION_BUDGET_MS,
             drain_timeout_seconds: DEFAULT_DRAIN_TIMEOUT_SECONDS,
             backpressure_budget_ms: DEFAULT_BACKPRESSURE_BUDGET_MS,
+            circuit_failure_threshold: DEFAULT_CIRCUIT_FAILURE_THRESHOLD,
+            circuit_backoff_seconds: DEFAULT_CIRCUIT_BACKOFF_SECONDS.to_vec(),
+            circuit_open_interval_seconds: DEFAULT_CIRCUIT_OPEN_INTERVAL_SECONDS,
+            circuit_max_degraded_seconds: DEFAULT_CIRCUIT_MAX_DEGRADED_SECONDS,
         }
     }
 
