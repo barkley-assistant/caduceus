@@ -420,6 +420,13 @@ pub fn classify_error(err: &CaduceusError) -> FailureClass {
         CaduceusError::WorktreeReuseAfterFailure { .. } => FailureClass::Worker,
         CaduceusError::ModeNotPreserved { .. } => FailureClass::Infrastructure,
 
+        // Executor-mode errors (Task 6.1). Both fire from
+        // config-validation or unsupported-mode selection; the
+        // orchestrator treats them as infrastructure so they do
+        // not count against the worker retry budget.
+        CaduceusError::OciNotImplementedYet => FailureClass::Infrastructure,
+        CaduceusError::ReducedContainmentNotAcknowledged => FailureClass::Infrastructure,
+
         // Generic Other — content / schema / public-voice / worker
         // result validation land here. Voice rejections and
         // content-shape failures are worker-attributable.
