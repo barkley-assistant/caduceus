@@ -2462,6 +2462,7 @@ impl MinimalConfig for Config {
             api_base: DEFAULT_API_BASE.to_string(),
             dry_run: false,
             worker_parallelism: 1,
+            discovery_max_pages: 20,
             compiled_ignore_patterns: Vec::new(),
             scheduler_lease_ttl_seconds: 60,
             scheduler_transaction_budget_ms: 100,

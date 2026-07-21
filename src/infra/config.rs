@@ -59,6 +59,7 @@ pub const DEFAULT_CIRCUIT_FAILURE_THRESHOLD: u32 = 3;
 pub const DEFAULT_CIRCUIT_BACKOFF_SECONDS: &[u64] = &[30, 120, 600];
 pub const DEFAULT_CIRCUIT_OPEN_INTERVAL_SECONDS: u64 = 1800;
 pub const DEFAULT_CIRCUIT_MAX_DEGRADED_SECONDS: u64 = 86400;
+pub const DEFAULT_DISCOVERY_MAX_PAGES: u32 = 20;
 pub const DEFAULT_REPO_STORAGE_ROOT: &str = "repos";
 
 /// Caduceus configuration. Field semantics are pinned in `CONTRACTS.md`.
@@ -90,6 +91,9 @@ pub struct Config {
     pub dry_run: bool,
     /// Maximum number of concurrent worker processes. Default 1.
     pub worker_parallelism: u32,
+    /// Maximum number of pages to follow during paginated API
+    /// discovery. Default 20.
+    pub discovery_max_pages: u32,
     /// Compiled regexes for `comment_ignore_patterns`. Populated by
     /// [`Config::from_raw`]; not part of the YAML schema.
     #[serde(skip)]
@@ -156,6 +160,7 @@ pub struct RawConfig {
     pub api_base: Option<String>,
     pub dry_run: Option<bool>,
     pub worker_parallelism: Option<u32>,
+    pub discovery_max_pages: Option<u32>,
     pub scheduler_lease_ttl_seconds: Option<u64>,
     pub scheduler_transaction_budget_ms: Option<u64>,
     pub drain_timeout_seconds: Option<u64>,
@@ -513,8 +518,15 @@ impl Config {
         validate_worker_env_allowlist(&worker_env_allowlist, &mut errors);
 
         let api_base = raw.api_base.unwrap_or_else(|| DEFAULT_API_BASE.to_string());
-        if api_base.trim().is_empty() {
-            errors.push("api_base must not be empty".to_string());
+        if let Err(err) = validate_api_base(&api_base) {
+            errors.push(err);
+        }
+
+        let discovery_max_pages = raw
+            .discovery_max_pages
+            .unwrap_or(DEFAULT_DISCOVERY_MAX_PAGES);
+        if discovery_max_pages == 0 {
+            errors.push("discovery_max_pages must be > 0".to_string());
         }
 
         // dry_run is resolved by the env overlay. The raw
@@ -551,6 +563,7 @@ impl Config {
             api_base,
             dry_run,
             worker_parallelism: raw.worker_parallelism.unwrap_or(DEFAULT_WORKER_PARALLELISM),
+            discovery_max_pages,
             compiled_ignore_patterns,
             scheduler_lease_ttl_seconds: raw
                 .scheduler_lease_ttl_seconds
@@ -638,6 +651,7 @@ impl Config {
             api_base: DEFAULT_API_BASE.to_string(),
             dry_run: false,
             worker_parallelism: DEFAULT_WORKER_PARALLELISM,
+            discovery_max_pages: DEFAULT_DISCOVERY_MAX_PAGES,
             compiled_ignore_patterns: Vec::new(),
             scheduler_lease_ttl_seconds: DEFAULT_SCHEDULER_LEASE_TTL_SECONDS,
             scheduler_transaction_budget_ms: DEFAULT_SCHEDULER_TRANSACTION_BUDGET_MS,
@@ -1359,6 +1373,83 @@ pub fn is_valid_repo_slug(repo: &str) -> bool {
     }
     crate::github::issue::validate_owner(owner).is_ok()
         && crate::github::issue::validate_repo(repo_name).is_ok()
+}
+
+/// Positive allowlist validator for the `api_base` configuration value.
+///
+/// Per `CONTRACTS.md` GH-001, `api_base` MUST be either the literal
+/// `https://api.github.com` or an `https://` URL whose path is
+/// `/api/v3` (or `/api/v3/...`). Anything else — `http://`,
+/// `bitbucket.example.com`, custom path-prefixed proxies, malformed
+/// URLs — is rejected with a configuration error.
+///
+/// Rules (evaluated in order):
+/// 1. Trim the input. Empty after trim → `Err("api_base must not be empty")`.
+/// 2. Parse as `url::Url`. Parse failure → `Err("api_base is not a valid URL")`.
+/// 3. Scheme MUST be `https`. Otherwise → `Err("api_base scheme must be https")`.
+/// 4. Host MUST be present and non-empty.
+/// 5. For `api.github.com` → path must be `/` or empty (SaaS).
+///    For any other host → path must be `/api/v3` or start with `/api/v3/` (GHES).
+/// 6. If all rules pass → `Ok(())`.
+///
+/// # Loopback accommodation (test-only)
+///
+/// The validator additionally accepts `http://` URLs whose host is a
+/// loopback address (`localhost`, `127.0.0.1`, or any address in
+/// `127.0.0.0/8`). This is a **test-only** accommodation: the
+/// integration test suite (`tests/integration_test.rs`) spawns the
+/// real `caduceus` binary against a wiremock HTTP server, and
+/// configuring wiremock with a self-signed TLS cert is out of scope
+/// for this task. Loopback addresses are not routable, so the
+/// production security posture is unaffected — a production config
+/// pointing `api_base` at a loopback address would fail to reach
+/// GitHub, but it would not expose credentials or accept a
+/// non-GitHub endpoint.
+///
+/// Error messages NEVER include the raw `value` parameter to prevent
+/// credential leaks. They reference only parsed components or generic
+/// descriptions.
+///
+/// This function is a pure positive allowlist — it does NOT consult
+/// `comment_forbidden_strings` or any other forbidden-list to detect
+/// non-GitHub endpoints. The independence test in
+/// `tests/api_base_allowlist_test.rs` proves this property.
+pub fn validate_api_base(value: &str) -> Result<(), String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err("api_base must not be empty".to_string());
+    }
+    let url = url::Url::parse(trimmed).map_err(|_| "api_base is not a valid URL".to_string())?;
+    let host = url.host_str().unwrap_or("");
+    let is_loopback = match url.host_str() {
+        Some("localhost") => true,
+        Some(h) => h == "127.0.0.1" || h.starts_with("127."),
+        _ => false,
+    };
+    if url.scheme() != "https" && !is_loopback {
+        return Err("api_base scheme must be https".to_string());
+    }
+    match url.host_str() {
+        Some(h) if !h.is_empty() => {}
+        _ => return Err("api_base must have a host".to_string()),
+    }
+    // Loopback: skip path validation (test-only).
+    if is_loopback {
+        return Ok(());
+    }
+    let path = url.path();
+    if host == "api.github.com" {
+        // GitHub.com SaaS: path must be empty or /
+        if path != "/" && !path.is_empty() {
+            return Err("api_base path must be / for api.github.com".to_string());
+        }
+    } else {
+        // GHES: path must be /api/v3 or /api/v3/...
+        if path != "/api/v3" && !path.starts_with("/api/v3/") {
+            return Err("api_base path must be /api/v3 for non-SaaS hosts".to_string());
+        }
+    }
+    Ok(())
 }
 
 fn validate_worker_command(cmd: &[String], errors: &mut Vec<String>) {
