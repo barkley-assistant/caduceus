@@ -103,7 +103,7 @@ pub async fn discover_watched_repos(client: &Client, cfg: &Config) -> CaduceusRe
     if !cfg.watched_repos.is_empty() {
         return Ok(validated_configured_repos(&cfg.watched_repos));
     }
-    discover_via_api(client).await
+    discover_via_api(client, cfg.discovery_max_pages as usize).await
 }
 
 fn validated_configured_repos(configured: &[String]) -> Vec<String> {
@@ -127,7 +127,7 @@ fn validated_configured_repos(configured: &[String]) -> Vec<String> {
     out
 }
 
-async fn discover_via_api(client: &Client) -> CaduceusResult<Vec<String>> {
+async fn discover_via_api(client: &Client, max_pages: usize) -> CaduceusResult<Vec<String>> {
     let initial_path = format!("/user/repos?per_page={}&sort=full_name", REPOS_PER_PAGE);
     let mut next: Option<Url> = Some(client.base_url().clone().join(&initial_path).map_err(
         |err| {
@@ -142,9 +142,9 @@ async fn discover_via_api(client: &Client) -> CaduceusResult<Vec<String>> {
     let mut pages = 0usize;
 
     while let Some(url) = next.take() {
-        if pages >= MAX_PAGES_PER_ENDPOINT {
+        if pages >= max_pages {
             return Err(CaduceusError::Other(format!(
-                "repository discovery exceeded {MAX_PAGES_PER_ENDPOINT} pages"
+                "repository discovery exceeded {max_pages} pages"
             )));
         }
         pages += 1;
@@ -303,11 +303,12 @@ pub async fn poll_investigation(
 /// Rate-limit and page-cap failures short-circuit the whole poll.
 async fn poll_label(
     client: &Client,
-    _cfg: &Config,
+    cfg: &Config,
     repos: &[String],
     label: &str,
     ticket_type: TicketType,
 ) -> CaduceusResult<IssuePollOutcome> {
+    let max_pages = cfg.discovery_max_pages as usize;
     let mut outcome = IssuePollOutcome::default();
     for repo in repos {
         if !is_valid_repo_slug(repo) {
@@ -325,9 +326,9 @@ async fn poll_label(
         )?);
         let mut pages = 0usize;
         while let Some(url) = next.take() {
-            if pages >= MAX_PAGES_PER_ENDPOINT {
+            if pages >= max_pages {
                 return Err(CaduceusError::Other(format!(
-                    "{ticket_type:?} issue poll for {repo} exceeded {MAX_PAGES_PER_ENDPOINT} pages"
+                    "{ticket_type:?} issue poll for {repo} exceeded {max_pages} pages"
                 )));
             }
             pages += 1;
