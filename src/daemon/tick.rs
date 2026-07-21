@@ -136,14 +136,7 @@ pub async fn run_with_config(
     let clock: Arc<dyn crate::daemon::orchestration::Clock> = Arc::new(SystemClock);
     let client = Arc::new(Client::with_config(&cfg)?);
     let git = GitRunner::new(&cfg);
-    let services = Services::production(
-        &cfg,
-        clock,
-        Arc::clone(&client),
-        git,
-        Arc::new(crate::daemon::orchestration::ProcessSupervisorAdapter),
-        Arc::clone(&pool),
-    );
+    let services = Services::production(&cfg, clock, Arc::clone(&client), git, Arc::clone(&pool));
     tick(cfg, services, pool, cancellation).await
 }
 

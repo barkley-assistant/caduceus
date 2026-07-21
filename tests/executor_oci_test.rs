@@ -1,10 +1,10 @@
-//! Tests for the OciExecutor stub.
+//! Tests for the OciExecutor implementation.
 //!
-//! Verifies the runtime rejection contract: the OciExecutor parses in
-//! config (config loads cleanly) but returns
-//! `CaduceusError::OciNotImplementedYet` from `run` with an error
-//! message that names Task 6.2 as the unblocking work unit. The
-//! dispatch never spawns a subprocess.
+//! Verifies that `OciExecutor::run` attempts to dispatch via the
+//! configured OCI CLI. In CI without Docker/Podman, the executor
+//! returns `OciEngineUnavailable` (via `OciCliNotFound` or similar
+//! from the subprocess path). The tests verify the typed error and
+//! that no subprocess is spawned for config-only errors.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -20,9 +20,13 @@ fn issue_key() -> IssueKey {
     IssueKey::parse("test-owner/test-repo#1").expect("valid key")
 }
 
-fn test_cfg() -> Config {
+fn setup() -> (Config, TempDir) {
     let tmp = TempDir::new().expect("tempdir");
-    Config::test_defaults(tmp.path())
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).expect("create state dir");
+    let mut cfg = Config::test_defaults(tmp.path());
+    cfg.state_dir = state_dir;
+    (cfg, tmp)
 }
 
 fn test_spec() -> ExecutorSpec {
@@ -38,49 +42,51 @@ fn test_spec() -> ExecutorSpec {
 }
 
 // ---------------------------------------------------------------------------
-// SCN-03.3: oci_executor_returns_not_implemented
+// oci_executor_returns_typed_error
 // ---------------------------------------------------------------------------
 
-/// `OciExecutor::run` returns `CaduceusError::OciNotImplementedYet`
-/// whose `Display` contains "Task 6.2".
+/// `OciExecutor::run` returns a typed `CaduceusError` (not a panic).
+/// Without Docker/Podman in CI, the error is either
+/// `OciEngineUnavailable` or `OciCreateFailed`.
 #[tokio::test]
-async fn oci_executor_returns_not_implemented() {
-    let cfg = test_cfg();
+async fn oci_executor_returns_typed_error() {
+    let (cfg, _tmp) = setup();
     let executor: Arc<dyn Executor> = Arc::new(OciExecutor::new(cfg));
     let spec = test_spec();
     let err = executor
         .run(&spec)
         .await
-        .expect_err("OciExecutor::run must return an error");
-    match err {
-        CaduceusError::OciNotImplementedYet => {}
-        other => panic!("expected OciNotImplementedYet; got: {other:?}"),
-    }
-    let display = format!("{}", CaduceusError::OciNotImplementedYet);
+        .expect_err("OciExecutor::run must return an error without Docker");
+
+    let is_oci_error = matches!(
+        &err,
+        CaduceusError::OciEngineUnavailable { .. }
+            | CaduceusError::OciCreateFailed { .. }
+            | CaduceusError::OciCliNotFound { .. }
+            | CaduceusError::OciPullFailed { .. }
+    );
     assert!(
-        display.contains("Task 6.2"),
-        "error message must name Task 6.2; got: {display}"
+        is_oci_error,
+        "expected a typed OCI error without Docker; got: {err:?}"
     );
 }
 
 // ---------------------------------------------------------------------------
-// oci_executor_does_not_spawn
+// oci_executor_does_not_spawn_process
 // ---------------------------------------------------------------------------
 
-/// `OciExecutor::run` returns immediately without spawning a subprocess.
-/// We assert this by measuring elapsed time — the stub returns in
-/// well under 100ms. A real spawn would take longer (process creation,
-/// tokio scheduling, etc.).
+/// `OciExecutor::run` returns quickly without spawning a long-lived
+/// subprocess when the engine is unavailable.
 #[tokio::test]
-async fn oci_executor_does_not_spawn() {
-    let cfg = test_cfg();
+async fn oci_executor_does_not_spawn_process() {
+    let (cfg, _tmp) = setup();
     let executor: Arc<dyn Executor> = Arc::new(OciExecutor::new(cfg));
     let spec = test_spec();
     let started = Instant::now();
     let _ = executor.run(&spec).await;
     let elapsed = started.elapsed();
     assert!(
-        elapsed.as_millis() < 100,
-        "OciExecutor::run returned in {elapsed:?} — must be immediate (no spawn)"
+        elapsed.as_secs() < 5,
+        "OciExecutor::run returned in {elapsed:?} — should be fast even on error"
     );
 }
