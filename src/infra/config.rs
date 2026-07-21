@@ -64,6 +64,20 @@ pub const DEFAULT_REPO_STORAGE_ROOT: &str = "repos";
 pub const DEFAULT_EXECUTOR_MODE: crate::executor::ExecutorKind =
     crate::executor::ExecutorKind::TrustedHost;
 
+/// OCI image pull policy.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OciPullPolicy {
+    #[default]
+    Never,
+    IfMissing,
+    Always,
+}
+
+pub const DEFAULT_OCI_STOP_TIMEOUT_SECONDS: u64 = 30;
+pub const DEFAULT_OCI_KILL_TIMEOUT_SECONDS: u64 = 10;
+pub const DEFAULT_OCI_RECONCILE_TIMEOUT_SECONDS: u64 = 60;
+
 /// Caduceus configuration. Field semantics are pinned in `CONTRACTS.md`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -138,6 +152,22 @@ pub struct Config {
     /// Defaults to `false`; `Config::from_raw` rejects TrustedHost with
     /// `ReducedContainmentNotAcknowledged` before any subprocess spawns.
     pub reduced_containment_acknowledged: bool,
+
+    // -----------------------------------------------------------------------
+    // OCI executor fields (Task 6.2)
+    // -----------------------------------------------------------------------
+    /// Path to the OCI CLI binary (docker or podman). Default "docker".
+    pub oci_cli: PathBuf,
+    /// Image digest (sha256:...) pinned for the OCI executor.
+    pub oci_image_digest: String,
+    /// Image pull policy. Default Never.
+    pub oci_pull_policy: OciPullPolicy,
+    /// Grace period in seconds for `docker stop`. Default 30.
+    pub oci_stop_timeout_seconds: u64,
+    /// Grace period in seconds for `docker kill`. Default 10.
+    pub oci_kill_timeout_seconds: u64,
+    /// Total timeout in seconds for orphan reconciliation. Default 60.
+    pub oci_reconcile_timeout_seconds: u64,
 }
 
 /// Loose deserialisation layer used to read the YAML before the source
@@ -185,6 +215,14 @@ pub struct RawConfig {
     pub repo_storage_root: Option<PathBuf>,
     pub executor_mode: Option<crate::executor::ExecutorKind>,
     pub reduced_containment_acknowledged: Option<bool>,
+
+    // OCI executor fields
+    pub oci_cli: Option<PathBuf>,
+    pub oci_image_digest: Option<String>,
+    pub oci_pull_policy: Option<OciPullPolicy>,
+    pub oci_stop_timeout_seconds: Option<u64>,
+    pub oci_kill_timeout_seconds: Option<u64>,
+    pub oci_reconcile_timeout_seconds: Option<u64>,
 }
 
 /// Load context — used to resolve paths and the default worker command
@@ -561,6 +599,57 @@ impl Config {
             );
         }
 
+        // OCI executor fields — only validate when executor_mode is Oci
+        let oci_cli = raw.oci_cli.unwrap_or_else(|| PathBuf::from("docker"));
+        let is_oci_mode = matches!(executor_mode, crate::executor::ExecutorKind::Oci);
+        let oci_image_digest = match raw.oci_image_digest {
+            Some(d) if !d.is_empty() => {
+                let digest_regex =
+                    Regex::new(r"^sha256:[a-f0-9]{64}$").expect("digest regex is valid");
+                if !digest_regex.is_match(&d) {
+                    errors.push(format!(
+                        "oci_image_digest must be a valid sha256 digest \
+  (sha256: followed by 64 hex chars), got: {d:?}"
+                    ));
+                }
+                d
+            }
+            Some(_) => {
+                // Explicitly set to empty string
+                errors.push("oci_image_digest must not be set to an empty string".to_string());
+                String::new()
+            }
+            None => {
+                if is_oci_mode {
+                    errors.push(
+                        "oci_image_digest must not be empty when executor_mode is oci \
+  (image must be pinned by digest)"
+                            .to_string(),
+                    );
+                }
+                String::new()
+            }
+        };
+        let oci_pull_policy = raw.oci_pull_policy.unwrap_or(OciPullPolicy::Never);
+        let oci_stop_timeout_seconds = raw
+            .oci_stop_timeout_seconds
+            .unwrap_or(DEFAULT_OCI_STOP_TIMEOUT_SECONDS);
+        if oci_stop_timeout_seconds == 0 {
+            errors.push("oci_stop_timeout_seconds must be > 0".to_string());
+        }
+        let oci_kill_timeout_seconds = raw
+            .oci_kill_timeout_seconds
+            .unwrap_or(DEFAULT_OCI_KILL_TIMEOUT_SECONDS);
+        if oci_kill_timeout_seconds == 0 {
+            errors.push("oci_kill_timeout_seconds must be > 0".to_string());
+        }
+        let oci_reconcile_timeout_seconds = raw
+            .oci_reconcile_timeout_seconds
+            .unwrap_or(DEFAULT_OCI_RECONCILE_TIMEOUT_SECONDS);
+        if oci_reconcile_timeout_seconds == 0 {
+            errors.push("oci_reconcile_timeout_seconds must be > 0".to_string());
+        }
+
         // dry_run is resolved by the env overlay. The raw
         // layer may carry a YAML-supplied hint here for tests; we
         // delegate the merge.
@@ -650,6 +739,14 @@ impl Config {
             repo_storage_root,
             executor_mode,
             reduced_containment_acknowledged,
+
+            // OCI executor fields
+            oci_cli,
+            oci_image_digest,
+            oci_pull_policy,
+            oci_stop_timeout_seconds,
+            oci_kill_timeout_seconds,
+            oci_reconcile_timeout_seconds,
         })
     }
 
@@ -703,6 +800,16 @@ impl Config {
             // path construct a `RawConfig` with the field set to
             // `Some(false)`.
             reduced_containment_acknowledged: true,
+
+            // OCI executor defaults
+            oci_cli: PathBuf::from("docker"),
+            oci_image_digest:
+                "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                    .to_string(),
+            oci_pull_policy: OciPullPolicy::Never,
+            oci_stop_timeout_seconds: DEFAULT_OCI_STOP_TIMEOUT_SECONDS,
+            oci_kill_timeout_seconds: DEFAULT_OCI_KILL_TIMEOUT_SECONDS,
+            oci_reconcile_timeout_seconds: DEFAULT_OCI_RECONCILE_TIMEOUT_SECONDS,
         }
     }
 

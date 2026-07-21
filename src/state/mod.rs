@@ -18,6 +18,7 @@ pub mod checkpoints;
 pub mod meta;
 pub mod migrate;
 pub mod migrate_to_sqlite;
+pub mod oci_run;
 pub mod queue;
 pub mod retention;
 pub mod store;

@@ -10,8 +10,8 @@
 //!
 //! * [`trusted_host::TrustedHostExecutor`] — wraps
 //!   [`crate::worker::supervisor::supervise`] unchanged.
-//! * [`oci::OciExecutor`] — stub returning
-//!   [`CaduceusError::OciNotImplementedYet`]; filled in by Task 6.2.
+//! * [`oci::OciExecutor`] — dispatches workers via Docker or Podman
+//!   CLI using the five-step lifecycle in [`oci_lifecycle`].
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -34,6 +34,9 @@ use self::trusted_host::TrustedHostExecutor;
 // ---------------------------------------------------------------------------
 
 pub mod oci;
+pub mod oci_args;
+pub mod oci_lifecycle;
+pub mod secret_transport;
 pub mod trusted_host;
 
 // ---------------------------------------------------------------------------

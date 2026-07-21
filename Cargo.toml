@@ -120,3 +120,33 @@ edition = "2021"
 name = "tick_dispatch_test"
 path = "tests/tick_dispatch_test.rs"
 edition = "2021"
+
+[[test]]
+name = "oci_config_test"
+path = "tests/oci_config_test.rs"
+edition = "2021"
+
+[[test]]
+name = "oci_run_test"
+path = "tests/state/oci_run_test.rs"
+edition = "2021"
+
+[[test]]
+name = "oci_args_test"
+path = "tests/executor/oci_args_test.rs"
+edition = "2021"
+
+[[test]]
+name = "oci_lifecycle_test"
+path = "tests/executor/oci_lifecycle_test.rs"
+edition = "2021"
+
+[[test]]
+name = "oci_secret_transport_test"
+path = "tests/executor/oci_secret_transport_test.rs"
+edition = "2021"
+
+[[test]]
+name = "oci_label_test"
+path = "tests/executor/oci_label_test.rs"
+edition = "2021"
