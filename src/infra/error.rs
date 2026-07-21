@@ -180,6 +180,23 @@ pub enum CaduceusError {
     #[error("operation cancelled")]
     Cancelled,
 
+    /// The worker pool has no available permits. Current depth
+    /// and max depth are surfaced so the caller can decide
+    /// whether to retry immediately or route to NeedsAttention.
+    #[error("pool saturated: {current_depth}/{max_depth} permits held")]
+    PoolSaturated { current_depth: u32, max_depth: u32 },
+
+    /// A per-repository exclusion lock is held by another
+    /// admission for the same repo key. The caller should
+    /// treat this as a transient infrastructure failure.
+    #[error("repository exclusion held: {repo_key}")]
+    RepositoryExclusionHeld { repo_key: String },
+
+    /// The drain timeout elapsed before all in-flight workers
+    /// completed. The listed run IDs had their leases cancelled.
+    #[error("drain timed out for run(s): {timed_out_run_ids:?}")]
+    DrainTimeout { timed_out_run_ids: Vec<String> },
+
     #[error("{0}")]
     Other(String),
 }
@@ -284,6 +301,20 @@ impl fmt::Debug for CaduceusError {
                 issue_key, stale_token, current_token
             ),
             CaduceusError::Cancelled => "Cancelled".to_string(),
+            CaduceusError::PoolSaturated {
+                current_depth,
+                max_depth,
+            } => format!(
+                "PoolSaturated {{ current_depth: {}, max_depth: {} }}",
+                current_depth, max_depth
+            ),
+            CaduceusError::RepositoryExclusionHeld { repo_key } => {
+                format!("RepositoryExclusionHeld {{ repo_key: {:?} }}", repo_key)
+            }
+            CaduceusError::DrainTimeout { timed_out_run_ids } => format!(
+                "DrainTimeout {{ timed_out_run_ids: {:?} }}",
+                timed_out_run_ids
+            ),
             CaduceusError::Other(s) => format!("Other({})", scrub(s)),
         };
         f.write_str(&rendered)

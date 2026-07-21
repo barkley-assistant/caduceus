@@ -67,6 +67,8 @@ pub struct StatusReport {
     pub state_corrupt: bool,
     /// Readiness diagnostics: bridge/harness/provider status.
     pub readiness: Option<BTreeMap<String, String>>,
+    /// Pool state: "idle", "active(n)", "saturated", or "draining".
+    pub pool_state: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -85,7 +87,7 @@ pub struct LiveWorker {
 
 /// Schema version. Bumped when a new field is added so
 /// the `--json` consumer can detect the version.
-pub const STATUS_SCHEMA_VERSION: &str = "7.4.0";
+pub const STATUS_SCHEMA_VERSION: &str = "7.5.0";
 
 /// Maximum number of recent errors surfaced by
 /// `StatusReport::recent_errors`.
@@ -236,6 +238,7 @@ pub fn build_report(state_dir: &Path) -> CaduceusResult<(StatusReport, Option<St
         diagnostics: Vec::new(),
         state_corrupt,
         readiness: Some(readiness),
+        pool_state: None,
     };
     Ok((report, None))
 }
@@ -286,6 +289,7 @@ fn empty_report(state_dir: &Path) -> StatusReport {
         diagnostics: Vec::new(),
         state_corrupt: false,
         readiness: None,
+        pool_state: None,
     }
 }
 
@@ -477,6 +481,9 @@ pub fn render_human(report: &StatusReport, diagnostic: Option<&StatusDiagnostic>
     if report.state_corrupt {
         out.push_str("  STATE META CORRUPT — refusing to tick until cleared\n");
     }
+    if let Some(ref pool) = report.pool_state {
+        out.push_str(&format!("  pool state: {pool}\n"));
+    }
     out.push_str("  phases:\n");
     for (label, count) in &report.phases {
         out.push_str(&format!("    {label}: {count}\n"));
@@ -598,6 +605,7 @@ pub fn build_report_from_state(
         diagnostics: Vec::new(),
         state_corrupt: false,
         readiness: None,
+        pool_state: None,
     }
 }
 

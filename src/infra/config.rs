@@ -53,6 +53,8 @@ pub const DEFAULT_API_BASE: &str = "https://api.github.com";
 pub const DEFAULT_WORKER_PARALLELISM: u32 = 1;
 pub const DEFAULT_SCHEDULER_LEASE_TTL_SECONDS: u64 = 60;
 pub const DEFAULT_SCHEDULER_TRANSACTION_BUDGET_MS: u64 = 100;
+pub const DEFAULT_DRAIN_TIMEOUT_SECONDS: u64 = 30;
+pub const DEFAULT_BACKPRESSURE_BUDGET_MS: u64 = 5000;
 
 /// Caduceus configuration. Field semantics are pinned in `CONTRACTS.md`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -92,6 +94,12 @@ pub struct Config {
     /// Maximum time in milliseconds for a scheduler transaction.
     /// Default 100.
     pub scheduler_transaction_budget_ms: u64,
+    /// Timeout in seconds for graceful worker drain on shutdown.
+    /// Default 30.
+    pub drain_timeout_seconds: u64,
+    /// Maximum time in milliseconds to wait for a semaphore permit
+    /// before returning PoolSaturated. Default 5000.
+    pub backpressure_budget_ms: u64,
 }
 
 /// Loose deserialisation layer used to read the YAML before the source
@@ -129,6 +137,8 @@ pub struct RawConfig {
     pub worker_parallelism: Option<u32>,
     pub scheduler_lease_ttl_seconds: Option<u64>,
     pub scheduler_transaction_budget_ms: Option<u64>,
+    pub drain_timeout_seconds: Option<u64>,
+    pub backpressure_budget_ms: Option<u64>,
 }
 
 /// Load context — used to resolve paths and the default worker command
@@ -516,6 +526,12 @@ impl Config {
             scheduler_transaction_budget_ms: raw
                 .scheduler_transaction_budget_ms
                 .unwrap_or(DEFAULT_SCHEDULER_TRANSACTION_BUDGET_MS),
+            drain_timeout_seconds: raw
+                .drain_timeout_seconds
+                .unwrap_or(DEFAULT_DRAIN_TIMEOUT_SECONDS),
+            backpressure_budget_ms: raw
+                .backpressure_budget_ms
+                .unwrap_or(DEFAULT_BACKPRESSURE_BUDGET_MS),
         })
     }
 
@@ -554,6 +570,8 @@ impl Config {
             compiled_ignore_patterns: Vec::new(),
             scheduler_lease_ttl_seconds: DEFAULT_SCHEDULER_LEASE_TTL_SECONDS,
             scheduler_transaction_budget_ms: DEFAULT_SCHEDULER_TRANSACTION_BUDGET_MS,
+            drain_timeout_seconds: DEFAULT_DRAIN_TIMEOUT_SECONDS,
+            backpressure_budget_ms: DEFAULT_BACKPRESSURE_BUDGET_MS,
         }
     }
 
