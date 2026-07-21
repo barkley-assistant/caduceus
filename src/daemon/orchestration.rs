@@ -37,6 +37,7 @@ use tracing::{info, warn};
 use crate::github::issue::IssueKey;
 use crate::github::Client;
 use crate::infra::error::{CaduceusError, CaduceusResult};
+use crate::scheduler::Pool;
 use crate::state::queue::{ClaimToken, Phase, QueueEntry, StateStore};
 use crate::worker::supervisor::SupervisorOutcome;
 use crate::worktree::{GitRunner, Worktree};
@@ -205,6 +206,7 @@ pub struct Services {
     pub github: Arc<dyn GithubClient>,
     pub git: Arc<dyn Git>,
     pub process: Arc<dyn ProcessSupervisor>,
+    pub pool: Arc<Pool>,
 }
 
 impl std::fmt::Debug for Services {
@@ -214,6 +216,7 @@ impl std::fmt::Debug for Services {
             .field("github", &"Arc<dyn GithubClient>")
             .field("git", &"Arc<dyn Git>")
             .field("process", &"Arc<dyn ProcessSupervisor>")
+            .field("pool", &"Arc<Pool>")
             .finish()
     }
 }
@@ -225,12 +228,14 @@ impl Services {
         github: Arc<Client>,
         git: GitRunner,
         process: Arc<dyn ProcessSupervisor>,
+        pool: Arc<Pool>,
     ) -> Self {
         Self {
             clock,
             github: Arc::new(GithubClientAdapter::new(github)),
             git: Arc::new(GitRunnerAdapter::new(git)),
             process,
+            pool,
         }
     }
 
@@ -241,12 +246,14 @@ impl Services {
         github: Arc<dyn GithubClient>,
         git: Arc<dyn Git>,
         process: Arc<dyn ProcessSupervisor>,
+        pool: Arc<Pool>,
     ) -> Self {
         Self {
             clock,
             github,
             git,
             process,
+            pool,
         }
     }
 }
@@ -392,6 +399,9 @@ pub fn classify_error(err: &CaduceusError) -> FailureClass {
         CaduceusError::LeadershipContended { .. } => FailureClass::Infrastructure,
         CaduceusError::LeaseStale { .. } => FailureClass::Infrastructure,
         CaduceusError::FencingTokenRegression { .. } => FailureClass::Infrastructure,
+        CaduceusError::PoolSaturated { .. } => FailureClass::Infrastructure,
+        CaduceusError::RepositoryExclusionHeld { .. } => FailureClass::Infrastructure,
+        CaduceusError::DrainTimeout { .. } => FailureClass::Cancellation,
 
         // Generic Other — content / schema / public-voice / worker
         // result validation land here. Voice rejections and
@@ -864,6 +874,25 @@ mod inline_tests {
         let io_err = std::io::Error::new(std::io::ErrorKind::ConnectionReset, "reset");
         let err: CaduceusError = io_err.into();
         assert_eq!(classify_error(&err), FailureClass::Infrastructure);
+
+        // Pool saturated — infrastructure
+        let err = CaduceusError::PoolSaturated {
+            current_depth: 5,
+            max_depth: 10,
+        };
+        assert_eq!(classify_error(&err), FailureClass::Infrastructure);
+
+        // Repository exclusion held — infrastructure
+        let err = CaduceusError::RepositoryExclusionHeld {
+            repo_key: "owner/repo".into(),
+        };
+        assert_eq!(classify_error(&err), FailureClass::Infrastructure);
+
+        // Drain timeout — cancellation
+        let err = CaduceusError::DrainTimeout {
+            timed_out_run_ids: vec!["run-1".into()],
+        };
+        assert_eq!(classify_error(&err), FailureClass::Cancellation);
     }
 
     #[test]
@@ -871,7 +900,7 @@ mod inline_tests {
         // Every CaduceusError variant is classified. If a new
         // variant is added without a `classify_error` arm,
         // this match will fail to compile.
-        let variants: [CaduceusError; 20] = [
+        let variants: [CaduceusError; 23] = [
             CaduceusError::Config("x".into()),
             CaduceusError::Io(std::io::Error::other("x")),
             CaduceusError::Json(serde_json::from_str::<u8>("not-a-number").unwrap_err()),
@@ -937,6 +966,16 @@ mod inline_tests {
                 issue_key: "owner/repo#1".into(),
                 stale_token: 1,
                 current_token: 3,
+            },
+            CaduceusError::PoolSaturated {
+                current_depth: 1,
+                max_depth: 2,
+            },
+            CaduceusError::RepositoryExclusionHeld {
+                repo_key: "owner/repo".into(),
+            },
+            CaduceusError::DrainTimeout {
+                timed_out_run_ids: vec!["run-1".into()],
             },
         ];
         for v in &variants {

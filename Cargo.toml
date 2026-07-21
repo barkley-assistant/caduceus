@@ -55,3 +55,13 @@ serial_test = "3"
 lto = "thin"
 codegen-units = 1
 strip = "symbols"
+
+[[test]]
+name = "pool_test"
+path = "tests/scheduler/pool_test.rs"
+edition = "2021"
+
+[[test]]
+name = "drain_test"
+path = "tests/daemon/drain_test.rs"
+edition = "2021"

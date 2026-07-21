@@ -535,10 +535,10 @@ fn raw_env_from_process_env_handles_unset_vars() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn status_schema_version_bumped_to_7_4_0() {
+fn status_schema_version_bumped_to_7_5_0() {
     assert_eq!(
         caduceus::status::STATUS_SCHEMA_VERSION,
-        "7.4.0",
-        "schema version should be 7.4.0 for the readiness field"
+        "7.5.0",
+        "schema version should be 7.5.0 for the pool_state field"
     );
 }
