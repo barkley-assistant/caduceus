@@ -319,3 +319,104 @@ fn scrub_helper_redacts_multiple_assignments_in_one_line() {
     assert!(out.contains("PATH=/tmp"));
     assert_eq!(out.matches("<redacted>").count(), 2);
 }
+
+// ---------------------------------------------------------------------------
+// Task 5.4 — New error variants for daemon-owned repository storage
+// ---------------------------------------------------------------------------
+
+#[test]
+fn symlinked_storage_root_display_contains_path() {
+    let err = CaduceusError::SymlinkedStorageRoot {
+        path: PathBuf::from("/tmp/linked-repos"),
+    };
+    let rendered = format!("{err}");
+    assert!(rendered.contains("/tmp/linked-repos"), "got: {rendered}");
+}
+
+#[test]
+fn symlinked_storage_root_debug_contains_path() {
+    let err = CaduceusError::SymlinkedStorageRoot {
+        path: PathBuf::from("/tmp/linked-repos"),
+    };
+    let debug = format!("{err:?}");
+    assert!(debug.contains("SymlinkedStorageRoot"), "got: {debug}");
+    assert!(debug.contains("/tmp/linked-repos"), "got: {debug}");
+}
+
+#[test]
+fn symlinked_storage_root_exit_code_is_one() {
+    let err = CaduceusError::SymlinkedStorageRoot {
+        path: PathBuf::from("/tmp/x"),
+    };
+    assert_eq!(err.exit_code(), std::process::ExitCode::from(1));
+}
+
+#[test]
+fn worktree_reuse_after_failure_display_contains_run_id() {
+    let err = CaduceusError::WorktreeReuseAfterFailure {
+        run_id: "deadbeef".to_string(),
+        worktree_path: PathBuf::from("/tmp/failed-worktree"),
+        last_state: "Failed".to_string(),
+    };
+    let rendered = format!("{err}");
+    assert!(rendered.contains("deadbeef"), "got: {rendered}");
+    assert!(rendered.contains("/tmp/failed-worktree"), "got: {rendered}");
+}
+
+#[test]
+fn worktree_reuse_after_failure_debug_scrubs_last_state() {
+    let err = CaduceusError::WorktreeReuseAfterFailure {
+        run_id: "deadbeef".to_string(),
+        worktree_path: PathBuf::from("/tmp/failed"),
+        last_state: "GITHUB_TOKEN=ghp_leaked state".to_string(),
+    };
+    let debug = format!("{err:?}");
+    assert!(debug.contains("WorktreeReuseAfterFailure"), "got: {debug}");
+    assert!(!debug.contains("ghp_leaked"), "debug leaked: {debug}");
+}
+
+#[test]
+fn worktree_reuse_after_failure_exit_code_is_one() {
+    let err = CaduceusError::WorktreeReuseAfterFailure {
+        run_id: "abc".to_string(),
+        worktree_path: PathBuf::from("/tmp/wt"),
+        last_state: "exists".to_string(),
+    };
+    assert_eq!(err.exit_code(), std::process::ExitCode::from(1));
+}
+
+#[test]
+fn mode_not_preserved_display_shows_octal_modes() {
+    let err = CaduceusError::ModeNotPreserved {
+        path: PathBuf::from("/tmp/dir"),
+        expected: 0o700,
+        observed: 0o755,
+    };
+    let rendered = format!("{err}");
+    assert!(rendered.contains("/tmp/dir"), "got: {rendered}");
+    assert!(rendered.contains("700"), "got: {rendered}");
+    assert!(rendered.contains("755"), "got: {rendered}");
+}
+
+#[test]
+fn mode_not_preserved_debug_shows_octal_modes() {
+    let err = CaduceusError::ModeNotPreserved {
+        path: PathBuf::from("/tmp/dir"),
+        expected: 0o700,
+        observed: 0o755,
+    };
+    let debug = format!("{err:?}");
+    assert!(debug.contains("ModeNotPreserved"), "got: {debug}");
+    assert!(debug.contains("700"), "got: {debug}");
+    assert!(debug.contains("755"), "got: {debug}");
+}
+
+#[test]
+fn mode_not_preserved_exit_code_is_one() {
+    let err = CaduceusError::ModeNotPreserved {
+        path: PathBuf::from("/tmp/x"),
+        expected: 0o700,
+        observed: 0o755,
+    };
+    assert_eq!(err.exit_code(), std::process::ExitCode::from(1));
+}

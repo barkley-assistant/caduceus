@@ -14,7 +14,7 @@ use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -501,7 +501,31 @@ impl GitRunner {
     pub fn timeout(&self) -> Duration {
         self.inner.timeout
     }
+
+    /// Switch the process-wide umask to `0o022` for worktree
+    /// mutations (preserving source-file executable bits), execute
+    /// the closure, then restore `0o077`. The operation is serialized
+    /// via a process-wide [`Mutex`] to prevent races with other
+    /// threads.
+    ///
+    /// Uses [`nix::sys::stat::umask`] which is a safe wrapper
+    /// around the POSIX `umask(2)` call — no `unsafe` required.
+    pub fn with_worktree_umask<F, T>(f: F) -> T
+    where
+        F: FnOnce() -> T,
+    {
+        let _guard = UMASK_MUTEX.lock().expect("umask mutex poisoned");
+        let previous = nix::sys::stat::umask(nix::sys::stat::Mode::from_bits_truncate(0o022));
+        let result = f();
+        nix::sys::stat::umask(previous);
+        result
+    }
 }
+
+/// Process-wide umask guard. Only the `GitRunner` acquires this
+/// mutex, ensuring that concurrent worktree mutations do not
+/// race on the process-level umask.
+static UMASK_MUTEX: Mutex<()> = Mutex::new(());
 
 enum Outcome {
     Cancelled,
@@ -2447,6 +2471,7 @@ impl MinimalConfig for Config {
             circuit_backoff_seconds: vec![30, 120, 600],
             circuit_open_interval_seconds: 1800,
             circuit_max_degraded_seconds: 86400,
+            repo_storage_root: PathBuf::from("/tmp/repos"),
         }
     }
 }

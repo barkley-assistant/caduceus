@@ -40,7 +40,7 @@ hex = "0.4"
 filetime = "0.2"
 walkdir = "2"
 libc = "0.2"
-nix = { version = "0.29", default-features = false, features = ["feature", "process", "signal"] }
+nix = { version = "0.29", default-features = false, features = ["feature", "fs", "process", "signal"] }
 rusqlite = { version = "0.40", default-features = false, features = ["bundled"] }
 uuid = { version = "1", features = ["v4"] }
 
@@ -79,4 +79,24 @@ edition = "2021"
 [[test]]
 name = "drain_test"
 path = "tests/daemon/drain_test.rs"
+edition = "2021"
+
+[[test]]
+name = "mirror_test"
+path = "tests/repo/mirror_test.rs"
+edition = "2021"
+
+[[test]]
+name = "worktree_test"
+path = "tests/repo/worktree_test.rs"
+edition = "2021"
+
+[[test]]
+name = "storage_root_test"
+path = "tests/repo/storage_root_test.rs"
+edition = "2021"
+
+[[test]]
+name = "startup_test"
+path = "tests/daemon/startup_test.rs"
 edition = "2021"

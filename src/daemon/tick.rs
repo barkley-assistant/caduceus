@@ -158,6 +158,26 @@ pub async fn tick(
 ) -> CaduceusResult<TickOutcome> {
     let state_dir = cfg.state_dir.clone();
 
+    // 0. Initialize daemon-owned repository storage.
+    //     This runs before any lock acquisition so the directories
+    //     are guaranteed to exist before the first tick attempts
+    //     to use them.
+    let storage = crate::repo::Storage::new(cfg.repo_storage_root.clone());
+    storage.ensure_dirs().map_err(|err| {
+        tracing::error!(
+            error = %err,
+            "failed to initialize repo storage at {}",
+            cfg.repo_storage_root.display()
+        );
+        err
+    })?;
+
+    // 0.5. Install the restrictive umask for private storage.
+    //     The umask is set once at process start; GitRunner's
+    //     with_worktree_umask temporarily switches to 0o022 for
+    //     worktree mutations and restores 0o077.
+    let _ = nix::sys::stat::umask(nix::sys::stat::Mode::from_bits_truncate(0o077));
+
     // 1. Check scheduler leadership. If another tick holds the
     //    scheduler lock, skip (concurrent). Unlike the old
     //    whole-tick DaemonLock, the scheduler lock is held only
