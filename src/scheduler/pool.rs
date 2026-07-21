@@ -179,9 +179,8 @@ impl Pool {
         {
             let draining = self.draining.lock().expect("draining lock");
             if *draining {
-                return Err(CaduceusError::PoolSaturated {
-                    current_depth: self.current_depth(),
-                    max_depth: self.max_permits,
+                return Err(CaduceusError::DrainTimeout {
+                    timed_out_run_ids: vec![],
                 });
             }
         }

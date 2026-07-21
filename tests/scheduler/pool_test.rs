@@ -19,12 +19,17 @@ fn drain_config() -> DrainConfig {
 #[tokio::test]
 async fn parallelism_limit_enforced() {
   // GIVEN worker_parallelism = 2
+  // NOTE: distinct repos on purpose — per-repo exclusion is exercised
+  // by `same_repo_exclusion_serializes` below. Using the same repo here
+  // would deadlock because the first permit holds the exclusion lock
+  // and the next admit would block waiting for it.
   let pool = Pool::new(2, drain_config());
   let mut permits = Vec::new();
 
-  // WHEN 5 dispatches are submitted simultaneously
-  for _ in 0..5 {
-  let admit = pool.admit("owner/repo-a").await;
+  // WHEN 5 dispatches are submitted simultaneously across distinct repos
+  for i in 0..5 {
+  let repo = format!("owner/repo-{i}");
+  let admit = pool.admit(&repo).await;
   match admit {
   Ok(admitted) => permits.push(admitted),
   Err(_) => break, // pool saturated
