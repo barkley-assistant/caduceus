@@ -176,7 +176,7 @@ fn run_cli(state_dir: &Path, args: &[&str]) -> std::process::Output {
     fs::create_dir_all(&hermes_home).unwrap();
     let config_path = state_dir.join("config.yaml");
     let yaml = format!(
-        "caduceus:\n  state_dir: \"{}\"\n  worker_command:\n    - \"python3\"\n    - \"{}/bridge.py\"\n",
+        "caduceus:\n  state_dir: \"{}\"\n  worker_command:\n    - \"python3\"\n    - \"{}/bridge.py\"\n  reduced_containment_acknowledged: true\n",
         state_dir.display(),
         state_dir.display()
     );

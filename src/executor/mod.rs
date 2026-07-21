@@ -26,6 +26,9 @@ use crate::infra::config::Config;
 use crate::infra::error::CaduceusResult;
 use crate::worker::supervisor::SupervisorOutcome;
 
+use self::oci::OciExecutor;
+use self::trusted_host::TrustedHostExecutor;
+
 // ---------------------------------------------------------------------------
 // Submodules
 // ---------------------------------------------------------------------------
@@ -98,20 +101,17 @@ pub trait Executor: Send + Sync {
 
 /// Construct the executor matching the configured mode.
 ///
-/// Temporarily uses `ExecutorKind` directly until `executor_mode` is
-/// added to `Config` (Task 4). After Task 4 the signature becomes
-/// `executor_for_config(cfg: &Config) -> Arc<dyn Executor>`, reading
-/// `cfg.executor_mode` internally.
-pub fn executor_for_config(kind: ExecutorKind) -> Arc<dyn Executor> {
-    match kind {
-        ExecutorKind::TrustedHost => Arc::new(trusted_host::TrustedHostExecutor::new(
-            Config::test_defaults(&std::path::Path::new("/tmp/executor")),
-        )),
-        ExecutorKind::Oci => {
-            // OciExecutor impl lands in Task 3.
-            Arc::new(oci::OciExecutor::new(Config::test_defaults(
-                &std::path::Path::new("/tmp/executor"),
-            )))
-        }
+/// Reads `cfg.executor_mode` and dispatches to the matching concrete
+/// implementation. The factory is the single entry point used by
+/// `Services::production`; tests inject their own `Arc<dyn Executor>`
+/// via `Services::for_tests`.
+///
+/// `Oci` execution is allowed in config; the `OciExecutor` stub
+/// returns `CaduceusError::OciNotImplementedYet` at `run` time. Task
+/// 6.2 replaces the stub with the real OCI CLI lifecycle.
+pub fn executor_for_config(cfg: &Config) -> Arc<dyn Executor> {
+    match cfg.executor_mode {
+        ExecutorKind::TrustedHost => Arc::new(TrustedHostExecutor::new(cfg.clone())),
+        ExecutorKind::Oci => Arc::new(OciExecutor::new(cfg.clone())),
     }
 }

@@ -362,6 +362,7 @@ fn config_from_raw_rejects_discovery_max_pages_zero() {
     let yaml = r#"
         discovery_max_pages: 0
         worker_command: ["python3", "bridge.py"]
+        reduced_containment_acknowledged: true
         "#;
     let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
     let root = tempdir("cfg-zero-max");

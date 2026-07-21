@@ -96,7 +96,7 @@ fn write_config(state_dir: &Path, worker_script: &Path, poll_interval_seconds: u
     fs::create_dir_all(&hermes_home).expect("hermes home");
     let config_path = state_dir.join("config.yaml");
     let yaml = format!(
-        "caduceus:\n  state_dir: \"{}\"\n  poll_interval_seconds: {}\n  watched_repos:\n    - \"owner/repo\"\n  worker_command:\n    - \"{}\"\n",
+        "caduceus:\n  state_dir: \"{}\"\n  poll_interval_seconds: {}\n  watched_repos:\n    - \"owner/repo\"\n  worker_command:\n    - \"{}\"\n  reduced_containment_acknowledged: true\n",
         state_dir.display(),
         poll_interval_seconds,
         worker_script.display(),

@@ -28,6 +28,7 @@ fn empty_config(state_dir: &std::path::Path) -> Config {
         worker_command: Some(vec!["/bin/true".to_string()]),
         state_dir: Some(state_dir.to_path_buf()),
         watched_repos: Some(Vec::new()),
+        reduced_containment_acknowledged: Some(true),
         ..Default::default()
     };
     let ctx = LoadContext {
@@ -216,6 +217,7 @@ fn run_blocking_reports_failure_for_missing_state_dir() {
                 "/nonexistent/caduceus-tick-test/xyz",
             )),
             worker_command: Some(vec!["/bin/true".to_string()]),
+            reduced_containment_acknowledged: Some(true),
             ..Default::default()
         },
         &LoadContext::default(),

@@ -170,7 +170,7 @@ impl IsolatedState {
         // scenarios that need a specific repo set this
         // field by writing a different YAML.
         let yaml = format!(
-            "caduceus:\n  state_dir: \"{}\"\n  api_base: \"{}\"\n  github_token: \"ghp_test_token_xyz\"\n  poll_interval_seconds: {}\n  worker_command:\n    - \"{}\"\n  dry_run: {}\n",
+            "caduceus:\n  state_dir: \"{}\"\n  api_base: \"{}\"\n  github_token: \"ghp_test_token_xyz\"\n  poll_interval_seconds: {}\n  worker_command:\n    - \"{}\"\n  dry_run: {}\n  reduced_containment_acknowledged: true\n",
             self.state_dir.display(),
             self.api_base,
             poll_interval_seconds,
@@ -194,7 +194,7 @@ impl IsolatedState {
         let repos_yaml: Vec<String> = repos.iter().map(|r| format!("    - \"{r}\"")).collect();
         let repos_block = repos_yaml.join("\n");
         let yaml = format!(
-            "caduceus:\n  state_dir: \"{}\"\n  api_base: \"{}\"\n  github_token: \"ghp_test_token_xyz\"\n  poll_interval_seconds: {}\n  watched_repos:\n{}\n  worker_command:\n    - \"{}\"\n  dry_run: {}\n",
+            "caduceus:\n  state_dir: \"{}\"\n  api_base: \"{}\"\n  github_token: \"ghp_test_token_xyz\"\n  poll_interval_seconds: {}\n  watched_repos:\n{}\n  worker_command:\n    - \"{}\"\n  dry_run: {}\n  reduced_containment_acknowledged: true\n",
             self.state_dir.display(),
             self.api_base,
             poll_interval_seconds,

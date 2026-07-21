@@ -178,6 +178,7 @@ fn invalid_regex_rejected_at_config_time() {
     let raw = RawConfig {
         comment_ignore_patterns: Some(vec!["[unclosed".to_string()]),
         worker_command: Some(vec!["python3".to_string(), "bridge.py".to_string()]),
+        reduced_containment_acknowledged: Some(true),
         ..Default::default()
     };
     let ctx_holder = caduceus::config::LoadContext {
@@ -393,6 +394,7 @@ fn explicit_ci_flag_enables_case_insensitive_match() {
     let raw = RawConfig {
         comment_ignore_patterns: Some(vec!["(?i)ALICE".to_string()]),
         worker_command: Some(vec!["python3".to_string(), "bridge.py".to_string()]),
+        reduced_containment_acknowledged: Some(true),
         ..Default::default()
     };
     let ctx_holder = caduceus::config::LoadContext {

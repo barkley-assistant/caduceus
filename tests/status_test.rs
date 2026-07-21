@@ -45,6 +45,7 @@ fn empty_config(state_dir: &Path) -> Config {
         worker_command: Some(vec!["/bin/true".to_string()]),
         state_dir: Some(state_dir.to_path_buf()),
         watched_repos: Some(Vec::new()),
+        reduced_containment_acknowledged: Some(true),
         ..Default::default()
     };
     let ctx = LoadContext {
@@ -460,7 +461,7 @@ fn status_exit_0_for_valid_state() {
     // Provide a minimal valid config with worker_command
     // so Config::load doesn't fail.
     let config_body = format!(
-        "caduceus:\n  state_dir: {}\n  worker_command: ['/bin/true']\n",
+        "caduceus:\n  state_dir: {}\n  worker_command: ['/bin/true']\n  reduced_containment_acknowledged: true\n",
         state_dir.display().to_string().replace('\'', "")
     );
     let mut f = std::fs::File::create(&config_path).expect("create config");
@@ -488,7 +489,7 @@ fn status_exit_2_for_missing_state() {
 
     let config_path = dir.path().join("config.yaml");
     let config_body = format!(
-        "caduceus:\n  state_dir: {}\n  worker_command: ['/bin/true']\n",
+        "caduceus:\n  state_dir: {}\n  worker_command: ['/bin/true']\n  reduced_containment_acknowledged: true\n",
         state_dir.display().to_string().replace('\'', "")
     );
     let mut f = std::fs::File::create(&config_path).expect("create config");
@@ -519,7 +520,7 @@ fn status_exit_1_for_corrupt_state() {
 
     let config_path = dir.path().join("config.yaml");
     let config_body = format!(
-        "caduceus:\n  state_dir: {}\n  worker_command: ['/bin/true']\n",
+        "caduceus:\n  state_dir: {}\n  worker_command: ['/bin/true']\n  reduced_containment_acknowledged: true\n",
         state_dir.display().to_string().replace('\'', "")
     );
     let mut f = std::fs::File::create(&config_path).expect("create config");
@@ -553,7 +554,7 @@ fn status_exit_1_for_corrupt_queue() {
 
     let config_path = dir.path().join("config.yaml");
     let config_body = format!(
-        "caduceus:\n  state_dir: {}\n  worker_command: ['/bin/true']\n",
+        "caduceus:\n  state_dir: {}\n  worker_command: ['/bin/true']\n  reduced_containment_acknowledged: true\n",
         state_dir.display().to_string().replace('\'', "")
     );
     let mut f = std::fs::File::create(&config_path).expect("create config");
