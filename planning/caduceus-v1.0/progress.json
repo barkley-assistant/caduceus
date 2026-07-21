@@ -159,7 +159,9 @@
       "handoff": "handoffs/5.5.md"
     },
     "6.1": {
-      "status": "pending"
+      "status": "complete",
+      "updated_at": "2026-07-21T16:50:55.595678+00:00",
+      "handoff": "handoffs/6.1.md"
     },
     "6.2": {
       "status": "pending"
@@ -215,7 +217,9 @@
       "handoff": "handoffs/phase-04.md"
     },
     "5": {
-      "status": "pending"
+      "status": "complete",
+      "updated_at": "2026-07-21T14:35:05.498452+00:00",
+      "handoff": "handoffs/phase-05.md"
     },
     "6": {
       "status": "pending"
