@@ -9,9 +9,9 @@
 //! The module owns two implementations:
 //!
 //! * [`trusted_host::TrustedHostExecutor`] — wraps
-//!  [`crate::worker::supervisor::supervise`] unchanged.
+//!   [`crate::worker::supervisor::supervise`] unchanged.
 //! * [`oci::OciExecutor`] — stub returning
-//!  [`CaduceusError::OciNotImplementedYet`]; filled in by Task 6.2.
+//!   [`CaduceusError::OciNotImplementedYet`]; filled in by Task 6.2.
 
 use std::future::Future;
 use std::path::PathBuf;
