@@ -570,6 +570,7 @@ async fn run_claim(
         context_json: context_json.clone(),
         worker_command,
         cancellation: cancellation.clone(),
+        network_profile: None,
     };
     let supervisor_outcome = match services.executor.run(&spec).await {
         Ok(o) => o,

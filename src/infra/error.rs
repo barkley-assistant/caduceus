@@ -320,6 +320,35 @@ pub enum CaduceusError {
     #[error("trusted-host execution requires reduced_containment_acknowledged: true in config")]
     ReducedContainmentNotAcknowledged,
 
+    /// A network profile referenced in the run spec was not found in
+    /// the configured allow-list.
+    #[error("OCI network profile not in configured profiles: {profile}")]
+    OciNetworkNotInProfile { profile: String },
+
+    /// A secret was requested but is not in the configured grant list.
+    #[error("OCI secret not granted: {name}")]
+    OciSecretNotGranted { name: String },
+
+    /// An image reference is tag-only (not pinned by digest).
+    #[error("OCI image is not digest-pinned: {reference}")]
+    OciImageNotDigestPinned { reference: String },
+
+    /// A required resource limit (CPU, memory, or PIDs) was not set.
+    #[error("OCI resource limit required: {resource}")]
+    OciResourceLimitRequired { resource: &'static str },
+
+    /// A baseline policy check failed (e.g., engine socket mount detected).
+    #[error("OCI baseline violation: {detail}")]
+    OciBaselineViolation { detail: String },
+
+    /// No upgrade choice has been persisted for the daemon.
+    #[error("OCI upgrade choice is required before running in OCI mode")]
+    OciUpgradeChoiceRequired,
+
+    /// Pull policy `Always` is incompatible with digest-pinned images.
+    #[error("OCI pull policy incompatible: {detail}")]
+    OciPullPolicyIncompatible { detail: String },
+
     #[error("{0}")]
     Other(String),
 }
@@ -536,6 +565,27 @@ impl fmt::Debug for CaduceusError {
   }
             CaduceusError::ReducedContainmentNotAcknowledged => {
                 "ReducedContainmentNotAcknowledged".to_string()
+            }
+            CaduceusError::OciNetworkNotInProfile { profile } => {
+                format!("OciNetworkNotInProfile {{ profile: {:?} }}", profile)
+            }
+            CaduceusError::OciSecretNotGranted { name } => {
+                format!("OciSecretNotGranted {{ name: {:?} }}", name)
+            }
+            CaduceusError::OciImageNotDigestPinned { reference } => {
+                format!("OciImageNotDigestPinned {{ reference: {:?} }}", reference)
+            }
+            CaduceusError::OciResourceLimitRequired { resource } => {
+                format!("OciResourceLimitRequired {{ resource: {:?} }}", resource)
+            }
+            CaduceusError::OciBaselineViolation { detail } => {
+                format!("OciBaselineViolation {{ detail: {} }}", scrub(detail))
+            }
+            CaduceusError::OciUpgradeChoiceRequired => {
+                "OciUpgradeChoiceRequired".to_string()
+            }
+            CaduceusError::OciPullPolicyIncompatible { detail } => {
+                format!("OciPullPolicyIncompatible {{ detail: {} }}", scrub(detail))
             }
             CaduceusError::Other(s) => format!("Other({})", scrub(s)),
         };
