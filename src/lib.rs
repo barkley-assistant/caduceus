@@ -113,4 +113,6 @@ pub use crate::worktree::{
 };
 
 // Executor re-exports
+pub use crate::executor::network::NetworkProfile;
+pub use crate::executor::upgrade::UpgradeChoice;
 pub use crate::executor::{Executor, ExecutorKind, ExecutorSpec};

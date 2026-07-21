@@ -17,7 +17,7 @@
 //! Public field list, semantics, and defaults are pinned by
 //! `CONTRACTS.md` — every field documented there must be present.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use regex::Regex;
@@ -168,6 +168,19 @@ pub struct Config {
     pub oci_kill_timeout_seconds: u64,
     /// Total timeout in seconds for orphan reconciliation. Default 60.
     pub oci_reconcile_timeout_seconds: u64,
+
+    // -----------------------------------------------------------------------
+    // Isolation policy fields (Task 6.3)
+    // -----------------------------------------------------------------------
+    /// Named network profiles for OCI executor isolation.
+    /// Empty by default — no network access unless a profile is declared.
+    pub network_profiles: HashMap<String, crate::executor::network::NetworkProfile>,
+    /// Secret names the operator has explicitly granted to workers.
+    /// Empty by default — default-deny.
+    pub secret_grants: Vec<String>,
+    /// Operator's upgrade choice for OCI mode. `None` at first start;
+    /// the daemon refuses to run in OCI mode without a persisted choice.
+    pub upgrade_choice: Option<crate::executor::upgrade::UpgradeChoice>,
 }
 
 /// Loose deserialisation layer used to read the YAML before the source
@@ -223,6 +236,11 @@ pub struct RawConfig {
     pub oci_stop_timeout_seconds: Option<u64>,
     pub oci_kill_timeout_seconds: Option<u64>,
     pub oci_reconcile_timeout_seconds: Option<u64>,
+
+    // Isolation policy fields (Task 6.3)
+    pub network_profiles: Option<HashMap<String, crate::executor::network::NetworkProfile>>,
+    pub secret_grants: Option<Vec<String>>,
+    pub upgrade_choice: Option<crate::executor::upgrade::UpgradeChoice>,
 }
 
 /// Load context — used to resolve paths and the default worker command
@@ -650,6 +668,21 @@ impl Config {
             errors.push("oci_reconcile_timeout_seconds must be > 0".to_string());
         }
 
+        // Isolation policy fields (Task 6.3). The network_profiles
+        // map and secret_grants list default to empty (default-deny).
+        // The upgrade_choice is None by default; the daemon enforces
+        // a persisted choice at startup when executor_mode == Oci.
+        let network_profiles = raw.network_profiles.unwrap_or_default();
+        let secret_grants = raw.secret_grants.unwrap_or_default();
+        for grant in &secret_grants {
+            if !is_valid_secret_grant_name(grant) {
+                errors.push(format!(
+                    "secret_grant name {grant:?} must match [a-z][a-z0-9-]{{0,63}}"
+                ));
+            }
+        }
+        let upgrade_choice = raw.upgrade_choice;
+
         // dry_run is resolved by the env overlay. The raw
         // layer may carry a YAML-supplied hint here for tests; we
         // delegate the merge.
@@ -747,6 +780,11 @@ impl Config {
             oci_stop_timeout_seconds,
             oci_kill_timeout_seconds,
             oci_reconcile_timeout_seconds,
+
+            // Isolation policy fields
+            network_profiles,
+            secret_grants,
+            upgrade_choice,
         })
     }
 
@@ -810,6 +848,11 @@ impl Config {
             oci_stop_timeout_seconds: DEFAULT_OCI_STOP_TIMEOUT_SECONDS,
             oci_kill_timeout_seconds: DEFAULT_OCI_KILL_TIMEOUT_SECONDS,
             oci_reconcile_timeout_seconds: DEFAULT_OCI_RECONCILE_TIMEOUT_SECONDS,
+
+            // Isolation policy defaults
+            network_profiles: HashMap::new(),
+            secret_grants: Vec::new(),
+            upgrade_choice: None,
         }
     }
 
@@ -1488,6 +1531,23 @@ fn expand_worker_command(cmd: Vec<String>, ctx: &LoadContext) -> CaduceusResult<
 // ---------------------------------------------------------------------------
 // Validators
 // ---------------------------------------------------------------------------
+
+/// Validate a secret grant name: must match `[a-z][a-z0-9-]{0,63}`.
+fn is_valid_secret_grant_name(name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let bytes = name.as_bytes();
+    if !bytes[0].is_ascii_lowercase() {
+        return false;
+    }
+    if name.len() > 64 {
+        return false;
+    }
+    bytes[1..]
+        .iter()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
+}
 
 fn validate_watched_repos(repos: &[String], errors: &mut Vec<String>) {
     let mut seen: HashSet<String> = HashSet::new();

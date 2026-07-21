@@ -394,6 +394,13 @@ pub fn classify_error(err: &CaduceusError) -> FailureClass {
         CaduceusError::OciSecretLeakSuspected { .. } => FailureClass::Infrastructure,
         CaduceusError::OciSecretLeakDetected { .. } => FailureClass::Infrastructure,
         CaduceusError::ReducedContainmentNotAcknowledged => FailureClass::Infrastructure,
+        CaduceusError::OciNetworkNotInProfile { .. } => FailureClass::Worker,
+        CaduceusError::OciSecretNotGranted { .. } => FailureClass::Worker,
+        CaduceusError::OciImageNotDigestPinned { .. } => FailureClass::Worker,
+        CaduceusError::OciResourceLimitRequired { .. } => FailureClass::Worker,
+        CaduceusError::OciBaselineViolation { .. } => FailureClass::Worker,
+        CaduceusError::OciUpgradeChoiceRequired => FailureClass::Worker,
+        CaduceusError::OciPullPolicyIncompatible { .. } => FailureClass::Worker,
 
         // Generic Other — content / schema / public-voice / worker
         // result validation land here. Voice rejections and
