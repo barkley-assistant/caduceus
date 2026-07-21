@@ -59,6 +59,7 @@ pub const DEFAULT_CIRCUIT_FAILURE_THRESHOLD: u32 = 3;
 pub const DEFAULT_CIRCUIT_BACKOFF_SECONDS: &[u64] = &[30, 120, 600];
 pub const DEFAULT_CIRCUIT_OPEN_INTERVAL_SECONDS: u64 = 1800;
 pub const DEFAULT_CIRCUIT_MAX_DEGRADED_SECONDS: u64 = 86400;
+pub const DEFAULT_REPO_STORAGE_ROOT: &str = "repos";
 
 /// Caduceus configuration. Field semantics are pinned in `CONTRACTS.md`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -116,6 +117,10 @@ pub struct Config {
     /// Maximum seconds a circuit can remain open before the work is
     /// escalated to NeedsAttention. Default 86400 (24h).
     pub circuit_max_degraded_seconds: u64,
+    /// Root directory for daemon-owned repository storage (bare mirrors
+    /// and disposable worktrees). Defaults to `<state_dir>/repos`.
+    /// Must not be a symlink and must use mode 0700.
+    pub repo_storage_root: PathBuf,
 }
 
 /// Loose deserialisation layer used to read the YAML before the source
@@ -159,6 +164,7 @@ pub struct RawConfig {
     pub circuit_backoff_seconds: Option<Vec<u64>>,
     pub circuit_open_interval_seconds: Option<u64>,
     pub circuit_max_degraded_seconds: Option<u64>,
+    pub repo_storage_root: Option<PathBuf>,
 }
 
 /// Load context — used to resolve paths and the default worker command
@@ -398,6 +404,12 @@ impl Config {
         };
         validate_secure_path(&state_dir, "state_dir", &mut errors);
 
+        let repo_storage_root = match raw.repo_storage_root {
+            Some(p) => expand_leading_tilde(p),
+            None => state_dir.join(DEFAULT_REPO_STORAGE_ROOT),
+        };
+        validate_repo_storage_root(&repo_storage_root, &mut errors);
+
         let log_path = match raw.log_path {
             Some(p) => expand_leading_tilde(p),
             None => state_dir.join("processor.log"),
@@ -590,6 +602,7 @@ impl Config {
                 }
                 v
             },
+            repo_storage_root,
         })
     }
 
@@ -634,6 +647,7 @@ impl Config {
             circuit_backoff_seconds: DEFAULT_CIRCUIT_BACKOFF_SECONDS.to_vec(),
             circuit_open_interval_seconds: DEFAULT_CIRCUIT_OPEN_INTERVAL_SECONDS,
             circuit_max_degraded_seconds: DEFAULT_CIRCUIT_MAX_DEGRADED_SECONDS,
+            repo_storage_root: root.join("repos"),
         }
     }
 
@@ -1490,6 +1504,40 @@ fn validate_secure_path(path: &Path, field: &str, errors: &mut Vec<String>) {
                 "{field} exists but is not a directory: {}",
                 path.display()
             ));
+        }
+    }
+}
+
+/// Validate `repo_storage_root`: refuse symlinks, and when the
+/// directory already exists refuse modes wider than 0700 with
+/// an operator-actionable fix message. Missing directories are
+/// accepted — the daemon creates them at startup with mode 0700.
+fn validate_repo_storage_root(path: &Path, errors: &mut Vec<String>) {
+    if path.as_os_str().is_empty() {
+        errors.push("repo_storage_root must not be empty".to_string());
+        return;
+    }
+    if let Ok(meta) = std::fs::symlink_metadata(path) {
+        if meta.file_type().is_symlink() {
+            errors.push(format!(
+                "repo_storage_root must not be a symlink: {}",
+                path.display()
+            ));
+            return;
+        }
+    }
+    if path.exists() {
+        if let Ok(meta) = std::fs::metadata(path) {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = meta.permissions().mode() & 0o777;
+            if mode != 0o700 {
+                errors.push(format!(
+                    "repo_storage_root {} has mode {:03o}; expected 0700. Run: chmod 0700 {}",
+                    path.display(),
+                    mode,
+                    path.display()
+                ));
+            }
         }
     }
 }

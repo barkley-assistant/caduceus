@@ -403,6 +403,7 @@ fn idle_cancellation_does_not_mutate_state() {
             name == "daemon.lock"
                 || name == "scheduler.lock"
                 || name == "cache"
+                || name == "repos"
                 || name.starts_with("cache."),
             "unexpected state-file created by idle SIGINT: {name}"
         );

@@ -217,6 +217,38 @@ pub enum CaduceusError {
         opened_at: i64,
     },
 
+    /// The storage root (or a controlled subdirectory) is a
+    /// symlink. The daemon refuses to operate on symlinked
+    /// storage to prevent TOCTOU escapes.
+    #[error("storage root is a symlink: {}", path.display())]
+    SymlinkedStorageRoot { path: PathBuf },
+
+    /// A worktree from a previous failed attempt was found at the
+    /// requested path. The daemon refuses to reuse a worktree
+    /// whose prior lifecycle was not cleanly completed.
+    #[error(
+        "reuse of failed worktree {run_id} at {}: last state {last_state}",
+        worktree_path.display()
+    )]
+    WorktreeReuseAfterFailure {
+        run_id: String,
+        worktree_path: PathBuf,
+        last_state: String,
+    },
+
+    /// A filesystem mode check did not match the expected
+    /// permissions. The expected and observed modes are shown in
+    /// octal.
+    #[error(
+        "mode not preserved at {}: expected {expected:o}, observed {observed:o}",
+        path.display()
+    )]
+    ModeNotPreserved {
+        path: PathBuf,
+        expected: u32,
+        observed: u32,
+    },
+
     #[error("{0}")]
     Other(String),
 }
@@ -351,6 +383,27 @@ impl fmt::Debug for CaduceusError {
             } => format!(
                 "MaxDegradedAgeExceeded {{ scope: {:?}, scope_id: {:?}, opened_at: {} }}",
                 scope, scope_id, opened_at
+            ),
+            CaduceusError::SymlinkedStorageRoot { path } => {
+                format!("SymlinkedStorageRoot {{ path: {:?} }}", path)
+            }
+            CaduceusError::WorktreeReuseAfterFailure {
+                run_id,
+                worktree_path,
+                last_state,
+            } => format!(
+                "WorktreeReuseAfterFailure {{ run_id: {:?}, worktree_path: {:?}, last_state: {} }}",
+                run_id,
+                worktree_path,
+                scrub(last_state)
+            ),
+            CaduceusError::ModeNotPreserved {
+                path,
+                expected,
+                observed,
+            } => format!(
+                "ModeNotPreserved {{ path: {:?}, expected: {:o}, observed: {:o} }}",
+                path, expected, observed
             ),
             CaduceusError::Other(s) => format!("Other({})", scrub(s)),
         };
