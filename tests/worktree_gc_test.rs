@@ -125,6 +125,7 @@ fn gc_test_config(base: &Path, watched: Vec<String>) -> Config {
         worker_command: Some(vec!["/bin/true".to_string()]),
         state_dir: Some(state_dir),
         workdir_base: Some(base.to_path_buf()),
+        reduced_containment_acknowledged: Some(true),
         ..Default::default()
     };
     let ctx = LoadContext {
@@ -139,7 +140,7 @@ fn gc_test_config(base: &Path, watched: Vec<String>) -> Config {
     // for the test process.
     let toml_path = base.join("caduceus.yaml");
     let toml_text = format!(
-        "state_dir: \"{}\"\nworkdir_base: \"{}\"\nworker_command:\n  - \"/bin/true\"\nwatched_repos:\n  - \"{}\"\n",
+        "state_dir: \"{}\"\nworkdir_base: \"{}\"\nworker_command:\n  - \"/bin/true\"\nwatched_repos:\n  - \"{}\"\nreduced_containment_acknowledged: true\n",
         cfg.state_dir.display(),
         cfg.workdir_base.display(),
         watched[0]

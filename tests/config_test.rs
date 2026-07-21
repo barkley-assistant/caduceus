@@ -67,6 +67,7 @@ fn raw_default_parses_minimal_plugin_derived_config() {
     // Minimal config: only the keys Hermes's plugin-defaults would set.
     let yaml = r#"
         worker_command: ["python3", "/path/to/bridge.py"]
+        reduced_containment_acknowledged: true
         "#;
     let raw: RawConfig = serde_yaml::from_str(yaml).expect("minimal yaml parses");
     let root = tempdir("minimal");
@@ -96,6 +97,7 @@ fn every_default_is_independently_overridable() {
         ticket_label_investigation: "investigate-label"
         api_base: "https://ghes.example.com/api/v3"
         worker_command: ["python3", "/path/to/bridge.py"]
+        reduced_containment_acknowledged: true
         dry_run: true
         watched_repos: ["acme/widgets"]
         "#;
@@ -134,6 +136,7 @@ fn explicit_lists_replace_defaults_not_append() {
         worker_env_allowlist: ["OPENAI_*"]
         watched_repos: ["acme/widgets"]
         worker_command: ["python3", "bridge.py"]
+        reduced_containment_acknowledged: true
         "#;
     let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
     let root = tempdir("lists");
@@ -197,6 +200,7 @@ fn plugin_root_token_is_expanded_only_in_arguments() {
     ctx.plugin_root = Some(plugin_root.clone());
     let yaml = r#"
         worker_command: ["python3", "${plugin_root}/plugin-assets/worker-bridge.py"]
+        reduced_containment_acknowledged: true
         "#;
     let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
     let cfg = Config::from_raw(raw, &ctx).expect("config validates");
@@ -213,6 +217,7 @@ fn plugin_root_token_in_program_position_is_rejected() {
     ctx.plugin_root = Some(root.join("plugin"));
     let yaml = r#"
         worker_command: ["${plugin_root}/python3"]
+        reduced_containment_acknowledged: true
         "#;
     let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
     let err = Config::from_raw(raw, &ctx).expect_err("must reject ${plugin_root} in argv[0]");
@@ -226,6 +231,7 @@ fn unknown_interpolation_is_rejected() {
     let ctx = ctx(&root);
     let yaml = r#"
         worker_command: ["python3", "$HOME/something"]
+        reduced_containment_acknowledged: true
         "#;
     let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
     let err = Config::from_raw(raw, &ctx).expect_err("must reject $HOME");
@@ -242,6 +248,7 @@ fn tilde_in_worker_command_is_rejected() {
     let ctx = ctx(&root);
     let yaml = r#"
         worker_command: ["python3", "~/my-bridge.py"]
+        reduced_containment_acknowledged: true
         "#;
     let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
     let err = Config::from_raw(raw, &ctx).expect_err("must reject ~ in worker_command");
@@ -261,6 +268,7 @@ fn empty_worker_command_in_standalone_install_is_rejected() {
     // No plugin_root and no hermes_home → standalone install.
     let yaml = r#"
         worker_command: []
+        reduced_containment_acknowledged: true
         "#;
     let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
     let err = Config::from_raw(raw, &ctx_standalone())
@@ -286,6 +294,7 @@ fn zero_durations_and_budgets_are_rejected() {
         max_retries_per_issue: 0
         retry_backoff_seconds: 0
         worker_command: ["python3", "bridge.py"]
+        reduced_containment_acknowledged: true
         "#;
     let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
     let err = Config::from_raw(raw, &ctx(&root)).expect_err("zero values must fail");
@@ -308,6 +317,7 @@ fn empty_label_is_rejected() {
     let yaml = r#"
         ticket_label_code: ""
         worker_command: ["python3", "bridge.py"]
+        reduced_containment_acknowledged: true
         "#;
     let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
     let err = Config::from_raw(raw, &ctx(&root)).expect_err("empty label must fail");
@@ -325,6 +335,7 @@ fn invalid_regex_is_rejected_at_config_time() {
     let yaml = r#"
         comment_ignore_patterns: ["("]
         worker_command: ["python3", "bridge.py"]
+        reduced_containment_acknowledged: true
         "#;
     let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
     let err = Config::from_raw(raw, &ctx(&root)).expect_err("invalid regex must fail");
@@ -339,6 +350,7 @@ fn default_case_sensitive_matching_is_not_flipped_by_inner_flags() {
     let yaml = r#"
         comment_ignore_patterns: ["Dependabot"]
         worker_command: ["python3", "bridge.py"]
+        reduced_containment_acknowledged: true
         "#;
     let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
     let cfg = Config::from_raw(raw, &ctx(&root)).expect("config validates");
@@ -356,6 +368,7 @@ fn explicit_ci_flag_in_pattern_enables_case_insensitive_match() {
     let yaml = r#"
         comment_ignore_patterns: ["(?i)Dependabot"]
         worker_command: ["python3", "bridge.py"]
+        reduced_containment_acknowledged: true
         "#;
     let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
     let cfg = Config::from_raw(raw, &ctx(&root)).expect("config validates");
@@ -403,6 +416,7 @@ fn duplicate_watched_repos_are_rejected_case_insensitively() {
     let yaml = r#"
         watched_repos: ["Acme/widgets", "acme/Widgets"]
         worker_command: ["python3", "bridge.py"]
+        reduced_containment_acknowledged: true
         "#;
     let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
     let err = Config::from_raw(raw, &ctx(&root)).expect_err("duplicate repos must fail");
@@ -419,6 +433,7 @@ fn invalid_watched_repo_slug_is_rejected() {
     let yaml = r#"
         watched_repos: ["owner with space/repo"]
         worker_command: ["python3", "bridge.py"]
+        reduced_containment_acknowledged: true
         "#;
     let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
     let err = Config::from_raw(raw, &ctx(&root)).expect_err("invalid repo must fail");
@@ -437,6 +452,7 @@ fn duplicate_trigger_labels_are_rejected() {
         ticket_label_code: "auto-fix"
         ticket_label_investigation: "auto-fix"
         worker_command: ["python3", "bridge.py"]
+        reduced_containment_acknowledged: true
         "#;
     let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
     let err = Config::from_raw(raw, &ctx(&root)).expect_err("duplicate labels must fail");
@@ -453,6 +469,7 @@ fn unknown_yaml_field_is_rejected() {
     let yaml = r#"
         poll_interval_seconds: 60
         worker_command: ["python3", "bridge.py"]
+        reduced_containment_acknowledged: true
         not_a_real_field: 123
         "#;
     let result: Result<RawConfig, _> = serde_yaml::from_str(yaml);
@@ -472,6 +489,7 @@ fn allowlist_rejects_github_credential_exact_match() {
     let yaml = r#"
         worker_env_allowlist: ["PATH", "GITHUB_TOKEN"]
         worker_command: ["python3", "bridge.py"]
+        reduced_containment_acknowledged: true
         "#;
     let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
     let err = Config::from_raw(raw, &ctx(&root)).expect_err("GITHUB_TOKEN must be denied");
@@ -485,6 +503,7 @@ fn allowlist_rejects_github_credential_prefix_wildcard() {
     let yaml = r#"
         worker_env_allowlist: ["PATH", "GITHUB_*"]
         worker_command: ["python3", "bridge.py"]
+        reduced_containment_acknowledged: true
         "#;
     let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
     let err = Config::from_raw(raw, &ctx(&root)).expect_err("GITHUB_* must be denied");
@@ -498,6 +517,7 @@ fn allowlist_rejects_malformed_entry() {
     let yaml = r#"
         worker_env_allowlist: ["BAD=NAME", "", "has spaces"]
         worker_command: ["python3", "bridge.py"]
+        reduced_containment_acknowledged: true
         "#;
     let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
     let err = Config::from_raw(raw, &ctx(&root)).expect_err("malformed allowlist must fail");
@@ -514,6 +534,7 @@ fn allowlist_rejects_internal_wildcard() {
     let yaml = r#"
         worker_env_allowlist: ["OP*EN"]
         worker_command: ["python3", "bridge.py"]
+        reduced_containment_acknowledged: true
         "#;
     let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
     let err = Config::from_raw(raw, &ctx(&root)).expect_err("internal wildcard must fail");
@@ -536,6 +557,7 @@ fn state_dir_must_not_be_a_symlink() {
         r#"
         state_dir: "{}"
         worker_command: ["python3", "bridge.py"]
+        reduced_containment_acknowledged: true
         "#,
         symlink.display()
     );
@@ -554,6 +576,7 @@ fn state_dir_must_not_be_a_file() {
         r#"
         state_dir: "{}"
         worker_command: ["python3", "bridge.py"]
+        reduced_containment_acknowledged: true
         "#,
         file.display()
     );
@@ -569,6 +592,7 @@ fn state_dir_must_not_be_empty() {
     let yaml = r#"
         state_dir: ""
         worker_command: ["python3", "bridge.py"]
+        reduced_containment_acknowledged: true
         "#;
     let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
     let err = Config::from_raw(raw, &ctx(&root)).expect_err("empty state dir must fail");
@@ -585,6 +609,7 @@ fn existing_state_dir_is_accepted_when_directory() {
         r#"
         state_dir: "{}"
         worker_command: ["python3", "bridge.py"]
+        reduced_containment_acknowledged: true
         "#,
         state.display()
     );
@@ -599,6 +624,7 @@ fn missing_state_dir_path_is_accepted() {
         r#"
         state_dir: "{}/state-not-yet"
         worker_command: ["python3", "bridge.py"]
+        reduced_containment_acknowledged: true
         "#,
         root.display()
     );
@@ -636,6 +662,7 @@ fn hermes_primary_install_resolves_default_bridge() {
     ctx.plugin_root = Some(root.join("plugin"));
     let yaml = r#"
         poll_interval_seconds: 60
+        reduced_containment_acknowledged: true
         "#;
     let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
     let cfg = Config::from_raw(raw, &ctx).expect("default bridge path resolves");
@@ -662,6 +689,7 @@ fn api_base_accepts_github_com_saas() {
     let yaml = r#"
         api_base: "https://api.github.com"
         worker_command: ["python3", "bridge.py"]
+        reduced_containment_acknowledged: true
         "#;
     let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
     Config::from_raw(raw, &ctx(&root)).expect("https://api.github.com must be accepted");
@@ -673,6 +701,7 @@ fn api_base_accepts_ghes_path() {
     let yaml = r#"
         api_base: "https://ghes.example.com/api/v3"
         worker_command: ["python3", "bridge.py"]
+        reduced_containment_acknowledged: true
         "#;
     let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
     Config::from_raw(raw, &ctx(&root)).expect("GHES api_base must be accepted");
@@ -684,6 +713,7 @@ fn api_base_rejects_http_scheme() {
     let yaml = r#"
         api_base: "http://api.github.com"
         worker_command: ["python3", "bridge.py"]
+        reduced_containment_acknowledged: true
         "#;
     let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
     let err = Config::from_raw(raw, &ctx(&root)).expect_err("http scheme must be rejected");
@@ -697,6 +727,7 @@ fn api_base_rejects_bitbucket_host() {
     let yaml = r#"
         api_base: "https://bitbucket.example.com"
         worker_command: ["python3", "bridge.py"]
+        reduced_containment_acknowledged: true
         "#;
     let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
     let err = Config::from_raw(raw, &ctx(&root)).expect_err("bitbucket must be rejected");
@@ -714,6 +745,7 @@ fn discovery_max_pages_is_set_from_raw() {
     let yaml = r#"
         discovery_max_pages: 7
         worker_command: ["python3", "bridge.py"]
+        reduced_containment_acknowledged: true
         "#;
     let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
     let cfg = Config::from_raw(raw, &ctx(&root)).expect("config validates");
@@ -725,6 +757,7 @@ fn discovery_max_pages_defaults_to_20() {
     let root = tempdir("dmp-default");
     let yaml = r#"
         worker_command: ["python3", "bridge.py"]
+        reduced_containment_acknowledged: true
         "#;
     let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
     let cfg = Config::from_raw(raw, &ctx(&root)).expect("config validates");
@@ -737,6 +770,7 @@ fn discovery_max_pages_zero_rejected() {
     let yaml = r#"
         discovery_max_pages: 0
         worker_command: ["python3", "bridge.py"]
+        reduced_containment_acknowledged: true
         "#;
     let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
     let err = Config::from_raw(raw, &ctx(&root)).expect_err("0 must be rejected");

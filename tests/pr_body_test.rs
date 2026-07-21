@@ -25,6 +25,7 @@ use serde_json::json;
 fn empty_config() -> Config {
     let raw = RawConfig {
         worker_command: Some(vec!["/bin/true".to_string()]),
+        reduced_containment_acknowledged: Some(true),
         ..Default::default()
     };
     let ctx = LoadContext {
@@ -38,6 +39,7 @@ fn forbidden_config(terms: Vec<String>) -> Config {
     let raw = RawConfig {
         worker_command: Some(vec!["/bin/true".to_string()]),
         comment_forbidden_strings: Some(terms),
+        reduced_containment_acknowledged: Some(true),
         ..Default::default()
     };
     let ctx = LoadContext {

@@ -25,6 +25,7 @@
 // --------------------------------------------------------------------------
 
 pub mod daemon;
+pub mod executor;
 pub mod finalize;
 pub mod github;
 pub mod infra;
@@ -110,3 +111,6 @@ pub use crate::worktree::{
     create as create_worktree, find_main_clone, remove as remove_worktree, GitOutput, GitRunner,
     RepositoryInfo, Worktree, GIT_OUTPUT_BYTE_CAP,
 };
+
+// Executor re-exports
+pub use crate::executor::{Executor, ExecutorKind, ExecutorSpec};

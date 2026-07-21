@@ -2473,6 +2473,8 @@ impl MinimalConfig for Config {
             circuit_open_interval_seconds: 1800,
             circuit_max_degraded_seconds: 86400,
             repo_storage_root: PathBuf::from("/tmp/repos"),
+            executor_mode: crate::executor::ExecutorKind::TrustedHost,
+            reduced_containment_acknowledged: true,
         }
     }
 }

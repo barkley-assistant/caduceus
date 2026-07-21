@@ -74,6 +74,7 @@ fn explicit_env_file_wins_over_hermes_and_standalone() {
         &explicit,
         r#"
         worker_command: ["python3", "/from/explicit.py"]
+        reduced_containment_acknowledged: true
         dry_run: false
         "#,
     );
@@ -85,6 +86,7 @@ fn explicit_env_file_wins_over_hermes_and_standalone() {
           default: hermes-only
         caduceus:
           worker_command: ["python3", "/from/hermes.py"]
+          reduced_containment_acknowledged: true
         "#,
     );
     let standalone = root.join("standalone.yaml");
@@ -92,6 +94,7 @@ fn explicit_env_file_wins_over_hermes_and_standalone() {
         &standalone,
         r#"
         worker_command: ["python3", "/from/standalone.py"]
+        reduced_containment_acknowledged: true
         "#,
     );
     let cfg = with_dry_run(None, || {
@@ -114,6 +117,7 @@ fn hermes_file_wins_when_explicit_env_not_set() {
         r#"
         caduceus:
           worker_command: ["python3", "/from/hermes.py"]
+          reduced_containment_acknowledged: true
         "#,
     );
     let standalone = root.join("standalone.yaml");
@@ -121,6 +125,7 @@ fn hermes_file_wins_when_explicit_env_not_set() {
         &standalone,
         r#"
         worker_command: ["python3", "/from/standalone.py"]
+        reduced_containment_acknowledged: true
         "#,
     );
     let cfg = with_dry_run(None, || {
@@ -143,6 +148,7 @@ fn standalone_used_when_hermes_missing() {
         &standalone,
         r#"
         worker_command: ["python3", "/from/standalone.py"]
+        reduced_containment_acknowledged: true
         "#,
     );
     let cfg = with_dry_run(None, || {
@@ -184,6 +190,7 @@ fn explicit_env_malformed_yaml_is_a_hard_error() {
         &explicit,
         r#"
         worker_command: ["python3",
+        reduced_containment_acknowledged: true
         missing_close_bracket: oops
         "#,
     );
@@ -219,6 +226,7 @@ fn hermes_file_without_caduceus_section_falls_through_to_standalone() {
         &standalone,
         r#"
         worker_command: ["python3", "/from/standalone.py"]
+        reduced_containment_acknowledged: true
         "#,
     );
     let cfg = with_dry_run(None, || {
@@ -268,6 +276,7 @@ fn dry_run_truth_table() {
         r#"
         caduceus:
           worker_command: ["python3", "/from/hermes.py"]
+          reduced_containment_acknowledged: true
           dry_run: false
         "#,
     );
@@ -308,6 +317,7 @@ fn dry_run_yaml_value_overridden_by_env_when_truthy() {
         caduceus:
           dry_run: false
           worker_command: ["python3", "/from/hermes.py"]
+          reduced_containment_acknowledged: true
         "#,
     );
     let cfg = with_dry_run(Some("yes"), || {
@@ -327,6 +337,7 @@ fn dry_run_yaml_truthy_overridden_by_env_when_falsy() {
         caduceus:
           dry_run: true
           worker_command: ["python3", "/from/hermes.py"]
+          reduced_containment_acknowledged: true
         "#,
     );
     let cfg = with_dry_run(Some("no"), || {
@@ -346,6 +357,7 @@ fn dry_run_yaml_value_kept_when_env_unset() {
         caduceus:
           dry_run: true
           worker_command: ["python3", "/from/hermes.py"]
+          reduced_containment_acknowledged: true
         "#,
     );
     let cfg = with_dry_run(None, || {
@@ -399,6 +411,7 @@ fn paths_with_spaces_round_trip_cleanly() {
         r#"
         caduceus:
           worker_command: ["python3", "/with/space.py"]
+          reduced_containment_acknowledged: true
         "#,
     );
     let cfg = with_dry_run(None, || {
@@ -448,6 +461,7 @@ fn standalone_only_works_without_hermes() {
         &standalone,
         r#"
         worker_command: ["python3", "/standalone.py"]
+        reduced_containment_acknowledged: true
         "#,
     );
     let cfg = with_dry_run(None, || {
@@ -482,6 +496,7 @@ fn load_from_supports_standalone_shape() {
         &standalone,
         r#"
         worker_command: ["python3", "/direct/path.py"]
+        reduced_containment_acknowledged: true
         "#,
     );
     let cfg = Config::load_from(&standalone).expect("load_from parses standalone");
@@ -503,6 +518,7 @@ fn load_from_supports_hermes_shape() {
           default: test
         caduceus:
           worker_command: ["python3", "/hermes/path.py"]
+          reduced_containment_acknowledged: true
         "#,
     );
     let cfg = Config::load_from(&cfg_file).expect("load_from parses hermes shape");

@@ -100,3 +100,23 @@ edition = "2021"
 name = "startup_test"
 path = "tests/daemon/startup_test.rs"
 edition = "2021"
+
+[[test]]
+name = "executor_trusted_host_test"
+path = "tests/executor_trusted_host_test.rs"
+edition = "2021"
+
+[[test]]
+name = "executor_oci_test"
+path = "tests/executor_oci_test.rs"
+edition = "2021"
+
+[[test]]
+name = "executor_config_test"
+path = "tests/executor_config_test.rs"
+edition = "2021"
+
+[[test]]
+name = "tick_dispatch_test"
+path = "tests/tick_dispatch_test.rs"
+edition = "2021"

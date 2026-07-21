@@ -41,6 +41,7 @@ fn empty_config(state_dir: &std::path::Path) -> Config {
     let raw = RawConfig {
         worker_command: Some(vec!["/bin/true".to_string()]),
         state_dir: Some(state_dir.to_path_buf()),
+        reduced_containment_acknowledged: Some(true),
         ..Default::default()
     };
     let ctx = LoadContext {
