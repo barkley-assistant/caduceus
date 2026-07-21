@@ -249,6 +249,21 @@ pub enum CaduceusError {
         observed: u32,
     },
 
+    /// The OCI executor mode was selected at runtime, but the OCI
+    /// implementation is not yet wired up. Task 6.2 is the unblocking
+    /// work unit. The error surfaces at `OciExecutor::run` (not at
+    /// `Config::load`) so operators can stage an Oci config while
+    /// keeping a working TrustedHost install elsewhere.
+    #[error("OCI execution is not implemented yet (Task 6.2)")]
+    OciNotImplementedYet,
+
+    /// Trusted-host execution was selected but the operator has not
+    /// explicitly acknowledged reduced containment. This fires at
+    /// `Config::load` BEFORE any subprocess is spawned, so a daemon
+    /// that fails this check never starts the worker.
+    #[error("trusted-host execution requires reduced_containment_acknowledged: true in config")]
+    ReducedContainmentNotAcknowledged,
+
     #[error("{0}")]
     Other(String),
 }
@@ -405,6 +420,10 @@ impl fmt::Debug for CaduceusError {
                 "ModeNotPreserved {{ path: {:?}, expected: {:o}, observed: {:o} }}",
                 path, expected, observed
             ),
+            CaduceusError::OciNotImplementedYet => "OciNotImplementedYet".to_string(),
+            CaduceusError::ReducedContainmentNotAcknowledged => {
+                "ReducedContainmentNotAcknowledged".to_string()
+            }
             CaduceusError::Other(s) => format!("Other({})", scrub(s)),
         };
         f.write_str(&rendered)

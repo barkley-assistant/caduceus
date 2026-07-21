@@ -137,6 +137,7 @@ pub async fn run_with_config(
     let client = Arc::new(Client::with_config(&cfg)?);
     let git = GitRunner::new(&cfg);
     let services = Services::production(
+        &cfg,
         clock,
         Arc::clone(&client),
         git,
@@ -559,26 +560,25 @@ async fn run_claim(
         return handle_infra_or_retry(cfg, guard, &err, class).await;
     }
 
-    // 13. Spawn the worker through the canonical supervisor.
+    // 13. Spawn the worker through the executor trait object. The
+    // factory in `Services::production` selected the matching
+    // concrete executor (TrustedHostExecutor today, OciExecutor
+    // stub once Task 6.2 lands) based on `cfg.executor_mode`.
     let self_exe = std::env::current_exe().map_err(|err| CaduceusError::Worktree {
         context: "tick",
         stderr: format!("current_exe: {err}"),
     })?;
     let worker_command = cfg.worker_command.clone();
-    let supervisor_outcome = match services
-        .process
-        .supervise(
-            &self_exe,
-            &cfg,
-            &claimed.entry.key,
-            &worktree.path,
-            &run_id,
-            &context_json,
-            &worker_command,
-            cancellation.clone(),
-        )
-        .await
-    {
+    let spec = crate::executor::ExecutorSpec {
+        self_exe,
+        issue: claimed.entry.key.clone(),
+        worktree: worktree.path.clone(),
+        run_id: run_id.clone(),
+        context_json: context_json.clone(),
+        worker_command,
+        cancellation: cancellation.clone(),
+    };
+    let supervisor_outcome = match services.executor.run(&spec).await {
         Ok(o) => o,
         Err(err) => {
             let class = classify_error(&err);

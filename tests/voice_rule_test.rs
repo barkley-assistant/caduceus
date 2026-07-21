@@ -61,6 +61,7 @@ worker_timeout_seconds: 60
 http_timeout_seconds: 30
 git_timeout_seconds: 30
 comment_forbidden_strings: ["SEKRIT-FORBIDDEN"]
+reduced_containment_acknowledged: true
 "#;
     let cfg = config_with_yaml(cfg_str).expect("loads");
     let err = validate_public_text("this contains sekrit-forbidden text", &cfg, 4096)

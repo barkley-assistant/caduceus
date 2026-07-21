@@ -61,6 +61,8 @@ pub const DEFAULT_CIRCUIT_OPEN_INTERVAL_SECONDS: u64 = 1800;
 pub const DEFAULT_CIRCUIT_MAX_DEGRADED_SECONDS: u64 = 86400;
 pub const DEFAULT_DISCOVERY_MAX_PAGES: u32 = 20;
 pub const DEFAULT_REPO_STORAGE_ROOT: &str = "repos";
+pub const DEFAULT_EXECUTOR_MODE: crate::executor::ExecutorKind =
+    crate::executor::ExecutorKind::TrustedHost;
 
 /// Caduceus configuration. Field semantics are pinned in `CONTRACTS.md`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -125,6 +127,17 @@ pub struct Config {
     /// and disposable worktrees). Defaults to `<state_dir>/repos`.
     /// Must not be a symlink and must use mode 0700.
     pub repo_storage_root: PathBuf,
+    /// Which executor mode the daemon uses to dispatch workers.
+    /// Default [`crate::executor::ExecutorKind::TrustedHost`].
+    /// `Oci` parses in config and is rejected at runtime by the
+    /// `OciExecutor` stub (Task 6.2 unblocks the full implementation).
+    pub executor_mode: crate::executor::ExecutorKind,
+    /// Operator acknowledgement of reduced containment. Required `true`
+    /// when `executor_mode == TrustedHost` — the daemon refuses to
+    /// dispatch workers on the trusted host without explicit opt-in.
+    /// Defaults to `false`; `Config::from_raw` rejects TrustedHost with
+    /// `ReducedContainmentNotAcknowledged` before any subprocess spawns.
+    pub reduced_containment_acknowledged: bool,
 }
 
 /// Loose deserialisation layer used to read the YAML before the source
@@ -170,6 +183,8 @@ pub struct RawConfig {
     pub circuit_open_interval_seconds: Option<u64>,
     pub circuit_max_degraded_seconds: Option<u64>,
     pub repo_storage_root: Option<PathBuf>,
+    pub executor_mode: Option<crate::executor::ExecutorKind>,
+    pub reduced_containment_acknowledged: Option<bool>,
 }
 
 /// Load context — used to resolve paths and the default worker command
@@ -529,6 +544,23 @@ impl Config {
             errors.push("discovery_max_pages must be > 0".to_string());
         }
 
+        // Executor mode and reduced-containment opt-in. TrustedHost
+        // requires explicit acknowledgement; Oci is allowed in config
+        // and rejected at runtime by the OciExecutor stub (Task 6.2
+        // unblocks the full implementation). The validation runs
+        // BEFORE any subprocess is spawned.
+        let executor_mode = raw.executor_mode.unwrap_or(DEFAULT_EXECUTOR_MODE);
+        let reduced_containment_acknowledged =
+            raw.reduced_containment_acknowledged.unwrap_or(false);
+        if matches!(executor_mode, crate::executor::ExecutorKind::TrustedHost)
+            && !reduced_containment_acknowledged
+        {
+            errors.push(
+                "trusted-host execution requires reduced_containment_acknowledged: true"
+                    .to_string(),
+            );
+        }
+
         // dry_run is resolved by the env overlay. The raw
         // layer may carry a YAML-supplied hint here for tests; we
         // delegate the merge.
@@ -616,6 +648,8 @@ impl Config {
                 v
             },
             repo_storage_root,
+            executor_mode,
+            reduced_containment_acknowledged,
         })
     }
 
@@ -662,6 +696,13 @@ impl Config {
             circuit_open_interval_seconds: DEFAULT_CIRCUIT_OPEN_INTERVAL_SECONDS,
             circuit_max_degraded_seconds: DEFAULT_CIRCUIT_MAX_DEGRADED_SECONDS,
             repo_storage_root: root.join("repos"),
+            executor_mode: DEFAULT_EXECUTOR_MODE,
+            // `test_defaults` opts in to trusted-host execution so the
+            // existing test suite loads without each test setting the
+            // flag explicitly. Tests that exercise the opt-in error
+            // path construct a `RawConfig` with the field set to
+            // `Some(false)`.
+            reduced_containment_acknowledged: true,
         }
     }
 

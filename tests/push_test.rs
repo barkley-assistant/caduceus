@@ -38,6 +38,7 @@ fn empty_config(state_dir: &Path) -> Config {
     let raw = RawConfig {
         worker_command: Some(vec!["/bin/true".to_string()]),
         state_dir: Some(state_dir.to_path_buf()),
+        reduced_containment_acknowledged: Some(true),
         ..Default::default()
     };
     let ctx = LoadContext {
@@ -422,6 +423,7 @@ fn push_uses_runner_timeout_for_hanging_remote() {
             worker_command: Some(vec!["/bin/true".to_string()]),
             state_dir: Some(base.path().to_path_buf()),
             git_timeout_seconds: Some(1),
+            reduced_containment_acknowledged: Some(true),
             ..Default::default()
         };
         let ctx = LoadContext {
