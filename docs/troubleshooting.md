@@ -19,9 +19,8 @@ plugin, and rerun setup.
 
 ### `hermes caduceus setup` fails with "rustc 1.97 required"
 
-Your installed toolchain is older than 1.97. Caduceus
-pins the MSRV at 1.97 in `Cargo.toml`. Update with
-`rustup update stable` and rerun setup.
+Your installed toolchain is older than the required
+minimum version. Run `rustup update` and rerun setup.
 
 ### `hermes caduceus setup` fails with "Cargo.lock would need updates"
 
