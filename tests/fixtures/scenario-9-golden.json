@@ -1,0 +1,4 @@
+{
+  "watched_repos": ["octocat/Hello-World"],
+  "poll_interval_seconds": 60
+}
