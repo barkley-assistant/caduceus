@@ -58,12 +58,10 @@ These are matched case-insensitive as substrings. That
 means `"Caduceus"`, `"CADUCEUS"`, and `"caduceus-bot"` all
 match.
 
-> The v0.1 README mentions a default forbidden-strings
-> list, but the implementation in this repository does
-> not actually ship one. The list above is a recommendation,
-> not a default. Operators who want this filtering should
-> set `comment_forbidden_strings` explicitly in their
-> config.
+The daemon does not ship a default forbidden-strings list.
+The list above is a recommendation, not a default.
+Operators who want this filtering should set
+`comment_forbidden_strings` explicitly in their config.
 
 ## Why Substring Matching
 

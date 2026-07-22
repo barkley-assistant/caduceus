@@ -17,11 +17,11 @@ sees. Install rustup (`https://rustup.rs/`), ensure
 `~/.cargo/bin` is on `PATH` for the user that runs the
 plugin, and rerun setup.
 
-### `hermes caduceus setup` fails with "rustc 1.97 required"
+### `hermes caduceus setup` fails with "rustc does not meet the minimum version"
 
-Your installed toolchain is older than 1.97. Caduceus
-pins the MSRV at 1.97 in `Cargo.toml`. Update with
-`rustup update stable` and rerun setup.
+The installed Rust toolchain does not satisfy the project's
+`Cargo.toml` `rust-version` field. Install a compatible toolchain
+via `rustup` and rerun setup.
 
 ### `hermes caduceus setup` fails with "Cargo.lock would need updates"
 
