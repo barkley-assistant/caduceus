@@ -213,3 +213,8 @@ edition = "2021"
 name = "failure_matrix"
 path = "tests/failure_matrix_test.rs"
 edition = "2021"
+
+[[test]]
+name = "hermes_lifecycle"
+path = "tests/hermes_lifecycle_test.rs"
+edition = "2021"

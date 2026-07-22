@@ -1834,3 +1834,105 @@ def test_reconcile_failed_relist_returns_needs_attention(
 
     assert isinstance(result, adapter._NeedsAttention)
     assert "re-list failed" in result.recovery_evidence
+
+
+# ---------------------------------------------------------------------------
+# AC-11: No real hermes subprocess in Python integration tests
+#
+# All Python tests use fake contexts and stubbed dispatchers. No test
+# case spawns the real `hermes` binary. This is verified by scanning
+# the test file for any subprocess invocation of the `hermes` binary.
+# ---------------------------------------------------------------------------
+
+
+def test_ac11_no_real_hermes_subprocess():
+    """AC-11: Verify no real hermes subprocess in Python integration tests.
+
+    Search the test file's own source for patterns that would indicate
+    a real `hermes` subprocess. The Python tests use `FakePluginContext`
+    and `_runtime.install_dispatcher` stubs; the real `hermes` binary
+    is only exercised by the Rust lifecycle tests in
+    `tests/hermes_lifecycle_test.rs`.
+    """
+    src = __file__  # This file's path
+    text = Path(src).read_text(encoding="utf-8")
+
+    # Banned patterns: direct subprocess.Popen/hermes invocation
+    # that would spawn a real Hermes binary.
+    import re
+    banned = [
+        # Subprocess patterns that would create a real hermes process
+        r'subprocess\.\w+\(.*hermes',
+        r'subprocess\.\w+\(.*\["hermes"',
+        r'subprocess\.\w+\(.*\[\'hermes\'',
+        # Direct hermes binary path
+        r'"/home/agent/\.local/bin/hermes"',
+        r"'/home/agent/\.local/bin/hermes'",
+        # Environment variable override for real hermes
+        r'os\.environ\["HERMES_BIN"\]',
+        # Popen with hermes
+        r'Popen\(.*hermes',
+    ]
+    for pattern in banned:
+        matches = re.findall(pattern, text)
+        assert not matches, f"AC-11: banned hermes-subprocess pattern found: {pattern}"
+
+
+# ---------------------------------------------------------------------------
+# AC-12: Verify installed manifests, hooks, scripts, assets, and skill
+# entries describe supported production behavior after install.
+# ---------------------------------------------------------------------------
+
+
+def test_ac12_manifest_invariants_post_install(install_plugin: Path, isolated_hermes_home: Path):
+    """AC-12: Verify plugin.yaml manifests + hooks/scripts/assets/skill entries.
+
+    After install, the plugin directory at ``$HERMES_HOME/plugins/caduceus``
+    must contain ``plugin.yaml``, which must parse and reference only files
+    that exist on disk.
+    """
+    plugin_dir = install_plugin
+    plugin_yaml = plugin_dir / "plugin.yaml"
+
+    # plugin.yaml must exist and parse
+    assert plugin_yaml.is_file(), "AC-12: plugin.yaml must exist after install"
+    import yaml
+    manifest = yaml.safe_load(plugin_yaml.read_text(encoding="utf-8"))
+    assert manifest is not None, "AC-12: plugin.yaml must parse as YAML"
+    assert isinstance(manifest, dict), "AC-12: plugin.yaml must be a dict"
+
+    # Verify installed directory structure
+    # The plugin must have __init__.py, _runtime.py, and plugin-assets/
+    assert (plugin_dir / "__init__.py").is_file(), "AC-12: __init__.py must exist"
+    assert (plugin_dir / "_runtime.py").is_file(), "AC-12: _runtime.py must exist"
+    assert (plugin_dir / "plugin-assets").is_dir(), "AC-12: plugin-assets/ must exist"
+
+    # Verify skills directory
+    skill_dir = plugin_dir / "skills" / "caduceus"
+    assert skill_dir.is_dir(), "AC-12: skills/caduceus/ must exist"
+    assert (skill_dir / "SKILL.md").is_file(), "AC-12: skills/caduceus/SKILL.md must exist"
+
+    # Verify plugin-assets files exist
+    expected_assets = ["caduceus-pulse.sh", "worker-bridge.py"]
+    for asset in expected_assets:
+        asset_path = plugin_dir / "plugin-assets" / asset
+        assert asset_path.is_file(), f"AC-12: plugin-assets/{asset} must exist"
+
+    # Verify the manifest does not reference files absent from the install
+    if "provides_hooks" in manifest and manifest["provides_hooks"]:
+        for hook in manifest["provides_hooks"]:
+            if "path" in hook:
+                hook_path = plugin_dir / hook["path"]
+                assert hook_path.exists(), (
+                    f"AC-12: hook path {hook['path']} referenced in manifest "
+                    f"but not found on disk"
+                )
+
+    # Verify plugin metadata fields are present
+    for field in ("name", "version", "kind", "manifest_version"):
+        assert field in manifest, f"AC-12: plugin.yaml must contain '{field}'"
+
+    # The plugin name must be "caduceus"
+    assert manifest.get("name") == "caduceus", (
+        f"AC-12: plugin.yaml name must be 'caduceus'; got {manifest.get('name')}"
+    )
