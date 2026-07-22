@@ -24,7 +24,7 @@ trying to do. Pick the one that matches:
 - Skim common questions: [`faq.md`](faq.md)
 
 The migration procedure from the legacy v0 cron processor
-or from Caduceus v0.1 itself is in
+or from Caduceus itself is in
 [`../MIGRATION.md`](../MIGRATION.md) at the repository
 root, on purpose. Operators with an outage should not
 have to navigate a docs tree.
@@ -39,8 +39,7 @@ feature ships:
   to fork the reference bridge into a custom bridge while
   reusing the daemon's env-var contract, the
   `worker-result.json` schema, and the supervisor
-  discipline. This is part of the v1.0 planning work
-  rather than v0.1.
+  discipline.
 - A `docs/release-notes/` directory with per-release notes
   pulled from `CHANGELOG.md` at release time. Lands with
   the first major release after this README ships.
