@@ -39,15 +39,15 @@ bridge.** This is not configurable.
 - `CADUCEUS_ISSUE_BODY` (`string`) — The issue body, raw Markdown.
 - `CADUCEUS_ISSUE_REPO` (`string`) — `owner/repo` slug.
 - `CADUCEUS_ISSUE_LABELS_JSON` (`JSON array`) — Current label names. The
-  legacy comma-separated form was removed in v0.1.
+  comma-separated form has been removed; use the array form.
 - `CADUCEUS_WORKTREE_PATH` (`path`) — The isolated directory the worker is
   operating in.
 - `CADUCEUS_RUN_ID` (`string`) — ULID/UUID naming this run; used as the
   transcript log filename.
 - `CADUCEUS_CONTEXT_JSON` (`JSON object`) — Structured context
   (timeline, trusted edits, allowed comment threads) for advanced
-  multi-turn harnesses. The v1.0 schema, keys, and limits are
-  normative — see "The `CADUCEUS_CONTEXT_JSON` Schema" below.
+  multi-turn harnesses. The schema, keys, and limits are
+  documented in "The `CADUCEUS_CONTEXT_JSON` Schema" below.
 - `CADUCEUS_BRANCH_NAME` (`string`) — The daemon-owned branch name. Workers
   may read it but must not create or rename branches.
 
@@ -192,13 +192,6 @@ To plug in a different harness:
 3. The rest of the bridge is harness-agnostic plumbing
    you don't need to touch.
 
-> A future v1.0 plan introduces a structured extension
-> pattern for harness-specific bridge bits — a way to
-> drop a custom harness adapter alongside the reference
-> bridge without forking the whole file. Until that
-> lands, the `invoke_harness` function is the integration
-> seam.
-
 ## The Harness Contract (Informational)
 
 This is the contract the bridge assumes about the
@@ -224,7 +217,7 @@ new read-only context without changing the
 `CADUCEUS_*` env-var list. The schema is versioned;
 the contract owns the version and key set. This
 section is the authoritative reference for the
-v1.0 schema.
+schema.
 
 ### Encoding and limits
 
@@ -242,7 +235,7 @@ v1.0 schema.
 ### Required keys
 
 - `schema_version` (`integer`) — The context schema
-  version. The v1.0 version is `1`. Bridges MUST
+  version. The current version is `1`. Bridges MUST
   refuse unknown `schema_version` values with a
   distinct non-zero exit so the daemon's logs say
   "context schema unsupported" rather than "harness
@@ -286,8 +279,7 @@ v1.0 schema.
   - `url` (`string`)
 - `finalization_checkpoint` (`object | null`) — When
   the daemon is resuming from a durable checkpoint,
-  this carries the prior state. See `CONTRACTS.md`
-  `FINAL-001`:
+  this carries the prior state:
   - `stage` (`string`) — one of `Committed`, `Pushed`,
     `PrCreated`, `Commented`, `AwaitingReview`
   - `branch` (`string`)
