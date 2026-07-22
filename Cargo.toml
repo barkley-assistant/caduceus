@@ -208,3 +208,8 @@ edition = "2021"
 name = "integration_scenarios"
 path = "tests/integration_scenarios.rs"
 edition = "2021"
+
+[[test]]
+name = "failure_matrix"
+path = "tests/failure_matrix_test.rs"
+edition = "2021"
