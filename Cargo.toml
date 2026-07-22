@@ -7,6 +7,9 @@ description = "Unix single-host, one-shot Rust daemon that polls GitHub, queues 
 license = "MIT"
 publish = false
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(env, values("CADUCEUS_RUN_ISOLATION_TESTS"))'] }
+
 [lib]
 name = "caduceus"
 path = "src/lib.rs"
@@ -169,4 +172,34 @@ edition = "2021"
 [[test]]
 name = "upgrade_test"
 path = "tests/executor/upgrade_test.rs"
+edition = "2021"
+
+[[test]]
+name = "isolation_escape_test"
+path = "tests/executor/isolation_escape_test.rs"
+edition = "2021"
+
+[[test]]
+name = "credential_leak_test"
+path = "tests/executor/credential_leak_test.rs"
+edition = "2021"
+
+[[test]]
+name = "network_isolation_test"
+path = "tests/executor/network_isolation_test.rs"
+edition = "2021"
+
+[[test]]
+name = "resource_limit_test"
+path = "tests/executor/resource_limit_test.rs"
+edition = "2021"
+
+[[test]]
+name = "cancellation_test"
+path = "tests/executor/cancellation_test.rs"
+edition = "2021"
+
+[[test]]
+name = "tamper_test"
+path = "tests/executor/tamper_test.rs"
 edition = "2021"
