@@ -66,9 +66,8 @@ caduceus:
 
 ## The Field Reference
 
-Every field below is part of the v0.1 semver-stable
-surface. See `RELEASING.md` for what that means in
-practice.
+Every field below is part of the stable surface. See
+`RELEASING.md` for what that means in practice.
 
 ### `poll_interval_seconds`
 
@@ -248,7 +247,7 @@ author is excluded from both `issue_comments` and
 defaults entirely.** To keep the defaults, set the list
 back to the empty list explicitly.
 
-> The v0.1 README mentions a default bot pattern list
+> The README mentions a default bot pattern list
 > (`dependabot[bot]`, `github-actions[bot]`) but the
 > implementation in this repository does not include
 > it. Operators who want that filtering should add the
@@ -304,8 +303,8 @@ values are ignored. Errors never include token contents.
 
 **Type:** `String`. **Default:** `https://api.github.com`.
 
-GitHub REST API base URL. The v1.0 contract (`CONTRACTS.md`
-GH-001) restricts `api_base` to two known forms:
+GitHub REST API base URL. The daemon restricts `api_base`
+to two known forms:
 
 - The literal `https://api.github.com` for GitHub.com.
 - An `https://` URL whose host matches the GHES host
@@ -319,8 +318,8 @@ validation is a positive allowlist, not a forbidden-string
 filter; do not rely on `comment_forbidden_strings` or any
 other string-match to detect a non-GitHub endpoint. If you
 need to point Caduceus at an internal GitHub proxy or
-shim, that shim is out of scope for v1.0; bring it up as a
-proposal so the allowlist can be extended deliberately.
+shim, open an issue so the allowlist can be extended
+deliberately.
 
 Don't set this to a GitHub instance you don't have a
 token for.

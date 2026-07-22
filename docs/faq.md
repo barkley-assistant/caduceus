@@ -56,7 +56,7 @@ org?**
 
 No. Both daemons will poll the same issues and one will
 lose every race. Multi-host state with leader election is
-post-v0.1.
+a future feature.
 
 **Does Caduceus need a database?**
 
@@ -102,15 +102,25 @@ case-insensitive.
 validation. **Do not edit the file in place.** See
 `state-recovery.md`.
 
-**How do I migrate from v0.1?**
+**How do I migrate from an earlier Caduceus installation?**
 
-See `MIGRATION.md` at the repository root. The v0.1
-upgrade path uses the same `caduceus migrate-state`
-command as the v0 → v0.1 path did.
+If your state directory contains a JSON state file
+instead of the current SQLite format, run:
 
-**How do I migrate from a legacy cron processor?**
+```text
+caduceus migrate-state --from <path-to-legacy.json> --dry-run
+```
 
-Also `MIGRATION.md`. Same command.
+Review the dry-run report, then run the command without
+`--dry-run` to apply. The import is idempotent. See the
+README's "Replacing a prior install" section for the
+full procedure.
+
+**How do I migrate from a prior cron processor?**
+
+Same command: `caduceus migrate-state --from <path>`.
+The README's "Replacing a prior install" section covers
+preflight, import, validation, and rollback.
 
 **How do I contribute?**
 

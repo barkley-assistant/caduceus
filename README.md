@@ -47,8 +47,6 @@ single Rust binary and a Python script and the ability to
 read every line of the code that runs on your behalf,
 welcome.
 
-⋆˙⟡ (ㅅ´ ˘ `) ⟡˙⋆
-
 **A note on what this project is for**: Caduceus exists
 to reduce the operator's workload, not to remove the
 operator from the loop. Every PR Caduceus opens is
@@ -201,9 +199,9 @@ short version with the opinions attached.
 
 Everything else lives in
 [`docs/configuration.md`](docs/configuration.md). If a config
-key is not named there, it is not part of the public v1.0
-contract surface; the daemon ignores it, which is the
-honest answer to "why does my custom key do nothing?"
+key is not named there, it is not part of the public contract
+surface; the daemon ignores it, which is the honest answer to
+"why does my custom key do nothing?"
 
 ## The Operator's Manual
 
@@ -223,7 +221,7 @@ front door; the manual is in `docs/`:
   in a different harness.
 - [`docs/state-recovery.md`](docs/state-recovery.md) —
   corrupt state, stuck issues, the `migrate-state`
-  command, backup retention, cutover from v0.1.
+  command, backup retention.
 - [`docs/public-voice.md`](docs/public-voice.md) — the
   forbidden-strings rule, why it exists, how to
   override, what happens when a comment fails the
@@ -233,7 +231,7 @@ front door; the manual is in `docs/`:
   discipline, why we shell out to Git instead of using
   libgit2.
 - [`docs/plugin-lifecycle.md`](docs/plugin-lifecycle.md) —
-  what Hermes v0.18.2 actually loads, what the
+  what the Hermes plugin host actually loads, what the
   manifest fields do, what we don't put in the manifest
   and why.
 - [`docs/hermes-integration.md`](docs/hermes-integration.md) —
@@ -244,12 +242,134 @@ front door; the manual is in `docs/`:
   and the actual fix.
 - [`docs/faq.md`](docs/faq.md) — short.
 
-For the migration procedure from the legacy v0 cron
-processor or from v0.1 itself, see
-[`MIGRATION.md`](MIGRATION.md) at the repository root —
-it's the operator runbook, and we keep it in the root
-so a panicking operator with an outage can find it
-without navigating a docs tree.
+## Replacing a prior install
+
+If your state directory contains a JSON state file instead
+of the current SQLite format, use the `migrate-state`
+command to import existing entries:
+
+```text
+caduceus migrate-state --from <path-to-legacy.json> [--dry-run]
+```
+
+**Do not edit daemon state, metadata, claim files, or
+transcripts by hand.** Caduceus owns those files. Use
+supported commands so it can take its lock, validate
+input, and install changes atomically.
+
+### Preflight
+
+1. Read the release notes for the version you are
+   installing. They identify the supported source
+   formats, any required commands, and version-specific
+   limitations.
+2. Record your active configuration and the resolved
+   state directory path.
+3. Stop scheduled ticks and any automation that may be
+   polling the same issues. Wait for any active tick to
+   finish before proceeding.
+4. Confirm that GitHub and Git credentials are available
+   to the account that will run the daemon after the
+   upgrade.
+
+### Import
+
+Run a dry run first:
+
+```text
+caduceus migrate-state --from /path/to/legacy.json --dry-run
+```
+
+Compare the reported import and skip counts with the
+source data. If they are not what you expect, stop and
+resolve the discrepancy before applying.
+
+When ready:
+
+```text
+caduceus migrate-state --from /path/to/legacy.json
+```
+
+The importer takes the daemon lock, validates every
+record, and adds entries that are not already present in
+live state. It does not overwrite conflicting entries.
+Malformed input leaves live state unchanged. A successful
+write uses the normal atomic-write procedure and creates a
+timestamped backup in the state directory.
+
+Running the same import again is idempotent: already-present
+entries are reported as skipped and are not duplicated.
+
+### Validate
+
+1. Run `caduceus status` and review the reported state.
+2. Confirm the expected backup exists in the state
+   directory.
+3. Run one tick against a test repository and verify its
+   logs, GitHub access, Git credentials, and worker
+   result.
+4. Re-enable scheduling only after the test tick
+   succeeds.
+5. Monitor the first scheduled run and retain backups
+   through that observation period.
+
+If the installation includes the Hermes plugin, also run
+`hermes caduceus doctor` after setup or an upgrade. A
+missing scheduler capability, required gateway restart,
+incomplete configuration, or unavailable provider must be
+treated as an actionable setup failure rather than a
+healthy installation.
+
+### Rollback
+
+If validation fails, stop scheduling before changing
+state. The import command preserves prior content as
+`<state_dir>/state.json.bak-<timestamp>`. A typical
+rollback:
+
+```text
+# Stop the Caduceus scheduler first.
+cp <state_dir>/state.json.bak-<timestamp> <state_dir>/state.json
+# Restart the known-good installation.
+```
+
+Use this only while the daemon is stopped. When Caduceus
+detects malformed state, it preserves the rejected bytes
+as a timestamped `state.json.corrupt-*` archive and
+refuses to proceed. Do not edit that archive or the live
+state in place. Follow the supported recovery process in
+[state recovery](docs/state-recovery.md).
+
+### Retrying failed work
+
+Use the queue command to retry a failed item:
+
+```text
+caduceus status
+caduceus queue reset owner/repo#number --dry-run
+caduceus queue reset owner/repo#number
+```
+
+The normal reset keeps the saved finalization checkpoint
+so a later tick can resume safely. `--force-finalization-reset`
+discards that checkpoint after warning about the affected
+branch and pull request; it never deletes remote branches
+or pull requests.
+
+### Installation changes and removal
+
+For Hermes installations, remove scheduling before removing
+the plugin:
+
+```text
+hermes caduceus cron-remove
+hermes plugins remove caduceus
+```
+
+This preserves the state directory, user-owned bridge,
+configuration, watched repositories, and worktrees for
+inspection or a later reinstall. Run `caduceus worktree-gc`
+when it is safe to clean unused worktrees.
 
 ## What Caduceus Explicitly Is Not
 
@@ -261,17 +381,17 @@ Read this before you install it. We mean it.
   other. The result is not "two workers in parallel";
   it is "two workers racing for the same issue, one of
   them loses, the issue gets retried twice." Multi-host
-  state with proper leader election is a post-v0.1
+  state with proper leader election is a future
   conversation, and we are not going to ship a
   half-baked version of it because you asked nicely.
 - **Not a GitHub App.** Caduceus uses a fine-grained
   PAT. GitHub App authentication with installation
   tokens is a future feature. We know ops teams have
-  asked, we know the rotation story is better with App
-  auth, we are not shipping it now because the
-  migration story for v0.1 operators on PAT is more
-  important than the migration story for hypothetical
-  future operators on App auth.
+  asked and the rotation story is better with App auth;
+  we are not shipping it now because the migration
+  story for operators on PAT is more important than
+  the migration story for hypothetical future
+  operators on App auth.
 - **Not a managed hosted service.** We don't run your
   automation. You do. There is no web dashboard, no
   monthly invoice, no Slack integration that pings us.

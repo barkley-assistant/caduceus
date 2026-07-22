@@ -105,9 +105,7 @@ reads when they are actually configuring something.
 Caduceus is not currently published to the Hermes
 plugin registry. Installation is via
 `hermes plugins install barkley-assistant/caduceus
---enable`, which clones the repository directly. This
-is fine for v0.1; a registry entry is a future
-conversation.
+--enable`, which clones the repository directly.
 
 ## Troubleshooting Hermes Integration
 
