@@ -116,7 +116,7 @@ Review the dry-run report, then run the command without
 README's "Replacing a prior install" section for the
 full procedure.
 
-**How do I migrate from a legacy cron processor?**
+**How do I migrate from a prior cron processor?**
 
 Same command: `caduceus migrate-state --from <path>`.
 The README's "Replacing a prior install" section covers

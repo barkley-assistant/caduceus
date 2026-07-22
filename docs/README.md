@@ -23,11 +23,11 @@ trying to do. Pick the one that matches:
 - Debug something that broke: [`troubleshooting.md`](troubleshooting.md)
 - Skim common questions: [`faq.md`](faq.md)
 
-The migration procedure from the legacy v0 cron processor
-or from Caduceus itself is in
-[`../MIGRATION.md`](../MIGRATION.md) at the repository
-root, on purpose. Operators with an outage should not
-have to navigate a docs tree.
+The migration procedure for replacing a prior Caduceus
+installation is in the
+[README's "Replacing a prior install" section](../README.md).
+Operators with an outage should not have to navigate a
+docs tree.
 
 ## To Be Added (Future Documentation)
 
