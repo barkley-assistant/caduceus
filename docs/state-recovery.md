@@ -6,10 +6,10 @@ files, or transcripts in place.** The lock and
 atomic-write discipline only hold for the programmatic
 API. This doc is the API.
 
-The migration procedure from a v0 install or from
-Caduceus v0.1 itself is in [`../MIGRATION.md`](../MIGRATION.md)
-at the repository root. This doc covers in-place
-recovery, which is different: state has become corrupt
+The migration procedure from a prior installation is
+in [`../MIGRATION.md`](../MIGRATION.md) at the
+repository root. This doc covers in-place recovery,
+which is different: state has become corrupt
 in-place and the daemon is refusing to start.
 
 ## The Failure Modes
@@ -59,16 +59,16 @@ skip steps.
    - Filesystem corruption (rare; check `dmesg` for
      I/O errors).
 4. **Build a repaired file.** The repaired file must
-   be a valid v1 envelope:
-   - `state.json` must parse as the current
-     `QueueState` schema (version 1, `entries` as a
-     map of display keys to `QueueEntry` records).
-   - `state_meta.json` must parse as the current
-     `StateMeta` schema (version 1).
+   be a valid envelope:
+   - `state.json` must parse as the `QueueState`
+     schema (`entries` as a map of display keys to
+     `QueueEntry` records).
+   - `state_meta.json` must parse as the `StateMeta`
+     schema.
    If you don't know how to write that by hand, the
-   easiest path is to run `caduceus migrate-state
-   --from <legacy.json>` against a legacy v0 file
-   (see `MIGRATION.md`).
+    easiest path is to run `caduceus migrate-state
+    --from <file>` against a prior-state JSON file
+    (see `MIGRATION.md`).
 5. **Apply the repaired file.** There are two paths
    here; pick the one that fits the situation:
    - **Library API:** if you have a Rust binary at
@@ -80,8 +80,7 @@ skip steps.
      installs the repaired file, and only then clears
      the corruption marker. The canonical source for
      this API is `src/state/migrate.rs` in the Caduceus
-     source tree; the v1.0 plan routes programmatic
-     recovery through Task 3.4.
+     source tree.
    - **Direct install:** if you understand what
      you're doing, manually move the corrupt file
      aside (rename `state.json` →
@@ -102,21 +101,16 @@ skip steps.
 ## The `migrate-state` Subcommand
 
 ```text
-caduceus migrate-state --from <legacy.json> [--dry-run]
+caduceus migrate-state --from <file> [--dry-run]
 ```
 
-This is the **currently shipped** v0.1 subcommand. It imports a legacy
-v0 queue file into the current v1 schema. Documented in detail in
-`MIGRATION.md`. This is *not* the same as recovery; recovery is for
-in-place corruption, migration is for cross-format import.
+Imports a JSON-formatted state file from a prior installation into
+the current schema. Documented in detail in `MIGRATION.md`. This is
+*not* the same as recovery; recovery is for in-place corruption,
+migration is for cross-format import.
 
-> **Planned v1.0 subcommand.** The v1.0 contract (`CONTRACTS.md`
-> STATE-002) defines `caduceus migrate-state --to sqlite` for the
-> JSON→SQLite cutover. That flag is **not** present in any shipped
-> binary; it lands with v1.0 Task 3.3. When 3.3 ships, this doc is
-> updated alongside `MIGRATION.md` so both surfaces are documented
-> accurately and without ambiguity. Until then, `--from
-> <legacy.json>` is the only supported migrate-state form.
+If your `~/.caduceus/caduceus.db` is already SQLite, migration is
+not needed.
 
 ## The `queue reset` Subcommand
 
@@ -153,15 +147,15 @@ ls -t $STATE_DIR/state.json.bak-* | tail -n +6 | xargs rm -f
 ```
 
 A retention sweep inside the daemon is a future
-feature; in v0.1 the operator is responsible for
+feature; the operator is responsible for
 housekeeping.
 
 ## When to File a Bug
 
 - The daemon wrote a `state.json.corrupt-<ts>` archive
-  whose content is parseable as v1 (this means the
-  daemon's loader had a false positive; please file
-  with the archive attached).
+  whose content is parseable as the current schema
+  (this means the daemon's loader had a false positive;
+  please file with the archive attached).
 - The daemon refused a recovery that, in your
   judgement, was valid (attach both the corrupted
   original and your repaired file).
