@@ -218,3 +218,8 @@ edition = "2021"
 name = "hermes_lifecycle"
 path = "tests/hermes_lifecycle_test.rs"
 edition = "2021"
+
+[[test]]
+name = "release_canary"
+path = "tests/release_canary_test.rs"
+edition = "2021"

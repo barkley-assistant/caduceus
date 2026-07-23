@@ -1,0 +1,13 @@
+# Caduceus Release Canary Report
+#
+# Written by tests/release_canary_test.rs at the end of each run.
+# Approval: independent — no production credentials (wiremock on
+# 127.0.0.1 + disposable `git daemon` origin on 127.0.0.1).
+
+Commit SHA: f8d292b6b0761b0561ef887f5ad236f49bec2e62
+Binary SHA-256: ceaec0acc75aad4696f93eb000318c8cfcce0a38469e077ae182b7ed08f7eb42
+Run ID: unknown
+PR URL: https://github.com/owner/repo/pull/4242
+Pushed branch: refs/heads/automation/issue-47-01ky6z61y9y7s9p0t7025j4mj7
+Request Log: total=14 GET=12 POST=2 PATCH=0 PUT=0 DELETE=0 pr_post=1 comment_post=1 pr_url=https://github.com/owner/repo/pull/4242
+Approval: independent

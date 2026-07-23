@@ -481,10 +481,17 @@ impl std::fmt::Debug for ActiveRunGuard {
 }
 
 impl ActiveRunGuard {
-    /// Build a guard from a freshly-issued [`ClaimToken`].
-    pub fn new(claim: ClaimToken, store: Arc<StateStore>, log_path: PathBuf) -> Self {
+    /// Build a guard from a freshly-issued [`ClaimToken`] and the
+    /// [`IssueKey`] the claim belongs to. The key is provided
+    /// explicitly because `ClaimToken::key()` returns a placeholder
+    /// — see the discussion there.
+    pub fn new(
+        claim: ClaimToken,
+        store: Arc<StateStore>,
+        log_path: PathBuf,
+        issue_key: IssueKey,
+    ) -> Self {
         let state_dir = store.state_dir().to_path_buf();
-        let issue_key = claim.key().clone();
         Self {
             claim: Some(claim),
             store,

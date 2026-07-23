@@ -289,7 +289,7 @@ fn finish_cancelled_requeues_without_retry_increment() {
     let digest = caduceus::queue::display_digest(&k.display_key());
     let token = ClaimToken::for_test(claims_dir, &digest, &run_id);
     let log_path = state_dir.join("processor.log");
-    let mut guard = ActiveRunGuard::new(token, std::sync::Arc::new(store), log_path);
+    let mut guard = ActiveRunGuard::new(token, std::sync::Arc::new(store), log_path, k.clone());
 
     // Drive the canonical cancel requeue path. The
     // `finish_cancelled` implementation calls
