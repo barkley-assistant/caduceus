@@ -1045,13 +1045,19 @@ async fn run_supervisor(
         cfg.transcript_max_bytes,
     );
 
-    // Convert to a tokio command for async I/O. The
-    // `process_group(0)` call sets a fresh process-group
-    // leader so the daemon can later broadcast to the whole
-    // supervisor subtree if needed.
+    // Convert to a tokio command for async I/O.
+    //
+    // Do NOT call `process_group(0)` here: the supervisor becomes a
+    // process-group leader via that call, but it then calls `setsid()`
+    // to create a fresh session. `setsid()` fails with EPERM when the
+    // caller is already a process-group leader, so pre-setting the pg
+    // would break every worker run. The supervisor's own `setsid()`
+    // puts it in a fresh session (whose PGID == its PID), which is
+    // exactly the "fresh process-group leader for the whole supervisor
+    // subtree" the daemon needs to broadcast to. The supervisor reports
+    // that PGID in its READY frame.
     let mut tokio_cmd: TokioCommand = cmd.into();
     tokio_cmd.kill_on_drop(true);
-    tokio_cmd.process_group(0);
     let mut child: Child = tokio_cmd.spawn().map_err(|err| CaduceusError::Worker {
         context: "supervisor:spawn",
         stderr: format!("spawn __worker-supervisor: {err}"),

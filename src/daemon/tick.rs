@@ -93,7 +93,14 @@ pub fn run() -> CaduceusResult<u8> {
 /// cancels the in-flight work and the orchestrator returns
 /// `TickOutcome::Cancelled` / exit 0.
 pub fn run_blocking(cfg: Config) -> CaduceusResult<TickOutcome> {
-    let rt = tokio::runtime::Builder::new_current_thread()
+    // A multi-threaded runtime is required so the sync finalize
+    // helpers (commit / push / status) can drive their async git
+    // operations via `tokio::task::block_in_place` + `Handle::block_on`.
+    // `block_in_place` is only valid on a multi-threaded runtime; a
+    // `current_thread` runtime would panic there. The tick itself is a
+    // single sequential async flow, so the worker pool only matters to
+    // `block_in_place`, not to per-tick concurrency.
+    let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|err| CaduceusError::Other(format!("build tokio runtime: {err}")))?;
@@ -329,7 +336,12 @@ pub async fn tick(
 
     if circuit_blocked {
         let log_path = state_dir.join("processor.log");
-        let mut guard = ActiveRunGuard::new(claimed.claim.clone(), Arc::clone(&store), log_path);
+        let mut guard = ActiveRunGuard::new(
+            claimed.claim.clone(),
+            Arc::clone(&store),
+            log_path,
+            claimed.entry.key.clone(),
+        );
         let err = CaduceusError::CircuitOpen {
             scope: "repository",
             scope_id: repo_key.clone(),
@@ -350,7 +362,12 @@ pub async fn tick(
         // PoolSaturated is an infrastructure failure; requeue with
         // backoff and surface as NeedsAttention.
         let log_path = state_dir.join("processor.log");
-        let mut guard = ActiveRunGuard::new(claimed.claim.clone(), Arc::clone(&store), log_path);
+        let mut guard = ActiveRunGuard::new(
+            claimed.claim.clone(),
+            Arc::clone(&store),
+            log_path,
+            claimed.entry.key.clone(),
+        );
         let class = classify_error(&err);
         let outcome = handle_infra_or_retry(cfg, &mut guard, &err, class).await?;
         finish_tick_outcome(&gate, &meta, now, outcome, None, Some(&err))?;
@@ -360,7 +377,12 @@ pub async fn tick(
     // 7. Build the guard and run the work, finalization, and
     //  teardown phases inside one explicit cleanup scope.
     let log_path = state_dir.join("processor.log");
-    let mut guard = ActiveRunGuard::new(claimed.claim.clone(), Arc::clone(&store), log_path);
+    let mut guard = ActiveRunGuard::new(
+        claimed.claim.clone(),
+        Arc::clone(&store),
+        log_path,
+        claimed.entry.key.clone(),
+    );
     let mut http_status: Option<u16> = None;
     let outcome = run_claim(
         cfg,
