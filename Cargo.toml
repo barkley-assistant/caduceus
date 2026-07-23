@@ -1,6 +1,6 @@
 [package]
 name = "caduceus"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 rust-version = "1.97"
 description = "Unix single-host, one-shot Rust daemon that polls GitHub, queues one unit of work per tick, and finalizes code or investigation results."

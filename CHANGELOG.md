@@ -6,7 +6,13 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
 
 ## [Unreleased][next]
 
-No unreleased changes.
+### Internal version bump
+
+This version bump to 1.0.0 is an internal manifest change. No public
+release artifacts have been published. The next refactor pass will
+land before any GitHub release is created from this version.
+
+No other unreleased changes.
 
 ## [0.1.0] - 2026-07-15
 

@@ -98,7 +98,7 @@ async fn required_headers_are_present_on_every_request() {
         .and(path("/repos/octocat/hello-world/issues"))
         .and(header(
             "user-agent",
-            format!("{USER_AGENT_PREFIX}/0.1.0").as_str(),
+            format!("{USER_AGENT_PREFIX}/{}", env!("CARGO_PKG_VERSION")).as_str(),
         ))
         .and(header("accept", ACCEPT_VALUE))
         .and(header(
