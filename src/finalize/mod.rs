@@ -439,7 +439,14 @@ pub fn commit_code_result(
 /// single-threaded runtime.
 fn drive_block_on<F: std::future::Future>(f: F) -> F::Output {
     match tokio::runtime::Handle::try_current() {
-        Ok(handle) => handle.block_on(f),
+        // We are inside a tokio runtime (the daemon's tick runs on a
+        // multi-threaded runtime). Driving an async git operation from a
+        // sync finalize helper requires `block_in_place` + `Handle::block_on`:
+        // `block_in_place` moves the current thread out of the worker pool's
+        // cooperative scheduling so a nested `block_on` does not deadlock.
+        // (Requires a multi-threaded runtime; the tick runtime is configured
+        // accordingly in `daemon::tick::run_blocking`.)
+        Ok(handle) => tokio::task::block_in_place(|| handle.block_on(f)),
         Err(_) => {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
