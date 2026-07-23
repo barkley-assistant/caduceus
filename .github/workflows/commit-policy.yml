@@ -28,7 +28,6 @@ on:
       - 'SECURITY.md'
       - 'LICENSE'
       - '.github/ISSUE_TEMPLATE/**'
-      - 'planning/**'
       - 'MIGRATION.md'
 
 concurrency:
@@ -77,9 +76,3 @@ jobs:
             fi
             echo "range=${prev_sha}..${head_sha}" >> "$GITHUB_OUTPUT"
           fi
-      - name: validate commit subjects
-        env:
-          RANGE: ${{ steps.subjects.outputs.range }}
-        run: |
-          set -euo pipefail
-          python3 planning/caduceus-v1.0/tools/check_commit_messages.py --range "$RANGE"

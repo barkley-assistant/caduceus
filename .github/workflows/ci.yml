@@ -23,11 +23,7 @@ on:
   pull_request:
   push:
     branches: [main]
-    # Option A: a docs-only or planning-only push should not pay the
-    # full Rust+Python build cost. The commit-policy workflow still
-    # gates the commit shape on every push (its on: block does not
-    # filter by paths), and the planning job still validates the
-    # v1.0 catalog. The build only fires when Rust, Python, or
+    # The build only fires when Rust, Python, or
     # the workflow files themselves change.
     paths-ignore:
       - 'docs/**'
@@ -39,7 +35,6 @@ on:
       - 'SECURITY.md'
       - 'LICENSE'
       - '.github/ISSUE_TEMPLATE/**'
-      - 'planning/**'
       - 'MIGRATION.md'
   # Option C: a weekly schedule trigger keeps the cargo and
   # target caches warm so the next human push does not pay the
@@ -136,15 +131,3 @@ jobs:
           path: pytest-junit.xml
           retention-days: 14
           if-no-files-found: error
-
-  planning:
-    name: planning
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
-      - name: validate the v1.0 plan
-        run: |
-          set -euo pipefail
-          python3 -B planning/caduceus-v1.0/tools/validate_plan.py

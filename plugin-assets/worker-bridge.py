@@ -75,7 +75,7 @@ from typing import List, Mapping, Sequence, Union
 
 
 # ---------------------------------------------------------------------------
-# Constants — keep these in lock-step with planning/caduceus-v0.1/CONTRACTS.md
+# Constants
 # ---------------------------------------------------------------------------
 
 #: Required ``CADUCEUS_*`` environment variables. The daemon exports every

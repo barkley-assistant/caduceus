@@ -52,7 +52,6 @@ to the actual change; the example is not a prescribed value.
   code blocks, and soft-wrap prose at 80 characters.
 - Do not edit daemon state, claim files, or transcripts directly. Use the
   recovery procedures in [docs/state-recovery.md](docs/state-recovery.md).
-- Treat `planning/caduceus-v0.1/` as an immutable archive.
 
 ## License
 

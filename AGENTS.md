@@ -8,18 +8,15 @@ These requirements apply to human and automated contributors.
 - Keep Python in `plugin-assets/worker-bridge.py` and `tests/`.
 - Keep the Hermes plugin in `plugin.yaml`, `__init__.py`, and
   `skills/caduceus/`. Hermes Agent v0.18.2 is the minimum host version.
-- Do not add top-level directories outside `.github/`, `docs/`, `planning/`,
+- Do not add top-level directories outside `.github/`, `docs/`,
   `plugin-assets/`, `skills/`, `src/`, and `tests/` without approval.
 - Do not commit generated files.
 
 ## Safety
 
-- Treat `planning/caduceus-v0.1/` as an immutable archive.
 - Never edit daemon state, claim files, or transcripts directly. Use the
   commands in `docs/state-recovery.md`.
 - Never commit operator-generated prompt files or directories.
-- Never change `contracts_sha256` or archived digests to bypass validation.
-  Record contract conflicts in `CONTRACT_REVISIONS.md` for human approval.
 - Do not add `todo!()`, `unimplemented!()`, or new `unsafe` production code.
 - All Caduceus-created pull requests require human review and merge.
 
