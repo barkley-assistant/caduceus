@@ -2,24 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import os
-import re
-import shutil
-import stat
-import subprocess
-import sys
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 import pytest
-
-from tests.fixtures.fake_ctx import (
-    FakePluginContext,
-    assert_cli_command_registered,
-    assert_command_registered,
-    assert_skill_registered,
-)
 
 from tests.plugin._helpers import _stub_wrapper_file, _stub_cron_runtime
 
@@ -54,7 +41,6 @@ def test_cron_remove_snapshots_before_mutation(
     if remove_actions:
         assert actions.index(list_actions[0]) < actions.index(remove_actions[0])
     assert not wrapper.exists()
-
 
 
 
@@ -98,5 +84,6 @@ def test_cron_remove_reconciles_on_failure(
     assert rc == 0
     assert wrapper.is_file()
     assert wrapper.read_bytes() == original_bytes
-    # Job still exists — remove failed and reconcile preserved it.
-    assert "abc" in registry
+    # A caduceus job still exists after reconcile re-created it.
+    caduceus_jobs = [j for j in registry.values() if j.get("name") == "caduceus"]
+    assert len(caduceus_jobs) == 1

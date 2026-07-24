@@ -251,20 +251,23 @@ def test_doctor_verbose_honoured_on_ci(
 
 
 def test_doctor_output_never_contains_malformed_response(
-    adapter, capsys: pytest.CaptureFixture
+    adapter, install_with_fake_binary: Path, capsys: pytest.CaptureFixture
 ) -> None:
     """The literal substring 'malformed-response:' does not reach a non-CI operator."""
     from caduceus import _runtime
+    from caduceus._runtime import CronCapabilityError
+    from tests.plugin._helpers import subprocess_run_recorder
 
-    fake_ctx = FakePluginContext(name="caduceus")
-    # The malformed simulator makes _coerce_jobs raise CronCapabilityError with
-    # category "malformed-response".
-    fake_ctx.install_cron_capability("malformed")
-    try:
+    def raise_malformed(argv, kwargs):
+        raise CronCapabilityError(
+            "malformed-response",
+            "Hermes returned an unexpected payload shape",
+            "garbled",
+        )
+
+    with subprocess_run_recorder({"list": raise_malformed}):
         rc = adapter._cli_doctor()
         captured = capsys.readouterr()
-    finally:
-        _runtime.reset_dispatcher()
 
     assert rc == 2
     assert "malformed-response:" not in captured.out

@@ -2,24 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import os
-import re
-import shutil
-import stat
-import subprocess
-import sys
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 import pytest
-
-from tests.fixtures.fake_ctx import (
-    FakePluginContext,
-    assert_cli_command_registered,
-    assert_command_registered,
-    assert_skill_registered,
-)
 
 from tests.plugin._helpers import _stub_cron_runtime
 
@@ -35,7 +22,6 @@ def test_doctor_check_binary_present(
 
 
 
-
 def test_doctor_check_binary_missing(adapter) -> None:
     """_doctor_check_binary returns fail when binary is missing."""
     finding = adapter._doctor_check_binary()
@@ -44,7 +30,6 @@ def test_doctor_check_binary_missing(adapter) -> None:
     assert "not found" in finding.detail.lower() or "missing" in finding.detail.lower()
     assert "run setup to build it" in finding.detail
     assert "hermes caduceus setup" in finding.next_action
-
 
 
 
@@ -64,7 +49,6 @@ def test_doctor_check_bridge_harness_executable(
 
 
 
-
 def test_doctor_check_bridge_harness_not_executable(
     adapter, isolated_hermes_home: Path
 ) -> None:
@@ -81,7 +65,6 @@ def test_doctor_check_bridge_harness_not_executable(
 
 
 
-
 def test_doctor_check_bridge_harness_not_yet_seeded(
     adapter, isolated_hermes_home: Path
 ) -> None:
@@ -91,7 +74,6 @@ def test_doctor_check_bridge_harness_not_yet_seeded(
     assert finding.status == "ok"
     assert "worker bridge not yet seeded" in finding.detail.lower()
     assert "external prerequisite" in finding.detail.lower()
-
 
 
 
@@ -108,7 +90,6 @@ def test_doctor_check_provider_secret_present(
 
 
 
-
 def test_doctor_check_provider_secret_missing(adapter) -> None:
     """_doctor_check_provider_secret returns fail when no secret name is set."""
     for var in ("CADUCEUS_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"):
@@ -121,7 +102,6 @@ def test_doctor_check_provider_secret_missing(adapter) -> None:
 
 
 
-
 def test_doctor_check_cron_capability_ok_with_jobs(
     adapter, install_with_fake_binary: Path
 ) -> None:
@@ -129,7 +109,7 @@ def test_doctor_check_cron_capability_ok_with_jobs(
     from caduceus import _runtime
 
     registry = {
-        "job-1": {"id": "job-1", "name": "caduceus", "schedule": "every 2m"},
+        "abc": {"id": "abc", "name": "caduceus", "schedule": "every 2m"},
     }
     _stub_cron_runtime(adapter, registry)
     try:
@@ -140,7 +120,6 @@ def test_doctor_check_cron_capability_ok_with_jobs(
     assert finding.status == "ok"
     assert "1 Caduceus cron job registered" in finding.detail
     assert "external prerequisite, exercised" in finding.detail
-
 
 
 
@@ -164,21 +143,19 @@ def test_doctor_check_cron_capability_no_caduceus_job(
 
 
 
-
-def test_doctor_check_cron_capability_dispatcher_not_installed(
+def test_doctor_check_cron_capability_hermes_not_on_path(
     adapter, install_with_fake_binary: Path
 ) -> None:
-    """Missing dispatcher points at plugin install, not gateway state."""
+    """Missing hermes CLI points at PATH/install, not the gateway state."""
     from caduceus import _runtime
 
     _runtime.reset_dispatcher()
+    _runtime._HERMES_PATH = None
     finding = adapter._doctor_check_cron_capability(ctx=adapter)
-    # reset_dispatcher leaves _DISPATCHER None; no restore needed.
     assert finding.status == "fail"
-    assert "adapter is not installed" in finding.detail.lower()
-    assert "gateway is running" not in finding.next_action.lower()
-    assert "hermes plugins install" in finding.next_action
-
+    assert "hermes cli not on path" in finding.detail.lower()
+    assert finding.next_action.startswith("install Hermes Agent")
+    assert "hermes" in finding.next_action
 
 
 

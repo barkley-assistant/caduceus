@@ -272,16 +272,10 @@ def register(ctx: Any) -> None:
             "remove the two-minute cron job, and inspect daemon state."
         ),
     )
-    # Wire the cronjob bridge to ``ctx.dispatch_tool("cronjob", ...)`` if
-    # the ctx exposes it. The adapter never *creates* cron jobs at
-    # register time — it only stores the dispatcher so that explicit
-    # operator invocations of ``hermes caduceus cron-install`` can route
-    # through Hermes's documented cronjob tool surface.
-    dispatcher = getattr(ctx, "dispatch_tool", None)
-    if callable(dispatcher):
-        from . import _runtime  # late import; avoids stdlib pollution
-
-        _runtime.install_dispatcher(dispatcher)
+    # Cron mutations happen through the ``hermes`` CLI subprocess (see
+    # ``_runtime.py``). Hermes v0.19.0 no longer exposes a ``cronjob`` MCP
+    # tool, so there is nothing to wire from ``ctx.dispatch_tool``. The
+    # adapter never *creates* cron jobs at register time.
 
 
 # ---------------------------------------------------------------------------
@@ -617,13 +611,15 @@ def _doctor_check_cron_capability(ctx: Any) -> _DoctorFinding:
     del ctx  # ctx is not needed — we use the runtime dispatcher directly
     from . import _runtime as rt  # type: ignore[import-not-found]
 
-    if rt._DISPATCHER is None:
+    try:
+        rt._resolve_hermes()
+    except rt.CronCapabilityError:
         return _DoctorFinding(
             category="host-capability-unavailable",
             status="fail",
-            detail="Caduceus adapter is not installed; cannot reach the cron subsystem",
-            next_action="run `hermes plugins install barkley-assistant/caduceus --enable` to register the adapter, then re-check",
-            internal_detail="cron dispatcher not installed (adapter not registered with Hermes)",
+            detail="hermes CLI not on PATH",
+            next_action="install Hermes Agent v0.18.2+ and ensure `hermes` is on PATH",
+            internal_detail="shutil.which('hermes') returned None",
         )
     try:
         jobs = rt.cron_list_jobs()
