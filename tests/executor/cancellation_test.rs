@@ -29,9 +29,7 @@ fn test_spec(run_id: &str) -> ExecutorSpec {
     }
 }
 
-// ---------------------------------------------------------------------------
 // cancel_at_create — SIGTERM during create leaves no orphan
-// ---------------------------------------------------------------------------
 
 #[test]
 #[cfg_attr(not(env = "CADUCEUS_RUN_ISOLATION_TESTS"), ignore)]
@@ -59,10 +57,8 @@ fn cancel_at_create() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // cancel_at_start — SIGTERM during start; Created container should remain
 // so the next start can remove it
-// ---------------------------------------------------------------------------
 
 #[test]
 #[cfg_attr(not(env = "CADUCEUS_RUN_ISOLATION_TESTS"), ignore)]
@@ -90,10 +86,8 @@ fn cancel_at_start() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // cancel_at_wait — SIGTERM during wait; container transitions
 // Stopping→Stopped→Removed
-// ---------------------------------------------------------------------------
 
 #[test]
 #[cfg_attr(not(env = "CADUCEUS_RUN_ISOLATION_TESTS"), ignore)]
@@ -119,10 +113,8 @@ fn cancel_at_wait() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // cancel_at_remove — SIGTERM during remove; removal is retried and
 // next reconciliation finishes
-// ---------------------------------------------------------------------------
 
 #[test]
 #[cfg_attr(not(env = "CADUCEUS_RUN_ISOLATION_TESTS"), ignore)]

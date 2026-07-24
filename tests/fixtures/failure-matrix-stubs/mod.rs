@@ -1,4 +1,4 @@
-//! Failure-matrix fixture stubs for `tests/failure_matrix_test.rs`.
+//! Failure-matrix fixture stubs for `tests/integration/failure_matrix_test.rs`.
 //!
 //! Each scenario group owns its own file so reviewers can scan a
 //! single domain at a time. The stubs are plain Rust sources

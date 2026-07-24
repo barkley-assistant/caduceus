@@ -7,9 +7,7 @@ use caduceus::executor::upgrade::{UpgradeChoice, UpgradePolicy};
 use caduceus::executor::ExecutorKind;
 use caduceus::infra::error::CaduceusError;
 
-// ---------------------------------------------------------------------------
 // missing_choice_rejected — None → OciUpgradeChoiceRequired
-// ---------------------------------------------------------------------------
 
 #[test]
 fn missing_choice_rejected() {
@@ -21,9 +19,7 @@ fn missing_choice_rejected() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // not_asked_rejected — NotAsked → OciUpgradeChoiceRequired
-// ---------------------------------------------------------------------------
 
 #[test]
 fn not_asked_rejected() {
@@ -35,9 +31,7 @@ fn not_asked_rejected() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // chosen_ok — Chosen(Oci) → Ok
-// ---------------------------------------------------------------------------
 
 #[test]
 fn chosen_ok() {
@@ -48,9 +42,7 @@ fn chosen_ok() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // chosen_trusted_host_ok — Chosen(TrustedHost) → Ok
-// ---------------------------------------------------------------------------
 
 #[test]
 fn chosen_trusted_host_ok() {
@@ -61,9 +53,7 @@ fn chosen_trusted_host_ok() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // deferred_ok — Deferred → Ok
-// ---------------------------------------------------------------------------
 
 #[test]
 fn deferred_ok() {

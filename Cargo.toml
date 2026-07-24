@@ -106,27 +106,27 @@ edition = "2021"
 
 [[test]]
 name = "executor_trusted_host_test"
-path = "tests/executor_trusted_host_test.rs"
+path = "tests/executor/executor_trusted_host_test.rs"
 edition = "2021"
 
 [[test]]
 name = "executor_oci_test"
-path = "tests/executor_oci_test.rs"
+path = "tests/executor/executor_oci_test.rs"
 edition = "2021"
 
 [[test]]
 name = "executor_config_test"
-path = "tests/executor_config_test.rs"
+path = "tests/executor/executor_config_test.rs"
 edition = "2021"
 
 [[test]]
 name = "tick_dispatch_test"
-path = "tests/tick_dispatch_test.rs"
+path = "tests/daemon/tick_dispatch_test.rs"
 edition = "2021"
 
 [[test]]
 name = "oci_config_test"
-path = "tests/oci_config_test.rs"
+path = "tests/executor/oci_config_test.rs"
 edition = "2021"
 
 [[test]]
@@ -205,21 +205,331 @@ path = "tests/executor/tamper_test.rs"
 edition = "2021"
 
 [[test]]
+name = "daemon_lock_test"
+path = "tests/daemon/daemon_lock_test.rs"
+edition = "2021"
+
+[[test]]
+name = "runtime_path_test"
+path = "tests/daemon/runtime_path_test.rs"
+edition = "2021"
+
+[[test]]
+name = "signal_test"
+path = "tests/daemon/signal_test.rs"
+edition = "2021"
+
+[[test]]
+name = "tick_test"
+path = "tests/daemon/tick_test.rs"
+edition = "2021"
+
+[[test]]
+name = "status_test"
+path = "tests/daemon/status_test.rs"
+edition = "2021"
+
+[[test]]
+name = "repository_discovery_test"
+path = "tests/repo/repository_discovery_test.rs"
+edition = "2021"
+
+[[test]]
+name = "repository_poll_test"
+path = "tests/repo/repository_poll_test.rs"
+edition = "2021"
+
+[[test]]
+name = "worktree_create_test"
+path = "tests/repo/worktree_create_test.rs"
+edition = "2021"
+
+[[test]]
+name = "worktree_gc_test"
+path = "tests/repo/worktree_gc_test.rs"
+edition = "2021"
+
+[[test]]
+name = "worktree_remove_test"
+path = "tests/repo/worktree_remove_test.rs"
+edition = "2021"
+
+[[test]]
+name = "scheduler_leadership_test"
+path = "tests/scheduler/scheduler_leadership_test.rs"
+edition = "2021"
+
+[[test]]
+name = "scheduler_leases_test"
+path = "tests/scheduler/scheduler_leases_test.rs"
+edition = "2021"
+
+[[test]]
+name = "api_base_allowlist_test"
+path = "tests/state/api_base_allowlist_test.rs"
+edition = "2021"
+
+[[test]]
+name = "audit_redaction_test"
+path = "tests/state/audit_redaction_test.rs"
+edition = "2021"
+
+[[test]]
+name = "cadence_test"
+path = "tests/state/cadence_test.rs"
+edition = "2021"
+
+[[test]]
+name = "checkpoint_crash_matrix_test"
+path = "tests/state/checkpoint_crash_matrix_test.rs"
+edition = "2021"
+
+[[test]]
+name = "claim_test"
+path = "tests/state/claim_test.rs"
+edition = "2021"
+
+[[test]]
+name = "config_bootstrap_test"
+path = "tests/state/config_bootstrap_test.rs"
+edition = "2021"
+
+[[test]]
+name = "config_resolution_test"
+path = "tests/state/config_resolution_test.rs"
+edition = "2021"
+
+[[test]]
+name = "config_test"
+path = "tests/state/config_test.rs"
+edition = "2021"
+
+[[test]]
+name = "credentials_audit_test"
+path = "tests/state/credentials_audit_test.rs"
+edition = "2021"
+
+[[test]]
+name = "error_test"
+path = "tests/state/error_test.rs"
+edition = "2021"
+
+[[test]]
+name = "finalize_checkpoints_test"
+path = "tests/state/finalize_checkpoints_test.rs"
+edition = "2021"
+
+[[test]]
+name = "lifecycle_matrix_test"
+path = "tests/state/lifecycle_matrix_test.rs"
+edition = "2021"
+
+[[test]]
+name = "logging_test"
+path = "tests/state/logging_test.rs"
+edition = "2021"
+
+[[test]]
+name = "meta_test"
+path = "tests/state/meta_test.rs"
+edition = "2021"
+
+[[test]]
+name = "migration_test"
+path = "tests/state/migration_test.rs"
+edition = "2021"
+
+[[test]]
+name = "queue_model_test"
+path = "tests/state/queue_model_test.rs"
+edition = "2021"
+
+[[test]]
+name = "queue_reset_cli_test"
+path = "tests/state/queue_reset_cli_test.rs"
+edition = "2021"
+
+[[test]]
+name = "reaper_test"
+path = "tests/state/reaper_test.rs"
+edition = "2021"
+
+[[test]]
+name = "reconcile_side_effects_test"
+path = "tests/state/reconcile_side_effects_test.rs"
+edition = "2021"
+
+[[test]]
+name = "retry_test"
+path = "tests/state/retry_test.rs"
+edition = "2021"
+
+[[test]]
+name = "review_lifecycle_test"
+path = "tests/state/review_lifecycle_test.rs"
+edition = "2021"
+
+[[test]]
+name = "state_store_test"
+path = "tests/state/state_store_test.rs"
+edition = "2021"
+
+[[test]]
+name = "token_test"
+path = "tests/state/token_test.rs"
+edition = "2021"
+
+[[test]]
+name = "validate_test"
+path = "tests/state/validate_test.rs"
+edition = "2021"
+
+[[test]]
+name = "worker_archive_test"
+path = "tests/worker/worker_archive_test.rs"
+edition = "2021"
+
+[[test]]
+name = "worker_env_test"
+path = "tests/worker/worker_env_test.rs"
+edition = "2021"
+
+[[test]]
+name = "worker_parent_death_test"
+path = "tests/worker/worker_parent_death_test.rs"
+edition = "2021"
+
+[[test]]
+name = "worker_process_test"
+path = "tests/worker/worker_process_test.rs"
+edition = "2021"
+
+[[test]]
+name = "worker_result_test"
+path = "tests/worker/worker_result_test.rs"
+edition = "2021"
+
+[[test]]
+name = "worker_timeout_test"
+path = "tests/worker/worker_timeout_test.rs"
+edition = "2021"
+
+[[test]]
+name = "worker_transcript_test"
+path = "tests/worker/worker_transcript_test.rs"
+edition = "2021"
+
+[[test]]
+name = "commit_test"
+path = "tests/github/commit_test.rs"
+edition = "2021"
+
+[[test]]
+name = "context_test"
+path = "tests/github/context_test.rs"
+edition = "2021"
+
+[[test]]
+name = "discovery_pagination_test"
+path = "tests/github/discovery_pagination_test.rs"
+edition = "2021"
+
+[[test]]
+name = "dry_run_test"
+path = "tests/github/dry_run_test.rs"
+edition = "2021"
+
+[[test]]
+name = "failure_investigation_test"
+path = "tests/github/failure_investigation_test.rs"
+edition = "2021"
+
+[[test]]
+name = "github_client_test"
+path = "tests/github/github_client_test.rs"
+edition = "2021"
+
+[[test]]
+name = "issue_close_test"
+path = "tests/github/issue_close_test.rs"
+edition = "2021"
+
+[[test]]
+name = "issue_detail_test"
+path = "tests/github/issue_detail_test.rs"
+edition = "2021"
+
+[[test]]
+name = "issue_poll_test"
+path = "tests/github/issue_poll_test.rs"
+edition = "2021"
+
+[[test]]
+name = "pr_body_test"
+path = "tests/github/pr_body_test.rs"
+edition = "2021"
+
+[[test]]
+name = "pr_test"
+path = "tests/github/pr_test.rs"
+edition = "2021"
+
+[[test]]
+name = "prompt_test"
+path = "tests/github/prompt_test.rs"
+edition = "2021"
+
+[[test]]
+name = "push_test"
+path = "tests/github/push_test.rs"
+edition = "2021"
+
+[[test]]
+name = "rate_limit_test"
+path = "tests/github/rate_limit_test.rs"
+edition = "2021"
+
+[[test]]
+name = "verify_test"
+path = "tests/github/verify_test.rs"
+edition = "2021"
+
+[[test]]
+name = "voice_rule_test"
+path = "tests/github/voice_rule_test.rs"
+edition = "2021"
+
+[[test]]
 name = "integration_scenarios"
-path = "tests/integration_scenarios.rs"
+path = "tests/integration/integration_scenarios.rs"
 edition = "2021"
 
 [[test]]
 name = "failure_matrix"
-path = "tests/failure_matrix_test.rs"
+path = "tests/integration/failure_matrix_test.rs"
 edition = "2021"
 
 [[test]]
 name = "hermes_lifecycle"
-path = "tests/hermes_lifecycle_test.rs"
+path = "tests/integration/hermes_lifecycle_test.rs"
 edition = "2021"
 
 [[test]]
 name = "release_canary"
-path = "tests/release_canary_test.rs"
+path = "tests/integration/release_canary_test.rs"
+edition = "2021"
+
+[[test]]
+name = "integration_test"
+path = "tests/integration/integration_test.rs"
+edition = "2021"
+
+[[test]]
+name = "docs_contract_test"
+path = "tests/architecture/docs_contract_test.rs"
+edition = "2021"
+
+[[test]]
+name = "fixtures_self_test"
+path = "tests/architecture/fixtures_self_test.rs"
 edition = "2021"

@@ -40,9 +40,7 @@ fn sample_row(run_id: &str, state: OciLifecycleState) -> ContainerRunRow {
     }
 }
 
-// ---------------------------------------------------------------------------
 // insert_oci_run_row
-// ---------------------------------------------------------------------------
 
 #[test]
 fn insert_oci_run_row() {
@@ -60,9 +58,7 @@ fn insert_oci_run_row() {
     assert_eq!(loaded.engine, "docker");
 }
 
-// ---------------------------------------------------------------------------
 // update_oci_run_state
-// ---------------------------------------------------------------------------
 
 #[test]
 fn update_oci_run_state() {
@@ -77,9 +73,7 @@ fn update_oci_run_state() {
     assert_eq!(loaded.state, OciLifecycleState::Running);
 }
 
-// ---------------------------------------------------------------------------
 // list_pending_reconciliation_returns_only_pending
-// ---------------------------------------------------------------------------
 
 #[test]
 fn list_pending_reconciliation_returns_only_pending() {
@@ -108,9 +102,7 @@ fn list_pending_reconciliation_returns_only_pending() {
     assert!(ids.contains(&"run-013"), "must contain run-013");
 }
 
-// ---------------------------------------------------------------------------
 // get_oci_run_by_id
-// ---------------------------------------------------------------------------
 
 #[test]
 fn get_oci_run_by_id() {
@@ -127,9 +119,7 @@ fn get_oci_run_by_id() {
     assert!(missing.is_none(), "non-existent run must return None");
 }
 
-// ---------------------------------------------------------------------------
 // delete_oci_run
-// ---------------------------------------------------------------------------
 
 #[test]
 fn delete_oci_run() {

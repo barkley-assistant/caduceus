@@ -20,7 +20,7 @@
 //!   not break legitimate local-remote operations.
 //!
 //! `LocalOrigin` is the v1.0 reusable form of the helper that
-//! `tests/worktree_create_test.rs` ships inline. Tests that
+//! `tests/repo/worktree_create_test.rs` ships inline. Tests that
 //! need a bare repo, a working clone, or a push/fetch round trip
 //! should construct one `LocalOrigin` and call the helpers.
 //!
@@ -117,7 +117,7 @@ impl LocalOrigin {
     /// `file://` URL the daemon should put in `remote.origin.url`.
     /// The host segment is empty (per RFC 8089 §E.2.1 for
     /// `file://` URLs without a host), which is exactly what
-    /// `tests/worktree_create_test.rs` does today.
+    /// `tests/repo/worktree_create_test.rs` does today.
     pub fn uri(&self) -> String {
         format!("file://{}", self.bare.display())
     }

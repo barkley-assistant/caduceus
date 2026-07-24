@@ -28,9 +28,7 @@ fn test_spec(run_id: &str) -> ExecutorSpec {
     }
 }
 
-// ---------------------------------------------------------------------------
 // granted_secret_creates_ephemeral_file
-// ---------------------------------------------------------------------------
 
 #[test]
 fn granted_secret_creates_ephemeral_file() {
@@ -61,9 +59,7 @@ fn granted_secret_creates_ephemeral_file() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // denied_secret_rejected — non-granted secret → OciSecretNotGranted
-// ---------------------------------------------------------------------------
 
 #[test]
 fn denied_secret_rejected() {
@@ -86,9 +82,7 @@ fn denied_secret_rejected() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // secret_value_not_in_argv — grep argv for the secret value → not found
-// ---------------------------------------------------------------------------
 
 #[test]
 fn secret_value_not_in_argv() {
