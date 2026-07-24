@@ -13,9 +13,6 @@ use sha2::{Digest, Sha256};
 use crate::github::issue::IssueKey;
 use crate::infra::error::{CaduceusError, CaduceusResult};
 
-/// Canonical queue-file schema version. Bumping it is a breaking
-/// change — the daemon refuses any other value. Tested by
-
 // ---------------------------------------------------------------------------
 // Reaper: scan claim files for stale entries, malformed bodies, future
 // timestamps; quarantine to claims/corrupt/ and report.

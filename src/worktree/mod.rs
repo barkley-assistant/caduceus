@@ -7,6 +7,8 @@
 //! spawns; it enforces the prompts/timeout/process-group contract
 //! the rest of the crate relies on.
 
+#![allow(clippy::module_inception)]
+
 // Submodule declarations and re-exports. These preserve the historical
 // `crate::worktree` public surface used by `lib.rs` and sibling modules.
 
