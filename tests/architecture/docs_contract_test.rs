@@ -128,7 +128,7 @@ fn extract_bridge_required_env_vars(source: &str) -> BTreeSet<String> {
     names
 }
 
-/// Extract every `Config` struct field name from `src/infra/config.rs`.
+/// Extract every `Config` struct field name from `src/infra/config/mod.rs`.
 fn extract_daemon_config_fields(source: &str) -> BTreeSet<String> {
     let mut fields = BTreeSet::new();
     let mut in_struct = false;
@@ -241,7 +241,7 @@ fn extract_python_manifest_field_allowlist() -> BTreeSet<String> {
 
 #[test]
 fn daemon_config_struct_matches_canonical_fixture() {
-    let source = read_repo_file("src/infra/config.rs");
+    let source = read_repo_file("src/infra/config/mod.rs");
     let struct_fields = extract_daemon_config_fields(&source);
 
     let mut missing: Vec<&str> = Vec::new();
