@@ -33,9 +33,7 @@ fn test_spec(run_id: &str) -> ExecutorSpec {
     }
 }
 
-// ---------------------------------------------------------------------------
 // tamper_modified_files — undeclared mount is rejected
-// ---------------------------------------------------------------------------
 
 #[test]
 fn tamper_modified_files() {
@@ -66,9 +64,7 @@ fn tamper_modified_files() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // tamper_secret_in_result — redact() scrubs ghp_ tokens from output
-// ---------------------------------------------------------------------------
 
 #[test]
 fn tamper_secret_in_result() {
@@ -126,9 +122,7 @@ fn tamper_secret_in_result() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // tamper_commit_metadata — argv does not contain .git volume mount
-// ---------------------------------------------------------------------------
 
 #[test]
 fn tamper_commit_metadata() {

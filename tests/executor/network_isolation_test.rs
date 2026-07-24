@@ -30,9 +30,7 @@ fn test_spec(run_id: &str, network_profile: Option<&str>) -> ExecutorSpec {
     }
 }
 
-// ---------------------------------------------------------------------------
 // probe_blocked_egress — no network profile → all egress blocked
-// ---------------------------------------------------------------------------
 
 #[test]
 #[cfg_attr(not(env = "CADUCEUS_RUN_ISOLATION_TESTS"), ignore)]
@@ -67,10 +65,8 @@ fn probe_blocked_egress() {
     // the lifecycle module when the container tries to connect.
 }
 
-// ---------------------------------------------------------------------------
 // probe_allowed_egress — with a network profile, specific egress works
 // but the audit logs the URL without the response body
-// ---------------------------------------------------------------------------
 
 #[test]
 #[cfg_attr(not(env = "CADUCEUS_RUN_ISOLATION_TESTS"), ignore)]
@@ -111,10 +107,8 @@ fn probe_allowed_egress() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // probe_dns_exfiltration — DNS queries are blocked with no network
 // profile
-// ---------------------------------------------------------------------------
 
 #[test]
 #[cfg_attr(not(env = "CADUCEUS_RUN_ISOLATION_TESTS"), ignore)]

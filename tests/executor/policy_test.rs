@@ -30,9 +30,7 @@ fn test_spec(run_id: &str) -> ExecutorSpec {
     }
 }
 
-// ---------------------------------------------------------------------------
 // mount allow-list: undeclared mount rejected
-// ---------------------------------------------------------------------------
 
 #[test]
 fn undeclared_mount_rejected() {
@@ -58,9 +56,7 @@ fn undeclared_mount_rejected() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // resource limit required — spec must have CPU, memory, PIDs
-// ---------------------------------------------------------------------------
 
 #[test]
 fn resource_limit_required() {
@@ -95,10 +91,8 @@ fn resource_limit_required() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // baseline enforced — argv has --user, --cap-drop ALL, --security-opt
 // no-new-privileges, --read-only, --tmpfs; no docker.sock; no --device
-// ---------------------------------------------------------------------------
 
 #[test]
 fn baseline_enforced() {
@@ -158,9 +152,7 @@ fn baseline_enforced() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // image digest pinned — tag-only ref is rejected
-// ---------------------------------------------------------------------------
 
 #[test]
 fn image_digest_pinned() {
@@ -181,9 +173,7 @@ fn image_digest_pinned() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // pull policy Always + digest → rejected
-// ---------------------------------------------------------------------------
 
 #[test]
 fn pull_policy_always_rejected() {
@@ -199,9 +189,7 @@ fn pull_policy_always_rejected() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // git-less worker — .git is RO, mirrors not mounted
-// ---------------------------------------------------------------------------
 
 #[test]
 fn git_less_worker() {
@@ -232,9 +220,7 @@ fn git_less_worker() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // network_profile_applied — network args are merged into the argv
-// ---------------------------------------------------------------------------
 
 #[test]
 fn network_profile_applied() {
@@ -273,9 +259,7 @@ fn network_profile_applied() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // no_network_profile_gives_none — no network_profile → --network=none
-// ---------------------------------------------------------------------------
 
 #[test]
 fn no_network_profile_gives_none() {

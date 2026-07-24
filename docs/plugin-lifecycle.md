@@ -68,7 +68,7 @@ fields, so a plugin could ship a manifest with
 `commands/*.md` references and Hermes would appear to
 install fine — but the references would be dead
 weight. Caduceus's contract test
-(`tests/docs_contract_test.rs`) explicitly rejects
+(`tests/architecture/docs_contract_test.rs`) explicitly rejects
 these manifest fields to keep the manifest clean.
 
 ## What `__init__.py` Does

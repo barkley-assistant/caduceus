@@ -33,10 +33,8 @@ fn test_spec(run_id: &str) -> ExecutorSpec {
     }
 }
 
-// ---------------------------------------------------------------------------
 // leak_via_argv — secret value in worker command or env must not appear
 // in the final argv
-// ---------------------------------------------------------------------------
 
 #[test]
 fn leak_via_argv() {
@@ -87,10 +85,8 @@ fn leak_via_argv() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // leak_via_log — redact() must scrub credential values from log output
 // while keeping the variable name visible
-// ---------------------------------------------------------------------------
 
 #[test]
 fn leak_via_log() {
@@ -130,9 +126,7 @@ fn leak_via_log() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // leak_via_signal — signal delivery must not expose secret values
-// ---------------------------------------------------------------------------
 
 #[test]
 #[cfg_attr(not(env = "CADUCEUS_RUN_ISOLATION_TESTS"), ignore)]

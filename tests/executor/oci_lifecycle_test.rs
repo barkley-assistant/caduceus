@@ -15,9 +15,7 @@ use caduceus::infra::config::Config;
 use caduceus::infra::error::{CaduceusError, CaduceusResult};
 use caduceus::state::oci_run::{ContainerRunRow, OciLifecycleState, OciRunState};
 
-// ---------------------------------------------------------------------------
 // FakeOciRunState — in-memory state for testing
-// ---------------------------------------------------------------------------
 
 struct FakeOciRunState {
     rows: Mutex<Vec<ContainerRunRow>>,
@@ -84,9 +82,7 @@ fn test_spec(run_id: &str) -> ExecutorSpec {
     }
 }
 
-// ---------------------------------------------------------------------------
 // cleanup_on_cancel_and_timeout (AC-03)
-// ---------------------------------------------------------------------------
 
 /// Cancel mid-wait → no orphan container is left behind.
 #[tokio::test]
@@ -116,9 +112,7 @@ async fn cleanup_on_cancel_and_timeout() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // engine_unavailable_surfaces_structured (AC-05)
-// ---------------------------------------------------------------------------
 
 /// Docker not running → `OciEngineUnavailable` or `OciCreateFailed`.
 #[tokio::test]
@@ -142,9 +136,7 @@ async fn engine_unavailable_surfaces_structured() {
     assert!(is_oci_error, "expected a typed OCI error; got: {err:?}");
 }
 
-// ---------------------------------------------------------------------------
 // stop_kill_remove_bounded (AC-05)
-// ---------------------------------------------------------------------------
 
 /// Each step has the configured timeout — without Docker, the steps
 /// fail fast rather than hanging.
@@ -186,9 +178,7 @@ async fn stop_kill_remove_bounded() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // crash_recovery (AC-05)
-// ---------------------------------------------------------------------------
 
 /// Simulate crash recovery: insert a row in PendingReconciliation,
 /// call reconcile, verify the row is marked Removed.
@@ -224,9 +214,7 @@ async fn crash_recovery() {
     assert!(row.is_some(), "row must still exist");
 }
 
-// ---------------------------------------------------------------------------
 // reconcile_does_not_remove_unrelated (AC-05)
-// ---------------------------------------------------------------------------
 
 /// Only caduceus-labelled containers are reconciled — unrelated rows
 /// are left untouched.
