@@ -1,4 +1,4 @@
-![Caduceus logo](https://github.com/barkley-assistant/caduceus/blob/main/docs/caduceus-logo.jpg)
+![Caduceus logo](https://github.com/barkley-assistant/caduceus/blob/main/docs/caduceus-logo.webp)
 
 # Caduceus
 
