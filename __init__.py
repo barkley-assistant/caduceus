@@ -109,7 +109,8 @@ class _NeedsAttention:
 
 _DoctorFinding = namedtuple(
     "_DoctorFinding",
-    ["category", "status", "detail", "next_action"],
+    ["category", "status", "detail", "next_action", "internal_detail"],
+    defaults=("",),
 )
 """Structured doctor finding.
 
@@ -117,9 +118,12 @@ Attributes:
     category: One of ``"host-capability-unavailable"``, ``"gateway-inactive"``,
         ``"config-incomplete"``, ``"daemon-defect"``.
     status: ``"ok"`` or ``"fail"``.
-    detail: Human-readable description of the finding.
+    detail: Human-readable operator-facing description of the finding.
     next_action: What the operator should do to fix the issue, or empty
         string if status is ``"ok"``.
+    internal_detail: Internal diagnostic for ``--verbose`` output, never
+        shown by default. May include structured categories such as
+        ``"malformed-response"`` because it is not operator-facing.
 """
 
 
@@ -357,9 +361,14 @@ def _register_caduceus_cli(subparser: Any) -> None:
         help="Print the actions without running them.",
     )
 
-    subs.add_parser(
+    doctor = subs.add_parser(
         "doctor",
         help="Verify the binary, bridge, and cron job are healthy.",
+    )
+    doctor.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print internal detail and structured category (human debugging only).",
     )
 
     subs.add_parser(
@@ -390,7 +399,7 @@ def _caduceus_cli_command(args: Any) -> int:
     if sub == "setup":
         return _cli_setup(dry_run=getattr(args, "dry_run", False))
     if sub == "doctor":
-        return _cli_doctor()
+        return _cli_doctor(verbose=getattr(args, "verbose", False))
     if sub == "status":
         return _cli_status()
     if sub == "cron-install":
@@ -510,14 +519,16 @@ def _doctor_check_binary() -> _DoctorFinding:
         return _DoctorFinding(
             category="host-capability-unavailable",
             status="ok",
-            detail=f"binary present at {binary}",
+            detail=f"caduceus binary present at {binary}",
             next_action="",
+            internal_detail="",
         )
     return _DoctorFinding(
         category="host-capability-unavailable",
         status="fail",
-        detail=f"binary not found at {binary}",
+        detail=f"caduceus binary not found at {binary} (run setup to build it)",
         next_action="run `hermes caduceus setup` to build and install the binary",
+        internal_detail="",
     )
 
 
@@ -533,21 +544,24 @@ def _doctor_check_bridge_harness() -> _DoctorFinding:
         return _DoctorFinding(
             category="host-capability-unavailable",
             status="ok",
-            detail=f"bridge harness at {bridge} (not yet created)",
+            detail=f"worker bridge not yet seeded at {bridge} (external prerequisite)",
             next_action="",
+            internal_detail=f"bridge harness at {bridge} (not yet created)",
         )
     if os.access(bridge, os.X_OK):
         return _DoctorFinding(
             category="host-capability-unavailable",
             status="ok",
-            detail=f"bridge harness at {bridge} is executable",
+            detail=f"worker bridge at {bridge} is executable",
             next_action="",
+            internal_detail="",
         )
     return _DoctorFinding(
         category="host-capability-unavailable",
         status="fail",
-        detail=f"bridge harness at {bridge} is not executable (mode {oct(stat.S_IMODE(bridge.stat().st_mode))})",
+        detail=f"worker bridge at {bridge} is not executable (mode {oct(stat.S_IMODE(bridge.stat().st_mode))})",
         next_action=f"run `chmod +x {bridge}` to make it executable",
+        internal_detail="",
     )
 
 
@@ -560,84 +574,116 @@ def _doctor_check_provider_secret() -> _DoctorFinding:
     # The provider secret name is expected in the environment.
     # Caduceus's daemon config uses CADUCEUS_GITHUB_TOKEN or GITHUB_TOKEN.
     # The secret *name* (not value) is checked here.
+    checked = "CADUCEUS_GITHUB_TOKEN, GITHUB_TOKEN, GH_TOKEN"
     for secret_name in ("CADUCEUS_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"):
         if os.environ.get(secret_name):
             return _DoctorFinding(
                 category="config-incomplete",
                 status="ok",
-                detail=f"provider secret name {secret_name} is configured",
+                detail=f"provider secret name {secret_name} is configured (no value read)",
                 next_action="",
+                internal_detail="",
             )
     # No secret name found — the operator may need to configure one.
     return _DoctorFinding(
         category="config-incomplete",
         status="fail",
-        detail="no provider secret token configured (checked CADUCEUS_GITHUB_TOKEN, GITHUB_TOKEN, GH_TOKEN)",
+        detail=f"no provider secret name configured (checked {checked})",
         next_action="set one of CADUCEUS_GITHUB_TOKEN, GITHUB_TOKEN, or GH_TOKEN in the environment",
+        internal_detail="",
     )
 
 
 def _doctor_check_cron_capability(ctx: Any) -> _DoctorFinding:
     """Check that cron capability is available via a bounded round-trip (AC-05).
 
-    Performs a single ``cronjob list`` call via the runtime dispatcher.
-    If the dispatcher is not installed or the call fails, the finding
-    reports a failure.
+    Performs a single ``cronjob list`` call via the runtime dispatcher,
+    then distinguishes five outcomes: dispatcher absent, no Caduceus job,
+    one or more Caduceus jobs, malformed payload, and every other error.
     """
     del ctx  # ctx is not needed — we use the runtime dispatcher directly
-    try:
-        from . import _runtime as rt  # type: ignore[import-not-found]
+    from . import _runtime as rt  # type: ignore[import-not-found]
 
-        if rt._DISPATCHER is None:
-            return _DoctorFinding(
-                category="host-capability-unavailable",
-                status="fail",
-                detail="cron dispatcher not installed (adapter not registered with Hermes)",
-                next_action="run `hermes plugins install barkley-assistant/caduceus --enable` to register the adapter",
-            )
-        _cron_job_registry()
-        return _DoctorFinding(
-            category="host-capability-unavailable",
-            status="ok",
-            detail="cron capability is available (cronjob list succeeded)",
-            next_action="",
-        )
-    except Exception as exc:
+    if rt._DISPATCHER is None:
         return _DoctorFinding(
             category="host-capability-unavailable",
             status="fail",
-            detail=f"cron capability check failed: {exc}",
-            next_action="ensure the Hermes gateway is running and cron is enabled",
+            detail="Caduceus adapter is not installed; cannot reach the cron subsystem",
+            next_action="run `hermes plugins install barkley-assistant/caduceus --enable` to register the adapter, then re-check",
+            internal_detail="cron dispatcher not installed (adapter not registered with Hermes)",
         )
+    try:
+        jobs = rt.cron_list_jobs()
+    except rt.CronCapabilityError as exc:
+        if exc.category == "malformed-response":
+            return _DoctorFinding(
+                category="host-capability-unavailable",
+                status="fail",
+                detail="Hermes returned an unexpected payload shape for the cron list",
+                next_action="run `hermes plugins install --enable` to refresh the adapter, then re-check",
+                internal_detail=str(exc),
+            )
+        return _DoctorFinding(
+            category="host-capability-unavailable",
+            status="fail",
+            detail=f"cron list call raised an exception: {exc.category}",
+            next_action="run `hermes caduceus cron-install` to register the 2-minute job (or re-run `hermes plugins install --enable` if the adapter was reinstalled)",
+            internal_detail=f"cron list call raised: {exc.category}: {exc.detail}",
+        )
+    caduceus_jobs = [job for job in jobs.values() if job.get("name") == "caduceus"]
+    if caduceus_jobs:
+        noun = "job" if len(caduceus_jobs) == 1 else "jobs"
+        return _DoctorFinding(
+            category="host-capability-unavailable",
+            status="ok",
+            detail=f"{len(caduceus_jobs)} Caduceus cron {noun} registered (external prerequisite, exercised)",
+            next_action="",
+            internal_detail="cron capability is available (cronjob list succeeded)",
+        )
+    return _DoctorFinding(
+        category="host-capability-unavailable",
+        status="ok",
+        detail="no Caduceus cron job registered yet (external prerequisite, not exercised)",
+        next_action="run `hermes caduceus cron-install` to register the 2-minute job",
+        internal_detail="cron list returned 0 Caduceus jobs",
+    )
 
 
-def _doctor_check_gateway() -> _DoctorFinding:
-    """Check that the Hermes gateway delivery is reachable (AC-05).
+def _doctor_check_hermes_home() -> _DoctorFinding:
+    """Check that the Hermes home directory exists on disk (AC-05).
 
-    This is a best-effort check — the gateway may not be running in
-    the current environment. The finding always returns a result without
-    making a network call.
+    This is a prerequisite check, not an active probe of the Hermes
+    gateway. It confirms a well-known directory the Hermes CLI owns.
     """
-    # The gateway is an external Hermes process. Without a live Hermes
-    # context, we cannot probe it directly. We check for the presence of
-    # the Hermes CLI which is a prerequisite for gateway operation.
     hermes_home = _hermes_home()
     if hermes_home.is_dir():
         return _DoctorFinding(
             category="gateway-inactive",
             status="ok",
-            detail=f"Hermes home at {hermes_home} exists",
+            detail=f"Hermes home at {hermes_home} exists (external prerequisite)",
             next_action="",
+            internal_detail="",
         )
     return _DoctorFinding(
         category="gateway-inactive",
         status="fail",
         detail=f"Hermes home at {hermes_home} not found",
-        next_action="ensure Hermes is installed and configured",
+        next_action="install Hermes and ensure the home directory is initialised",
+        internal_detail="",
     )
 
 
-def _cli_doctor() -> int:
+def _is_ci() -> bool:
+    """Return True when running on a CI / automated host.
+
+    Detected by the presence of the ``CI`` or ``GITHUB_ACTIONS``
+    environment variables, both common on GitHub Actions and other
+    hosted runners.
+    """
+    return bool(os.environ.get("CI")) or bool(os.environ.get("GITHUB_ACTIONS"))
+
+
+def _cli_doctor(verbose: bool = False) -> int:
     """Run all doctor checks and print a structured report (AC-06/07/08/11).
 
     Each check is independent — a failure in one does NOT short-circuit
@@ -648,23 +694,31 @@ def _cli_doctor() -> int:
            ``gateway-inactive``)
 
     Exit 2 takes precedence over exit 1 because prerequisites block everything.
+
+    ``--verbose`` prints the internal detail string and the structured
+    category on FAIL lines, but is suppressed on CI hosts so CI logs
+    stay operator-only.
     """
     checks = [
         ("Binary", _doctor_check_binary()),
         ("Bridge Harness", _doctor_check_bridge_harness()),
         ("Provider Secret", _doctor_check_provider_secret()),
         ("Cron Capability", _doctor_check_cron_capability(ctx=None)),
-        ("Gateway", _doctor_check_gateway()),
+        ("Hermes Home", _doctor_check_hermes_home()),
     ]
 
+    effective_verbose = verbose and not _is_ci()
     max_severity = 0  # 0 = ok, 1 = config/runtime, 2 = prerequisite
     for name, finding in checks:
         status_mark = "OK" if finding.status == "ok" else "FAIL"
-        print(f"[{status_mark}] {name}")
-        print(f"       category   : {finding.category}")
-        print(f"       detail     : {finding.detail}")
+        print(f"[{status_mark}] {name} — {finding.detail}")
         if finding.next_action:
             print(f"       next action: {finding.next_action}")
+        if effective_verbose:
+            internal = finding.internal_detail or finding.detail
+            print(f"       detail:      {internal}")
+            if finding.status != "ok":
+                print(f"       category:    {finding.category}")
         print()
         if finding.status != "ok":
             if finding.category in ("host-capability-unavailable", "gateway-inactive"):

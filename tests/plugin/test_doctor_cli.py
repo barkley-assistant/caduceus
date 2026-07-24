@@ -135,10 +135,10 @@ def test_doctor_exit_2_takes_precedence_over_exit_1(
 
 
 
-def test_doctor_prints_structured_report(
+def test_doctor_prints_operator_finding(
     adapter, install_with_fake_binary: Path, isolated_hermes_home: Path, capsys: pytest.CaptureFixture, monkeypatch
 ) -> None:
-    """_cli_doctor prints each finding with status, detail, next_action (AC-07)."""
+    """_cli_doctor prints each finding on one operator-readable line (AC-07)."""
     from caduceus import _runtime
 
     monkeypatch.setenv("CADUCEUS_GITHUB_TOKEN", "ghp_test-secret-configured")
@@ -156,11 +156,114 @@ def test_doctor_prints_structured_report(
 
     captured = capsys.readouterr()
     assert rc == 0
-    # Each finding category should appear in the output.
-    assert "binary" in captured.out.lower() or "Binary" in captured.out
-    assert "cron" in captured.out.lower() or "Cron" in captured.out
-    assert "bridge" in captured.out.lower() or "Bridge" in captured.out
-    assert "ok" in captured.out.lower() or "OK" in captured.out
+    assert "[OK] Binary —" in captured.out
+    assert "[OK] Bridge Harness —" in captured.out
+    assert "[OK] Provider Secret —" in captured.out
+    assert "[OK] Cron Capability —" in captured.out
+    assert "[OK] Hermes Home —" in captured.out
+    assert "       detail:      " not in captured.out
+    assert "       category:    " not in captured.out
+
+
+
+
+def test_doctor_default_does_not_print_internal_detail(
+    adapter, install_with_fake_binary: Path, isolated_hermes_home: Path, capsys: pytest.CaptureFixture, monkeypatch
+) -> None:
+    """Default output is operator-only: no internal detail or category lines."""
+    from caduceus import _runtime
+
+    monkeypatch.setenv("CADUCEUS_GITHUB_TOKEN", "ghp_test-secret-configured")
+    bridge = isolated_hermes_home / "caduceus" / "worker-bridge.py"
+    bridge.parent.mkdir(parents=True, exist_ok=True)
+    bridge.write_text("#!/usr/bin/env python3\nprint('ok')\n")
+    bridge.chmod(0o755)
+
+    registry = {}
+    _stub_cron_runtime(adapter, registry)
+    try:
+        adapter._cli_doctor()
+    finally:
+        _runtime.reset_dispatcher()
+
+    captured = capsys.readouterr()
+    assert "       detail:      " not in captured.out
+    assert "       category:    " not in captured.out
+
+
+
+
+def test_doctor_verbose_prints_internal_detail(
+    adapter, install_with_fake_binary: Path, isolated_hermes_home: Path, capsys: pytest.CaptureFixture, monkeypatch
+) -> None:
+    """--verbose adds the internal detail and category on FAIL lines."""
+    from caduceus import _runtime
+
+    monkeypatch.setenv("CADUCEUS_GITHUB_TOKEN", "ghp_test-secret-configured")
+    bridge = isolated_hermes_home / "caduceus" / "worker-bridge.py"
+    bridge.parent.mkdir(parents=True, exist_ok=True)
+    bridge.write_text("#!/usr/bin/env python3\nprint('ok')\n")
+    bridge.chmod(0o755)
+
+    registry = {}
+    _stub_cron_runtime(adapter, registry)
+    try:
+        adapter._cli_doctor(verbose=True)
+    finally:
+        _runtime.reset_dispatcher()
+
+    captured = capsys.readouterr()
+    assert "       detail:      cron list returned 0 Caduceus jobs" in captured.out
+
+
+
+
+def test_doctor_verbose_suppressed_on_ci(
+    adapter, install_with_fake_binary: Path, isolated_hermes_home: Path, capsys: pytest.CaptureFixture, monkeypatch
+) -> None:
+    """The verbose flag is ignored on CI hosts so logs stay operator-only."""
+    from caduceus import _runtime
+
+    monkeypatch.setenv("CADUCEUS_GITHUB_TOKEN", "ghp_test-secret-configured")
+    monkeypatch.setenv("CI", "1")
+    bridge = isolated_hermes_home / "caduceus" / "worker-bridge.py"
+    bridge.parent.mkdir(parents=True, exist_ok=True)
+    bridge.write_text("#!/usr/bin/env python3\nprint('ok')\n")
+    bridge.chmod(0o755)
+
+    registry = {}
+    _stub_cron_runtime(adapter, registry)
+    try:
+        adapter._cli_doctor(verbose=True)
+    finally:
+        _runtime.reset_dispatcher()
+
+    captured = capsys.readouterr()
+    assert "       detail:      " not in captured.out
+    assert "       category:    " not in captured.out
+
+
+
+
+def test_doctor_output_never_contains_malformed_response(
+    adapter, capsys: pytest.CaptureFixture
+) -> None:
+    """The literal substring 'malformed-response:' does not reach a non-CI operator."""
+    from caduceus import _runtime
+
+    fake_ctx = FakePluginContext(name="caduceus")
+    # The malformed simulator makes _coerce_jobs raise CronCapabilityError with
+    # category "malformed-response".
+    fake_ctx.install_cron_capability("malformed")
+    try:
+        rc = adapter._cli_doctor()
+        captured = capsys.readouterr()
+    finally:
+        _runtime.reset_dispatcher()
+
+    assert rc == 2
+    assert "malformed-response:" not in captured.out
+    assert "[FAIL] Cron Capability — Hermes returned an unexpected payload shape" in captured.out
 
 
 
