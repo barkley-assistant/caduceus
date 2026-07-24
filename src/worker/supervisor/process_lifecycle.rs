@@ -211,7 +211,12 @@ pub fn build_supervisor_command(
     heartbeat_path: &Path,
     timeout_seconds: u64,
     transcript_max_bytes: u64,
+    issue_title: &str,
+    issue_body: &str,
+    labels: &[String],
+    branch_name: &str,
 ) -> Command {
+    let labels_json = serde_json::to_string(labels).unwrap_or_else(|_| "[]".to_string());
     let mut cmd = Command::new(self_exe);
     cmd.arg(HIDDEN_COMMAND);
     cmd.arg("--worktree").arg(worktree);
@@ -224,6 +229,10 @@ pub fn build_supervisor_command(
     cmd.arg("--timeout").arg(timeout_seconds.to_string());
     cmd.arg("--transcript-max-bytes")
         .arg(transcript_max_bytes.to_string());
+    cmd.arg("--issue-title").arg(issue_title);
+    cmd.arg("--issue-body").arg(issue_body);
+    cmd.arg("--issue-labels-json").arg(&labels_json);
+    cmd.arg("--branch-name").arg(branch_name);
     for arg in worker_command {
         cmd.arg("--").arg(arg);
     }

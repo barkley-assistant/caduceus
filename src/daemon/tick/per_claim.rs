@@ -208,6 +208,10 @@ pub(crate) async fn run_claim(
         worker_command,
         cancellation: cancellation.clone(),
         network_profile: None,
+        issue_title: issue.title.clone(),
+        issue_body: issue.body.clone(),
+        labels: issue.labels.clone(),
+        branch_name: worktree.branch_name.clone(),
     };
     let supervisor_outcome = match services.executor.run(&spec).await {
         Ok(o) => o,

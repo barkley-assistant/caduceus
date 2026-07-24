@@ -87,6 +87,10 @@ fn run_supervisor_mode() -> CaduceusResult<()> {
     let mut _timeout_seconds: u64 = 3600;
     let mut transcript_max_bytes: u64 = 10 * 1024 * 1024;
     let mut worker_command: Vec<String> = Vec::new();
+    let mut issue_title: Option<String> = None;
+    let mut issue_body: Option<String> = None;
+    let mut issue_labels_json: Option<String> = None;
+    let mut branch_name: Option<String> = None;
 
     while let Some(arg) = args.next() {
         let s = arg.to_string_lossy().into_owned();
@@ -111,6 +115,12 @@ fn run_supervisor_mode() -> CaduceusResult<()> {
                     .and_then(|a| a.to_string_lossy().parse::<u64>().ok())
                     .unwrap_or(10 * 1024 * 1024)
             }
+            "--issue-title" => issue_title = args.next().map(|a| a.to_string_lossy().into_owned()),
+            "--issue-body" => issue_body = args.next().map(|a| a.to_string_lossy().into_owned()),
+            "--issue-labels-json" => {
+                issue_labels_json = args.next().map(|a| a.to_string_lossy().into_owned())
+            }
+            "--branch-name" => branch_name = args.next().map(|a| a.to_string_lossy().into_owned()),
             "--" => {
                 for rest in args {
                     worker_command.push(rest.to_string_lossy().into_owned());
@@ -142,6 +152,11 @@ fn run_supervisor_mode() -> CaduceusResult<()> {
         context: "supervisor",
         stderr: "--heartbeat is required".to_string(),
     })?;
+
+    let _issue_title = issue_title.unwrap_or_default();
+    let _issue_body = issue_body.unwrap_or_default();
+    let _issue_labels_json = issue_labels_json.unwrap_or_else(|| "[]".to_string());
+    let _issue_branch_name = branch_name.unwrap_or_default();
 
     if worker_command.is_empty() {
         return Err(caduceus::CaduceusError::Worker {

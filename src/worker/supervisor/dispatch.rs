@@ -55,6 +55,10 @@ pub async fn supervise(
     context_json: &str,
     worker_command: &[String],
     cancellation: tokio_util::sync::CancellationToken,
+    issue_title: &str,
+    issue_body: &str,
+    labels: &[String],
+    branch_name: &str,
 ) -> CaduceusResult<SupervisorOutcome> {
     let paths = WorkerRunPaths::new(cfg.state_dir.clone(), run_id.to_string());
     paths.ensure_dirs()?;
@@ -89,6 +93,10 @@ pub async fn supervise(
         worker_command,
         &paths,
         cancellation,
+        issue_title,
+        issue_body,
+        labels,
+        branch_name,
     )
     .await;
 
@@ -121,6 +129,10 @@ pub(crate) async fn run_supervisor(
     worker_command: &[String],
     paths: &WorkerRunPaths,
     cancellation: tokio_util::sync::CancellationToken,
+    issue_title: &str,
+    issue_body: &str,
+    labels: &[String],
+    branch_name: &str,
 ) -> CaduceusResult<SupervisorOutcome> {
     let cmd = build_supervisor_command(
         self_exe,
@@ -133,6 +145,10 @@ pub(crate) async fn run_supervisor(
         &paths.heartbeat_path,
         cfg.worker_timeout_seconds,
         cfg.transcript_max_bytes,
+        issue_title,
+        issue_body,
+        labels,
+        branch_name,
     );
 
     // Convert to a tokio command for async I/O.

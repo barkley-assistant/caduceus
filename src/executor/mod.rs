@@ -67,6 +67,14 @@ pub struct ExecutorSpec {
     /// Optional named network profile for OCI isolation policy.
     /// When `None`, the default network profile (none) is used.
     pub network_profile: Option<String>,
+    /// Issue title (UTF-8, NUL-free, may contain newlines).
+    pub issue_title: String,
+    /// Issue body (UTF-8, NUL-free, may contain newlines).
+    pub issue_body: String,
+    /// Label names (e.g. `["🤖 auto-fix"]`).
+    pub labels: Vec<String>,
+    /// Daemon-owned expected branch name.
+    pub branch_name: String,
 }
 
 // ---------------------------------------------------------------------------
