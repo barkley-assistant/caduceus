@@ -42,7 +42,8 @@ def test_doctor_check_binary_missing(adapter) -> None:
     assert finding.category == "host-capability-unavailable"
     assert finding.status == "fail"
     assert "not found" in finding.detail.lower() or "missing" in finding.detail.lower()
-    assert "setup" in finding.next_action.lower()
+    assert "run setup to build it" in finding.detail
+    assert "hermes caduceus setup" in finding.next_action
 
 
 
@@ -59,6 +60,7 @@ def test_doctor_check_bridge_harness_executable(
     assert finding.category == "host-capability-unavailable"
     assert finding.status == "ok"
     assert str(bridge) in finding.detail
+    assert "worker bridge" in finding.detail.lower()
 
 
 
@@ -74,27 +76,78 @@ def test_doctor_check_bridge_harness_not_executable(
     finding = adapter._doctor_check_bridge_harness()
     assert finding.category == "host-capability-unavailable"
     assert finding.status == "fail"
+    assert "worker bridge" in finding.detail.lower()
     assert "chmod" in finding.next_action.lower() or "+x" in finding.next_action.lower()
 
 
 
 
+def test_doctor_check_bridge_harness_not_yet_seeded(
+    adapter, isolated_hermes_home: Path
+) -> None:
+    """A missing bridge is OK but framed as an external prerequisite."""
+    finding = adapter._doctor_check_bridge_harness()
+    assert finding.category == "host-capability-unavailable"
+    assert finding.status == "ok"
+    assert "worker bridge not yet seeded" in finding.detail.lower()
+    assert "external prerequisite" in finding.detail.lower()
+
+
+
+
 def test_doctor_check_provider_secret_present(
-    adapter, install_plugin: Path
+    adapter, install_plugin: Path, monkeypatch
 ) -> None:
     """_doctor_check_provider_secret returns ok when secret name is configured."""
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_test-secret-name")
     finding = adapter._doctor_check_provider_secret()
-    # Without a config to inspect, we expect a sensible default.
-    assert finding.category in ("config-incomplete", "host-capability-unavailable")
-    assert finding.status in ("ok", "fail")
+    assert finding.category == "config-incomplete"
+    assert finding.status == "ok"
+    assert "provider secret name GITHUB_TOKEN is configured" in finding.detail
+    assert "no value read" in finding.detail
 
 
 
 
-def test_doctor_check_cron_capability_ok(
+def test_doctor_check_provider_secret_missing(adapter) -> None:
+    """_doctor_check_provider_secret returns fail when no secret name is set."""
+    for var in ("CADUCEUS_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"):
+        os.environ.pop(var, None)
+    finding = adapter._doctor_check_provider_secret()
+    assert finding.category == "config-incomplete"
+    assert finding.status == "fail"
+    assert "no provider secret name configured" in finding.detail.lower()
+    assert finding.next_action.startswith("set one of")
+
+
+
+
+def test_doctor_check_cron_capability_ok_with_jobs(
     adapter, install_with_fake_binary: Path
 ) -> None:
-    """_doctor_check_cron_capability returns ok when cron lists without error."""
+    """_doctor_check_cron_capability returns ok with caduceus job count."""
+    from caduceus import _runtime
+
+    registry = {
+        "job-1": {"id": "job-1", "name": "caduceus", "schedule": "every 2m"},
+    }
+    _stub_cron_runtime(adapter, registry)
+    try:
+        finding = adapter._doctor_check_cron_capability(ctx=adapter)
+    finally:
+        _runtime.reset_dispatcher()
+    assert finding.category == "host-capability-unavailable"
+    assert finding.status == "ok"
+    assert "1 Caduceus cron job registered" in finding.detail
+    assert "external prerequisite, exercised" in finding.detail
+
+
+
+
+def test_doctor_check_cron_capability_no_caduceus_job(
+    adapter, install_with_fake_binary: Path
+) -> None:
+    """A reachable cron subsystem with no caduceus job is a prerequisite."""
     from caduceus import _runtime
 
     registry = {}
@@ -105,36 +158,35 @@ def test_doctor_check_cron_capability_ok(
         _runtime.reset_dispatcher()
     assert finding.category == "host-capability-unavailable"
     assert finding.status == "ok"
+    assert "no Caduceus cron job registered yet" in finding.detail
+    assert "external prerequisite, not exercised" in finding.detail
+    assert "hermes caduceus cron-install" in finding.next_action
 
 
 
 
-def test_doctor_check_cron_capability_fails(
+def test_doctor_check_cron_capability_dispatcher_not_installed(
     adapter, install_with_fake_binary: Path
 ) -> None:
-    """_doctor_check_cron_capability returns fail when cron list raises."""
+    """Missing dispatcher points at plugin install, not gateway state."""
     from caduceus import _runtime
 
-    original_registry = adapter._cron_job_registry
-    def _failing_registry():
-        raise RuntimeError("cron unavailable")
-
-    try:
-        adapter._cron_job_registry = _failing_registry  # type: ignore[assignment]
-        finding = adapter._doctor_check_cron_capability(ctx=adapter)
-    finally:
-        adapter._cron_job_registry = original_registry
+    _runtime.reset_dispatcher()
+    finding = adapter._doctor_check_cron_capability(ctx=adapter)
+    # reset_dispatcher leaves _DISPATCHER None; no restore needed.
     assert finding.status == "fail"
-    assert "cron" in finding.detail.lower()
+    assert "adapter is not installed" in finding.detail.lower()
+    assert "gateway is running" not in finding.next_action.lower()
+    assert "hermes plugins install" in finding.next_action
 
 
 
 
-def test_doctor_check_gateway_returns_finding(
+def test_doctor_check_gateway_renamed_to_hermes_home(
     adapter, install_with_fake_binary: Path
 ) -> None:
-    """_doctor_check_gateway returns a _DoctorFinding (ok or fail)."""
-    finding = adapter._doctor_check_gateway()
+    """_doctor_check_hermes_home returns a _DoctorFinding with the new label surface."""
+    finding = adapter._doctor_check_hermes_home()
     assert isinstance(finding, tuple)
     assert finding.category == "gateway-inactive"
     assert finding.status in ("ok", "fail")
