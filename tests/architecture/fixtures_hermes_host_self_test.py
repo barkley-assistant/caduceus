@@ -1,10 +1,4 @@
-"""Self-tests for the HermesHostFixture.
-
-These tests exercise the fixture class directly without requiring a real
-Hermes binary on PATH.  They verify that EvidenceRecord is constructable,
-that the fixture initialises cleanly, and that the evidence list is
-empty before any operations.
-"""
+"""Self-tests for the HermesHost fixture."""
 
 from __future__ import annotations
 
@@ -78,12 +72,7 @@ def test_fixture_init_stores_constructor_args() -> None:
 
 
 def test_fixture_install_plugin_without_binary(tmp_path: Path) -> None:
-    """``install_plugin`` returns an EvidenceRecord even when hermes is absent.
-
-    Because the fixture uses ``subprocess.run`` with ``shell=False``, a
-    missing binary raises ``FileNotFoundError`` which is caught by
-    ``_run`` and recorded as exit code 127.
-    """
+    """``_run`` returns an EvidenceRecord with captured output."""
     fixture = HermesHostFixture(
         hermes_home=tmp_path / ".hermes",
         hermes_bin="/nonexistent/hermes",

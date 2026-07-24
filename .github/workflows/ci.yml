@@ -121,8 +121,8 @@ jobs:
           # no test report to surface in the Actions UI.
           python3 -m pytest -q \
             --junit-xml=pytest-junit.xml \
-            tests/hermes_plugin_test.py \
-            tests/bridge_test.py
+            tests/plugin/ \
+            tests/integration/bridge_test.py
       - name: upload pytest junit
         if: always()
         uses: actions/upload-artifact@v4

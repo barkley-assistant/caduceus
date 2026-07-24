@@ -191,12 +191,12 @@ fn extract_daemon_worker_env_names() -> BTreeSet<String> {
 }
 
 /// Extract the manifest field allowlist actually used by
-/// ``tests/hermes_plugin_test.py::_manifest_field_check``. The
+/// ``tests/plugin/test_manifest.py::_manifest_field_check``. The
 /// expected allowlist is the literal ``_ALLOWED_MANIFEST_FIELDS`` set
 /// declared in that test file; we parse it directly so the Rust
 /// fixture's allowlist agrees with the Python contract.
 fn extract_python_manifest_field_allowlist() -> BTreeSet<String> {
-    let source = read_repo_file("tests/hermes_plugin_test.py");
+    let source = read_repo_file("tests/plugin/test_manifest.py");
     let mut fields = BTreeSet::new();
     let mut in_set = false;
     let mut depth = 0i32;

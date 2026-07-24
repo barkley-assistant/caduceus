@@ -1,19 +1,9 @@
-"""Capability tests for FakePluginContext.install_cron_capability.
-
-Each category dispatches through ``install_cron_capability`` which wires
-a callable into ``_runtime.install_dispatcher``. The adapter's existing
-cron helpers (``cron_list_jobs``, ``cron_create_job``, etc.) are the
-canonical consumers — this test exercises every category listed in the
-design contract.
-
-See also: ``tests/hermes_plugin_test.py`` for the integration-level
-cron-reconciliation tests that exercise the same dispatcher.
-"""
+"""Cron capability dispatcher unit tests."""
 
 from __future__ import annotations
 
 import pytest
-from tests.fake_ctx import FakePluginContext
+from tests.fixtures.fake_ctx import FakePluginContext
 
 
 # ---------------------------------------------------------------------------
