@@ -10,6 +10,7 @@
 
 pub mod client;
 pub mod issue;
+pub mod link_header;
 pub mod merge_detect;
 pub mod poll;
 pub mod verify;
