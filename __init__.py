@@ -673,16 +673,6 @@ def _doctor_check_hermes_home() -> _DoctorFinding:
     )
 
 
-def _is_ci() -> bool:
-    """Return True when running on a CI / automated host.
-
-    Detected by the presence of the ``CI`` or ``GITHUB_ACTIONS``
-    environment variables, both common on GitHub Actions and other
-    hosted runners.
-    """
-    return bool(os.environ.get("CI")) or bool(os.environ.get("GITHUB_ACTIONS"))
-
-
 def _cli_doctor(verbose: bool = False) -> int:
     """Run all doctor checks and print a structured report (AC-06/07/08/11).
 
@@ -696,8 +686,11 @@ def _cli_doctor(verbose: bool = False) -> int:
     Exit 2 takes precedence over exit 1 because prerequisites block everything.
 
     ``--verbose`` prints the internal detail string and the structured
-    category on FAIL lines, but is suppressed on CI hosts so CI logs
-    stay operator-only.
+    category on FAIL lines. The verbose flag is always honoured when
+    the operator passes it — operators running ``--verbose`` from a CI
+    shell (e.g. for debugging) get the internal detail. CI log hygiene
+    is achieved by the default output being operator-only (verbose=False
+    is the default), not by overriding an explicit verbose flag.
     """
     checks = [
         ("Binary", _doctor_check_binary()),
@@ -707,7 +700,7 @@ def _cli_doctor(verbose: bool = False) -> int:
         ("Hermes Home", _doctor_check_hermes_home()),
     ]
 
-    effective_verbose = verbose and not _is_ci()
+    effective_verbose = verbose
     max_severity = 0  # 0 = ok, 1 = config/runtime, 2 = prerequisite
     for name, finding in checks:
         status_mark = "OK" if finding.status == "ok" else "FAIL"

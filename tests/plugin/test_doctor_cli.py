@@ -218,10 +218,16 @@ def test_doctor_verbose_prints_internal_detail(
 
 
 
-def test_doctor_verbose_suppressed_on_ci(
+def test_doctor_verbose_honoured_on_ci(
     adapter, install_with_fake_binary: Path, isolated_hermes_home: Path, capsys: pytest.CaptureFixture, monkeypatch
 ) -> None:
-    """The verbose flag is ignored on CI hosts so logs stay operator-only."""
+    """The verbose flag is always honoured when the operator passes it.
+
+    CI log hygiene is achieved by the default output being operator-only,
+    not by overriding an explicit verbose flag. Operators running
+    ``--verbose`` from a CI shell (e.g. for debugging) get the internal
+    detail. This test pins that contract.
+    """
     from caduceus import _runtime
 
     monkeypatch.setenv("CADUCEUS_GITHUB_TOKEN", "ghp_test-secret-configured")
@@ -239,8 +245,7 @@ def test_doctor_verbose_suppressed_on_ci(
         _runtime.reset_dispatcher()
 
     captured = capsys.readouterr()
-    assert "       detail:      " not in captured.out
-    assert "       category:    " not in captured.out
+    assert "       detail:      cron list returned 0 Caduceus jobs" in captured.out
 
 
 
