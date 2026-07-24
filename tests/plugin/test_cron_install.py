@@ -2,24 +2,12 @@
 
 from __future__ import annotations
 
-import json
 import os
-import re
-import shutil
-import stat
 import subprocess
-import sys
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 import pytest
-
-from tests.fixtures.fake_ctx import (
-    FakePluginContext,
-    assert_cli_command_registered,
-    assert_command_registered,
-    assert_skill_registered,
-)
 
 from tests.plugin._helpers import _stub_cron_runtime
 
@@ -30,19 +18,19 @@ def test_cron_install_zero_matches_creates(
     from caduceus import _runtime
 
     registry: Dict[str, Dict[str, Any]] = {}
-    actions = _stub_cron_runtime(adapter, registry)
+    _stub_cron_runtime(adapter, registry)
     try:
         action, note = adapter._cron_install(dry_run=False)
     finally:
         _runtime.reset_dispatcher()
     assert action == "created"
-    assert note.startswith("job-")
-    assert any(a["action"] == "create" for a in actions)
-    assert any(a["action"] == "list" for a in actions)
+    assert len(note) >= 8  # hex job id from the subprocess recorder
+    caduceus_jobs = [j for j in registry.values() if j.get("name") == "caduceus"]
+    assert len(caduceus_jobs) == 1
+    assert caduceus_jobs[0]["schedule"] == "every 2m"
     # Wrapper was written.
     wrapper = isolated_hermes_home / "scripts" / "caduceus-pulse.sh"
     assert wrapper.is_file()
-
 
 
 
@@ -52,27 +40,27 @@ def test_cron_install_one_match_reuses(
     from caduceus import _runtime
 
     registry = {
-        "job-9": {
-            "id": "job-9",
+        "abc": {
+            "id": "abc",
             "name": "caduceus",
             "schedule": "every 5m",
             "script": "caduceus-pulse.sh",
             "no_agent": False,
         }
     }
-    actions = _stub_cron_runtime(adapter, registry)
+    _stub_cron_runtime(adapter, registry)
     try:
         action, note = adapter._cron_install(dry_run=False)
     finally:
         _runtime.reset_dispatcher()
     assert action == "reused"
-    assert note == "job-9"
-    # update was invoked with the new schedule and no_agent=True.
-    update = next(a for a in actions if a["action"] == "update")
-    assert update["schedule"] == "every 2m"
-    assert update["no_agent"] is True
-    assert update["script"] == "caduceus-pulse.sh"
-
+    assert note == "abc"
+    # The original job is removed+recreated so one caduceus job remains.
+    caduceus_jobs = [j for j in registry.values() if j.get("name") == "caduceus"]
+    assert len(caduceus_jobs) == 1
+    assert caduceus_jobs[0]["schedule"] == "every 2m"
+    assert caduceus_jobs[0]["no_agent"] is True
+    assert caduceus_jobs[0]["script"] == "caduceus-pulse.sh"
 
 
 
@@ -82,8 +70,8 @@ def test_cron_install_multiple_matches_fails(
     from caduceus import _runtime
 
     registry = {
-        "job-a": {"id": "job-a", "name": "caduceus", "schedule": "every 2m"},
-        "job-b": {"id": "job-b", "name": "caduceus", "schedule": "every 2m"},
+        "aaaaaaaaaaaa": {"id": "aaaaaaaaaaaa", "name": "caduceus", "schedule": "every 2m"},
+        "bbbbbbbbbbbb": {"id": "bbbbbbbbbbbb", "name": "caduceus", "schedule": "every 2m"},
     }
     _stub_cron_runtime(adapter, registry)
     try:
@@ -92,7 +80,6 @@ def test_cron_install_multiple_matches_fails(
     finally:
         _runtime.reset_dispatcher()
     assert "multiple" in str(excinfo.value).lower()
-
 
 
 
