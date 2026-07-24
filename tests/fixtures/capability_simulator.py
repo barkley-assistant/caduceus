@@ -34,7 +34,7 @@ def well_formed_table(stdout: str | None = None) -> str:
         "    Script:    caduceus-pulse.sh\n"
         "    Mode:      no-agent (script stdout delivered directly)\n"
         "    Last run:  2026-07-24T18:08:00Z  ok\n"
-        "    Execution: completed  exec-01\n"
+        "    Execution:  completed  exec-01\n"
     )
 
 
