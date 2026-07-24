@@ -35,9 +35,7 @@ fn test_spec(run_id: &str) -> ExecutorSpec {
     }
 }
 
-// ---------------------------------------------------------------------------
 // escape_worktree_mount — writing outside worktree is EINVAL + audit
-// ---------------------------------------------------------------------------
 
 #[test]
 #[cfg_attr(not(env = "CADUCEUS_RUN_ISOLATION_TESTS"), ignore)]
@@ -72,9 +70,7 @@ fn escape_worktree_mount() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // escape_git_metadata — reading /workspace/.git/HEAD returns EROFS + audit
-// ---------------------------------------------------------------------------
 
 #[test]
 #[cfg_attr(not(env = "CADUCEUS_RUN_ISOLATION_TESTS"), ignore)]
@@ -101,9 +97,7 @@ fn escape_git_metadata() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // escape_daemon_storage — ls ~/.local/share/caduceus/repos/ returns ENOENT
-// ---------------------------------------------------------------------------
 
 #[test]
 #[cfg_attr(not(env = "CADUCEUS_RUN_ISOLATION_TESTS"), ignore)]
@@ -132,9 +126,7 @@ fn escape_daemon_storage() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // escape_engine_socket — connecting to /var/run/docker.sock returns ENOENT
-// ---------------------------------------------------------------------------
 
 #[test]
 #[cfg_attr(not(env = "CADUCEUS_RUN_ISOLATION_TESTS"), ignore)]
@@ -188,9 +180,7 @@ fn escape_engine_socket() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // escape_device_node — mknod /tmp/null c 1 3 returns EPERM + audit
-// ---------------------------------------------------------------------------
 
 #[test]
 #[cfg_attr(not(env = "CADUCEUS_RUN_ISOLATION_TESTS"), ignore)]

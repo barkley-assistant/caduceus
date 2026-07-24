@@ -30,9 +30,7 @@ fn test_spec(run_id: &str) -> ExecutorSpec {
     }
 }
 
-// ---------------------------------------------------------------------------
 // exhaust_memory — malloc beyond --memory=256m triggers OOM-killer
-// ---------------------------------------------------------------------------
 
 #[test]
 #[cfg_attr(not(env = "CADUCEUS_RUN_ISOLATION_TESTS"), ignore)]
@@ -61,9 +59,7 @@ fn exhaust_memory() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // exhaust_pids — fork beyond --pids-limit=100 returns EAGAIN
-// ---------------------------------------------------------------------------
 
 #[test]
 #[cfg_attr(not(env = "CADUCEUS_RUN_ISOLATION_TESTS"), ignore)]
@@ -89,9 +85,7 @@ fn exhaust_pids() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // exhaust_cpu — spin-loop at 100% CPU is throttled by cgroup
-// ---------------------------------------------------------------------------
 
 #[test]
 #[cfg_attr(not(env = "CADUCEUS_RUN_ISOLATION_TESTS"), ignore)]

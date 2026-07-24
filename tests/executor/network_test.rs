@@ -29,9 +29,7 @@ fn test_spec(run_id: &str, network_profile: Option<&str>) -> ExecutorSpec {
     }
 }
 
-// ---------------------------------------------------------------------------
 // no_profile_denies_network — no profile → --network=none
-// ---------------------------------------------------------------------------
 
 #[test]
 fn no_profile_denies_network() {
@@ -55,9 +53,7 @@ fn no_profile_denies_network() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // named_profile_network — named profile → --network=<profile_name>
-// ---------------------------------------------------------------------------
 
 #[test]
 fn named_profile_network() {
@@ -78,9 +74,7 @@ fn named_profile_network() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // named_profile_network_with_config — profile in config → --network=<name>
-// ---------------------------------------------------------------------------
 
 #[test]
 fn named_profile_network_with_config() {
