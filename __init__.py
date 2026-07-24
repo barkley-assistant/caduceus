@@ -385,10 +385,20 @@ def _register_caduceus_cli(subparser: Any) -> None:
         action="store_true",
         help="Print the planned changes without applying them.",
     )
+    cron_install.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print internal detail and structured category (human debugging only).",
+    )
 
     cron_remove = subs.add_parser(
         "cron-remove",
         help="Remove the cron job and bash wrapper.",
+    )
+    cron_remove.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print internal detail and structured category (human debugging only).",
     )
 
     subparser.set_defaults(func=_caduceus_cli_command)
@@ -403,9 +413,12 @@ def _caduceus_cli_command(args: Any) -> int:
     if sub == "status":
         return _cli_status()
     if sub == "cron-install":
-        return _cli_cron_install(dry_run=getattr(args, "dry_run", False))
+        return _cli_cron_install(
+            dry_run=getattr(args, "dry_run", False),
+            verbose=getattr(args, "verbose", False),
+        )
     if sub == "cron-remove":
-        return _cli_cron_remove()
+        return _cli_cron_remove(verbose=getattr(args, "verbose", False))
     print(f"caduceus: unknown subcommand {sub!r}", file=sys.stderr)
     return 2
 
@@ -1095,29 +1108,146 @@ def _write_pulse_wrapper(binary: Path) -> None:
     os.replace(tmp, path)
 
 
-def _cron_install_cli(*, dry_run: bool) -> int:
+_CRON_CATEGORY_PLAIN_ENGLISH = {
+    "denied": "Hermes refused the cron operation",
+    "timed-out": "Hermes cron bridge did not respond",
+    "eof": "Hermes cron bridge closed unexpectedly",
+    "crashed": "Hermes cron bridge crashed",
+    "duplicate-name": "A job named 'caduceus' already exists — run `hermes caduceus cron-remove` first",
+    "foreign-name-collision": "A different plugin owns a 'caduceus' cron job",
+    "malformed-response": "Hermes returned an unexpected payload shape",
+}
+
+
+_CRON_CATEGORY_NEXT_ACTION = {
+    "denied": "check that the Hermes gateway is running and the cron subsystem is enabled, then retry",
+    "timed-out": "check Hermes host load and the cronjob tool timeout, then retry",
+    "eof": "re-run `hermes plugins install --enable` to refresh the adapter, then re-check",
+    "crashed": "re-run `hermes plugins install --enable` to refresh the adapter, then re-check",
+    "duplicate-name": "run `hermes caduceus cron-remove` first, then re-run `hermes caduceus cron-install`",
+    "foreign-name-collision": "run `hermes caduceus cron-remove` to clear the collision, then re-install",
+    "malformed-response": "re-run `hermes plugins install --enable` to refresh the adapter, then re-check",
+}
+
+
+def _format_cron_finding(
+    *,
+    label: str,
+    ok: bool,
+    detail: str,
+    next_action: str = "",
+    internal_detail: str = "",
+    verbose: bool = False,
+) -> str:
+    """Return a single operator-readable line for a cron subcommand.
+
+    Mirrors the SEP-01 contract from ``_cli_doctor``: ``internal_detail``
+    and structured categories are only emitted when ``verbose`` is True.
+    """
+    prefix = "[OK]" if ok else "[FAIL]"
+    line = f"{prefix} {label} — {detail}"
+    if next_action:
+        line += f" — {next_action}"
+    if verbose and internal_detail:
+        line += f"\n       internal: {internal_detail}"
+    return line
+
+
+def _unwrap_cron_capability_error(
+    exc: BaseException,
+) -> Optional["CronCapabilityError"]:
+    """Walk ``__cause__`` / ``__context__`` to find a ``CronCapabilityError``."""
+    from . import _runtime as rt  # type: ignore[import-not-found]
+
+    cur: Optional[BaseException] = exc
+    seen: set = set()
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, rt.CronCapabilityError):
+            return cur
+        cur = getattr(cur, "__cause__", None) or getattr(cur, "__context__", None)
+    return None
+
+
+def _format_cron_failure(
+    label: str,
+    exc: BaseException,
+    verbose: bool = False,
+) -> str:
+    """Map a cron exception to an operator-readable failure string."""
+    from . import _runtime as rt  # type: ignore[import-not-found]
+
+    cron_err = _unwrap_cron_capability_error(exc)
+    if cron_err is not None:
+        detail = _CRON_CATEGORY_PLAIN_ENGLISH.get(
+            cron_err.category,
+            f"{cron_err.category} — {cron_err.detail}",
+        )
+        next_action = _CRON_CATEGORY_NEXT_ACTION.get(
+            cron_err.category,
+            "re-run `hermes plugins install --enable` to refresh the adapter, then re-check",
+        )
+        internal_detail = cron_err.internal_detail or str(exc)
+    else:
+        detail = str(exc)
+        if detail.startswith("caduceus binary not built"):
+            detail = (
+                "the Caduceus binary has not been built — run "
+                "`hermes caduceus setup` first"
+            )
+            next_action = "then re-run the command"
+        else:
+            next_action = (
+                "check the output above and retry, or re-run with "
+                "`--verbose` for the internal detail"
+            )
+        internal_detail = str(exc)
+
+    return _format_cron_finding(
+        label=label,
+        ok=False,
+        detail=detail,
+        next_action=next_action,
+        internal_detail=internal_detail,
+        verbose=verbose,
+    )
+
+
+def _cli_cron_install(*, dry_run: bool, verbose: bool = False) -> int:
     try:
-        action, note = _cron_install(dry_run=dry_run)
+        _cron_install(dry_run=dry_run)
     except RuntimeError as exc:
-        print(f"caduceus cron-install: {exc}", file=sys.stderr)
+        print(
+            _format_cron_failure("cron-install", exc, verbose=verbose),
+            file=sys.stderr,
+        )
         return 1
-    print(f"caduceus cron-install: {action} ({note})")
+    print(
+        _format_cron_finding(
+            label="cron-install",
+            ok=True,
+            detail="registered caduceus pulse at */2 * * * *",
+            next_action="wrapper at ~/.hermes/scripts/caduceus-pulse.sh",
+            verbose=verbose,
+        )
+    )
     return 0
 
 
-def _cli_cron_install(*, dry_run: bool) -> int:
-    return _cron_install_cli(dry_run=dry_run)
+def _cli_cron_remove(*, verbose: bool = False) -> int:
+    from . import _runtime as rt  # type: ignore[import-not-found]
 
-
-def _cli_cron_remove() -> int:
     try:
         # Step 1: Snapshot before any mutation.
         cronjob = _cron_job_registry()
         wrapper_path = _pulse_wrapper_path()
         snapshot = _snapshot_wrapper_and_job(wrapper_path, "caduceus", cronjob)
         matches = [job for job in cronjob.values() if job.get("name") == "caduceus"]
-    except RuntimeError as exc:
-        print(f"caduceus cron-remove: {exc}", file=sys.stderr)
+    except (RuntimeError, rt.CronCapabilityError) as exc:
+        print(
+            _format_cron_failure("cron-remove", exc, verbose=verbose),
+            file=sys.stderr,
+        )
         return 1
 
     # Step 2: Remove the cron job(s).
@@ -1125,7 +1255,7 @@ def _cli_cron_remove() -> int:
     for job in matches:
         try:
             _cronjob_remove(str(job.get("id")))
-        except RuntimeError as exc:
+        except (RuntimeError, rt.CronCapabilityError) as exc:
             error = exc
             break
 
@@ -1147,14 +1277,20 @@ def _cli_cron_remove() -> int:
             )
         except Exception as reconcile_error:
             print(
-                f"caduceus cron-remove: reconcile failed: {reconcile_error}",
+                _format_cron_failure(
+                    "cron-remove", reconcile_error, verbose=verbose
+                ),
                 file=sys.stderr,
             )
             return 1
 
         if isinstance(result, _NeedsAttention):
             print(
-                f"caduceus cron-remove: {result.recovery_evidence}",
+                _format_cron_failure(
+                    "cron-remove",
+                    RuntimeError(result.recovery_evidence),
+                    verbose=verbose,
+                ),
                 file=sys.stderr,
             )
             return 1
@@ -1162,13 +1298,26 @@ def _cli_cron_remove() -> int:
         if not wrapper_removed:
             # Reconcile cleaned up but wrapper still present — report.
             print(
-                "caduceus cron-remove: complete (cron job removed, "
-                "wrapper could not be removed; manual cleanup may be needed)",
+                _format_cron_finding(
+                    label="cron-remove",
+                    ok=False,
+                    detail="cron job removed, but the wrapper could not be removed",
+                    next_action="manual cleanup of ~/.hermes/scripts/caduceus-pulse.sh may be needed",
+                    internal_detail=str(error),
+                    verbose=verbose,
+                ),
                 file=sys.stderr,
             )
             return 1
 
-    print("caduceus cron-remove: complete")
+    print(
+        _format_cron_finding(
+            label="cron-remove",
+            ok=True,
+            detail="removed the Caduceus cron job and wrapper",
+            verbose=verbose,
+        )
+    )
     return 0
 
 
