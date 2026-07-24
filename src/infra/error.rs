@@ -757,7 +757,7 @@ fn advance_to_end_of_value(s: &str, start: usize) -> usize {
 }
 
 // ---------------------------------------------------------------------------
-// Tests live in `tests/error_test.rs`.
+// Tests live in `tests/state/error_test.rs`.
 // ---------------------------------------------------------------------------
 #[cfg(test)]
 mod inline_tests {

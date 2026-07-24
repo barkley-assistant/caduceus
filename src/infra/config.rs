@@ -1605,7 +1605,7 @@ pub fn is_valid_repo_slug(repo: &str) -> bool {
 /// The validator additionally accepts `http://` URLs whose host is a
 /// loopback address (`localhost`, `127.0.0.1`, or any address in
 /// `127.0.0.0/8`). This is a **test-only** accommodation: the
-/// integration test suite (`tests/integration_test.rs`) spawns the
+/// integration test suite (`tests/integration/integration_test.rs`) spawns the
 /// real `caduceus` binary against a wiremock HTTP server, and
 /// configuring wiremock with a self-signed TLS cert is out of scope
 /// for this task. Loopback addresses are not routable, so the
@@ -1621,7 +1621,7 @@ pub fn is_valid_repo_slug(repo: &str) -> bool {
 /// This function is a pure positive allowlist — it does NOT consult
 /// `comment_forbidden_strings` or any other forbidden-list to detect
 /// non-GitHub endpoints. The independence test in
-/// `tests/api_base_allowlist_test.rs` proves this property.
+/// `tests/state/api_base_allowlist_test.rs` proves this property.
 pub fn validate_api_base(value: &str) -> Result<(), String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {

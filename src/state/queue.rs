@@ -52,7 +52,7 @@ use crate::infra::error::{CaduceusError, CaduceusResult};
 
 /// Canonical queue-file schema version. Bumping it is a breaking
 /// change — the daemon refuses any other value. Tested by
-/// [`tests/queue_model_test.rs`].
+/// [`tests/state/queue_model_test.rs`].
 pub const QUEUE_FILE_VERSION: u32 = 1;
 
 /// Name of the queue state file inside `<state_dir>`.

@@ -1,4 +1,4 @@
-//! Small helper binary used by `tests/daemon_lock_test.rs` to
+//! Small helper binary used by `tests/daemon/daemon_lock_test.rs` to
 //! exercise the daemon-wide lock from a separate process.
 //!
 //! Modes:
