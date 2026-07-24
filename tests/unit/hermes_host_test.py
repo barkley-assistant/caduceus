@@ -263,13 +263,7 @@ def test_coerce_jobs_json_string_success_returns_jobs_dict() -> None:
     """A real Hermes JSON-string success shape is parsed and keyed by id."""
     from caduceus._runtime import _coerce_jobs
 
-    payload = json.dumps(
-        {
-            "success": True,
-            "count": 1,
-            "jobs": [{"id": "caduceus", "name": "caduceus", "schedule": "every 2m"}],
-        }
-    )
+    payload = json.dumps({"success": True, "count": 1, "jobs": [{"id": "caduceus", "name": "caduceus", "schedule": "every 2m"}]})
     result = _coerce_jobs(payload)
     assert result == {"caduceus": {"id": "caduceus", "name": "caduceus", "schedule": "every 2m"}}
 
@@ -278,8 +272,7 @@ def test_coerce_jobs_json_string_success_empty_returns_empty_dict() -> None:
     """A real Hermes empty JSON-string success shape returns {}."""
     from caduceus._runtime import _coerce_jobs
 
-    payload = json.dumps({"success": True, "count": 0, "jobs": []})
-    assert _coerce_jobs(payload) == {}
+    assert _coerce_jobs(json.dumps({"success": True, "count": 0, "jobs": []})) == {}
 
 
 def test_coerce_jobs_json_string_error_envelope_raises_denied() -> None:
@@ -288,8 +281,7 @@ def test_coerce_jobs_json_string_error_envelope_raises_denied() -> None:
 
     with pytest.raises(CronCapabilityError) as excinfo:
         _coerce_jobs(json.dumps({"error": "permission denied"}))
-    assert excinfo.value.category == "denied"
-    assert excinfo.value.detail == "permission denied"
+    assert excinfo.value.category == "denied" and excinfo.value.detail == "permission denied"
 
 
 def test_coerce_jobs_unparseable_string_raises_malformed_with_internal_detail() -> None:
@@ -308,13 +300,9 @@ def test_coerce_jobs_existing_shapes_unchanged() -> None:
     from caduceus._runtime import _coerce_jobs
 
     assert _coerce_jobs(None) == {}
-    assert _coerce_jobs({"jobs": [{"id": "x", "name": "test"}]}) == {
-        "x": {"id": "x", "name": "test"}
-    }
+    assert _coerce_jobs({"jobs": [{"id": "x", "name": "test"}]}) == {"x": {"id": "x", "name": "test"}}
     assert _coerce_jobs([{"id": "x", "name": "test"}]) == {"x": {"id": "x", "name": "test"}}
-    assert _coerce_jobs({"x": {"id": "x", "name": "test"}}) == {
-        "x": {"id": "x", "name": "test"}
-    }
+    assert _coerce_jobs({"x": {"id": "x", "name": "test"}}) == {"x": {"id": "x", "name": "test"}}
 
 
 # ---------------------------------------------------------------------------

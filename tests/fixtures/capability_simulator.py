@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, Dict
 
 from caduceus._runtime import CronCapabilityError
@@ -69,33 +70,18 @@ def absent(name: str, args: Dict[str, Any]) -> None:
 
 
 def real_hermes(name: str, args: Dict[str, Any]) -> str:
-    """Return the documented cronjob list success shape as a JSON string.
-
-    Mirrors ``hermes-agent/tools/cronjob_tools.py:778`` which returns
-    ``json.dumps({"success": True, "count": N, "jobs": [...]}, indent=2)``.
-    """
-    import json
-
+    """Return the documented cronjob list success shape as a JSON string."""
     jobs = [{"id": "caduceus", "name": "caduceus", "schedule": "every 2m"}]
     return json.dumps({"success": True, "count": len(jobs), "jobs": jobs}, indent=2)
 
 
 def real_hermes_empty(name: str, args: Dict[str, Any]) -> str:
     """Return the empty-success JSON string (count: 0)."""
-    import json
-
     return json.dumps({"success": True, "count": 0, "jobs": []}, indent=2)
 
 
 def error_envelope(name: str, args: Dict[str, Any]) -> str:
-    """Return the registry error envelope as a JSON string.
-
-    Mirrors ``hermes-agent/tools/registry.py:644`` on handler exception.
-    Downstream asserts the caught ``CronCapabilityError`` category is
-    ``"denied"``.
-    """
-    import json
-
+    """Return the registry error envelope as a JSON string."""
     return json.dumps({"error": "permission denied"})
 
 
