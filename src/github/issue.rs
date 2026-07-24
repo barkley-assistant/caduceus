@@ -12,6 +12,7 @@ use futures_util::future::try_join3;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
+use crate::github::link_header::next_url_from_link_header;
 use crate::github::{Client, Response, ACCEPT_VALUE};
 use crate::infra::error::{CaduceusError, CaduceusResult};
 
@@ -380,24 +381,6 @@ fn next_page(response: &Response, next_page_number: u32, per_page: u32) -> Optio
         format!("{path}?{query}&{extra}")
     };
     Url::parse(&combined).ok()
-}
-
-fn next_url_from_link_header(header: &str) -> Option<String> {
-    for segment in header.split(',') {
-        let segment = segment.trim();
-        let mut parts = segment.split(';');
-        let url_part = parts.next()?.trim();
-        let url = url_part
-            .strip_prefix('<')
-            .and_then(|s| s.strip_suffix('>'))?;
-        for rel in parts {
-            let rel = rel.trim();
-            if rel == "rel=\"next\"" {
-                return Some(url.to_string());
-            }
-        }
-    }
-    None
 }
 
 pub(crate) fn validate_owner(owner: &str) -> CaduceusResult<()> {

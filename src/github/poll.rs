@@ -9,12 +9,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Utc};
-use reqwest::header::LINK;
 use serde::Deserialize;
 use url::Url;
 
 use crate::github::issue::IssueKey;
 use crate::github::{rate_limit_from_headers, Client, Response, ACCEPT_VALUE};
+
+// Preserve the historical public surface: tests reach this helper through
+// `caduceus::poll::next_url_from_link_header`.
+pub use crate::github::link_header::next_url_from_link_header;
 use crate::infra::config::{is_valid_repo_slug, Config};
 use crate::infra::error::{CaduceusError, CaduceusResult};
 use crate::state::queue::TicketType;
@@ -200,35 +203,9 @@ async fn discover_via_api(client: &Client, max_pages: usize) -> CaduceusResult<V
 /// `rel="next"` if any. The header looks like
 /// `<https://api.github.com/...?page=2>; rel="next", <...>; rel="last"`.
 fn parse_next_link(response: &Response) -> Option<Url> {
+    use reqwest::header::LINK;
     let header = response.headers.get(LINK)?.to_str().ok()?;
     next_url_from_link_header(header).and_then(|raw| Url::parse(&raw).ok())
-}
-
-/// Extract the `rel="next"` URL out of a raw Link header. Returns
-/// `None` when no `rel="next"` is present (signalling the last
-/// page) or when the URL cannot be parsed. Exposed as `pub` so
-/// the test suite can drive it directly without a network fixture.
-pub fn next_url_from_link_header(header: &str) -> Option<String> {
-    for segment in header.split(',') {
-        let segment = segment.trim();
-        let mut parts = segment.split(';');
-        let url_part = parts.next()?.trim();
-        let url = url_part
-            .strip_prefix('<')
-            .and_then(|s| s.strip_suffix('>'))?;
-        let mut is_next = false;
-        for rel in parts {
-            let rel = rel.trim();
-            if rel == "rel=\"next\"" {
-                is_next = true;
-                break;
-            }
-        }
-        if is_next {
-            return Some(url.to_string());
-        }
-    }
-    None
 }
 
 /// Translate a [`crate::github::RateLimitInfo`] into the
