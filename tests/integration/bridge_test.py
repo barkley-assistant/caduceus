@@ -1,33 +1,4 @@
-"""Canonical reference bridge tests — ``tests/bridge_test.py``.
-
-These tests pin the contract that ``plugin-assets/worker-bridge.py`` is
-the reference implementation in front of which Hermes operators copy
-the *user-editable* bridge. The contract comes from Task 8.1's
-acceptance matrix and ``planning/caduceus-v0.1/CONTRACTS.md``.
-
-Coverage:
-
-1. **read_required_env** — every required ``CADUCEUS_*`` value is
-   present; missing values are reported in one diagnostic line; no
-   values are echoed.
-2. **parse_labels** — JSON arrays of strings parse cleanly;
-   non-strings, top-level non-arrays, and malformed JSON reject with
-   ``EXIT_MALFORMED_LABELS``.
-3. **verify_prompt** — missing prompt files reject cleanly.
-4. **invoke_harness** — receives ``worktree``, ``prompt_file``,
-   ``run_id``, ``labels``, ``branch_name``; uses ``subprocess.run``
-   with argument arrays (never a shell); returns the harness exit code.
-5. **main** propagates the harness exit code (both 0 and nonzero),
-   treats missing env and malformed labels as user errors, and refuses
-   to launch when credential-shaped variables leak through.
-6. **No side effects** — ``main`` does not write to a state directory,
-   does not create a heartbeat file, does not produce a
-   ``worker-result.json``, and does not touch anything under
-   ``$HOME/.hermes``.
-7. **End-to-end with subprocess** — driving the bridge script as a
-   real subprocess with a fake harness verifies spaces, Unicode, and
-   signal propagation behavior end to end.
-"""
+"""Bridge script integration tests."""
 
 from __future__ import annotations
 
@@ -44,7 +15,7 @@ from pathlib import Path
 import pytest
 
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 BRIDGE_PATH = REPO_ROOT / "plugin-assets" / "worker-bridge.py"
 FAKE_HARNESS_PATH = REPO_ROOT / "tests" / "fixtures" / "bridge_harness.py"
 
@@ -336,12 +307,7 @@ class TestMain:
     def test_credential_vars_in_bridge_input_do_not_block_when_other_env_present(
         self, bridge_module, monkeypatch, fake_env, capsys
     ):
-        """The bridge does not police credential tokens — that is the
-        daemon's job. A token present in *env* does not block a launch as
-        long as every required ``CADUCEUS_*`` value is also present.
-        ``test_credential_vars_do_not_reach_worker`` covers the daemon-side
-        boundary that makes this safe.
-        """
+        """The bridge does not police credential tokens — that is the."""
         env = dict(fake_env)
         env["GITHUB_TOKEN"] = "ghp_secret_value"
         monkeypatch.setattr(bridge_module, "invoke_harness", lambda **_: 0)
@@ -503,19 +469,7 @@ def _run_bridge_subprocess(env: dict, *args: str) -> subprocess.CompletedProcess
 
 
 def _make_opencode_wrapper(bin_dir: Path, harness_path: Path) -> Path:
-    """Create a Python ``opencode`` script that exec's the fake harness.
-
-    Returns the wrapper path. The wrapper ignores OpenCode's
-    subcommands (``run`` etc.) and forwards the bridge's full argv,
-    including the prompt path and any user-supplied ``extra_argv``,
-    to the fake harness.
-
-    We use Python (not Bash) because Bash is not necessarily on the
-    target's PATH inside the subprocess — the bridge's tests must run
-    in any environment the user happens to have. The wrapping Python
-    interpreter uses ``sys.executable`` so it always matches the
-    interpreter that imports this test module.
-    """
+    """Create a Python ``opencode`` script that exec's the fake harness."""
     wrapper = bin_dir / "opencode"
     contents = textwrap.dedent(
         f"""\
@@ -634,15 +588,7 @@ class TestSubprocessEndToEnd:
     def test_bridge_does_not_install_python_signal_handlers(
         self, bridge_module, monkeypatch, tmp_path
     ):
-        """The bridge is downstream of the daemon's worker supervisor,
-        which already owns SIGINT/SIGTERM/timeout forwarding to the
-        whole process group. If the bridge installs its own Python
-        signal handlers, it can swallow signals before they reach the
-        harness, defeating the daemon's contract.
-
-        This test asserts ``signal.signal`` is never called from the
-        bridge's main path.
-        """
+        """The bridge is downstream of the daemon's worker supervisor,."""
         # Provide a real worktree with a prompt so the bridge runs to
         # completion through invoke_harness.
         _make_worktree_with_prompt(tmp_path)
@@ -664,14 +610,7 @@ class TestSubprocessEndToEnd:
 
 
     def test_signal_forwarded_to_harness_via_subprocess(self, tmp_path):
-        """Verify the bridge's subprocess.run lets the daemon-supplied
-        process-group signal plan reach the harness.
-
-        We launch the bridge with ``start_new_session=True`` so the
-        harness inherits a fresh process group. When we deliver SIGINT
-        to that group the harness's signal handler fires and writes
-        the signal number to its pid file.
-        """
+        """Verify the bridge's subprocess.run lets the daemon-supplied."""
         _make_worktree_with_prompt(tmp_path)
         env = _build_env(tmp_path)
         bin_dir = tmp_path / "bin4"
@@ -756,12 +695,7 @@ class TestSubprocessEndToEnd:
         assert proc.returncode is not None
 
     def test_credential_vars_do_not_reach_harness_subprocess(self, tmp_path):
-        """The bridge inherits its environment from the daemon. The daemon
-        strips credential tokens before launch, so the bridge subprocess
-        should never see them on its own side. We pin the bridge's posture
-        by asserting it doesn't *forward* credential vars into the worker's
-        env when present.
-        """
+        """The bridge inherits its environment from the daemon. The daemon."""
         _make_worktree_with_prompt(tmp_path)
         env = _build_env(tmp_path)
         bin_dir = tmp_path / "bin5"

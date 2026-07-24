@@ -1,29 +1,4 @@
-"""Cron capability simulators for the Caduceus Hermes plugin test suite.
-
-Each simulator is a ``dispatch_tool``-compatible callable
-``(name: str, args: dict) -> Any`` that returns a pre-determined response
-matching a real Hermes cron capability failure mode.  The simulators let
-the test suite exercise every dispatch-tool path without a live Hermes
-binary.
-
-Categories
-----------
-* ``well_formed`` — returns a valid job list.
-* ``malformed`` — returns ``None`` (simulates a broken dispatch).
-* ``denied`` — raises ``RuntimeError("cron denied")`` (simulates a
-  capability rejection).
-* ``timed_out`` — raises ``TimeoutError("cron timed out")`` (simulates
-  a Hermes-side timeout).
-* ``eof`` — returns ``{"jobs": []}`` (simulates an empty stream).
-* ``crashed`` — raises ``RuntimeError("cron crashed")`` (simulates
-  an internal Hermes crash).
-* ``duplicate`` — returns a list with two jobs sharing the same name
-  (simulates a name collision).
-* ``foreign_name_collision`` — returns a list where a non-caduceus job
-  has the name ``"caduceus"`` (simulates a foreign-name collision).
-* ``absent`` — returns ``None`` *without* raising (simulates a missing
-  capability).
-"""
+"""Cron capability simulators for the Caduceus Hermes plugin test suite."""
 
 from __future__ import annotations
 

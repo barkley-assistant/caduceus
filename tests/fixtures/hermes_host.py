@@ -1,16 +1,4 @@
-"""Hermes host fixture — hermetic Hermes Agent v0.18.2 test host.
-
-This module provides a dataclass for recording evidence and a fixture
-class that wraps subprocess calls to a real pinned Hermes installation.
-Every method returns an ``EvidenceRecord`` documenting the command,
-exit code, structured category, and artifact path.  The fixture is
-designed for reuse by Phase 02 runtime work and Phase 07 verification.
-
-The fixture never touches the operator's real ``~/.hermes`` home.
-Instead, callers provide an isolated temp directory as ``hermes_home``.
-Gateway restart is represented as an explicit prerequisite — the fixture
-never invokes ``hermes gateway start`` or ``hermes gateway stop``.
-"""
+"""Hermes host fixture for integration tests."""
 
 from __future__ import annotations
 
@@ -24,16 +12,7 @@ from typing import List
 
 @dataclass
 class EvidenceRecord:
-    """A single piece of evidence from a Hermes host operation.
-
-    Attributes:
-        command: The command that was executed (argv joined as string).
-        exit_code: The subprocess returncode, or -1 on timeout.
-        category: A structured category (e.g. "lifecycle", "prerequisite",
-            or a HERMES-002 category).
-        artifact_path: Path to a file containing captured stdout/stderr,
-            or "" when no output was captured.
-    """
+    """A single piece of evidence from a Hermes host operation."""
 
     command: str
     exit_code: int
@@ -42,11 +21,7 @@ class EvidenceRecord:
 
 
 class HermesHostFixture:
-    """Fixture for running Hermes CLI commands in an isolated home directory.
-
-    Every subprocess method records an ``EvidenceRecord``.  The full
-    evidence list is accessible via the ``evidence`` property.
-    """
+    """Fixture for running Hermes CLI commands in an isolated home directory."""
 
     def __init__(
         self, hermes_home: Path, hermes_bin: str, plugin_root: Path
@@ -131,12 +106,7 @@ class HermesHostFixture:
         )
 
     def teardown(self) -> None:
-        """Remove the temp HERMES_HOME and record the gateway prerequisite.
-
-        This method never invokes ``hermes gateway start`` or
-        ``hermes gateway stop`` — the gateway restart is an explicit
-        external prerequisite recorded as evidence.
-        """
+        """Remove the temp HERMES_HOME and record the gateway prerequisite."""
         if self._hermes_home.exists():
             shutil.rmtree(self._hermes_home)
         self._evidence.append(
@@ -158,16 +128,7 @@ class HermesHostFixture:
         method_name: str,
         cwd: Path | None = None,
     ) -> EvidenceRecord:
-        """Run *argv*, capture output, write artifacts, return evidence.
-
-        Args:
-            argv: The argument list (never ``shell=True``).
-            method_name: Used to derive artifact filenames.
-            cwd: Working directory for the subprocess.
-
-        Returns:
-            An ``EvidenceRecord`` with the captured result.
-        """
+        """Run *argv*, capture output, write artifacts, return evidence."""
         env = os.environ.copy()
         env["HERMES_HOME"] = str(self._hermes_home)
         self._hermes_home.mkdir(parents=True, exist_ok=True)

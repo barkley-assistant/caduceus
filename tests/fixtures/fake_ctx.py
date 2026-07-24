@@ -1,10 +1,4 @@
-"""Stand-in for Hermes's ``PluginContext`` used by the adapter tests.
-
-The real context exposes ``register_skill``, ``register_command``,
-``register_cli_command``, ``register_hook``, ``register_tool``,
-``dispatch_tool``, ``manifest``, etc. The tests cover the surfaces
-Caduceus uses; they do not pretend to be a Hermes loader.
-"""
+"""Fake Hermes PluginContext for adapter tests."""
 
 from __future__ import annotations
 
@@ -118,14 +112,7 @@ class FakePluginContext:
     # -- cron capability install ---------------------------------------------
 
     def install_cron_capability(self, category: str) -> None:
-        """Install a cron dispatcher callable for the given *category*.
-
-        Categories: well_formed, malformed, denied, timed_out, eof, crashed,
-        duplicate, foreign_name_collision, absent.  Uses
-        ``_runtime.install_dispatcher()`` — does NOT modify ``_runtime.py``.
-        The caller is responsible for calling ``_runtime.reset_dispatcher()``
-        after the test.
-        """
+        """Install a cron dispatcher callable for the given *category*."""
         from caduceus import _runtime
         from tests.fixtures.capability_simulator import get_simulator
 
@@ -135,12 +122,7 @@ class FakePluginContext:
     # -- inspection helpers --------------------------------------------------
 
     def parse_cli(self, argv: List[str]) -> Any:
-        """Parse *argv* against the registered CLI subcommand parser.
-
-        Returns the populated ``argparse.Namespace``. The CLI subparser
-        tree built by the adapter must accept the canonical ``hermes
-        caduceus <subcommand>`` invocation shape.
-        """
+        """Parse *argv* against the registered CLI subcommand parser."""
         if not self.cli_commands:
             raise AssertionError("no CLI commands registered")
         record = next(iter(self.cli_commands.values()))
