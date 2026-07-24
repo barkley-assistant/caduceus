@@ -2,24 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import os
-import re
-import shutil
-import stat
-import subprocess
-import sys
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 import pytest
-
-from tests.fixtures.fake_ctx import (
-    FakePluginContext,
-    assert_cli_command_registered,
-    assert_command_registered,
-    assert_skill_registered,
-)
 
 from tests.plugin._helpers import _stub_wrapper_file, _stub_cron_runtime
 
@@ -60,7 +47,6 @@ def test_reconcile_intended_state_already_exists(
 
 
 
-
 def test_reconcile_nothing_changed_from_snapshot(
     adapter, isolated_hermes_home: Path, install_with_fake_binary: Path
 ) -> None:
@@ -89,7 +75,6 @@ def test_reconcile_nothing_changed_from_snapshot(
         _runtime.reset_dispatcher()
 
     assert result is None or result == "ok"
-
 
 
 
@@ -138,9 +123,8 @@ def test_reconcile_restores_wrapper_and_job(
     assert result is None or result == "ok"
     assert wrapper.is_file()
     assert wrapper.read_bytes() == original_bytes
-    mode = stat.S_IMODE(wrapper.stat().st_mode)
+    mode = os.stat(wrapper).st_mode & 0o777
     assert mode == 0o755
-
 
 
 
@@ -176,7 +160,6 @@ def test_reconcile_impossible_rollback_returns_needs_attention(
     assert isinstance(result, adapter._NeedsAttention)
     assert isinstance(result.recovery_evidence, str)
     assert len(result.recovery_evidence) > 0
-
 
 
 

@@ -2,24 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import os
-import re
-import shutil
-import stat
-import subprocess
-import sys
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 import pytest
-
-from tests.fixtures.fake_ctx import (
-    FakePluginContext,
-    assert_cli_command_registered,
-    assert_command_registered,
-    assert_skill_registered,
-)
 
 from tests.plugin._helpers import _stub_wrapper_file, _stub_cron_runtime
 
@@ -38,7 +25,7 @@ def test_cron_install_crash_after_wrapper_before_create_is_idempotent(
     assert wrapper.is_file()
 
     # Second run should succeed and create the job.
-    registry = {}
+    registry: Dict[str, Dict[str, Any]] = {}
     _stub_cron_runtime(adapter, registry)
     try:
         action, note = adapter._cron_install(dry_run=False)
@@ -47,7 +34,6 @@ def test_cron_install_crash_after_wrapper_before_create_is_idempotent(
 
     assert action == "created"
     assert wrapper.is_file()
-
 
 
 
@@ -62,7 +48,7 @@ def test_cron_remove_crash_after_remove_before_wrapper_delete(
     _stub_wrapper_file(wrapper, install_with_fake_binary)
 
     # First run: remove the job manually (simulating crash after remove).
-    registry = {}
+    registry: Dict[str, Dict[str, Any]] = {}
     _stub_cron_runtime(adapter, registry)
     try:
         rc = adapter._cli_cron_remove()
@@ -72,7 +58,6 @@ def test_cron_remove_crash_after_remove_before_wrapper_delete(
     # Should succeed — job is already gone, wrapper gets removed.
     assert rc == 0
     assert not wrapper.exists()
-
 
 
 
@@ -96,13 +81,15 @@ def test_cron_install_crash_between_create_and_update_is_idempotent(
             "no_agent": False,
         }
     }
-    actions = _stub_cron_runtime(adapter, registry)
+    _stub_cron_runtime(adapter, registry)
     try:
         action, note = adapter._cron_install(dry_run=False)
     finally:
         _runtime.reset_dispatcher()
 
     assert action == "reused"
-    # The job should have been updated.
-    assert registry["abc"]["schedule"] == "every 2m"
-    assert registry["abc"]["no_agent"] is True
+    # The original job is removed and recreated with the desired state.
+    caduceus_jobs = [j for j in registry.values() if j.get("name") == "caduceus"]
+    assert len(caduceus_jobs) == 1
+    assert caduceus_jobs[0]["schedule"] == "every 2m"
+    assert caduceus_jobs[0]["no_agent"] is True

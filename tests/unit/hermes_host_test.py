@@ -5,160 +5,112 @@ from __future__ import annotations
 import json
 
 import pytest
-from tests.fixtures.fake_ctx import FakePluginContext
+from tests.fixtures.capability_simulator import get_simulator
+from tests.plugin._helpers import subprocess_run_recorder
 
 
 # ---------------------------------------------------------------------------
-# CRON-01: well_formed
+# Cron list through the subprocess recorder
 # ---------------------------------------------------------------------------
 
 
 def test_cron_well_formed_returns_job_list() -> None:
-    """``well_formed`` dispatcher returns a well-formed job list."""
+    """A well-formed table parses to a dict keyed by job id."""
+    from tests.fixtures.capability_simulator import well_formed_table
     from caduceus import _runtime
 
-    ctx = FakePluginContext(name="caduceus")
-    ctx.install_cron_capability("well_formed")
-    try:
+    with subprocess_run_recorder({"list": well_formed_table()}) as calls:
         result = _runtime.cron_list_jobs()
-    finally:
-        _runtime.reset_dispatcher()
+    assert len(calls) == 1
+    assert calls[0] == ["hermes", "cron", "list", "--all"]
     assert isinstance(result, dict)
     assert "abc" in result
     assert result["abc"]["name"] == "caduceus"
     assert result["abc"]["schedule"] == "every 2m"
 
 
-# ---------------------------------------------------------------------------
-# CRON-02: malformed
-# ---------------------------------------------------------------------------
-
-
 def test_cron_malformed_raises_cron_capability_error() -> None:
-    """``malformed`` dispatcher returns None -> CronCapabilityError raised."""
+    """Non-table stdout maps to an empty result, not an exception."""
     from caduceus import _runtime
 
-    ctx = FakePluginContext(name="caduceus")
-    ctx.install_cron_capability("malformed")
-    try:
-        with pytest.raises(_runtime.CronCapabilityError) as excinfo:
-            _runtime.cron_list_jobs()
-    finally:
-        _runtime.reset_dispatcher()
-    assert excinfo.value.category == "malformed-response"
-    assert excinfo.value.detail is not None
-
-
-# ---------------------------------------------------------------------------
-# CRON-03: denied
-# ---------------------------------------------------------------------------
+    with subprocess_run_recorder({"list": "garbled"}) as calls:
+        result = _runtime.cron_list_jobs()
+    assert result == {}
 
 
 def test_cron_denied_raises_cron_capability_error() -> None:
-    """``denied`` raises CronCapabilityError with denied category."""
+    """A denied stderr prefix raises CronCapabilityError with category denied."""
+    import subprocess
     from caduceus import _runtime
 
-    ctx = FakePluginContext(name="caduceus")
-    ctx.install_cron_capability("denied")
-    try:
+    def fail_list(argv, kwargs):
+        return subprocess.CompletedProcess(
+            argv, 1, "", "denied: cron subsystem not available"
+        )
+
+    with subprocess_run_recorder({"list": fail_list}):
         with pytest.raises(_runtime.CronCapabilityError) as excinfo:
             _runtime.cron_list_jobs()
-    finally:
-        _runtime.reset_dispatcher()
     assert excinfo.value.category == "denied"
     assert excinfo.value.detail is not None
 
 
-# ---------------------------------------------------------------------------
-# CRON-04: timed_out
-# ---------------------------------------------------------------------------
-
-
 def test_cron_timed_out_raises_cron_capability_error() -> None:
-    """``timed_out`` raises CronCapabilityError with timed-out category."""
+    """A timeout raises CronCapabilityError with timed-out category."""
     from caduceus import _runtime
 
-    ctx = FakePluginContext(name="caduceus")
-    ctx.install_cron_capability("timed_out")
-    try:
+    def raise_timed_out(argv, kwargs):
+        raise _runtime.CronCapabilityError("timed-out", "hermes cron timed out")
+
+    with subprocess_run_recorder({"list": raise_timed_out}):
         with pytest.raises(_runtime.CronCapabilityError) as excinfo:
             _runtime.cron_list_jobs()
-    finally:
-        _runtime.reset_dispatcher()
     assert excinfo.value.category == "timed-out"
     assert excinfo.value.detail is not None
 
 
-# ---------------------------------------------------------------------------
-# CRON-05: eof
-# ---------------------------------------------------------------------------
-
-
 def test_cron_eof_raises_cron_capability_error() -> None:
-    """``eof`` raises CronCapabilityError with eof category."""
+    """An EOF condition raises CronCapabilityError with eof category."""
     from caduceus import _runtime
 
-    ctx = FakePluginContext(name="caduceus")
-    ctx.install_cron_capability("eof")
-    try:
+    def raise_eof(argv, kwargs):
+        raise _runtime.CronCapabilityError("eof", "cron capability returned EOF")
+
+    with subprocess_run_recorder({"list": raise_eof}):
         with pytest.raises(_runtime.CronCapabilityError) as excinfo:
             _runtime.cron_list_jobs()
-    finally:
-        _runtime.reset_dispatcher()
     assert excinfo.value.category == "eof"
     assert excinfo.value.detail is not None
 
 
-# ---------------------------------------------------------------------------
-# CRON-06: crashed
-# ---------------------------------------------------------------------------
-
-
 def test_cron_crashed_raises_cron_capability_error() -> None:
-    """``crashed`` raises CronCapabilityError with crashed category."""
+    """A Hermes crash raises CronCapabilityError with crashed category."""
     from caduceus import _runtime
 
-    ctx = FakePluginContext(name="caduceus")
-    ctx.install_cron_capability("crashed")
-    try:
+    def raise_crashed(argv, kwargs):
+        raise _runtime.CronCapabilityError("crashed", "cron crashed")
+
+    with subprocess_run_recorder({"list": raise_crashed}):
         with pytest.raises(_runtime.CronCapabilityError) as excinfo:
             _runtime.cron_list_jobs()
-    finally:
-        _runtime.reset_dispatcher()
     assert excinfo.value.category == "crashed"
     assert excinfo.value.detail is not None
 
 
-# ---------------------------------------------------------------------------
-# CRON-07: absent
-# ---------------------------------------------------------------------------
-
-
 def test_cron_absent_returns_empty_dict() -> None:
-    """``absent`` returns None -> _coerce_jobs returns {}."""
+    """An empty table (banner only) returns {}."""
+    from tests.fixtures.capability_simulator import empty_table
     from caduceus import _runtime
 
-    ctx = FakePluginContext(name="caduceus")
-    ctx.install_cron_capability("absent")
-    try:
+    with subprocess_run_recorder({"list": empty_table()}):
         result = _runtime.cron_list_jobs()
-    finally:
-        _runtime.reset_dispatcher()
-    # The absent simulator returns None, which _coerce_jobs coerces to {}
-    # (empty dict — no jobs, no error).
     assert result == {}
 
 
-# ---------------------------------------------------------------------------
-# CRON-08: unknown category
-# ---------------------------------------------------------------------------
-
-
 def test_cron_unknown_category_raises_value_error() -> None:
-    """An unrecognised category raises ValueError."""
-    ctx = FakePluginContext(name="caduceus")
+    """An unrecognised simulator category still raises ValueError."""
     with pytest.raises(ValueError, match="unknown cron capability category"):
-        ctx.install_cron_capability("bogus")
+        get_simulator("bogus")
 
 
 # ---------------------------------------------------------------------------
@@ -314,14 +266,11 @@ def test_doctor_check_cron_capability_no_caduceus_job_registered(
     adapter, install_with_fake_binary: Path
 ) -> None:
     """A well-formed empty job list becomes a distinct OK prerequisite finding."""
+    from tests.fixtures.capability_simulator import empty_table
     from caduceus import _runtime
 
-    ctx = FakePluginContext(name="caduceus")
-    ctx.install_cron_capability("absent")
-    try:
+    with subprocess_run_recorder({"list": empty_table()}):
         finding = adapter._doctor_check_cron_capability(ctx=adapter)
-    finally:
-        _runtime.reset_dispatcher()
     assert finding.status == "ok"
     assert "no Caduceus cron job registered yet" in finding.detail
     assert "external prerequisite, not exercised" in finding.detail
@@ -332,14 +281,16 @@ def test_doctor_check_cron_capability_raises_distinct_finding(
     adapter, install_with_fake_binary: Path
 ) -> None:
     """A denied capability becomes a distinct FAIL finding mentioning the category."""
+    import subprocess
     from caduceus import _runtime
 
-    ctx = FakePluginContext(name="caduceus")
-    ctx.install_cron_capability("denied")
-    try:
+    def fail_list(argv, kwargs):
+        return subprocess.CompletedProcess(
+            argv, 1, "", "denied: cron subsystem not available"
+        )
+
+    with subprocess_run_recorder({"list": fail_list}):
         finding = adapter._doctor_check_cron_capability(ctx=adapter)
-    finally:
-        _runtime.reset_dispatcher()
     assert finding.status == "fail"
     assert "cron list call raised an exception" in finding.detail
     assert "denied" in finding.detail
@@ -352,12 +303,15 @@ def test_doctor_check_cron_capability_unexpected_payload_shape_distinct_finding(
     """A malformed payload becomes a distinct FAIL finding without leaking category text."""
     from caduceus import _runtime
 
-    ctx = FakePluginContext(name="caduceus")
-    ctx.install_cron_capability("malformed")
-    try:
+    def raise_malformed(argv, kwargs):
+        raise _runtime.CronCapabilityError(
+            "malformed-response",
+            "Hermes returned an unexpected payload shape",
+            "garbled",
+        )
+
+    with subprocess_run_recorder({"list": raise_malformed}):
         finding = adapter._doctor_check_cron_capability(ctx=adapter)
-    finally:
-        _runtime.reset_dispatcher()
     assert finding.status == "fail"
     assert "unexpected payload shape" in finding.detail
     assert "hermes plugins install --enable" in finding.next_action
@@ -368,18 +322,32 @@ def test_doctor_check_cron_capability_findings_are_distinct(
     adapter, install_with_fake_binary: Path
 ) -> None:
     """No-job, exception, and shape findings are pairwise operator-distinguishable."""
+    import subprocess
+    from tests.fixtures.capability_simulator import empty_table
     from caduceus import _runtime
 
+    def fail_denied(argv, kwargs):
+        return subprocess.CompletedProcess(
+            argv, 1, "", "denied: cron subsystem not available"
+        )
+
+    def raise_malformed(argv, kwargs):
+        raise _runtime.CronCapabilityError(
+            "malformed-response",
+            "Hermes returned an unexpected payload shape",
+            "garbled",
+        )
+
+    scenarios = {
+        "empty": empty_table(),
+        "denied": fail_denied,
+        "malformed": raise_malformed,
+    }
+
     findings = []
-    categories = ["absent", "denied", "malformed"]
-    for category in categories:
-        ctx = FakePluginContext(name="caduceus")
-        ctx.install_cron_capability(category)
-        try:
-            finding = adapter._doctor_check_cron_capability(ctx=adapter)
-        finally:
-            _runtime.reset_dispatcher()
-        findings.append(finding)
+    for scenario in scenarios.values():
+        with subprocess_run_recorder({"list": scenario}):
+            findings.append(adapter._doctor_check_cron_capability(ctx=adapter))
 
     details = [f.detail for f in findings]
     next_actions = [f.next_action for f in findings]

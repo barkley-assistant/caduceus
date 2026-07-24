@@ -9,6 +9,70 @@ from caduceus._runtime import CronCapabilityError
 
 
 # ---------------------------------------------------------------------------
+# Table fixtures (new subprocess path)
+# ---------------------------------------------------------------------------
+
+_HERMES_CRON_LIST_HEADER = (
+    "\u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510\n"
+    "\u2502 Scheduled Jobs \u2502\n"
+    "\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518\n"
+)
+
+
+def well_formed_table(stdout: str | None = None) -> str:
+    """Return a well-formed ``hermes cron list --all`` table with one caduceus job."""
+    if stdout is not None:
+        return stdout
+    return (
+        _HERMES_CRON_LIST_HEADER
+        + "  abc [active]\n"
+        "    Name:      caduceus\n"
+        "    Schedule:  every 2m\n"
+        "    Repeat:    yes\n"
+        "    Next run:  2026-07-24T18:10:00Z\n"
+        "    Deliver:   stdout\n"
+        "    Script:    caduceus-pulse.sh\n"
+        "    Mode:      no-agent (script stdout delivered directly)\n"
+        "    Last run:  2026-07-24T18:08:00Z  ok\n"
+        "    Execution:  completed  exec-01\n"
+    )
+
+
+def empty_table() -> str:
+    """Return a banner-only table (no job blocks)."""
+    return _HERMES_CRON_LIST_HEADER
+
+
+def disabled_job_table() -> str:
+    """Return a table containing one active and one disabled job."""
+    return (
+        _HERMES_CRON_LIST_HEADER
+        + "  abc [active]\n"
+        "    Name:      caduceus\n"
+        "    Schedule:  every 2m\n"
+        "    Script:    caduceus-pulse.sh\n"
+        "    Mode:      no-agent\n"
+        "\n"
+        "  1a2b [disabled]\n"
+        "    Name:      other-job\n"
+        "    Schedule:  every 5m\n"
+        "    Deliver:   stderr\n"
+        "    Script:    /tmp/x.sh\n"
+        "    Workdir:   /home/agent\n"
+    )
+
+
+def create_stdout(job_id: str = "deadbeef") -> str:
+    """Return a realistic ``hermes cron create`` stdout containing *job_id*."""
+    return f"Created cron job {job_id}\n"
+
+
+def create_stdout_fallback_only_lists() -> str:
+    """Return create stdout without a job id, forcing the list fallback."""
+    return "Created cron job caduceus\n"
+
+
+# ---------------------------------------------------------------------------
 # Simulator factories
 # ---------------------------------------------------------------------------
 

@@ -1,32 +1,46 @@
-"""End-to-end cron-install / cron-remove tests with the JSON-string dispatcher."""
+"""End-to-end cron-install / cron-remove tests with the subprocess recorder."""
 
 from __future__ import annotations
 
-from tests.fixtures.fake_ctx import FakePluginContext
+import subprocess
+
+from tests.plugin._helpers import subprocess_run_recorder
 
 
-def test_cron_install_with_real_hermes_dispatcher_succeeds(adapter, install_with_fake_binary):
-    ctx = FakePluginContext(name="caduceus")
-    ctx.install_cron_capability("real_hermes")
-    try:
+def test_cron_install_with_real_hermes_table_succeeds(adapter, install_with_fake_binary):
+    from tests.fixtures.capability_simulator import well_formed_table
+
+    list_stdout = well_formed_table()
+    with subprocess_run_recorder({"list": list_stdout}) as calls:
         action, note = adapter._cron_install(dry_run=True)
-    finally:
-        from caduceus import _runtime as rt
-        rt.reset_dispatcher()
-    assert action in ("created", "reused")
+    assert action == "reused"
     assert note == "dry-run"
+    assert any(c[2] == "list" for c in calls)
 
 
-def test_cron_install_with_error_envelope_dispatcher_fails_operator_readable(
+def test_cron_install_empty_list_creates(adapter, install_with_fake_binary):
+    from tests.fixtures.capability_simulator import empty_table, create_stdout
+
+    with subprocess_run_recorder(
+        {"list": empty_table(), "create": create_stdout("deadbeef")}
+    ) as calls:
+        action, note = adapter._cron_install(dry_run=False)
+    assert action == "created"
+    assert note == "deadbeef"
+    assert any(c[2] == "list" for c in calls)
+    assert any(c[2] == "create" for c in calls)
+
+
+def test_cron_install_with_error_envelope_fails_operator_readable(
     adapter, install_with_fake_binary, capsys
 ):
-    ctx = FakePluginContext(name="caduceus")
-    ctx.install_cron_capability("error_envelope")
-    try:
+    def fail_list(argv, kwargs):
+        return subprocess.CompletedProcess(
+            argv, 1, "", "denied: cron subsystem not available"
+        )
+
+    with subprocess_run_recorder({"list": fail_list}) as calls:
         rc = adapter._cli_cron_install(dry_run=False)
-    finally:
-        from caduceus import _runtime as rt
-        rt.reset_dispatcher()
     stderr = capsys.readouterr().err
     assert rc == 1
     assert "[FAIL]" in stderr
@@ -36,16 +50,21 @@ def test_cron_install_with_error_envelope_dispatcher_fails_operator_readable(
     assert "RuntimeError" not in stderr
 
 
-def test_cron_install_with_malformed_string_dispatcher_fails_operator_readable(
+def test_cron_install_with_malformed_string_fails_operator_readable(
     adapter, install_with_fake_binary, capsys
 ):
-    ctx = FakePluginContext(name="caduceus")
-    ctx.install_cron_capability("malformed")
-    try:
+    """A response that cannot be parsed as a table is treated as malformed."""
+    from caduceus._runtime import CronCapabilityError
+
+    def raise_malformed(argv, kwargs):
+        raise CronCapabilityError(
+            "malformed-response",
+            "Hermes returned an unexpected payload shape",
+            "garbled",
+        )
+
+    with subprocess_run_recorder({"list": raise_malformed}) as calls:
         rc = adapter._cli_cron_install(dry_run=False)
-    finally:
-        from caduceus import _runtime as rt
-        rt.reset_dispatcher()
     stderr = capsys.readouterr().err
     assert rc == 1
     assert "[FAIL]" in stderr
@@ -56,31 +75,29 @@ def test_cron_install_with_malformed_string_dispatcher_fails_operator_readable(
     assert "garbled" not in stderr
 
 
-def test_cron_remove_with_real_hermes_dispatcher_succeeds(adapter, install_with_fake_binary, capsys):
-    ctx = FakePluginContext(name="caduceus")
-    ctx.install_cron_capability("real_hermes")
-    try:
+def test_cron_remove_with_real_hermes_table_succeeds(adapter, install_with_fake_binary, capsys):
+    from tests.fixtures.capability_simulator import well_formed_table, empty_table
+
+    with subprocess_run_recorder({"list": well_formed_table(), "remove": empty_table()}) as calls:
         rc = adapter._cli_cron_remove()
-    finally:
-        from caduceus import _runtime as rt
-        rt.reset_dispatcher()
     assert rc == 0
-    assert "[OK] cron-remove —" in capsys.readouterr().out
+    assert "[OK] cron-remove" in capsys.readouterr().out
+    assert [c[2] for c in calls] == ["list", "remove"]
 
 
-def test_cron_remove_with_error_envelope_dispatcher_fails_operator_readable(
+def test_cron_remove_with_error_envelope_fails_operator_readable(
     adapter, install_with_fake_binary, capsys
 ):
-    ctx = FakePluginContext(name="caduceus")
-    ctx.install_cron_capability("error_envelope")
-    try:
+    def fail_list(argv, kwargs):
+        return subprocess.CompletedProcess(
+            argv, 1, "", "denied: cron subsystem not available"
+        )
+
+    with subprocess_run_recorder({"list": fail_list}) as calls:
         rc = adapter._cli_cron_remove()
-    finally:
-        from caduceus import _runtime as rt
-        rt.reset_dispatcher()
     stderr = capsys.readouterr().err
     assert rc == 1
-    assert "[FAIL] cron-remove —" in stderr
+    assert "[FAIL] cron-remove" in stderr
     assert "malformed-response:" not in stderr
     assert "CronCapabilityError" not in stderr
     assert "RuntimeError" not in stderr
