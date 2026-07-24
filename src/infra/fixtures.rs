@@ -5,7 +5,7 @@
 //! pinning under Task 8.1. Public docs, the bridge Python module, and
 //! the daemon's `Config` all derive their names from this module.
 //!
-//! The companion test (`tests/docs_contract_test.rs`) loads
+//! The companion test (`tests/architecture/docs_contract_test.rs`) loads
 //! `plugin-assets/worker-bridge.py`, `skills/caduceus/SKILL.md`,
 //! `README.md`, and the `__init__.py` adapter docs, then asserts that
 //! each public artifact references these names verbatim. The set is
@@ -15,9 +15,9 @@
 //!
 //! **Edit discipline.** These fixtures are part of the v0.1 normative
 //! contract. Changing them requires updating the cross-document test in
-//! `tests/docs_contract_test.rs` *and* the related public
+//! `tests/architecture/docs_contract_test.rs` *and* the related public
 //! documentation, and verifying the Python bridge test suite
-//! `tests/bridge_test.py` still passes its own mirror of these names.
+//! `tests/integration/bridge_test.py` still passes its own mirror of these names.
 //! Don't add to this list casually.
 
 /// Canonical `Config` field names. Mirrors the public surface of
