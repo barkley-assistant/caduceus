@@ -255,3 +255,85 @@ def test_coerce_jobs_keyed_dict() -> None:
 
     result = _coerce_jobs({"x": {"id": "x", "name": "test"}})
     assert result == {"x": {"id": "x", "name": "test"}}
+
+
+# ---------------------------------------------------------------------------
+# Distinct cron-capability findings through the doctor probe (REQ-55)
+# ---------------------------------------------------------------------------
+
+
+def test_doctor_check_cron_capability_no_caduceus_job_registered(
+    adapter, install_with_fake_binary: Path
+) -> None:
+    """A well-formed empty job list becomes a distinct OK prerequisite finding."""
+    from caduceus import _runtime
+
+    ctx = FakePluginContext(name="caduceus")
+    ctx.install_cron_capability("absent")
+    try:
+        finding = adapter._doctor_check_cron_capability(ctx=adapter)
+    finally:
+        _runtime.reset_dispatcher()
+    assert finding.status == "ok"
+    assert "no Caduceus cron job registered yet" in finding.detail
+    assert "external prerequisite, not exercised" in finding.detail
+    assert "hermes caduceus cron-install" in finding.next_action
+
+
+def test_doctor_check_cron_capability_raises_distinct_finding(
+    adapter, install_with_fake_binary: Path
+) -> None:
+    """A denied capability becomes a distinct FAIL finding mentioning the category."""
+    from caduceus import _runtime
+
+    ctx = FakePluginContext(name="caduceus")
+    ctx.install_cron_capability("denied")
+    try:
+        finding = adapter._doctor_check_cron_capability(ctx=adapter)
+    finally:
+        _runtime.reset_dispatcher()
+    assert finding.status == "fail"
+    assert "cron list call raised an exception" in finding.detail
+    assert "denied" in finding.detail
+    assert "hermes caduceus cron-install" in finding.next_action
+
+
+def test_doctor_check_cron_capability_unexpected_payload_shape_distinct_finding(
+    adapter, install_with_fake_binary: Path
+) -> None:
+    """A malformed payload becomes a distinct FAIL finding without leaking category text."""
+    from caduceus import _runtime
+
+    ctx = FakePluginContext(name="caduceus")
+    ctx.install_cron_capability("malformed")
+    try:
+        finding = adapter._doctor_check_cron_capability(ctx=adapter)
+    finally:
+        _runtime.reset_dispatcher()
+    assert finding.status == "fail"
+    assert "unexpected payload shape" in finding.detail
+    assert "hermes plugins install --enable" in finding.next_action
+    assert "malformed-response" not in finding.detail
+
+
+def test_doctor_check_cron_capability_findings_are_distinct(
+    adapter, install_with_fake_binary: Path
+) -> None:
+    """No-job, exception, and shape findings are pairwise operator-distinguishable."""
+    from caduceus import _runtime
+
+    findings = []
+    categories = ["absent", "denied", "malformed"]
+    for category in categories:
+        ctx = FakePluginContext(name="caduceus")
+        ctx.install_cron_capability(category)
+        try:
+            finding = adapter._doctor_check_cron_capability(ctx=adapter)
+        finally:
+            _runtime.reset_dispatcher()
+        findings.append(finding)
+
+    details = [f.detail for f in findings]
+    next_actions = [f.next_action for f in findings]
+    assert len(set(details)) == len(details)
+    assert len(set(next_actions)) == len(next_actions)

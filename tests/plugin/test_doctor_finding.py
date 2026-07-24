@@ -23,14 +23,20 @@ from tests.fixtures.fake_ctx import (
 
 
 def test_doctor_finding_is_namedtuple() -> None:
-    """_DoctorFinding is a namedtuple with category, status, detail, next_action."""
+    """_DoctorFinding is a namedtuple with category, status, detail, next_action, internal_detail."""
     from collections import namedtuple
     from caduceus import _DoctorFinding
 
     assert isinstance(_DoctorFinding, type)
     assert issubclass(_DoctorFinding, tuple)
     # Namedtuples have _fields.
-    assert _DoctorFinding._fields == ("category", "status", "detail", "next_action")
+    assert _DoctorFinding._fields == (
+        "category",
+        "status",
+        "detail",
+        "next_action",
+        "internal_detail",
+    )
 
 
 
