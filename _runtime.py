@@ -12,6 +12,7 @@ loaded (notably, the ``pytest`` environment).
 
 from __future__ import annotations
 
+import json
 from typing import Any, Callable, Dict, Optional
 
 
@@ -29,11 +30,19 @@ class CronCapabilityError(Exception):
             ``"timed-out"``, ``"eof"``, ``"crashed"``, ``"duplicate-name"``,
             ``"foreign-name-collision"``).
         detail: A human-readable description of what went wrong.
+        internal_detail: Internal diagnostic for verbose output, never
+            shown to operators by default.
     """
 
-    def __init__(self, category: str, detail: str) -> None:
+    def __init__(
+        self,
+        category: str,
+        detail: str,
+        internal_detail: Optional[str] = None,
+    ) -> None:
         self.category = category
         self.detail = detail
+        self.internal_detail = internal_detail
         super().__init__(f"{category}: {detail}")
 
 
@@ -115,9 +124,10 @@ def cron_remove_job(job_id: str) -> None:
 def _coerce_jobs(result: Any) -> Dict[str, Dict[str, Any]]:
     """Return ``{job_id: job_dict, ...}`` from whatever the dispatcher returns.
 
-    Hermes's ``cronjob`` action=``list`` returns either a dict mapping ids
-    to job dicts, or a list of job dicts (each with ``id``). Both shapes
-    are accepted so the adapter does not depend on the wire format.
+    Hermes's ``cronjob`` action=``list`` returns a JSON string in
+    production. After parsing, the shape is either a dict mapping ids to
+    job dicts, or a list of job dicts (each with ``id``). Both shapes are
+    accepted so the adapter does not depend on the wire format.
 
     Raises
     ------
@@ -129,6 +139,26 @@ def _coerce_jobs(result: Any) -> Dict[str, Dict[str, Any]]:
     if result is None:
         # No response — empty cron list, no error.
         return {}
+    if isinstance(result, str):
+        try:
+            parsed = json.loads(result)
+        except json.JSONDecodeError:
+            raise CronCapabilityError(
+                "malformed-response",
+                "cron bridge returned an unparseable response",
+                internal_detail=result,
+            ) from None
+        if isinstance(parsed, dict) and "error" in parsed:
+            category = parsed.get("category")
+            if not isinstance(category, str) or not category:
+                category = "denied"
+            raise CronCapabilityError(
+                category,
+                str(parsed.get("error", "cron capability denied")),
+                internal_detail=result,
+            ) from None
+        # Parsed value falls through to the existing shape branches.
+        return _coerce_jobs(parsed)
     if isinstance(result, dict) and "jobs" in result and isinstance(result["jobs"], list):
         # Empty jobs list is valid — no jobs registered.
         if not result["jobs"]:
