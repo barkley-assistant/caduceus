@@ -42,6 +42,10 @@ impl Executor for TrustedHostExecutor {
         let context_json: &'a str = &spec.context_json;
         let worker_command: &'a [String] = &spec.worker_command;
         let cancellation: CancellationToken = spec.cancellation.clone();
+        let issue_title: &'a str = &spec.issue_title;
+        let issue_body: &'a str = &spec.issue_body;
+        let labels: &'a [String] = &spec.labels;
+        let branch_name: &'a str = &spec.branch_name;
 
         Box::pin(async move {
             supervise(
@@ -53,6 +57,10 @@ impl Executor for TrustedHostExecutor {
                 context_json,
                 worker_command,
                 cancellation,
+                issue_title,
+                issue_body,
+                labels,
+                branch_name,
             )
             .await
         })

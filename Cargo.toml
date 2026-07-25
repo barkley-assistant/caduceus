@@ -328,6 +328,10 @@ name = "worker_env_test"
 path = "tests/worker/worker_env_test.rs"
 
 [[test]]
+name = "supervisor_env_test"
+path = "tests/worker/supervisor_env_test.rs"
+
+[[test]]
 name = "worker_parent_death_test"
 path = "tests/worker/worker_parent_death_test.rs"
 
