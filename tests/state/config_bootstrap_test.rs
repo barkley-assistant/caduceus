@@ -66,6 +66,7 @@ fn load_with_context_explicit_env_authoritative() {
         r#"
         worker_command: ["python3", "/from/explicit.py"]
         reduced_containment_acknowledged: true
+        github_token: "test-token-stub"
         "#,
     );
     let hermes_dir = root.join("hermes");
@@ -161,6 +162,7 @@ fn load_with_context_hermes_then_standalone_fallback() {
         caduceus:
           worker_command: ["python3", "/from/hermes.py"]
           reduced_containment_acknowledged: true
+          github_token: "test-token-stub"
         "#,
     );
 
@@ -210,6 +212,7 @@ fn load_resolves_default_worker_to_hermes_home_bridge() {
         caduceus:
           poll_interval_seconds: 60
           reduced_containment_acknowledged: true
+          github_token: "test-token-stub"
         "#,
     );
 
