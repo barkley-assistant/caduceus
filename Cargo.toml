@@ -316,6 +316,10 @@ name = "token_test"
 path = "tests/state/token_test.rs"
 
 [[test]]
+name = "config_token_resolution_test"
+path = "tests/state/config_token_resolution_test.rs"
+
+[[test]]
 name = "validate_test"
 path = "tests/state/validate_test.rs"
 
