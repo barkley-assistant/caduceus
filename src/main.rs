@@ -135,7 +135,7 @@ fn run_supervisor_mode() -> CaduceusResult<()> {
         context: "supervisor",
         stderr: "--worktree is required".to_string(),
     })?;
-    let _run_id = run_id.ok_or_else(|| caduceus::CaduceusError::Worker {
+    let run_id = run_id.ok_or_else(|| caduceus::CaduceusError::Worker {
         context: "supervisor",
         stderr: "--run-id is required".to_string(),
     })?;
@@ -143,7 +143,7 @@ fn run_supervisor_mode() -> CaduceusResult<()> {
         context: "supervisor",
         stderr: "--issue is required".to_string(),
     })?;
-    let _context_json = context_json.unwrap_or_default();
+    let context_json = context_json.unwrap_or_default();
     let transcript_path = transcript_path.ok_or_else(|| caduceus::CaduceusError::Worker {
         context: "supervisor",
         stderr: "--transcript is required".to_string(),
@@ -153,10 +153,10 @@ fn run_supervisor_mode() -> CaduceusResult<()> {
         stderr: "--heartbeat is required".to_string(),
     })?;
 
-    let _issue_title = issue_title.unwrap_or_default();
-    let _issue_body = issue_body.unwrap_or_default();
-    let _issue_labels_json = issue_labels_json.unwrap_or_else(|| "[]".to_string());
-    let _issue_branch_name = branch_name.unwrap_or_default();
+    let issue_title = issue_title.unwrap_or_default();
+    let issue_body = issue_body.unwrap_or_default();
+    let issue_labels_json = issue_labels_json.unwrap_or_else(|| "[]".to_string());
+    let branch_name = branch_name.unwrap_or_default();
 
     if worker_command.is_empty() {
         return Err(caduceus::CaduceusError::Worker {
@@ -179,7 +179,7 @@ fn run_supervisor_mode() -> CaduceusResult<()> {
     // Sanity-check the issue ref format. The daemon-side
     // already validates this, but a malformed ref must fail
     // fast inside the supervisor too.
-    let _ = caduceus::issue::IssueKey::parse(&issue_ref)?;
+    let issue = caduceus::issue::IssueKey::parse(&issue_ref)?;
 
     // Detach into a new session so the worker has its own
     // process group. The daemon recorded our PGID via the
@@ -204,6 +204,39 @@ fn run_supervisor_mode() -> CaduceusResult<()> {
     // bytes and the worker bytes from interleaving.
     cmd.stdout(std::process::Stdio::null());
     cmd.stderr(std::process::Stdio::piped());
+
+    // When the daemon supplied the new issue-context flags,
+    // build a sanitized worker environment from them and
+    // apply it before the worker starts. Backward-compatible
+    // callers (e.g. existing tests that drive
+    // `__worker-supervisor` by hand) omit these flags; we
+    // leave the inherited environment untouched in that case.
+    if !branch_name.is_empty() {
+        let labels: Vec<String> = if issue_labels_json.trim() == "[]" {
+            Vec::new()
+        } else {
+            serde_json::from_str(&issue_labels_json).map_err(|err| {
+                caduceus::CaduceusError::Config(format!("invalid labels JSON: {err}"))
+            })?
+        };
+        let inputs = caduceus::worker::SanitizedEnvInputs {
+            issue,
+            issue_title,
+            issue_body,
+            labels,
+            worktree_path: worktree.clone(),
+            run_id: run_id.clone(),
+            branch_name,
+            allowlist: Vec::new(),
+            context_json,
+        };
+        let parent: std::collections::BTreeMap<std::ffi::OsString, std::ffi::OsString> =
+            std::env::vars_os().collect();
+        let env = caduceus::worker::sanitized_env(&parent, &inputs)?;
+        cmd.env_clear();
+        cmd.envs(env);
+    }
+
     cmd.process_group(0);
     let mut child = cmd.spawn().map_err(|err| caduceus::CaduceusError::Worker {
         context: "supervisor:worker_spawn",

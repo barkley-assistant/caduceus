@@ -14,7 +14,6 @@ use std::path::{Path, PathBuf};
 
 use caduceus::issue::IssueKey;
 use caduceus::worker::sanitized_env;
-use caduceus::worker::spawn;
 use caduceus::worker::SanitizedEnvInputs;
 
 fn empty_env() -> BTreeMap<OsString, OsString> {
@@ -103,10 +102,56 @@ fn supervisor_command_inherits_all_nine_caduceus_vars() {
 
 #[test]
 fn supervisor_command_strips_denied_exact_vars() {
-    panic!("not implemented");
+    let worktree = tempdir("deny");
+    fs::create_dir_all(&worktree).expect("worktree dir");
+    let mut inputs = sample_inputs(&worktree);
+    inputs.allowlist = vec![
+        "GITHUB_TOKEN".to_string(),
+        "GH_TOKEN".to_string(),
+        "CADUCEUS_GITHUB_TOKEN".to_string(),
+        "AUTO_ISSUE_GITHUB_TOKEN".to_string(),
+        "MY_GITHUB_TOKEN".to_string(),
+    ];
+    let parent = env_with(&[
+        ("GITHUB_TOKEN", "ghp_x"),
+        ("GH_TOKEN", "ghp_y"),
+        ("CADUCEUS_GITHUB_TOKEN", "ghp_z"),
+        ("AUTO_ISSUE_GITHUB_TOKEN", "ghp_w"),
+        ("MY_GITHUB_TOKEN", "ghp_v"),
+        ("PATH", "/usr/bin"),
+    ]);
+    let env = sanitized_env(&parent, &inputs).expect("sanitized env");
+
+    for denied in [
+        "GITHUB_TOKEN",
+        "GH_TOKEN",
+        "CADUCEUS_GITHUB_TOKEN",
+        "AUTO_ISSUE_GITHUB_TOKEN",
+        "MY_GITHUB_TOKEN",
+    ] {
+        assert!(
+            !env.contains_key(OsStr::new(denied)),
+            "denied var {denied} must be stripped"
+        );
+    }
+    // PATH must survive as a sanity check that the allowlist path is
+    // still working alongside the deny list.
+    assert_eq!(env.get(OsStr::new("PATH")).unwrap(), OsStr::new("/usr/bin"));
 }
 
 #[test]
 fn supervisor_command_validates_labels_json() {
-    panic!("not implemented");
+    let worktree = tempdir("labels_json");
+    fs::create_dir_all(&worktree).expect("worktree dir");
+    let mut inputs = sample_inputs(&worktree);
+    inputs.labels = vec!["🤖 auto-fix".to_string()];
+    let env = sanitized_env(&empty_env(), &inputs).expect("sanitized env");
+
+    let raw = env
+        .get(OsStr::new("CADUCEUS_ISSUE_LABELS_JSON"))
+        .expect("labels json")
+        .to_str()
+        .expect("labels json utf-8");
+    let parsed: Vec<String> = serde_json::from_str(raw).expect("valid JSON array of strings");
+    assert_eq!(parsed, vec!["🤖 auto-fix".to_string()]);
 }

@@ -191,9 +191,11 @@ pub fn kill_pgid(pgid: i32, signal: i32) {
 /// Build the `caduceus __worker-supervisor` command for *args*.
 /// The hidden command is dispatched before Clap parsing so it
 /// is never shown in `--help` output and is never accepted
-/// from cron / plugin configuration. The supervisor only sees
-/// the cleared worker environment; no daemon credentials
-/// reach it.
+/// from cron / plugin configuration. The supervisor inherits
+/// the daemon environment so PATH and other safe bootstrap
+/// variables are available; the worker subprocess is then
+/// launched with `env_clear()` and a sanitized environment
+/// built by `run_supervisor_mode`.
 ///
 /// The daemon-side uses `Child::stdin/stdout/stderr` for the
 /// control/status pipes — the supervisor inherits them as
@@ -242,6 +244,5 @@ pub fn build_supervisor_command(
     cmd.stdin(Stdio::piped());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
-    cmd.env_clear();
     cmd
 }

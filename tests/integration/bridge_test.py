@@ -11,6 +11,7 @@ import sys
 import textwrap
 import time
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -349,6 +350,36 @@ class TestMain:
 # ---------------------------------------------------------------------------
 # 6. Forbidden side effects: no state, no heartbeat, no worker-result.json
 # ---------------------------------------------------------------------------
+
+
+    def test_bridge_passes_env_validation_with_full_set(
+        self, bridge_module, monkeypatch, fake_env
+    ):
+        """When all 9 CADUCEUS_* vars are present, validation passes and the
+        bridge reaches invoke_harness.
+        """
+        captured = {}
+
+        def fake_invoke_harness(**kwargs):
+            captured["args"] = kwargs
+            return 0
+
+        monkeypatch.setattr(bridge_module, "invoke_harness", fake_invoke_harness)
+        rc = bridge_module.main(env=fake_env, argv=["worker-bridge.py"])
+        assert rc == 0
+        assert captured, "invoke_harness should have been called"
+        assert captured["args"]["run_id"] == fake_env["CADUCEUS_RUN_ID"]
+        assert captured["args"]["branch_name"] == fake_env["CADUCEUS_BRANCH_NAME"]
+        assert captured["args"]["labels"] == ["🤖 auto-fix", "good first issue"]
+
+    def test_bridge_missing_env_exits_2(self, bridge_module, fake_env):
+        """A completely missing env block still exits 2 on the first
+        validation step — regression guard for the bug that surfaced
+        as missing CADUCEUS_* vars in the worker subprocess.
+        """
+        with pytest.raises(SystemExit) as excinfo:
+            bridge_module.main(env={}, argv=["worker-bridge.py"])
+        assert excinfo.value.code == bridge_module.EXIT_MISSING_ENV
 
 
 class TestForbiddenSideEffects:
