@@ -933,7 +933,7 @@ impl Config {
         Ok(config)
     }
 
-    /// Load the configuration from a single, explicit file path.
+    /// Load configuration from a single, explicit file path.
     ///
     /// The file may be either a standalone Caduceus config (whose
     /// top-level keys map to [`RawConfig`] directly) or a Hermes
@@ -943,19 +943,21 @@ impl Config {
     ///
     /// This entry point is mostly useful for tests and for the
     /// `caduceus migrate-state` flow that needs to read a known file.
-    /// The cron tick uses [`Config::load`].
+    /// The cron tick uses [`Config::load`]. Token resolution is
+    /// intentionally NOT invoked here — `load_from` is a test seam
+    /// and the `gh auth token` runner must not shell out from CI.
+    /// Tests that need to assert strict-error behaviour use the
+    /// runner-aware variant [`Config::load_from_with_env`].
     pub fn load_from(path: &Path) -> CaduceusResult<Self> {
         let raw = load_raw_from(path)?;
-        let mut config = Config::from_raw(
+        Config::from_raw(
             raw,
             &LoadContext {
                 hermes_home: None,
                 plugin_root: None,
                 env: RawEnv::default(),
             },
-        )?;
-        resolve_if_missing(&mut config, &crate::infra::config::token::OsEnv)?;
-        Ok(config)
+        )
     }
 
     /// Test-only entry point. Loads a standalone config from *path*
@@ -1008,7 +1010,11 @@ impl Config {
                 env: RawEnv::default(),
             },
         )?;
-        resolve_if_missing(&mut config, &crate::infra::config::token::OsEnv)?;
+        // Token resolution is intentionally NOT invoked here. This is
+        // a test seam and the `gh auth token` runner must not shell
+        // out from CI runners. Production cron tick uses [`Config::load`]
+        // which routes through [`Config::load_with_context`] where the
+        // chain runs.
         // ``CADUCEUS_DRY_RUN`` is read from the process env via the
         // same path the daemon uses at runtime. Tests that need to
         // pin the dry-run behaviour set the env var themselves and
