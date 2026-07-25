@@ -921,7 +921,11 @@ impl Config {
             },
         )?;
 
-        // 7. Apply CADUCEUS_DRY_RUN
+        // 7. Resolve the GitHub token using the environment chain when
+        //    the YAML did not supply one.
+        resolve_if_missing(&mut config, &crate::infra::config::token::OsEnv)?;
+
+        // 8. Apply CADUCEUS_DRY_RUN
         if let Some(ref value) = env.caduceus_dry_run {
             apply_dry_run_env(&mut config, value)?;
         }
@@ -942,14 +946,37 @@ impl Config {
     /// The cron tick uses [`Config::load`].
     pub fn load_from(path: &Path) -> CaduceusResult<Self> {
         let raw = load_raw_from(path)?;
-        Config::from_raw(
+        let mut config = Config::from_raw(
             raw,
             &LoadContext {
                 hermes_home: None,
                 plugin_root: None,
                 env: RawEnv::default(),
             },
-        )
+        )?;
+        resolve_if_missing(&mut config, &crate::infra::config::token::OsEnv)?;
+        Ok(config)
+    }
+
+    /// Test-only entry point. Loads a standalone config from *path*
+    /// and gives the test control over the environment and the
+    /// ``gh auth token`` runner so token resolution is deterministic.
+    pub fn load_from_with_env(
+        path: &Path,
+        env: &dyn TokenEnv,
+        runner: &dyn GhRunner,
+    ) -> CaduceusResult<Self> {
+        let raw = load_raw_from(path)?;
+        let mut config = Config::from_raw(
+            raw,
+            &LoadContext {
+                hermes_home: None,
+                plugin_root: None,
+                env: RawEnv::default(),
+            },
+        )?;
+        resolve_if_missing_with_runner(&mut config, env, runner)?;
+        Ok(config)
     }
 
     /// Test-only entry point. The three ``Option<Path>`` slots pin the
@@ -981,6 +1008,7 @@ impl Config {
                 env: RawEnv::default(),
             },
         )?;
+        resolve_if_missing(&mut config, &crate::infra::config::token::OsEnv)?;
         // ``CADUCEUS_DRY_RUN`` is read from the process env via the
         // same path the daemon uses at runtime. Tests that need to
         // pin the dry-run behaviour set the env var themselves and
@@ -1014,6 +1042,31 @@ impl Config {
     pub fn resolve_github_token(&self, env: &dyn TokenEnv) -> CaduceusResult<ResolvedToken> {
         resolve_token_chain(self, env, &RealGhRunner)
     }
+}
+
+/// Resolve a token when the YAML did not provide one.
+///
+/// This is the production helper: it uses the real OS environment
+/// and the real ``gh auth token`` runner. The public
+/// [`Config::load_from_with_env`] entry point uses the runner-aware
+/// variant so tests can inject a stub ``GhRunner``.
+pub(crate) fn resolve_if_missing(cfg: &mut Config, env: &dyn TokenEnv) -> CaduceusResult<()> {
+    resolve_if_missing_with_runner(cfg, env, &RealGhRunner)
+}
+
+fn resolve_if_missing_with_runner(
+    cfg: &mut Config,
+    env: &dyn TokenEnv,
+    runner: &dyn GhRunner,
+) -> CaduceusResult<()> {
+    if cfg.github_token.is_some() {
+        // YAML wins; do not consult the chain.
+        return Ok(());
+    }
+    let resolved = resolve_token_chain(cfg, env, runner)?;
+    cfg.github_token = Some(resolved.token);
+    tracing::info!(source = ?resolved.source, "GitHub token resolved");
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
