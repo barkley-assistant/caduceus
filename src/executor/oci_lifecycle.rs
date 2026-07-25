@@ -565,6 +565,10 @@ mod inline_tests {
             worker_command: vec!["python3".to_string()],
             cancellation: CancellationToken::new(),
             network_profile: None,
+            issue_title: "title".to_string(),
+            issue_body: "body".to_string(),
+            labels: Vec::new(),
+            branch_name: "automation/issue-1".to_string(),
         };
         let mounts = default_mounts(&spec);
         assert!(!mounts.is_empty());
