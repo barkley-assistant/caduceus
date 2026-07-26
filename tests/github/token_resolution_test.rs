@@ -23,8 +23,12 @@ fn with_config_resolves_from_env_var_when_config_is_none() {
 #[test]
 fn with_config_falls_back_to_none_when_env_var_dropped() {
     let c = cfg(None);
-    let client = Client::with_config(&c).expect("client builds");
-    assert_eq!(client.token(), None);
+    // Hide the gh executable so the final chain step fails deterministically
+    // when no env var is set, without depending on the host's gh auth state.
+    temp_env::with_var("PATH", None::<&str>, || {
+        let client = Client::with_config(&c).expect("client builds");
+        assert_eq!(client.token(), None);
+    });
 }
 
 #[test]
@@ -37,7 +41,7 @@ fn with_config_uses_explicit_config_when_set() {
 #[test]
 fn with_cache_resolves_from_env_var_when_config_is_none() {
     let state_dir = std::path::Path::new("/tmp");
-    let mut c = Config::test_defaults(state_dir);
+    let c = Config::test_defaults(state_dir);
     let cache = caduceus::github::HttpCache::open(state_dir).expect("cache opens");
     temp_env::with_var(
         "CADUCEUS_GITHUB_TOKEN",
