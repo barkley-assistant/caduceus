@@ -18,7 +18,7 @@ use crate::finalize::{
     validate_comment, validate_pr_body, validate_pr_title, validate_public_text,
 };
 use crate::github::issue::IssueKey;
-use crate::infra::config::Config;
+use crate::infra::config::{Config, OsEnv};
 use crate::infra::error::{CaduceusError, CaduceusResult, VoiceError};
 
 use super::cache::{cache_key, inert_cache, is_valid_etag, CacheEntry, HttpCache};
@@ -85,9 +85,16 @@ impl Client {
             .user_agent(format!("{USER_AGENT_PREFIX}/{}", env!("CARGO_PKG_VERSION")))
             .build()?;
         let cache = HttpCache::open(&cfg.state_dir)?;
+        let token = match cfg.resolve_github_token(&OsEnv) {
+            Ok(resolved) => Some(resolved.token),
+            Err(err) => {
+                tracing::warn!(error = %err, "github token resolution failed; continuing without auth");
+                None
+            }
+        };
         Ok(Self {
             base_url,
-            token: cfg.github_token.clone(),
+            token,
             timeout,
             cache: Arc::new(cache),
             inner,
@@ -107,9 +114,16 @@ impl Client {
             .redirect(Policy::none())
             .user_agent(format!("{USER_AGENT_PREFIX}/{}", env!("CARGO_PKG_VERSION")))
             .build()?;
+        let token = match cfg.resolve_github_token(&OsEnv) {
+            Ok(resolved) => Some(resolved.token),
+            Err(err) => {
+                tracing::warn!(error = %err, "github token resolution failed; continuing without auth");
+                None
+            }
+        };
         Ok(Self {
             base_url,
-            token: cfg.github_token.clone(),
+            token,
             timeout,
             cache: Arc::new(cache),
             inner,
@@ -130,6 +144,11 @@ impl Client {
     /// The configured per-request timeout.
     pub fn timeout(&self) -> Duration {
         self.timeout
+    }
+
+    /// The resolved GitHub token, if any.
+    pub fn token(&self) -> Option<&str> {
+        self.token.as_deref()
     }
 
     /// Issue a conditional GET against *url_path* (joined onto
