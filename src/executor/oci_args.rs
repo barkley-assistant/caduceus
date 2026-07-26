@@ -10,10 +10,6 @@ use crate::executor::ExecutorSpec;
 use crate::infra::config::Config;
 use crate::infra::error::{CaduceusError, CaduceusResult};
 
-// ---------------------------------------------------------------------------
-// OciEngine
-// ---------------------------------------------------------------------------
-
 /// Which OCI CLI engine the argv is being built for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OciEngine {
@@ -36,10 +32,6 @@ impl OciEngine {
     }
 }
 
-// ---------------------------------------------------------------------------
-// MountSpec
-// ---------------------------------------------------------------------------
-
 /// A single bind-mount declaration for a container.
 #[derive(Clone, Debug)]
 pub struct MountSpec {
@@ -48,14 +40,10 @@ pub struct MountSpec {
     pub read_only: bool,
 }
 
-// ---------------------------------------------------------------------------
-// build_argv
-// ---------------------------------------------------------------------------
-
 /// Build the argv vector for an OCI CLI `run` command.
 ///
 /// Returns `OciUndeclaredMount` when the spec's worktree path is not
-/// covered by any entry in `mounts` (AC-02).
+/// declared in the mount allow-list.
 pub fn build_argv(
     spec: &ExecutorSpec,
     cfg: &Config,
@@ -145,9 +133,9 @@ fn derive_daemon_id(cfg: &Config) -> String {
 }
 
 /// Derive the image name (without digest) from config.
-/// Defaults to `"caduceus-worker"` when not otherwise configured.
+///
+/// The image name is currently hardcoded because the config field does
+/// not yet exist.
 fn derive_image_name(_cfg: &Config) -> String {
-    // Task 6.3 will add a configurable image name. For now we
-    // hardcode a sensible default.
     "caduceus-worker".to_string()
 }

@@ -26,10 +26,6 @@ use crate::infra::error::{CaduceusError, CaduceusResult};
 use crate::state::oci_run::{ContainerRunRow, OciLifecycleState, OciRunState};
 use crate::worker::supervisor::SupervisorOutcome;
 
-// ---------------------------------------------------------------------------
-// Default mounts
-// ---------------------------------------------------------------------------
-
 /// Build the default mount allow-list: worktree (rw) and result (rw).
 /// The container paths mirror the daemon's layout.
 fn default_mounts(spec: &ExecutorSpec) -> Vec<MountSpec> {
@@ -55,10 +51,6 @@ fn default_mounts(spec: &ExecutorSpec) -> Vec<MountSpec> {
     ]
 }
 
-// ---------------------------------------------------------------------------
-// run — the 5-step lifecycle
-// ---------------------------------------------------------------------------
-
 /// Run the OCI container lifecycle: create → start → wait → stop → remove.
 ///
 /// The function:
@@ -80,7 +72,7 @@ pub async fn run(
     let engine = OciEngine::from_binary_name(&cfg.oci_cli.to_string_lossy());
     let mounts = default_mounts(spec);
 
-    // Build argv — rejects undeclared mounts (AC-02).
+    // Build argv — rejects mounts not declared in the allow-list.
     let argv = build_argv(spec, cfg, &mounts, None)?;
 
     // Insert a Created state row.
@@ -301,14 +293,9 @@ pub async fn run_with_argv(
     })
 }
 
-// ---------------------------------------------------------------------------
-// Reconciliation
-// ---------------------------------------------------------------------------
-
 /// Reconcile orphaned containers: every row in `PendingReconciliation`
-/// is checked against the live engine and cleaned up.
-///
-/// Called by the daemon's reconciliation task (AC-05).
+/// is checked against the live engine and cleaned up by the daemon's
+/// reconciliation task.
 pub async fn reconcile(
     cfg: &Config,
     state: &dyn OciRunState,
@@ -334,10 +321,6 @@ pub async fn reconcile(
     }
     Ok(())
 }
-
-// ---------------------------------------------------------------------------
-// Crash recovery — find orphaned containers on the engine
-// ---------------------------------------------------------------------------
 
 /// Find containers on the engine that have caduceus labels but no
 /// corresponding non-removed state row. These are containers that
@@ -404,10 +387,6 @@ pub async fn find_orphans(
 
     Ok(orphans)
 }
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 /// Derive a stable daemon identifier from the config.
 fn derive_daemon_id(cfg: &Config) -> String {
@@ -529,10 +508,6 @@ fn to_oci_error(step: &'static str, context: &'static str, detail: &str) -> Cadu
 fn parse_exit_code(output: &str) -> i32 {
     output.trim().parse().unwrap_or(-1)
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod inline_tests {
