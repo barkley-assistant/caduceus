@@ -13,11 +13,6 @@ use sha2::{Digest, Sha256};
 use crate::github::issue::IssueKey;
 use crate::infra::error::{CaduceusError, CaduceusResult};
 
-// ---------------------------------------------------------------------------
-// Reaper: scan claim files for stale entries, malformed bodies, future
-// timestamps; quarantine to claims/corrupt/ and report.
-// ---------------------------------------------------------------------------
-
 /// Directory under `<state_dir>/claims` where malformed/future-stamped
 /// claim files are quarantined. The reaper never silently deletes
 /// anything — corrupt claims are moved here and the queue file is left
@@ -238,7 +233,7 @@ pub async fn reap_stale_claims(
 /// preserved verbatim; the file name is suffixed with the
 /// current timestamp so a re-quarantine of the same path does
 /// not overwrite an existing artefact.
-pub(crate) fn quarantine_claim(
+fn quarantine_claim(
     claims_dir: &Path,
     path: &Path,
     bytes: &[u8],
@@ -368,7 +363,7 @@ pub(crate) async fn reap_one_stale_claim(
 /// always returns `false` so the reaper treats those claims as
 /// stale (matching the contract's "process identity is
 /// absent").
-pub(crate) fn is_pid_alive(pid: u32) -> bool {
+fn is_pid_alive(pid: u32) -> bool {
     if pid == 0 {
         return false;
     }
@@ -380,12 +375,6 @@ pub(crate) fn is_pid_alive(pid: u32) -> bool {
     // by the starttime comparison.
     std::path::Path::new(&format!("/proc/{pid}")).exists()
 }
-
-// ---------------------------------------------------------------------------
-// Reaper-only StateStore surface. The full StateStore takes the lock
-// on `open()`; the reaper needs a lighter view that loads/parses
-// without taking the daemon-wide lock (the caller already holds it).
-// ---------------------------------------------------------------------------
 
 impl StateStore {
     /// Open a StateStore for the reaper's read-only view. Does

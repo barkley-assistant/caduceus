@@ -43,8 +43,8 @@ pub struct CheckpointRow {
     /// RFC-3339 timestamp of when the checkpoint was created.
     pub created_at: String,
     /// Durable operation ID derived from the run and stage
-    /// (Task 4.2, FINAL-001). Persisted before the external
-    /// effect fires. NULL for pre-migration checkpoints.
+    /// (FINAL-001). Persisted before the external effect
+    /// fires. NULL for pre-migration checkpoints.
     pub operation_id: Option<String>,
     /// Exact remote marker (e.g. commit SHA, PR number,
     /// comment ID) used for reconciliation. Persisted after
@@ -71,8 +71,8 @@ impl CheckpointRow {
 /// It must be `None` or a valid JSON string.
 ///
 /// `operation_id` is the durable operation ID derived from the
-/// run and stage (Task 4.2, FINAL-001). Persisted *before* the
-/// external effect fires.
+/// run and stage (FINAL-001). Persisted *before* the external
+/// effect fires.
 ///
 /// `remote_marker` is the exact remote marker (e.g. commit SHA,
 /// PR number, comment ID) persisted *after* the external effect
@@ -202,10 +202,6 @@ pub fn delete_checkpoint(
     })?;
     Ok(())
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
