@@ -293,3 +293,36 @@ def test_doctor_prints_failures_on_exit_2(
     assert rc == 2
     # Should show what failed.
     assert "fail" in captured.out.lower() or "FAIL" in captured.out
+
+
+
+def test_doctor_exit_1_when_worktree_lock_stale(
+    adapter, install_with_fake_binary: Path, isolated_hermes_home: Path, monkeypatch
+) -> None:
+    """A stale .worktrees/.lock makes _cli_doctor exit 1 (daemon-defect)."""
+    from caduceus import _runtime
+
+    monkeypatch.setenv("CADUCEUS_GITHUB_TOKEN", "ghp_test-secret-configured")
+    bridge = isolated_hermes_home / "caduceus" / "worker-bridge.py"
+    bridge.parent.mkdir(parents=True, exist_ok=True)
+    bridge.write_text("#!/usr/bin/env python3\nprint('ok')\n")
+    bridge.chmod(0o755)
+
+    lock = (
+        isolated_hermes_home
+        / "projects"
+        / "octocat"
+        / "Hello-World"
+        / ".worktrees"
+        / ".lock"
+    )
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_text("")
+
+    registry = {}
+    _stub_cron_runtime(adapter, registry)
+    try:
+        rc = adapter._cli_doctor()
+    finally:
+        _runtime.reset_dispatcher()
+    assert rc == 1

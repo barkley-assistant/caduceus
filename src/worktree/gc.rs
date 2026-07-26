@@ -186,14 +186,16 @@ pub async fn gc(config: &Config, older_than_days: u64, dry_run: bool) -> Caduceu
 /// just the path and the branch (the porcelain format
 /// contains more keys, but those are enough for GC).
 #[derive(Debug, Clone)]
-struct WorktreeListEntry {
-    path: PathBuf,
-    branch: String,
+pub(crate) struct WorktreeListEntry {
+    pub(crate) path: PathBuf,
+    pub(crate) branch: String,
 }
 
 /// Read `git worktree list --porcelain` for *main_path* and
 /// return each entry's path and branch.
-async fn list_worktrees_porcelain(main_path: &Path) -> CaduceusResult<Vec<WorktreeListEntry>> {
+pub(crate) async fn list_worktrees_porcelain(
+    main_path: &Path,
+) -> CaduceusResult<Vec<WorktreeListEntry>> {
     let runner = build_runner();
     let shim_cfg = runner_inner_cfg();
     let output = runner_run_in_std(
