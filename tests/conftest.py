@@ -17,6 +17,25 @@ TESTS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = TESTS_DIR.parent
 
 
+def _register_caduceus_package() -> None:
+    """Ensure ``import caduceus`` resolves from the repository root.
+
+    The checkout directory may not be named ``caduceus`` (e.g. a git
+    worktree), so pytest needs a namespace-style package entry that points
+    at ``<repo>/`` for ``from caduceus import _runtime`` imports during test
+    collection. The ``adapter`` fixture later loads the real plugin copy.
+    """
+    import types
+
+    pkg = types.ModuleType("caduceus")
+    pkg.__package__ = "caduceus"
+    pkg.__path__ = [str(REPO_ROOT)]  # type: ignore[attr-defined]
+    sys.modules.setdefault("caduceus", pkg)
+
+
+_register_caduceus_package()
+
+
 @pytest.fixture(scope="session")
 def repo_root() -> Path:
     """Absolute path to the Caduceus repository root."""
