@@ -4,7 +4,7 @@
 //! is documented in `CONTRACTS.md` under "CLI contract". This file holds the
 //! CLI parser and the entry-point function. Implementation of the
 //! individual subcommand bodies lives in the relevant module; `caduceus run`
-//! ultimately delegates to the orchestration tick defined in phase 7.
+//! ultimately delegates to `caduceus::tick::run_blocking`.
 
 use std::ffi::OsString;
 
@@ -113,10 +113,6 @@ pub enum QueueAction {
 }
 
 /// Drive the CLI from `main`.
-///
-/// Subcommand bodies are filled in by their respective phase gates; this
-/// stub returns `Ok(())` so the compile/fmt/clippy gates for Task 0.1 hold
-/// without prematurely committing the orchestration loop body.
 ///
 /// A bare `caduceus` invocation is rewritten to `caduceus run` before
 /// Clap parsing. The rewrite uses `args_os()` per `CONTRACTS.md`,
