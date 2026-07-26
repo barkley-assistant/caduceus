@@ -53,6 +53,7 @@ wiremock = "0.6"
 assert_fs = "1"
 predicates = "3"
 serial_test = "3"
+temp-env = "0.3"
 
 [profile.release]
 lto = "thin"
@@ -378,6 +379,10 @@ path = "tests/github/failure_investigation_test.rs"
 [[test]]
 name = "github_client_test"
 path = "tests/github/github_client_test.rs"
+
+[[test]]
+name = "token_resolution_test"
+path = "tests/github/token_resolution_test.rs"
 
 [[test]]
 name = "issue_close_test"
