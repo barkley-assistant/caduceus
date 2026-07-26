@@ -28,6 +28,7 @@ plugin compatibility contract in ``planning/caduceus-v0.1/CONTRACTS.md``:
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import shlex
@@ -682,6 +683,93 @@ def _doctor_check_hermes_home() -> _DoctorFinding:
     )
 
 
+def _doctor_check_worktree_lock(ctx: Any) -> _DoctorFinding:
+    """Detect leftover .worktrees/.lock files via non-blocking flock probe.
+
+    Scans ``<hermes_home>/projects/*/*/.worktrees/.lock`` and attempts a
+    non-blocking exclusive flock. Stale (acquirable) locks are reported as a
+    daemon defect; held locks (EWOULDBLOCK) are expected while a daemon tick
+    is running. Missing locks are clean.
+
+    Limitation: this check only inspects the default ``projects`` layout.
+    Non-default ``workdir_base`` values configured in the daemon rely on the
+    Rust-side tolerance filter as the load-bearing fallback.
+    """
+    del ctx  # ctx is not needed for this filesystem scan
+    workdir_base = Path(_hermes_home()) / "projects"
+    if not workdir_base.is_dir():
+        return _DoctorFinding(
+            category="daemon-defect",
+            status="ok",
+            detail=f"workdir_base {workdir_base} not present (no lock to check)",
+            next_action="",
+            internal_detail="",
+        )
+
+    stale: list[Path] = []
+    held: list[Path] = []
+    for owner_dir in workdir_base.iterdir():
+        if not owner_dir.is_dir():
+            continue
+        for repo_dir in owner_dir.iterdir():
+            if not repo_dir.is_dir():
+                continue
+            lock = repo_dir / ".worktrees" / ".lock"
+            if not lock.is_file():
+                continue
+            try:
+                fd = os.open(str(lock), os.O_RDWR)
+            except FileNotFoundError:
+                continue
+            except OSError:
+                stale.append(lock)
+                continue
+            try:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    held.append(lock)
+                else:
+                    stale.append(lock)
+            finally:
+                os.close(fd)
+
+    if not stale and not held:
+        return _DoctorFinding(
+            category="daemon-defect",
+            status="ok",
+            detail=f"no stale .worktrees/.lock files in {workdir_base}",
+            next_action="",
+            internal_detail=f"workdir_base={workdir_base}",
+        )
+    if stale:
+        return _DoctorFinding(
+            category="daemon-defect",
+            status="fail",
+            detail=(
+                f"stale .worktrees/.lock at {stale[0]} "
+                f"(no Caduceus daemon holds the flock)"
+            ),
+            next_action=(
+                f"remove {stale[0]} with `rm` if no Caduceus daemon is currently running, "
+                f"or restart the daemon so the next tick can clean it up"
+            ),
+            internal_detail=(
+                f"workdir_base={workdir_base}; "
+                f"stale_count={len(stale)} held_count={len(held)}"
+            ),
+        )
+    return _DoctorFinding(
+        category="daemon-defect",
+        status="ok",
+        detail=(
+            f"{len(held)} .worktrees/.lock file(s) currently held by the daemon"
+        ),
+        next_action="",
+        internal_detail=f"workdir_base={workdir_base}; held={held}",
+    )
+
+
 def _cli_doctor(verbose: bool = False) -> int:
     """Run all doctor checks and print a structured report (AC-06/07/08/11).
 
@@ -706,6 +794,7 @@ def _cli_doctor(verbose: bool = False) -> int:
         ("Bridge Harness", _doctor_check_bridge_harness()),
         ("Provider Secret", _doctor_check_provider_secret()),
         ("Cron Capability", _doctor_check_cron_capability(ctx=None)),
+        ("Worktree Lock", _doctor_check_worktree_lock(ctx=None)),
         ("Hermes Home", _doctor_check_hermes_home()),
     ]
 

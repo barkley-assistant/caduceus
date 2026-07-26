@@ -24,12 +24,19 @@
 #![allow(unused_variables)]
 
 use std::fs;
+use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+use tokio::runtime::Runtime;
 
 use caduceus::config::Config;
 use caduceus::issue::IssueKey;
 use caduceus::worktree::{create as create_worktree, GitRunner, RepositoryInfo, Worktree};
+
+/// Serialises the two .lock-env-var tests so the global
+/// `_CADUCEUS_TEST_PANIC_IN_CREATE_LOCKED` flag cannot leak between them.
+static LOCK_TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Unique tempdir per call so parallel test invocations don't
 /// trample each other.
@@ -455,6 +462,10 @@ async fn create_surfaces_precise_error_on_fetch_failure() {
         !probe.status.success(),
         "create must NOT have created {branch_ref}"
     );
+    assert!(
+        !dest.join(".worktrees").join(".lock").exists(),
+        ".worktrees/.lock must be removed on fetch failure"
+    );
 }
 
 // Collision (path / branch owned by a foreign run id)
@@ -486,6 +497,10 @@ async fn create_returns_collision_when_path_owned_by_foreign_run_id() {
     assert!(
         text.contains("collision") || text.contains("already exists"),
         "got: {text}"
+    );
+    assert!(
+        !dest.join(".worktrees").join(".lock").exists(),
+        ".worktrees/.lock must be removed after path collision error"
     );
 }
 
@@ -672,6 +687,77 @@ async fn create_leaves_parent_main_checkout_unchanged() {
     assert!(
         offending.is_empty(),
         "parent checkout had unexpected changes after create: {offending:?}"
+    );
+    assert!(
+        !dest.join(".worktrees").join(".lock").exists(),
+        ".worktrees/.lock must be removed after successful create"
+    );
+}
+
+#[test]
+fn leftover_lock_is_removed_on_normal_exit() {
+    let _guard = LOCK_TEST_MUTEX.lock().unwrap();
+    let owner = "octocat";
+    let repo = "Hello-World";
+    let root = tempdir("lock-removed-normal");
+    let bare = root.join("remote.git");
+    init_bare_repo(&bare);
+    let workdir = root.join("workdirs");
+    fs::create_dir_all(&workdir).unwrap();
+    let dest = workdir.join(owner).join(repo);
+    fs::create_dir_all(dest.parent().unwrap()).unwrap();
+    clone_into(&bare, &dest);
+
+    let cfg = config_for(&root, "https://api.github.com");
+    let runner = GitRunner::new(&cfg);
+    let info = info_for(&dest, "main");
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        create_worktree(&cfg, &runner, &info, &key(owner, repo, 99), HAPPY_RUN_ID)
+            .await
+            .expect("create should succeed");
+    });
+
+    assert!(
+        !dest.join(".worktrees").join(".lock").exists(),
+        ".worktrees/.lock must be removed on normal exit"
+    );
+}
+
+#[test]
+fn leftover_lock_is_removed_on_panic() {
+    let _guard = LOCK_TEST_MUTEX.lock().unwrap();
+    let owner = "octocat";
+    let repo = "Hello-World";
+    let root = tempdir("lock-removed-panic");
+    let bare = root.join("remote.git");
+    init_bare_repo(&bare);
+    let workdir = root.join("workdirs");
+    fs::create_dir_all(&workdir).unwrap();
+    let dest = workdir.join(owner).join(repo);
+    fs::create_dir_all(dest.parent().unwrap()).unwrap();
+    clone_into(&bare, &dest);
+
+    let cfg = config_for(&root, "https://api.github.com");
+    let runner = GitRunner::new(&cfg);
+    let info = info_for(&dest, "main");
+    let issue_key = key(owner, repo, 99);
+    let lock_path = dest.join(".worktrees").join(".lock");
+
+    let rt = Runtime::new().unwrap();
+    let outcome = std::panic::catch_unwind(AssertUnwindSafe(move || {
+        rt.block_on(async {
+            std::env::set_var("_CADUCEUS_TEST_PANIC_IN_CREATE_LOCKED", "1");
+            let _ = create_worktree(&cfg, &runner, &info, &issue_key, HAPPY_RUN_ID).await;
+            std::env::remove_var("_CADUCEUS_TEST_PANIC_IN_CREATE_LOCKED");
+        });
+    }));
+
+    std::env::remove_var("_CADUCEUS_TEST_PANIC_IN_CREATE_LOCKED");
+    assert!(outcome.is_err(), "expected a panic during create_worktree");
+    assert!(
+        !lock_path.exists(),
+        ".worktrees/.lock must be removed after panic"
     );
 }
 

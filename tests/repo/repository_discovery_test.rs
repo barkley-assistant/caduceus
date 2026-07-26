@@ -426,6 +426,83 @@ async fn find_main_clone_rejects_dirty_main_checkout() {
 }
 
 #[tokio::test]
+async fn find_main_clone_tolerates_empty_lock_with_no_registered_worktrees() {
+    let root = tempdir("lock-empty-no-worktrees");
+    let workdir = root.join("workdirs");
+    fs::create_dir_all(&workdir).unwrap();
+    let dest = workdir.join("octocat").join("Hello-World");
+    fs::create_dir_all(&dest).unwrap();
+    init_working_repo(&dest, "https://github.com/octocat/Hello-World.git");
+
+    let lock = dest.join(".worktrees").join(".lock");
+    fs::create_dir_all(lock.parent().unwrap()).unwrap();
+    fs::write(&lock, "").unwrap();
+    assert_eq!(lock.metadata().unwrap().len(), 0);
+
+    let cfg = config_for(&root, "https://api.github.com");
+    let runner = GitRunner::new(&cfg);
+    let info = find_main_clone(&cfg, &runner, &key("octocat", "Hello-World", 1))
+        .await
+        .expect("discovery should tolerate empty .worktrees/.lock");
+    assert_eq!(info.path, dest);
+}
+
+#[tokio::test]
+async fn find_main_clone_rejects_lock_when_a_worktree_subdir_is_registered() {
+    let root = tempdir("lock-with-registered-worktree");
+    let workdir = root.join("workdirs");
+    fs::create_dir_all(&workdir).unwrap();
+    let dest = workdir.join("octocat").join("Hello-World");
+    fs::create_dir_all(&dest).unwrap();
+    init_working_repo(&dest, "https://github.com/octocat/Hello-World.git");
+
+    let lock = dest.join(".worktrees").join(".lock");
+    fs::create_dir_all(lock.parent().unwrap()).unwrap();
+    fs::write(&lock, "").unwrap();
+
+    let worktree_dir = dest.join(".worktrees").join("registered-run");
+    fs::create_dir_all(&worktree_dir).unwrap();
+    run_command(Command::new("git").current_dir(&dest).args([
+        "worktree",
+        "add",
+        "-b",
+        "registered-branch",
+        worktree_dir.to_str().unwrap(),
+    ]));
+
+    let cfg = config_for(&root, "https://api.github.com");
+    let runner = GitRunner::new(&cfg);
+    let err = find_main_clone(&cfg, &runner, &key("octocat", "Hello-World", 1))
+        .await
+        .unwrap_err();
+    let text = format!("{err:?}");
+    assert!(text.contains("dirty"), "got: {text}");
+}
+
+#[tokio::test]
+async fn find_main_clone_rejects_nonempty_lock() {
+    let root = tempdir("lock-nonempty");
+    let workdir = root.join("workdirs");
+    fs::create_dir_all(&workdir).unwrap();
+    let dest = workdir.join("octocat").join("Hello-World");
+    fs::create_dir_all(&dest).unwrap();
+    init_working_repo(&dest, "https://github.com/octocat/Hello-World.git");
+
+    let lock = dest.join(".worktrees").join(".lock");
+    fs::create_dir_all(lock.parent().unwrap()).unwrap();
+    fs::write(&lock, "hold").unwrap();
+    assert!(lock.metadata().unwrap().len() > 0);
+
+    let cfg = config_for(&root, "https://api.github.com");
+    let runner = GitRunner::new(&cfg);
+    let err = find_main_clone(&cfg, &runner, &key("octocat", "Hello-World", 1))
+        .await
+        .unwrap_err();
+    let text = format!("{err:?}");
+    assert!(text.contains("dirty"), "got: {text}");
+}
+
+#[tokio::test]
 async fn find_main_clone_succeeds_when_workdir_base_path_contains_spaces() {
     let root = tempdir("path-with-spaces");
     let workdir = root.join("path with spaces");
