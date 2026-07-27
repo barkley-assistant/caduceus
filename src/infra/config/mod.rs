@@ -145,8 +145,8 @@ pub struct Config {
     pub repo_storage_root: PathBuf,
     /// Which executor mode the daemon uses to dispatch workers.
     /// Default [`crate::executor::ExecutorKind::TrustedHost`].
-    /// `Oci` parses in config and is rejected at runtime by the
-    /// `OciExecutor` stub (Task 6.2 unblocks the full implementation).
+    /// `Oci` parses in config and is rejected at runtime when no OCI
+    /// executor is available.
     pub executor_mode: crate::executor::ExecutorKind,
     /// Operator acknowledgement of reduced containment. Required `true`
     /// when `executor_mode == TrustedHost` — the daemon refuses to
@@ -155,9 +155,7 @@ pub struct Config {
     /// `ReducedContainmentNotAcknowledged` before any subprocess spawns.
     pub reduced_containment_acknowledged: bool,
 
-    // -----------------------------------------------------------------------
-    // OCI executor fields (Task 6.2)
-    // -----------------------------------------------------------------------
+    // OCI executor fields
     /// Path to the OCI CLI binary (docker or podman). Default "docker".
     pub oci_cli: PathBuf,
     /// Image digest (sha256:...) pinned for the OCI executor.
@@ -171,9 +169,7 @@ pub struct Config {
     /// Total timeout in seconds for orphan reconciliation. Default 60.
     pub oci_reconcile_timeout_seconds: u64,
 
-    // -----------------------------------------------------------------------
-    // Isolation policy fields (Task 6.3)
-    // -----------------------------------------------------------------------
+    // Isolation policy fields
     /// Named network profiles for OCI executor isolation.
     /// Empty by default — no network access unless a profile is declared.
     pub network_profiles: HashMap<String, crate::executor::network::NetworkProfile>,
@@ -239,7 +235,7 @@ pub struct RawConfig {
     pub oci_kill_timeout_seconds: Option<u64>,
     pub oci_reconcile_timeout_seconds: Option<u64>,
 
-    // Isolation policy fields (Task 6.3)
+    // Isolation policy fields
     pub network_profiles: Option<HashMap<String, crate::executor::network::NetworkProfile>>,
     pub secret_grants: Option<Vec<String>>,
     pub upgrade_choice: Option<crate::executor::upgrade::UpgradeChoice>,
@@ -372,20 +368,20 @@ workdir_base: "{}"
         workdir_base.display(),
     );
 
-    // --- Determine existing file state ---
+    // Determine existing file state.
     let existing_mode = std::fs::metadata(&config_path)
         .ok()
         .map(|m| m.permissions().mode() & 0o777);
     let preserve_hermes_shape = config_path.is_file();
 
-    // --- Write temp file in the same directory ---
+    // Write temp file in the same directory.
     let tmp_path = config_path.with_file_name("config.yaml.tmp");
     let mut _guard = TmpGuard(tmp_path.clone());
 
     // Remove any leftover tmp from a previous interrupted run.
     let _ = std::fs::remove_file(&tmp_path);
 
-    // --- Build final content ---
+    // Build final content.
     let final_content: String = if preserve_hermes_shape {
         // Read existing file and merge: if it's a Hermes-shaped file,
         // add/replace the caduceus: section.
@@ -417,7 +413,7 @@ workdir_base: "{}"
         yaml_body
     };
 
-    // --- Write atomically ---
+    // Write atomically.
     use std::io::Write;
     let mut f = std::fs::File::create(&tmp_path)
         .map_err(|e| CaduceusError::Config(format!("failed to create temp config: {e}")))?;
@@ -428,14 +424,14 @@ workdir_base: "{}"
         .map_err(|e| CaduceusError::Config(format!("failed to set temp config mode: {e}")))?;
     drop(f);
 
-    // --- Rename ---
+    // Rename.
     std::fs::rename(&tmp_path, &config_path)
         .map_err(|e| CaduceusError::Config(format!("failed to rename config: {e}")))?;
 
     // Release the guard since rename succeeded.
     let _ = std::mem::take(&mut _guard.0);
 
-    // --- Restore original mode (never widen) ---
+    // Restore original mode (never widen).
     let final_mode = if let Some(orig) = existing_mode {
         let narrowed = std::cmp::min(orig, 0o600);
         if narrowed < orig {
@@ -604,9 +600,8 @@ impl Config {
 
         // Executor mode and reduced-containment opt-in. TrustedHost
         // requires explicit acknowledgement; Oci is allowed in config
-        // and rejected at runtime by the OciExecutor stub (Task 6.2
-        // unblocks the full implementation). The validation runs
-        // BEFORE any subprocess is spawned.
+        // and rejected at runtime when no OCI executor is available.
+        // The validation runs BEFORE any subprocess is spawned.
         let executor_mode = raw.executor_mode.unwrap_or(DEFAULT_EXECUTOR_MODE);
         let reduced_containment_acknowledged =
             raw.reduced_containment_acknowledged.unwrap_or(false);
@@ -670,7 +665,7 @@ impl Config {
             errors.push("oci_reconcile_timeout_seconds must be > 0".to_string());
         }
 
-        // Isolation policy fields (Task 6.3). The network_profiles
+        // Isolation policy fields. The network_profiles
         // map and secret_grants list default to empty (default-deny).
         // The upgrade_choice is None by default; the daemon enforces
         // a persisted choice at startup when executor_mode == Oci.
@@ -715,7 +710,14 @@ impl Config {
             comment_ignore_patterns,
             comment_forbidden_strings,
             worker_env_allowlist,
-            github_token: raw.github_token.and_then(|s| non_empty(Some(&s))),
+            github_token: raw.github_token.and_then(|s| {
+                let trimmed = s.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            }),
             api_base,
             dry_run,
             worker_parallelism: raw.worker_parallelism.unwrap_or(DEFAULT_WORKER_PARALLELISM),
@@ -1074,8 +1076,6 @@ fn resolve_if_missing_with_runner(
     tracing::info!(source = ?resolved.source, "GitHub token resolved");
     Ok(())
 }
-
-// ---------------------------------------------------------------------------
 
 // Submodule declarations and re-exports. The public surface keeps
 // `Config`, `RawConfig`, `OciPullPolicy`, etc. at `crate::infra::config::*`.

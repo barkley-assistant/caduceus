@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 use crate::infra::error::{CaduceusError, CaduceusResult};
 
 // Token resolution
-// ---------------------------------------------------------------------------
 
 /// Indicate which resolution path produced the token. Used in tests
 /// and in the daemon's structured logs (without the secret itself).
@@ -165,11 +164,11 @@ pub fn resolve_token_chain(
 
 /// Return ``Some(token)`` when *token* is non-empty after trimming and
 /// contains at least one non-whitespace character.
-pub(crate) fn is_token_usable(token: &str) -> bool {
+fn is_token_usable(token: &str) -> bool {
     !token.trim().is_empty()
 }
 
-pub(crate) fn non_empty(s: Option<&str>) -> Option<String> {
+fn non_empty(s: Option<&str>) -> Option<String> {
     s.map(str::trim)
         .filter(|t| !t.is_empty())
         .map(str::to_string)

@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 use crate::infra::error::{CaduceusError, CaduceusResult};
 
 // Path / interpolation helpers
-// ---------------------------------------------------------------------------
 
 /// Expand a single leading ``~`` to the user's home directory. No
 /// other shell expansion is performed (CONTRACTS.md "Configuration").
@@ -99,7 +98,7 @@ pub(crate) fn default_worker_command(ctx: &LoadContext) -> Option<Vec<String>> {
             bridge.to_string_lossy().to_string(),
         ]);
     }
-    // Priority 2: Hermes-primary install — user-owned bridge (AC-04).
+    // Priority 2: Hermes-primary install — user-owned bridge.
     if let Some(ref hermes_home) = ctx.hermes_home {
         let bridge = hermes_home.join("caduceus").join("worker-bridge.py");
         return Some(vec![
@@ -141,9 +140,7 @@ pub(crate) fn expand_worker_command(
     Ok(out)
 }
 
-// ---------------------------------------------------------------------------
 // Validators
-// ---------------------------------------------------------------------------
 
 /// Validate a secret grant name: must match `[a-z][a-z0-9-]{0,63}`.
 pub(crate) fn is_valid_secret_grant_name(name: &str) -> bool {
