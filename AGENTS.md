@@ -44,8 +44,11 @@ Run before pushing:
 cargo fmt --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked --all-targets
-pytest -q tests/plugin/ tests/integration/bridge_test.py
+uv run pytest -q tests/plugin/ tests/integration/bridge_test.py
 ```
+
+Run `uv sync` once after cloning to install the locked Python dependencies
+(Python 3.12, managed by the committed `uv.lock`).
 
 Use `rustfmt` and Ruff defaults. Keep Markdown links relative, tag fenced code
 blocks, and soft-wrap prose at 80 characters.
