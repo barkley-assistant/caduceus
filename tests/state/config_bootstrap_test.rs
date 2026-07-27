@@ -289,140 +289,149 @@ fn readiness_diagnostics_bridge_present() {
 
 #[test]
 fn setup_config_creates_mode_0600() {
-    let root = tempdir("ac06-create");
-    let hermes_home = root.join("hermes");
-    std::fs::create_dir_all(&hermes_home).expect("create hermes_home");
+    with_env(&[("CADUCEUS_CONFIG", None)], || {
+        let root = tempdir("ac06-create");
+        let hermes_home = root.join("hermes");
+        std::fs::create_dir_all(&hermes_home).expect("create hermes_home");
 
-    let report =
-        caduceus::config::setup_config(&hermes_home, false).expect("setup_config creates config");
-    assert_eq!(report.action, SetupAction::Created, "should be Created");
-    assert!(report.path.is_file(), "config file should exist");
+        let report = caduceus::config::setup_config(&hermes_home, false)
+            .expect("setup_config creates config");
+        assert_eq!(report.action, SetupAction::Created, "should be Created");
+        assert!(report.path.is_file(), "config file should exist");
 
-    // Verify mode via permissions
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let meta = std::fs::metadata(&report.path).expect("metadata");
-        let mode = meta.permissions().mode() & 0o777;
-        // Mode should be 0o600 (or narrower if umask affected it)
-        assert!(mode <= 0o600, "mode should be <= 0o600, got: {mode:o}");
-    }
+        // Verify mode via permissions
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let meta = std::fs::metadata(&report.path).expect("metadata");
+            let mode = meta.permissions().mode() & 0o777;
+            // Mode should be 0o600 (or narrower if umask affected it)
+            assert!(mode <= 0o600, "mode should be <= 0o600, got: {mode:o}");
+        }
 
-    // Verify the file has valid YAML with caduceus config keys
-    let content = std::fs::read_to_string(&report.path).expect("read config");
-    assert!(
-        content.contains("poll_interval_seconds"),
-        "config should contain poll_interval_seconds"
-    );
-    assert!(
-        content.contains("state_dir"),
-        "config should contain state_dir"
-    );
-    assert!(
-        content.contains("workdir_base"),
-        "config should contain workdir_base"
-    );
-    // The first run creates a standalone file (no Hermes shape)
-    assert!(
-        !content.contains("caduceus:"),
-        "standalone config should not have a caduceus: section wrapper"
-    );
+        // Verify the file has valid YAML with caduceus config keys
+        let content = std::fs::read_to_string(&report.path).expect("read config");
+        assert!(
+            content.contains("poll_interval_seconds"),
+            "config should contain poll_interval_seconds"
+        );
+        assert!(
+            content.contains("state_dir"),
+            "config should contain state_dir"
+        );
+        assert!(
+            content.contains("workdir_base"),
+            "config should contain workdir_base"
+        );
+        // The first run creates a standalone file (no Hermes shape)
+        assert!(
+            !content.contains("caduceus:"),
+            "standalone config should not have a caduceus: section wrapper"
+        );
+    });
 }
 
 #[test]
 fn setup_config_dry_run_does_not_write() {
-    let root = tempdir("ac06-dry-run");
-    let hermes_home = root.join("hermes");
-    std::fs::create_dir_all(&hermes_home).expect("create hermes_home");
+    with_env(&[("CADUCEUS_CONFIG", None)], || {
+        let root = tempdir("ac06-dry-run");
+        let hermes_home = root.join("hermes");
+        std::fs::create_dir_all(&hermes_home).expect("create hermes_home");
 
-    let report = caduceus::config::setup_config(&hermes_home, true).expect("setup_config dry-run");
-    assert_eq!(report.action, SetupAction::Skipped, "should be Skipped");
-    // The file should NOT exist after a dry-run
-    assert!(
-        !report.path.is_file(),
-        "config file should not exist after dry-run"
-    );
+        let report =
+            caduceus::config::setup_config(&hermes_home, true).expect("setup_config dry-run");
+        assert_eq!(report.action, SetupAction::Skipped, "should be Skipped");
+        // The file should NOT exist after a dry-run
+        assert!(
+            !report.path.is_file(),
+            "config file should not exist after dry-run"
+        );
+    });
 }
 
 #[test]
 fn setup_config_preserves_existing_mode_and_yaml() {
-    let root = tempdir("ac07-preserve");
-    let hermes_home = root.join("hermes");
-    std::fs::create_dir_all(&hermes_home).expect("create hermes_home");
+    with_env(&[("CADUCEUS_CONFIG", None)], || {
+        let root = tempdir("ac07-preserve");
+        let hermes_home = root.join("hermes");
+        std::fs::create_dir_all(&hermes_home).expect("create hermes_home");
 
-    // Create an existing Hermes-shaped config with a known mode
-    let config_path = hermes_home.join("config.yaml");
-    write(
-        &config_path,
-        r#"
-        model:
-          default: hermes-model
-        "#,
-    );
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o640))
-            .expect("set mode 0640");
-    }
+        // Create an existing Hermes-shaped config with a known mode
+        let config_path = hermes_home.join("config.yaml");
+        write(
+            &config_path,
+            r#"
+            model:
+              default: hermes-model
+            "#,
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o640))
+                .expect("set mode 0640");
+        }
 
-    let report =
-        caduceus::config::setup_config(&hermes_home, false).expect("setup_config updates existing");
-    assert_eq!(report.action, SetupAction::Updated, "should be Updated");
+        let report = caduceus::config::setup_config(&hermes_home, false)
+            .expect("setup_config updates existing");
+        assert_eq!(report.action, SetupAction::Updated, "should be Updated");
 
-    // Verify the file now has a caduceus: section
-    let content = std::fs::read_to_string(&report.path).expect("read config");
-    assert!(
-        content.contains("caduceus:"),
-        "merged config should have caduceus: section"
-    );
-    assert!(
-        content.contains("hermes-model"),
-        "merged config should preserve original hermes keys"
-    );
-    assert!(
-        content.contains("poll_interval_seconds"),
-        "merged config should have caduceus config keys"
-    );
+        // Verify the file now has a caduceus: section
+        let content = std::fs::read_to_string(&report.path).expect("read config");
+        assert!(
+            content.contains("caduceus:"),
+            "merged config should have caduceus: section"
+        );
+        assert!(
+            content.contains("hermes-model"),
+            "merged config should preserve original hermes keys"
+        );
+        assert!(
+            content.contains("poll_interval_seconds"),
+            "merged config should have caduceus config keys"
+        );
 
-    // Verify mode was preserved (not widened above 0600)
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let meta = std::fs::metadata(&report.path).expect("metadata");
-        let mode = meta.permissions().mode() & 0o777;
-        assert!(mode <= 0o640, "mode should be <= 0o640, got: {mode:o}");
-    }
+        // Verify mode was preserved (not widened above 0600)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let meta = std::fs::metadata(&report.path).expect("metadata");
+            let mode = meta.permissions().mode() & 0o777;
+            assert!(mode <= 0o640, "mode should be <= 0o640, got: {mode:o}");
+        }
+    });
 }
 
 #[test]
 fn setup_config_interrupt_before_rename_is_retryable() {
-    let root = tempdir("ac08-retry");
-    let hermes_home = root.join("hermes");
-    std::fs::create_dir_all(&hermes_home).expect("create hermes_home");
+    with_env(&[("CADUCEUS_CONFIG", None)], || {
+        let root = tempdir("ac08-retry");
+        let hermes_home = root.join("hermes");
+        std::fs::create_dir_all(&hermes_home).expect("create hermes_home");
 
-    // Simulate a leftover .tmp file from a previous interrupted run
-    let tmp_path = hermes_home.join("config.yaml.tmp");
-    write(&tmp_path, "leftover garbage\n");
+        // Simulate a leftover .tmp file from a previous interrupted run
+        let tmp_path = hermes_home.join("config.yaml.tmp");
+        write(&tmp_path, "leftover garbage\n");
 
-    // First run should succeed and clean up the tmp file
-    let report = caduceus::config::setup_config(&hermes_home, false)
-        .expect("first setup_config succeeds despite leftover tmp");
-    assert_eq!(report.action, SetupAction::Created, "should be Created");
-    assert!(report.path.is_file(), "config file should exist");
+        // First run should succeed and clean up the tmp file
+        let report = caduceus::config::setup_config(&hermes_home, false)
+            .expect("first setup_config succeeds despite leftover tmp");
+        assert_eq!(report.action, SetupAction::Created, "should be Created");
+        assert!(report.path.is_file(), "config file should exist");
 
-    // The tmp file should be gone
-    assert!(!tmp_path.is_file(), "leftover tmp file should be removed");
+        // The tmp file should be gone
+        assert!(!tmp_path.is_file(), "leftover tmp file should be removed");
 
-    // Second run should succeed (idempotent)
-    let report2 =
-        caduceus::config::setup_config(&hermes_home, false).expect("second setup_config succeeds");
-    assert_eq!(
-        report2.action,
-        SetupAction::Updated,
-        "second run should Update"
-    );
-    assert!(report2.path.is_file(), "config file should still exist");
+        // Second run should succeed (idempotent)
+        let report2 = caduceus::config::setup_config(&hermes_home, false)
+            .expect("second setup_config succeeds");
+        assert_eq!(
+            report2.action,
+            SetupAction::Updated,
+            "second run should Update"
+        );
+        assert!(report2.path.is_file(), "config file should still exist");
+    });
 }
 
 #[test]
