@@ -2,10 +2,10 @@
 //! re-exported from `lib.rs`. Validation rules live in this module per
 //! `CONTRACTS.md` "Issue identity and queue schema".
 //!
-//! The detail fetcher (Task 2.6) issues three concurrent GitHub
-//! requests — the issue, its comments, and its timeline — and
-//! cancels the other two on the first error. The output is the
-//! typed `IssueDetail` the worker uses to build its prompt.
+//! The detail fetcher issues three concurrent GitHub requests — the
+//! issue, its comments, and its timeline — and cancels the other two
+//! on the first error. The output is the typed `IssueDetail` the worker
+//! uses to build its prompt.
 
 use chrono::{DateTime, Utc};
 use futures_util::future::try_join3;

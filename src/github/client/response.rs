@@ -30,8 +30,7 @@ pub struct Response {
     pub final_url: String,
     pub body: Vec<u8>,
     /// Raw response headers (case-insensitive). Used by the
-    /// pagination loop (Link header) and by the rate-limit observer
-    /// (Task 2.4).
+    /// pagination loop (Link header) and by the rate-limit observer.
     pub headers: HeaderMap,
     /// True when the body was reused from the cache after a 304.
     pub from_cache: bool,

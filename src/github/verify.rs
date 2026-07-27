@@ -1,12 +1,11 @@
-//! Verify selected trigger label immediately before work. Task 2.5 owns
-//! the body.
+//! Verify selected trigger label immediately before work.
 //!
 //! The verifier re-fetches the issue via the typed client and decides
-//! whether the worker may proceed. The function is the documented
-//! "second pass" that catches the case where the issue was edited
-//! between the original poll and the worker launch — the label may
-//! have been removed, the issue may have been closed, or a 301
-//! transfer to a different repository may have changed ownership.
+//! whether the worker may proceed. This "second pass" catches the
+//! case where the issue was edited between the original poll and the
+//! worker launch — the label may have been removed, the issue may have
+//! been closed, or a 301 transfer to a different repository may have
+//! changed ownership.
 
 use serde::Deserialize;
 

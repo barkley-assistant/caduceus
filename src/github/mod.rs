@@ -1,8 +1,6 @@
 //! GitHub API surface — HTTP client, issue model, polling, and
 //! second-pass label verification.
 //!
-//! Module shape after the v0.1 → v1.0 restructuring (issue #13):
-//!
 //! - [`client`] — the HTTP client, ETag cache, and rate-limit parsing.
 //! - [`issue`] — `IssueKey`, `IssueDetail`, and the fetch helper.
 //! - [`poll`] — repository discovery, label polling, merge outcomes.
