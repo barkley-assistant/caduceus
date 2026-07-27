@@ -103,23 +103,19 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v4
-      - name: install Python and pytest
-        run: |
-          set -euo pipefail
-          sudo apt-get update -y
-          sudo apt-get install -y python3 python3-pip python3-yaml
-          # Pin pytest to a known-good version. The system's pre-installed
-          # pytest may be a different major version; we want exactly the
-          # version we tested against locally (9.0.2) so behavior is
-          # identical between local and CI runs.
-          python3 -m pip install --break-system-packages --quiet pytest==9.0.2
+      - name: install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.x"
+      - name: sync locked Python dependencies
+        run: uv sync --frozen --group test
       - name: run the canonical Python gate
         run: |
           set -euo pipefail
           # Write a JUnit XML next to the runner so the artifact step
           # below can upload it. Without --junit-xml the runner has
           # no test report to surface in the Actions UI.
-          python3 -m pytest -q \
+          uv run pytest -q \
             --junit-xml=pytest-junit.xml \
             tests/plugin/ \
             tests/integration/bridge_test.py

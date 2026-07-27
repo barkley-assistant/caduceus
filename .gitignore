@@ -6,6 +6,9 @@ __pycache__/
 *.pyc
 *.pyo
 
+# uv-managed virtual environment
+.venv/
+
 # OS / editor cruft
 .DS_Store
 planning/*/.progress.lock
