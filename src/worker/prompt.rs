@@ -1,4 +1,4 @@
-//! Canonical prompt file writer. Task 4.4 owns the body.
+//! Canonical worker prompt writer.
 //!
 //! The prompt is delivered to the worker bridge as
 //! `<worktree>/worker-prompt.md`. It carries:
@@ -54,9 +54,9 @@ pub const PROMPT_FILENAME: &str = "worker-prompt.md";
 /// * `issue` — the fetched issue detail.
 /// * `ticket_type` — `Code` or `Investigation`.
 /// * `context_json` — the verbatim `CADUCEUS_CONTEXT_JSON`
-///   document (Task 5.6). The full document is embedded
-///   verbatim under a fenced JSON block; the worker can
-///   parse it directly.
+///   document. The full context JSON is embedded verbatim
+///   under a fenced JSON block; the worker can parse it
+///   directly.
 /// * `branch_name` — the daemon-owned branch the worker is
 ///   expected to leave in place.
 pub fn build_prompt(
@@ -398,9 +398,7 @@ fn ticket_type_label(t: TicketType) -> &'static str {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Self-test (cargo test --lib)
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod inline_tests {

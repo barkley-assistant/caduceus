@@ -15,9 +15,7 @@ use tokio::process::{Child, Command as TokioCommand};
 use crate::github::issue::IssueKey;
 use crate::infra::error::{CaduceusError, CaduceusResult};
 
-// ---------------------------------------------------------------------------
 // Control pipe protocol
-// ---------------------------------------------------------------------------
 
 /// Frame sent between the supervisor and the daemon over the
 /// inherited `stdin`/`stdout` descriptors. The serialisation
@@ -182,9 +180,7 @@ pub fn decode_frame(buf: &[u8]) -> CaduceusResult<(ControlFrame, usize)> {
     };
     Ok((frame, 4 + len))
 }
-// ---------------------------------------------------------------------------
 // Frame I/O over tokio child streams
-// ---------------------------------------------------------------------------
 
 /// Async read a single control frame from `stream`. Returns
 /// `None` on EOF (the supervisor closed the pipe).

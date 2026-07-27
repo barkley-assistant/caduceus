@@ -1,6 +1,6 @@
 //! Stable context JSON. The shape and the serialized form are pinned by
 //! `CONTRACTS.md` under "Worker environment and result" / "build stable
-//! context JSON" (Task 5.6).
+//! context JSON".
 //!
 //! The context document is the worker's authoritative view of the
 //! issue. It carries:
@@ -517,9 +517,7 @@ fn approx_json_array_len<T: Serialize + Clone>(key: &str, items: &[T]) -> Caduce
     Ok(s.len())
 }
 
-// ---------------------------------------------------------------------------
 // Self-test (cargo test --lib)
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod inline_tests {

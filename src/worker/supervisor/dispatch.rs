@@ -15,9 +15,7 @@ use tokio::process::{Child, Command as TokioCommand};
 use crate::github::issue::IssueKey;
 use crate::infra::error::{CaduceusError, CaduceusResult};
 
-// ---------------------------------------------------------------------------
 // Public spawn orchestrator
-// ---------------------------------------------------------------------------
 
 /// Top-level worker supervision entry point used by the
 /// orchestration loop. The implementation here is the
@@ -429,16 +427,14 @@ impl IntoOutcome for CaduceusError {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Self-test (cargo test --lib)
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod inline_tests {
     use super::*;
 
     #[test]
-    pub(crate) fn frame_round_trip() {
+    fn frame_round_trip() {
         let cases = vec![
             ControlFrame::Ready { pgid: 1234 },
             ControlFrame::Done {
@@ -465,7 +461,7 @@ mod inline_tests {
     }
 
     #[test]
-    pub(crate) fn frame_rejects_wrong_version() {
+    fn frame_rejects_wrong_version() {
         let mut bytes = encode_frame(&ControlFrame::Ack).expect("encode");
         // Mangle the version byte.
         bytes[6] = b'9';
@@ -475,7 +471,7 @@ mod inline_tests {
     }
 
     #[test]
-    pub(crate) fn frame_rejects_oversize() {
+    fn frame_rejects_oversize() {
         // Construct a buffer whose first 4 bytes encode a
         // length that exceeds MAX_FRAME_BYTES, then put enough
         // payload after it so the frame *appears* complete —
@@ -491,7 +487,7 @@ mod inline_tests {
     }
 
     #[test]
-    pub(crate) fn heartbeat_round_trip() {
+    fn heartbeat_round_trip() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("hbeat");
         write_heartbeat(&path).expect("write");
@@ -502,7 +498,7 @@ mod inline_tests {
     }
 
     #[test]
-    pub(crate) fn transcript_truncation_appends_marker() {
+    fn transcript_truncation_appends_marker() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("t.log");
         let mut file = open_transcript(&path).expect("open");
@@ -523,7 +519,7 @@ mod inline_tests {
     }
 
     #[test]
-    pub(crate) fn paths_ensure_dirs_creates_secure_layout() {
+    fn paths_ensure_dirs_creates_secure_layout() {
         let dir = tempfile::tempdir().expect("tempdir");
         let paths = WorkerRunPaths::new(dir.path().to_path_buf(), "RUN01".to_string());
         paths.ensure_dirs().expect("ensure_dirs");
@@ -533,7 +529,7 @@ mod inline_tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    pub(crate) fn bounded_writer_new_creates_file() {
+    fn bounded_writer_new_creates_file() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("bw.log");
         let writer = BoundedTranscriptWriter::new(path.clone(), 1024).expect("new");
@@ -549,7 +545,7 @@ mod inline_tests {
     }
 
     #[test]
-    pub(crate) fn bounded_writer_under_limit() {
+    fn bounded_writer_under_limit() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("bw_under.log");
         let mut writer = BoundedTranscriptWriter::new(path.clone(), 1024).expect("new");
@@ -560,7 +556,7 @@ mod inline_tests {
     }
 
     #[test]
-    pub(crate) fn bounded_writer_exact_fit() {
+    fn bounded_writer_exact_fit() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("bw_exact.log");
         let mut writer = BoundedTranscriptWriter::new(path.clone(), 100).expect("new");
@@ -571,7 +567,7 @@ mod inline_tests {
     }
 
     #[test]
-    pub(crate) fn bounded_writer_over_limit_sets_truncated() {
+    fn bounded_writer_over_limit_sets_truncated() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("bw_over.log");
         let mut writer = BoundedTranscriptWriter::new(path.clone(), 50).expect("new");
@@ -588,7 +584,7 @@ mod inline_tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    pub(crate) fn bounded_writer_write_failure() {
+    fn bounded_writer_write_failure() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("bw_fail.log");
         let mut writer = BoundedTranscriptWriter::new(path.clone(), 1024).expect("new");
@@ -612,7 +608,7 @@ mod inline_tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    pub(crate) fn bounded_writer_truncation_takes_precedence() {
+    fn bounded_writer_truncation_takes_precedence() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("bw_prec.log");
         let mut writer = BoundedTranscriptWriter::new(path.clone(), 50).expect("new");
@@ -638,7 +634,7 @@ mod inline_tests {
     }
 
     #[test]
-    pub(crate) fn bounded_writer_max_bytes_zero() {
+    fn bounded_writer_max_bytes_zero() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("bw_zero.log");
         let mut writer = BoundedTranscriptWriter::new(path.clone(), 0).expect("new");
@@ -653,7 +649,7 @@ mod inline_tests {
     // signalling. They are Linux-only because they read /proc/<pid>/stat.
     #[cfg(target_os = "linux")]
     #[test]
-    pub(crate) fn read_proc_starttime_parses_field22() {
+    fn read_proc_starttime_parses_field22() {
         // Deterministic unit check of the field parser: feed a synthetic
         // /proc/<pid>/stat line and confirm field 22 (starttime) is read at
         // after-paren index 19.
@@ -688,7 +684,7 @@ mod inline_tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    pub(crate) fn verify_identity_detects_reuse() {
+    fn verify_identity_detects_reuse() {
         let mut child = std::process::Command::new("sleep")
             .arg("60")
             .spawn()
