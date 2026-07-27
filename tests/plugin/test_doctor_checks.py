@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import fcntl
 import os
+import threading
+import time
 from pathlib import Path
 from typing import Any, Dict
 
@@ -167,3 +170,81 @@ def test_doctor_check_gateway_renamed_to_hermes_home(
     assert isinstance(finding, tuple)
     assert finding.category == "gateway-inactive"
     assert finding.status in ("ok", "fail")
+
+
+
+def test_doctor_check_worktree_lock_no_locks(
+    adapter, isolated_hermes_home: Path
+) -> None:
+    """No .worktrees/.lock files means the check is clean."""
+    finding = adapter._doctor_check_worktree_lock(ctx=None)
+    assert finding.category == "daemon-defect"
+    assert finding.status == "ok"
+    assert "no stale" in finding.detail.lower() or "not present" in finding.detail.lower()
+
+
+
+def test_doctor_check_worktree_lock_stale_lock(
+    adapter, isolated_hermes_home: Path
+) -> None:
+    """An empty, unheld .worktrees/.lock is reported as a stale daemon defect."""
+    lock = (
+        isolated_hermes_home
+        / "projects"
+        / "octocat"
+        / "Hello-World"
+        / ".worktrees"
+        / ".lock"
+    )
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_text("")
+
+    finding = adapter._doctor_check_worktree_lock(ctx=None)
+    assert finding.category == "daemon-defect"
+    assert finding.status == "fail"
+    assert str(lock) in finding.detail
+    assert "stale" in finding.detail.lower()
+
+
+
+def test_doctor_check_worktree_lock_held_lock(
+    adapter, isolated_hermes_home: Path
+) -> None:
+    """A .worktrees/.lock currently held by the daemon is not stale."""
+    lock = (
+        isolated_hermes_home
+        / "projects"
+        / "owner"
+        / "repo"
+        / ".worktrees"
+        / ".lock"
+    )
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_text("")
+
+    acquired = threading.Event()
+    release = threading.Event()
+
+    def _hold_flock() -> None:
+        fd = os.open(str(lock), os.O_RDWR)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            acquired.set()
+            release.wait(timeout=5.0)
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+
+    thread = threading.Thread(target=_hold_flock, daemon=True)
+    thread.start()
+    acquired.wait(timeout=5.0)
+
+    try:
+        finding = adapter._doctor_check_worktree_lock(ctx=None)
+    finally:
+        release.set()
+        thread.join(timeout=5.0)
+
+    assert finding.category == "daemon-defect"
+    assert finding.status == "ok"
+    assert "held" in finding.detail.lower()

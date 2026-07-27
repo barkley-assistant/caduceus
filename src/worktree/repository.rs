@@ -1,5 +1,6 @@
 #![allow(dead_code, unused_imports)]
 use super::*;
+use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
@@ -36,6 +37,31 @@ pub struct RepositoryInfo {
     /// host-validation purposes the host is derived from this
     /// value, not the daemon's `api_base`.
     pub remote_url: String,
+}
+
+/// Return true when *worktrees_dir* contains exactly one entry named
+/// `.lock` and that entry is a zero-byte file. Used by
+/// `find_main_clone` to decide whether the untracked `.worktrees/`
+/// directory is only the daemon's transient lock file.
+fn worktrees_dir_contains_only_empty_lock(worktrees_dir: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(worktrees_dir) else {
+        return false;
+    };
+    let mut found_empty_lock = false;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if name == ".lock" {
+            match entry.metadata() {
+                Ok(meta) if meta.len() == 0 => found_empty_lock = true,
+                _ => return false,
+            }
+        } else {
+            // Any other entry (worktree sub-dir, stray file, etc.)
+            // means the directory is not *just* a transient lock.
+            return false;
+        }
+    }
+    found_empty_lock
 }
 
 /// Discover the local main clone for *key*. The path is
@@ -85,7 +111,53 @@ pub async fn find_main_clone(
     // dirty main checkout (operator visible signal that the
     // branch is mid-edit).
     let porcelain = git_string(runner, &path, "status", &["--porcelain"]).await?;
-    if !porcelain.is_empty() {
+
+    // Defence-in-depth: tolerate a 0-byte .worktrees/.lock that was
+    // left behind when a previous tick aborted, but only when no
+    // daemon-owned worktree sub-dir is currently registered. Any other
+    // untracked/modified file still hard-fails.
+    let worktrees_dir = path.join(".worktrees");
+    let lock_path = worktrees_dir.join(".lock");
+    let registered = crate::worktree::gc::list_worktrees_porcelain(&path).await?;
+    let registered_paths: HashSet<PathBuf> =
+        registered.into_iter().map(|entry| entry.path).collect();
+    let has_registered_worktree = registered_paths
+        .iter()
+        .any(|p| p.strip_prefix(&worktrees_dir).is_ok());
+    let lock_is_empty = std::fs::metadata(&lock_path)
+        .map(|meta| meta.len() == 0)
+        .unwrap_or(false);
+    let tolerated: Vec<&str> = porcelain
+        .lines()
+        .filter(|line| {
+            if line.is_empty() {
+                return false;
+            }
+            let file_path = line.split_once(' ').map(|(_, rest)| rest).unwrap_or("");
+            if file_path.is_empty() {
+                return true;
+            }
+            let resolved = path.join(file_path);
+            // `git status --porcelain` reports an untracked `.worktrees/`
+            // directory when the only thing inside is the transient lock.
+            if resolved == worktrees_dir
+                && worktrees_dir_contains_only_empty_lock(&worktrees_dir)
+                && !has_registered_worktree
+            {
+                return false; // tolerate the directory line
+            }
+            if resolved == lock_path && lock_is_empty && !has_registered_worktree {
+                return false; // tolerate an explicit .lock line
+            }
+            if registered_paths.contains(&resolved) {
+                return false; // registered worktree sub-dirs are not "dirt"
+            }
+            true
+        })
+        .collect();
+    let porcelain = tolerated.join("\n");
+
+    if !porcelain.trim().is_empty() {
         return Err(CaduceusError::Worktree {
             context: "discover",
             stderr: format!(

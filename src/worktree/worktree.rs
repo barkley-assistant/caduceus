@@ -1,7 +1,7 @@
 #![allow(dead_code, unused_imports)]
 use super::*;
 use std::ffi::OsStr;
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -47,7 +47,45 @@ pub struct Worktree {
     pub created_at: DateTime<Utc>,
 }
 
-/// Provision an isolated worktree + branch.
+/// Guard that releases an `fs2` flock and removes the underlying
+/// lock file when it drops. Mirrors the `TmpGuard` pattern in
+/// `src/infra/config/mod.rs` but adds the flock release step.
+struct LockGuard {
+    file: File,
+    path: PathBuf,
+    armed: bool,
+}
+
+impl LockGuard {
+    fn new(file: File, path: PathBuf) -> Self {
+        Self {
+            file,
+            path,
+            armed: true,
+        }
+    }
+
+    /// Suppress the Drop-side cleanup. Currently unused by
+    /// `create()` (the lock file is removed on every exit), but
+    /// kept for future code paths that may want to keep the file.
+    #[allow(dead_code)]
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for LockGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            // Release the flock first so a concurrent `create()`
+            // can race for it; then remove the inode we created.
+            let _ = FileExt::unlock(&self.file);
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
+/// Provision an isolated worktree + branch. The flow is:
 ///
 /// 1. Validate the run id (no path traversal, no shell
 ///    metacharacters). Run id must match `[A-Za-z0-9_-]{1,64}`.
@@ -123,19 +161,21 @@ pub async fn create(
             stderr: format!("open worktree lock {}: {err}", lock_path.display()),
         })?;
     if let Err(err) = lock_file.lock_exclusive() {
+        // The file was created by `OpenOptions::open` even when
+        // the flock itself could not be acquired. Remove it so a
+        // subsequent `git status --porcelain` does not see a stale
+        // untracked file.
+        let _ = fs::remove_file(&lock_path);
         return Err(CaduceusError::Worktree {
             context: "create",
             stderr: format!("lock worktree-home {}: {err}", lock_path.display()),
         });
     }
 
+    let _guard = LockGuard::new(lock_file, lock_path.clone());
+
     let result = create_locked(cfg, runner, repo, key, run_id, &branch_name, &worktree_path).await;
 
-    // Release the flock regardless of outcome. `fs2::FileExt`
-    // documents that the lock is released on close; explicit
-    // `unlock` here keeps the lock held file usable for
-    // further flock-based coordination.
-    let _ = FileExt::unlock(&lock_file);
     result
 }
 
@@ -152,6 +192,12 @@ async fn create_locked(
     worktree_path: &Path,
 ) -> CaduceusResult<Worktree> {
     let _ = cfg;
+
+    // Test-only hook to exercise panic-path cleanup in integration
+    // tests without adding a public surface to the daemon.
+    if std::env::var_os("_CADUCEUS_TEST_PANIC_IN_CREATE_LOCKED").is_some() {
+        panic!("injected panic for lock cleanup test");
+    }
 
     // (5) Pre-flight: branch / path already exist? Resolve
     // each case to "ours" (reconcile) or "theirs" (collision).
