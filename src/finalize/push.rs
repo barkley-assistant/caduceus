@@ -152,6 +152,7 @@ pub async fn push_and_finalize(
     Ok(FinalizeOutput {
         action: FinalizeAction::Pushed,
         pr_url: None,
+        pr_number: None,
         idempotency_observations: vec![
             "pushed".to_string(),
             format!("branch={}", outcome.branch),

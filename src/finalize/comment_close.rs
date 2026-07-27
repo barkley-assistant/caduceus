@@ -185,6 +185,7 @@ pub async fn post_completion_and_close_and_finalize(
     Ok(FinalizeOutput {
         action: FinalizeAction::Commented,
         pr_url: None,
+        pr_number: None,
         idempotency_observations: observations,
     })
 }
@@ -259,6 +260,7 @@ pub async fn post_completion_only(
     Ok(FinalizeOutput {
         action: FinalizeAction::Commented,
         pr_url: None,
+        pr_number: None,
         idempotency_observations: vec![format!("comment_posted={comment_posted}")],
     })
 }

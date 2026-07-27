@@ -336,6 +336,7 @@ pub(crate) async fn run_code_finalize(
     Ok(FinalizeOutput {
         action: crate::finalize::FinalizeAction::AwaitingReview,
         pr_url: None,
+        pr_number: None,
         idempotency_observations: vec![
             "awaiting_review".to_string(),
             format!("issue={}", ctx.issue.key.display_key()),
