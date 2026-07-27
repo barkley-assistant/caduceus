@@ -1,7 +1,6 @@
 //! Daemon-owned repositories: bare mirrors and disposable worktrees.
 //!
-//! Phase 5 owns this module. Every git subprocess created here goes
-//! through the hardened GitRunner (Task 2.6).
+//! Every git subprocess created here goes through the hardened `GitRunner`.
 
 pub mod mirror;
 pub mod storage;

@@ -9,8 +9,7 @@
 
 #![allow(dead_code)]
 
-// Submodule declarations and re-exports. These preserve the historical
-// `crate::github::client` public surface byte-for-byte.
+// Submodule declarations and re-exports.
 
 pub mod cache;
 pub mod client_core;

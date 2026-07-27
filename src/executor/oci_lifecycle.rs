@@ -11,53 +11,19 @@
 //! `run_cli` helper. The lifecycle is the single call site; all other
 //! executor modules are pure argv builders or secret transport.
 
-use std::path::Path;
 use std::time::Duration;
 
 use tokio::process::Command;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
-use crate::executor::oci_args::{build_argv, MountSpec, OciEngine};
+use crate::executor::oci_args::{build_argv, OciEngine};
 use crate::executor::policy::EnforcedSpec;
 use crate::executor::ExecutorSpec;
 use crate::infra::config::Config;
 use crate::infra::error::{CaduceusError, CaduceusResult};
 use crate::state::oci_run::{ContainerRunRow, OciLifecycleState, OciRunState};
 use crate::worker::supervisor::SupervisorOutcome;
-
-// ---------------------------------------------------------------------------
-// Default mounts
-// ---------------------------------------------------------------------------
-
-/// Build the default mount allow-list: worktree (rw) and result (rw).
-/// The container paths mirror the daemon's layout.
-fn default_mounts(spec: &ExecutorSpec) -> Vec<MountSpec> {
-    let worktree_container = spec.worktree.parent().map_or_else(
-        || Path::new("/worktree").to_path_buf(),
-        |p| p.join("worktree"),
-    );
-    let result_container = spec
-        .worktree
-        .parent()
-        .map_or_else(|| Path::new("/result").to_path_buf(), |p| p.join("result"));
-    vec![
-        MountSpec {
-            host_path: spec.worktree.clone(),
-            container_path: worktree_container,
-            read_only: false,
-        },
-        MountSpec {
-            host_path: spec.worktree.clone(),
-            container_path: result_container,
-            read_only: false,
-        },
-    ]
-}
-
-// ---------------------------------------------------------------------------
-// run — the 5-step lifecycle
-// ---------------------------------------------------------------------------
 
 /// Run the OCI container lifecycle: create → start → wait → stop → remove.
 ///
@@ -78,9 +44,9 @@ pub async fn run(
     cancellation: CancellationToken,
 ) -> CaduceusResult<SupervisorOutcome> {
     let engine = OciEngine::from_binary_name(&cfg.oci_cli.to_string_lossy());
-    let mounts = default_mounts(spec);
+    let mounts = crate::executor::policy::default_mounts(spec);
 
-    // Build argv — rejects undeclared mounts (AC-02).
+    // Build argv — rejects mounts not declared in the allow-list.
     let argv = build_argv(spec, cfg, &mounts, None)?;
 
     // Insert a Created state row.
@@ -301,14 +267,9 @@ pub async fn run_with_argv(
     })
 }
 
-// ---------------------------------------------------------------------------
-// Reconciliation
-// ---------------------------------------------------------------------------
-
 /// Reconcile orphaned containers: every row in `PendingReconciliation`
-/// is checked against the live engine and cleaned up.
-///
-/// Called by the daemon's reconciliation task (AC-05).
+/// is checked against the live engine and cleaned up by the daemon's
+/// reconciliation task.
 pub async fn reconcile(
     cfg: &Config,
     state: &dyn OciRunState,
@@ -334,10 +295,6 @@ pub async fn reconcile(
     }
     Ok(())
 }
-
-// ---------------------------------------------------------------------------
-// Crash recovery — find orphaned containers on the engine
-// ---------------------------------------------------------------------------
 
 /// Find containers on the engine that have caduceus labels but no
 /// corresponding non-removed state row. These are containers that
@@ -404,10 +361,6 @@ pub async fn find_orphans(
 
     Ok(orphans)
 }
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 /// Derive a stable daemon identifier from the config.
 fn derive_daemon_id(cfg: &Config) -> String {
@@ -530,12 +483,10 @@ fn parse_exit_code(output: &str) -> i32 {
     output.trim().parse().unwrap_or(-1)
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod inline_tests {
+    use std::path::Path;
+
     use super::*;
 
     #[test]
@@ -570,7 +521,7 @@ mod inline_tests {
             labels: Vec::new(),
             branch_name: "automation/issue-1".to_string(),
         };
-        let mounts = default_mounts(&spec);
+        let mounts = crate::executor::policy::default_mounts(&spec);
         assert!(!mounts.is_empty());
         assert!(mounts
             .iter()

@@ -18,10 +18,6 @@ use crate::github::issue::IssueKey;
 use crate::infra::config::Config;
 use crate::infra::error::{scrub, CaduceusError, CaduceusResult};
 
-// ---------------------------------------------------------------------------
-// Worktree (created by `create`, torn down by `destroy`, GCed by `gc`).
-// ---------------------------------------------------------------------------
-
 /// Outcome of creating one daemon-owned worktree + branch. The
 /// daemon owns the branch name (invariant #5) and the canonical
 /// worktree path; worker code never selects a ref or a path.
@@ -89,8 +85,7 @@ impl Drop for LockGuard {
     }
 }
 
-/// Provision an isolated worktree + branch. The flow per
-/// `tasks/4.2-create-a-daemon-owned-worktree-and-branch.md` is:
+/// Provision an isolated worktree + branch. The flow is:
 ///
 /// 1. Validate the run id (no path traversal, no shell
 ///    metacharacters). Run id must match `[A-Za-z0-9_-]{1,64}`.
@@ -98,7 +93,7 @@ impl Drop for LockGuard {
 ///    `automation/issue-<number>-<run_id-lowercase>` and the
 ///    worktree path `<repo>/.worktrees/<run_id>`.
 /// 3. Validate the branch shape with `git check-ref-format
-///    --branch` (per task spec).
+///    --branch`.
 /// 4. Take an `fs2` flock on `<repo>/.worktrees/.lock` so
 ///    concurrent `create` invocations on the same main clone
 ///    serialize and cannot race on a shared path/branch
@@ -124,8 +119,7 @@ pub async fn create(
     // both flow from this string; both must be safe.
     validate_run_id(run_id)?;
 
-    // (2) Compute branch + path. Branch is lowercased per the
-    // task packet; path keeps the original case so two
+    // (2) Compute branch + path. Branch is lowercased so two
     // different-case run ids can coexist.
     let branch_name = format!(
         "automation/issue-{}-{}",
@@ -134,10 +128,10 @@ pub async fn create(
     );
     let worktree_path = repo.path.join(".worktrees").join(run_id);
 
-    // (3) Validate the branch shape with git itself (per task
-    // spec). `git check-ref-format --branch <name>` exits 0
-    // when the branch name is a valid branch name under the
-    // documented rules; non-zero otherwise.
+    // (3) Validate the branch shape with git itself.
+    // `git check-ref-format --branch <name>` exits 0 when the
+    // branch name is a valid branch name under the documented
+    // rules; non-zero otherwise.
     git_check_branch_format(runner, &repo.path, &branch_name).await?;
 
     // (4) Atomic claim-of-worktree-path under the worker-home
@@ -625,8 +619,6 @@ async fn runner_run_in(
 
 /// Tear down a worktree, refusing to remove anything claimed or
 /// heartbeat-live.
-///
-/// The flow per `tasks/4.3-tear-down-safely.md`:
 ///
 /// 1. **Path safety.** Reject any worktree whose `path` is
 ///    not beneath `<main>/.worktrees/`. This is the daemon's

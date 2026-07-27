@@ -32,10 +32,8 @@ use crate::worker::prompt::{build_prompt, write_prompt};
 use crate::worker::WorkerResult;
 use crate::worktree::{create as create_worktree, find_main_clone, GitRunner};
 
-// ---------------------------------------------------------------------------
 // Awaiting-review poller — checks PR merge status for entries in
 // AwaitingReview phase and applies transitions.
-// ---------------------------------------------------------------------------
 
 /// Scan the queue for entries in [`Phase::AwaitingReview`] and poll
 /// each entry's PR merge status. Applies transitions:
@@ -325,9 +323,7 @@ pub fn exit_code_for_tests(outcome: &TickOutcome) -> u8 {
     exit_code_for(outcome)
 }
 
-// ---------------------------------------------------------------------------
 // Inline tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod inline_tests {

@@ -15,9 +15,7 @@ use crate::worktree::GitRunner;
 
 use sha2::{Digest, Sha256};
 
-// ---------------------------------------------------------------------------
 // Failure / investigation finalization
-// ---------------------------------------------------------------------------
 
 /// Marker prefix for the *failure* comment. The marker
 /// carries the `run_id` so a retry does not double-post.
@@ -223,7 +221,7 @@ pub async fn post_investigation_comment(
         }
     }
     // Best-effort label removal. The HTTP client exposes
-    // only GET and POST; the orchestrator (Phase 6) owns
+    // only GET and POST; the orchestrator owns
     // the DELETE. The function reports the comment-posted
     // outcome; the label-removed flag is the operator's
     // audit trail and is left at `false` for v0.1.

@@ -20,10 +20,6 @@ use tokio::sync::{OwnedMutexGuard, OwnedSemaphorePermit, Semaphore};
 use super::exclusion::RepoExclusionMap;
 use crate::infra::error::CaduceusError;
 
-// ---------------------------------------------------------------------------
-// DrainConfig
-// ---------------------------------------------------------------------------
-
 /// Configuration for pool drain behaviour.
 #[derive(Clone, Copy, Debug)]
 pub struct DrainConfig {
@@ -44,10 +40,6 @@ impl DrainConfig {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// PoolState
-// ---------------------------------------------------------------------------
 
 /// Observable state of the worker pool.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -72,10 +64,6 @@ impl std::fmt::Display for PoolState {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Admission
-// ---------------------------------------------------------------------------
 
 /// Outcome of [`Pool::admit`].
 ///
@@ -117,16 +105,12 @@ impl std::fmt::Debug for Admission {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Pool
-// ---------------------------------------------------------------------------
-
 /// Bounded concurrency worker pool with per-repository exclusion.
 ///
 /// The pool is shared across tick dispatches via `Arc<Pool>`. The
 /// design is in-memory only — it resets on daemon restart, which is
-/// safe because scheduler leases (Task 5.1) already guard against
-/// concurrent scheduler transactions.
+/// safe because scheduler leases already guard against concurrent
+/// scheduler transactions.
 pub struct Pool {
     /// Global slot counter. Sized by `worker_parallelism`.
     semaphore: Arc<Semaphore>,

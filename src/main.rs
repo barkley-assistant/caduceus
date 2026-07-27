@@ -19,7 +19,6 @@
 use std::os::unix::process::CommandExt;
 use std::process::ExitCode;
 
-use caduceus::config::Config;
 use caduceus::error::CaduceusResult;
 
 mod cli;
@@ -51,14 +50,6 @@ fn main() -> ExitCode {
             err.exit_code()
         }
     }
-}
-
-/// Parse configuration through the canonical resolver chain. Used by both
-/// `run` and `status`; wrapper around the typed loader so it remains easy
-/// to grow during later phases without touching `main`.
-#[allow(dead_code)]
-pub(crate) fn load_config() -> CaduceusResult<Config> {
-    Config::load()
 }
 
 /// Hidden supervisor mode. Parses the small set of
@@ -395,7 +386,8 @@ fn run_supervisor_mode() -> CaduceusResult<()> {
     })?;
 
     // Finalize transcript — report truncation/write failures.
-    // Must happen before DONE so invalid runs never succeed (AC-03).
+    // This must happen before DONE so a failed write is reported as a
+    // worker failure rather than a successful run.
     writer.finalize()?;
 
     // Send `DONE` over our stdout so the daemon sees the exit code.

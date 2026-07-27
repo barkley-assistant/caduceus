@@ -6,23 +6,17 @@
 //! consumers and integration tests can reach them without depending on the
 //! internal module layout.
 //!
-//! After the `src/` restructure (issue #13), the crate is organised into
-//! eight subdirectories that match the boundaries `docs/architecture.md`
+//! The crate is organised into the subdirectories `docs/architecture.md`
 //! describes: `github/`, `worker/`, `state/`, `daemon/`, `worktree/`,
-//! `finalize/`, `cli/`, `infra/`. Every public path that existed before
-//! the restructure remains reachable through the `pub use` aliases below
-//! — the integration test suite depends on the flat surface and we don't
-//! force a coordinated rename of the test tree.
+//! `finalize/`, `cli/`, `infra/`. Only a tightly bounded set of types is
+//! re-exported here so downstream consumers and integration tests can reach
+//! them without depending on the internal module layout.
 //!
-//! See [`CONTRACTS.md`] (under `planning/caduceus-v0.1/`) for the normative
-//! scope of every module in this crate.
+//! See [`CONTRACTS.md`] for the normative scope of every module in this
+//! crate.
 
 #![forbid(unsafe_code)]
 #![warn(missing_debug_implementations)]
-
-// --------------------------------------------------------------------------
-// Module declarations. These point at the post-restructure subdirectories.
-// --------------------------------------------------------------------------
 
 pub mod daemon;
 pub mod executor;
@@ -36,14 +30,12 @@ pub mod state;
 pub mod worker;
 pub mod worktree;
 
-// --------------------------------------------------------------------------
 // Flat `pub use` aliases.
 //
 // Goal: keep every external `caduceus::<old_module>::<thing>` import working
 // unchanged. The integration tests under `tests/` reach into these names
 // without going through `crate::`, so the surface here has to mirror what
 // the pre-restructure `lib.rs` exposed.
-// --------------------------------------------------------------------------
 
 // Infra re-exports ---------------------------------------------------------
 pub use crate::infra::config;
@@ -87,12 +79,7 @@ pub use crate::daemon::signals;
 pub use crate::daemon::status;
 pub use crate::daemon::tick;
 
-// --------------------------------------------------------------------------
-// Bounded symbol re-exports per CONTRACTS.md and Task 0.1's owning list.
-//
-// Modules remain reachable through their canonical paths for everything
-// not listed here.
-// --------------------------------------------------------------------------
+// Bounded symbol re-exports per CONTRACTS.md.
 
 pub use crate::daemon::orchestration::{
     ActiveRunGuard, Clock, FailureClass, FakeClock, FinishOutcome, Git, GithubClient, Services,

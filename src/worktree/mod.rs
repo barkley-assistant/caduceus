@@ -1,8 +1,8 @@
 //! Per-run worktree management plus the shared git runner.
 //!
-//! Phase 4 owns the bodies for `GitRunner`, `RepositoryInfo`, the
+//! This module holds `GitRunner`, `RepositoryInfo`, the
 //! `find_main_clone` discovery path, the daemon-owned worktree
-//! `create` and `destroy` operations, and the GC sweep. The runner
+//! `create` and `remove` operations, and the GC sweep. The runner
 //! is the single entry point for every git subprocess the daemon
 //! spawns; it enforces the prompts/timeout/process-group contract
 //! the rest of the crate relies on.

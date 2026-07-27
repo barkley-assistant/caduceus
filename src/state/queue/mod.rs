@@ -89,7 +89,7 @@ pub enum Phase {
     /// Conflicting remote markers or ambiguous side effects
     /// during reconciliation. The operator must inspect and
     /// manually resolve before the entry can be re-queued.
-    /// Added by Task 4.2 (FINAL-001 contract).
+    /// (FINAL-001 contract).
     NeedsAttention,
 }
 

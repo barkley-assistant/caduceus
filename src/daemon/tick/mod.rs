@@ -1,11 +1,10 @@
 //! The single canonical tick.
 //!
 //! [`run`], [`run_with_config`], and [`tick`] together implement
-//! the per-tick controller described in `CONTRACTS.md` and the
-//! Phase 7 task packet. The controller is the only entry
-//! point the daemon's CLI exposes: a no-argument `caduceus`
-//! invocation, the explicit `caduceus run`, and the cron
-//! tick all funnel through [`run`].
+//! the per-tick controller described in `CONTRACTS.md`. The
+//! controller is the only entry point the daemon's CLI exposes:
+//! a no-argument `caduceus` invocation, the explicit `caduceus run`,
+//! and the cron tick all funnel through [`run`].
 //!
 //! The order of operations is the contractually-documented
 //! one:
@@ -68,9 +67,7 @@ use crate::worker::prompt::{build_prompt, write_prompt};
 use crate::worker::WorkerResult;
 use crate::worktree::{create as create_worktree, find_main_clone, GitRunner};
 
-// ---------------------------------------------------------------------------
 // Public surface
-// ---------------------------------------------------------------------------
 
 /// Cron / no-argument entry point. Loads config from the
 /// canonical resolver chain, initialises the structured log

@@ -1,8 +1,8 @@
 //! `<state_dir>/state_meta.json` schema, `MetaStore`, and the
 //! crash-safe writer. This module owns the canonical metadata
 //! envelope and the `RateLimitObserver` defined here so the
-//! HTTP layer (Phase 2) and the persistence layer (this phase)
-//! can evolve independently.
+//! HTTP layer and the persistence layer can evolve
+//! independently.
 //!
 //! ## Concurrency model
 //!
@@ -106,13 +106,12 @@ impl StateMeta {
 
 /// Outcome of the most recent tick.
 ///
-/// The variant set is the contractually-documented one
-/// (Task 7.0 + Task 7.1). `Idle304` and `IdleEmpty` split
-/// the legacy `Idle` variant on whether every poll response
-/// reused the persistent HTTP cache. `SkippedConcurrent`
-/// and `SkippedCadence` replace the older `Concurrent` and
-/// `Cadence` aliases so the orchestrator's perspective is
-/// always the actionable one.
+/// The variant set is the contractually-documented one.
+/// `Idle304` and `IdleEmpty` split the legacy `Idle` variant
+/// on whether every poll response reused the persistent HTTP
+/// cache. `SkippedConcurrent` and `SkippedCadence` replace
+/// the older `Concurrent` and `Cadence` aliases so the
+/// orchestrator's perspective is always the actionable one.
 /// - The `SkippedCadence` outcome is what the daemon returns
 ///   when the configured `poll_interval_seconds` has not
 ///   elapsed since the last tick; the older `Cadence` variant
@@ -621,8 +620,8 @@ fn truncate_message(message: &str) -> String {
     message[..end].to_string()
 }
 
-/// Convenience used by tests and by future Phase 7 callers to
-/// produce a stable hashmap of rate-limit timestamps for assertion.
+/// Convenience used by tests to produce a stable hashmap of
+/// rate-limit timestamps for assertion.
 #[allow(dead_code)]
 pub fn rate_limit_index() -> BTreeMap<&'static str, RateLimitObservation> {
     BTreeMap::new()

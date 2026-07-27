@@ -1,10 +1,9 @@
 //! `caduceus status` reporter. Reads queue + metadata + heartbeats
 //! through the normal resolution chain.
 //!
-//! Task 7.3 owns the body. The reporter is the orchestrator's
-//! only observability surface for live workers; the file format
-//! is the JSON envelope the supervisor writes (see
-//! `worker_supervisor::Heartbeat`).
+//! The reporter is the orchestrator's only observability surface
+//! for live workers; the file format is the JSON envelope the
+//! supervisor writes (see [`crate::worker::supervisor::Heartbeat`]).
 //!
 //! Human output has golden fixtures matching the README; the
 //! JSON output carries a schema-version field. Missing state
@@ -108,8 +107,7 @@ pub fn build_report(state_dir: &Path) -> CaduceusResult<(StatusReport, Option<St
     }
 
     // 1. Load metadata strictly. A corrupt metadata file
-    //    preserves the file (Phase 1 contract) and
-    //    surfaces a diagnostic.
+    //    preserves the file and surfaces a diagnostic.
     let meta = match MetaStore::open(state_dir) {
         Ok(m) => m,
         Err(err) => {
@@ -129,8 +127,8 @@ pub fn build_report(state_dir: &Path) -> CaduceusResult<(StatusReport, Option<St
     };
 
     // 2. Read the queue state. A corrupt queue file is
-    //    preserved (Phase 1 contract) and surfaces a
-    //    distinct diagnostic. The store's `open` calls
+    //    preserved and surfaces a distinct diagnostic.
+    //    The store's `open` calls
     //    `load_validated`, so a corrupt file produces a
     //    `StateCorrupt` error from `StateStore::open`
     //    itself; we route both the open and snapshot

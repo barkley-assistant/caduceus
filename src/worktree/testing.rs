@@ -18,16 +18,13 @@ use crate::github::issue::IssueKey;
 use crate::infra::config::Config;
 use crate::infra::error::{scrub, CaduceusError, CaduceusResult};
 
-// ---------------------------------------------------------------------------
 // Test-only Config helper. `Config::test_defaults` is documented as the
 // canonical root-anchored builder, but `find_main_clone` and the runner
 // only need a couple of fields; this keeps the inline tests focused on
 // pure logic.
-// ---------------------------------------------------------------------------
 
 impl Config {
-    #[doc(hidden)]
-    pub(crate) fn minimal_workdir_for_runner_tests() -> Self {
+    fn minimal_workdir_for_runner_tests() -> Self {
         Self {
             poll_interval_seconds: 0,
             state_dir: PathBuf::from("/tmp"),

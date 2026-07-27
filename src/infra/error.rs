@@ -6,7 +6,7 @@
 //! "Error contract".
 //!
 //! [`VoiceError`] is a separate type used by the public-voice
-//! validator (Task 6.6). It is intentionally separate from
+//! validator. It is intentionally separate from
 //! [`CaduceusError`] because the voice validator runs *before* the
 //! corresponding API mutation and needs to surface a precise
 //! reason; mixing the two would lose that distinction.
@@ -620,11 +620,7 @@ impl CaduceusError {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Voice errors
-// ---------------------------------------------------------------------------
-
-/// Errors produced by the public-voice validator (Task 6.6). Kept
+/// Errors produced by the public-voice validator. Kept
 /// separate from [`CaduceusError`] so the validator can run before
 /// a corresponding API mutation has been attempted and report a
 /// precise reason without conflating with daemon-wide errors.
@@ -654,10 +650,6 @@ impl VoiceError {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Lossless conversions
-// ---------------------------------------------------------------------------
-
 impl From<std::path::StripPrefixError> for CaduceusError {
     fn from(_: std::path::StripPrefixError) -> Self {
         CaduceusError::Other("strip prefix failed".to_string())
@@ -673,10 +665,6 @@ impl From<std::num::ParseIntError> for CaduceusError {
         CaduceusError::Other(format!("parse int: {err}"))
     }
 }
-
-// ---------------------------------------------------------------------------
-// Redaction helper
-// ---------------------------------------------------------------------------
 
 /// Replace recognised credential names with `<redacted>` so the
 /// returned string is safe to render through `Debug` (and any
@@ -756,9 +744,7 @@ fn advance_to_end_of_value(s: &str, start: usize) -> usize {
     i
 }
 
-// ---------------------------------------------------------------------------
 // Tests live in `tests/state/error_test.rs`.
-// ---------------------------------------------------------------------------
 #[cfg(test)]
 mod inline_tests {
     use super::*;

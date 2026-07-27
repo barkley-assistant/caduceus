@@ -15,9 +15,7 @@ use crate::worktree::GitRunner;
 
 use sha2::{Digest, Sha256};
 
-// ---------------------------------------------------------------------------
 // Post completion and close idempotently
-// ---------------------------------------------------------------------------
 
 /// Marker prefix used to detect a previously-posted
 /// completion comment. The marker is a hidden HTML
@@ -194,7 +192,7 @@ pub async fn post_completion_and_close_and_finalize(
 /// Post the completion comment without closing the issue.
 ///
 /// This is the non-terminal variant used by the human-review
-/// lifecycle (Task 4.3). The comment is posted idempotently
+/// lifecycle. The comment is posted idempotently
 /// (the marker check prevents double-posting), but the issue
 /// is left open so the operator can review and merge the PR.
 ///

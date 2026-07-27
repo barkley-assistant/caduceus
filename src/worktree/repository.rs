@@ -19,10 +19,6 @@ use crate::github::issue::IssueKey;
 use crate::infra::config::Config;
 use crate::infra::error::{scrub, CaduceusError, CaduceusResult};
 
-// ---------------------------------------------------------------------------
-// Repository discovery
-// ---------------------------------------------------------------------------
-
 /// Outcome of [`find_main_clone`]: the resolved on-disk clone
 /// plus the metadata the daemon needs to create worktrees off
 /// it.
@@ -465,5 +461,5 @@ async fn git_string(
 /// field is the only one the runner consults; everything else
 /// is filler so we can pass a reference into the runner.
 pub(crate) fn runner_inner_cfg() -> Config {
-    Config::minimal_workdir_for_runner_tests()
+    Config::test_defaults(Path::new("/tmp"))
 }

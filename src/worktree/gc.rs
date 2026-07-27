@@ -117,9 +117,9 @@ pub async fn gc(config: &Config, older_than_days: u64, dry_run: bool) -> Caduceu
                 );
                 continue;
             }
-            // Build a Worktree handle and call Task 4.3's
-            // remove(). The branch_name in the handle is
-            // advisory only; remove() inspects ref state.
+            // Build a Worktree handle and call remove(). The
+            // branch_name in the handle is advisory only;
+            // remove() inspects ref state.
             let wt = Worktree {
                 issue: crate::github::issue::IssueKey {
                     owner: owner.clone(),
@@ -453,20 +453,4 @@ fn parse_watched_repo(s: &str) -> Option<(String, String)> {
         return None;
     }
     Some((owner.to_string(), repo.to_string()))
-}
-
-// ---------------------------------------------------------------------------
-// Stub for older callers; the canonical entry point is `gc(config, ...)`.
-// Kept for source-compatibility with Task 3.3's reaper call site.
-// ---------------------------------------------------------------------------
-#[doc(hidden)]
-pub fn gc_legacy_state_dir(
-    _state_dir: &Path,
-    _older_than_days: u64,
-    _dry_run: bool,
-) -> CaduceusResult<u64> {
-    Err(CaduceusError::Worktree {
-        context: "gc",
-        stderr: "use gc(config, ...); the state-dir-only signature was retired in 4.5".to_string(),
-    })
 }

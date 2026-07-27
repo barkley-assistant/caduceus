@@ -4,7 +4,7 @@
 //! each OCI container the daemon spawns. The state row is the
 //! durability boundary for crash recovery: a crash between `create`
 //! and `remove` leaves a row that the next reconciliation pass picks
-//! up (AC-05).
+//! up.
 
 use std::fmt;
 use std::str::FromStr;
@@ -13,10 +13,6 @@ use std::sync::Mutex;
 use rusqlite::{params, Connection};
 
 use crate::infra::error::{CaduceusError, CaduceusResult};
-
-// ---------------------------------------------------------------------------
-// OciLifecycleState
-// ---------------------------------------------------------------------------
 
 /// Typed state of an OCI container lifecycle.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -77,10 +73,6 @@ impl FromStr for OciLifecycleState {
     }
 }
 
-// ---------------------------------------------------------------------------
-// ContainerRunRow
-// ---------------------------------------------------------------------------
-
 /// A single row in the `oci_runs` table.
 #[derive(Clone, Debug)]
 pub struct ContainerRunRow {
@@ -94,10 +86,6 @@ pub struct ContainerRunRow {
     pub issue_id: String,
     pub worker_command_sha256: String,
 }
-
-// ---------------------------------------------------------------------------
-// OciRunState trait
-// ---------------------------------------------------------------------------
 
 /// Trait abstracting the `oci_runs` table for the lifecycle module.
 /// Production uses [`OciRunDao`]; tests use a fake.
@@ -135,10 +123,6 @@ impl OciRunState for OciRunDao {
         OciRunDao::delete(self, run_id)
     }
 }
-
-// ---------------------------------------------------------------------------
-// OciRunDao
-// ---------------------------------------------------------------------------
 
 /// Data-access object for the `oci_runs` table.
 pub struct OciRunDao {

@@ -75,10 +75,6 @@ pub fn prune_backups(state_dir: &Path, retention_days: u64) -> CaduceusResult<u6
     Ok(pruned)
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;

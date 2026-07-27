@@ -32,9 +32,7 @@ use crate::worker::prompt::{build_prompt, write_prompt};
 use crate::worker::WorkerResult;
 use crate::worktree::{create as create_worktree, find_main_clone, GitRunner};
 
-// ---------------------------------------------------------------------------
 // Checkpoint resume helpers
-// ---------------------------------------------------------------------------
 
 /// Decides what to do when a run already has durable checkpoints.
 pub(crate) enum ResumeAction {
@@ -67,7 +65,7 @@ pub(crate) fn resume_from_checkpoint(
     }
 }
 
-/// Returns the next stage in the FINAL-001 sequence.
+/// Returns the next stage in the finalization sequence.
 pub(crate) fn next_stage_after(
     stage: crate::state::queue::FinalizationStage,
 ) -> crate::state::queue::FinalizationStage {

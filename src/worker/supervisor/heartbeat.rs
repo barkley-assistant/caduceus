@@ -15,9 +15,7 @@ use tokio::process::{Child, Command as TokioCommand};
 use crate::github::issue::IssueKey;
 use crate::infra::error::{CaduceusError, CaduceusResult};
 
-// ---------------------------------------------------------------------------
 // Heartbeat
-// ---------------------------------------------------------------------------
 
 /// The versioned JSON envelope the supervisor writes to a
 /// `<state_dir>/runs/<run_id>.heartbeat` file. The contract
