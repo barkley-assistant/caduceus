@@ -186,6 +186,9 @@ pub async fn post_completion_and_close_and_finalize(
         action: FinalizeAction::Commented,
         pr_url: None,
         pr_number: None,
+        commit_oid: None,
+        pushed_oid: None,
+        comment_id: None,
         idempotency_observations: observations,
     })
 }
@@ -242,6 +245,8 @@ pub async fn post_completion_only(
 
     // 3. If absent, post the completion comment.
     let comment_posted = !existing;
+    let mut comment_id: Option<u64> = None;
+    let mut idempotency_observations = vec![format!("comment_posted={comment_posted}")];
     if !existing {
         let body = render_completion_comment(worker_result, run_id);
         let body_bytes = serde_json::to_vec(&serde_json::json!({ "body": body }))
@@ -255,12 +260,21 @@ pub async fn post_completion_only(
                 message: format!("create comment failed: {}", resp.status),
             });
         }
+        if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&resp.body) {
+            comment_id = value.get("id").and_then(|v| v.as_u64());
+        }
+        if comment_id.is_none() {
+            idempotency_observations.push("comment_id unparsable".to_string());
+        }
     }
 
     Ok(FinalizeOutput {
         action: FinalizeAction::Commented,
         pr_url: None,
         pr_number: None,
-        idempotency_observations: vec![format!("comment_posted={comment_posted}")],
+        commit_oid: None,
+        pushed_oid: None,
+        comment_id,
+        idempotency_observations,
     })
 }

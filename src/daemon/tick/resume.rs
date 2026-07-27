@@ -12,8 +12,9 @@ use crate::daemon::orchestration::{
 };
 use crate::finalize::{
     archive_worker_result, commit_code_and_finalize, dry_run_finalize,
-    find_or_create_pr_and_finalize, post_completion_only, post_investigation_comment_and_finalize,
-    push_and_finalize, FinalizeContext, FinalizeOutput, FinalizeRequest,
+    find_or_create_pr_and_finalize, generate_operation_id, post_completion_only,
+    post_investigation_comment_and_finalize, push_and_finalize, FinalizeContext, FinalizeOutput,
+    FinalizeRequest,
 };
 use crate::github::poll::{discover_watched_repos, merge_outcomes, poll_code, poll_investigation};
 use crate::github::{Client, RateLimitInfo, Response};
@@ -25,7 +26,9 @@ use crate::scheduler::{DrainConfig, LeaderToken, Pool};
 use crate::signals;
 use crate::state::checkpoints::{last_checkpoint_for_run, persist_checkpoint};
 use crate::state::meta::{CadenceDecision, CadenceGate, MetaStore, TickOutcome};
-use crate::state::queue::{ClaimedEntry, Phase, QueueEntry, StateStore, TicketType};
+use crate::state::queue::{
+    ClaimedEntry, FinalizationStage, Phase, QueueEntry, StateStore, TicketType,
+};
 use crate::state::store;
 use crate::worker::context::{build_context, encode_context, BuildInputs};
 use crate::worker::prompt::{build_prompt, write_prompt};
@@ -35,9 +38,10 @@ use crate::worktree::{create as create_worktree, find_main_clone, GitRunner};
 // Checkpoint resume helpers
 
 /// Decides what to do when a run already has durable checkpoints.
-pub(crate) enum ResumeAction {
+#[derive(Debug)]
+pub enum ResumeAction {
     /// Skip to the next uncompleted stage and resume from there.
-    Skip(crate::state::queue::FinalizationStage),
+    Skip(FinalizationStage),
     /// All stages are already complete; no work needed.
     AlreadyDone,
     /// No checkpoint found; start fresh.
@@ -46,7 +50,7 @@ pub(crate) enum ResumeAction {
 
 /// Reads the last checkpoint for a run and returns the appropriate resume
 /// action.
-pub(crate) fn resume_from_checkpoint(
+pub fn resume_from_checkpoint(
     conn: &rusqlite::Connection,
     run_id: &str,
 ) -> CaduceusResult<ResumeAction> {
@@ -58,7 +62,7 @@ pub(crate) fn resume_from_checkpoint(
                 None => return Ok(ResumeAction::StartFresh),
             };
             match stage {
-                crate::state::queue::FinalizationStage::Done => Ok(ResumeAction::AlreadyDone),
+                FinalizationStage::Done => Ok(ResumeAction::AlreadyDone),
                 other => Ok(ResumeAction::Skip(next_stage_after(other))),
             }
         }
@@ -66,10 +70,8 @@ pub(crate) fn resume_from_checkpoint(
 }
 
 /// Returns the next stage in the finalization sequence.
-pub(crate) fn next_stage_after(
-    stage: crate::state::queue::FinalizationStage,
-) -> crate::state::queue::FinalizationStage {
-    use crate::state::queue::FinalizationStage::*;
+pub(crate) fn next_stage_after(stage: FinalizationStage) -> FinalizationStage {
+    use FinalizationStage::*;
     match stage {
         ResultValidated => Committed,
         Committed => Pushed,
@@ -81,6 +83,25 @@ pub(crate) fn next_stage_after(
         InvestigationReady => InvestigationCommented,
         InvestigationCommented => Done,
     }
+}
+
+/// Persist a checkpoint with a deterministic operation_id. The marker is
+/// the durable remote effect produced by the stage; it must be `None` when
+/// the stage has no external effect to record.
+fn checkpoint(
+    conn: &rusqlite::Connection,
+    run_id: &str,
+    stage: FinalizationStage,
+    marker: Option<&str>,
+) -> CaduceusResult<()> {
+    persist_checkpoint(
+        conn,
+        run_id,
+        stage,
+        None,
+        Some(&generate_operation_id(run_id, stage.as_str())),
+        marker,
+    )
 }
 
 /// Re-enters the finalization pipeline at the given resume stage, skipping
@@ -199,11 +220,21 @@ pub(crate) async fn run_resume_finalization(
 
     match resume_stage {
         ResultValidated => {
-            persist_checkpoint(&conn, &ctx.run_id, ResultValidated, None, None, None)?;
-            let _ = commit_code_and_finalize(&ctx, &worker_result, &runner, &archive_path)?;
-            persist_checkpoint(&conn, &ctx.run_id, Committed, None, None, None)?;
-            push_and_finalize(&ctx, &runner).await?;
-            persist_checkpoint(&conn, &ctx.run_id, Pushed, None, None, None)?;
+            // ResultValidated has no external effect to record yet.
+            checkpoint(&conn, &ctx.run_id, ResultValidated, None)?;
+
+            let commit_out =
+                commit_code_and_finalize(&ctx, &worker_result, &runner, &archive_path)?;
+            checkpoint(
+                &conn,
+                &ctx.run_id,
+                Committed,
+                commit_out.commit_oid.as_deref(),
+            )?;
+
+            let push_out = push_and_finalize(&ctx, &runner).await?;
+            checkpoint(&conn, &ctx.run_id, Pushed, push_out.pushed_oid.as_deref())?;
+
             let pr_output =
                 find_or_create_pr_and_finalize(&ctx, ctx.client.as_ref(), &worker_result).await?;
             store.save_finalization(
@@ -213,20 +244,44 @@ pub(crate) async fn run_resume_finalization(
                     branch_name: ctx.worktree.branch_name.clone(),
                     result_path: result_path.clone(),
                     stage: crate::state::queue::FinalizationStage::PrCreated,
-                    commit_oid: None,
+                    commit_oid: commit_out.commit_oid.clone(),
                     pr_number: pr_output.pr_number,
                     pr_url: pr_output.pr_url,
                 },
             )?;
-            persist_checkpoint(&conn, &ctx.run_id, PrCreated, None, None, None)?;
-            post_completion_only(&ctx, ctx.client.as_ref(), &worker_result).await?;
-            persist_checkpoint(&conn, &ctx.run_id, Commented, None, None, None)?;
-            persist_checkpoint(&conn, &ctx.run_id, AwaitingReview, None, None, None)?;
+            checkpoint(
+                &conn,
+                &ctx.run_id,
+                PrCreated,
+                pr_output.pr_number.map(|n| n.to_string()).as_deref(),
+            )?;
+
+            let comment_out =
+                post_completion_only(&ctx, ctx.client.as_ref(), &worker_result).await?;
+            checkpoint(
+                &conn,
+                &ctx.run_id,
+                Commented,
+                comment_out.comment_id.map(|n| n.to_string()).as_deref(),
+            )?;
+
+            // AwaitingReview is a stage advance, no new external effect.
+            checkpoint(&conn, &ctx.run_id, AwaitingReview, None)?;
         }
         Committed => {
-            persist_checkpoint(&conn, &ctx.run_id, Committed, None, None, None)?;
-            push_and_finalize(&ctx, &runner).await?;
-            persist_checkpoint(&conn, &ctx.run_id, Pushed, None, None, None)?;
+            // Re-run the commit effect (idempotent), then record the checkpoint.
+            let commit_out =
+                commit_code_and_finalize(&ctx, &worker_result, &runner, &archive_path)?;
+            checkpoint(
+                &conn,
+                &ctx.run_id,
+                Committed,
+                commit_out.commit_oid.as_deref(),
+            )?;
+
+            let push_out = push_and_finalize(&ctx, &runner).await?;
+            checkpoint(&conn, &ctx.run_id, Pushed, push_out.pushed_oid.as_deref())?;
+
             let pr_output =
                 find_or_create_pr_and_finalize(&ctx, ctx.client.as_ref(), &worker_result).await?;
             store.save_finalization(
@@ -236,18 +291,34 @@ pub(crate) async fn run_resume_finalization(
                     branch_name: ctx.worktree.branch_name.clone(),
                     result_path: result_path.clone(),
                     stage: crate::state::queue::FinalizationStage::PrCreated,
-                    commit_oid: None,
+                    commit_oid: commit_out.commit_oid.clone(),
                     pr_number: pr_output.pr_number,
                     pr_url: pr_output.pr_url,
                 },
             )?;
-            persist_checkpoint(&conn, &ctx.run_id, PrCreated, None, None, None)?;
-            post_completion_only(&ctx, ctx.client.as_ref(), &worker_result).await?;
-            persist_checkpoint(&conn, &ctx.run_id, Commented, None, None, None)?;
-            persist_checkpoint(&conn, &ctx.run_id, AwaitingReview, None, None, None)?;
+            checkpoint(
+                &conn,
+                &ctx.run_id,
+                PrCreated,
+                pr_output.pr_number.map(|n| n.to_string()).as_deref(),
+            )?;
+
+            let comment_out =
+                post_completion_only(&ctx, ctx.client.as_ref(), &worker_result).await?;
+            checkpoint(
+                &conn,
+                &ctx.run_id,
+                Commented,
+                comment_out.comment_id.map(|n| n.to_string()).as_deref(),
+            )?;
+
+            checkpoint(&conn, &ctx.run_id, AwaitingReview, None)?;
         }
         Pushed => {
-            persist_checkpoint(&conn, &ctx.run_id, Pushed, None, None, None)?;
+            // Re-run the push effect (idempotent), then record the checkpoint.
+            let push_out = push_and_finalize(&ctx, &runner).await?;
+            checkpoint(&conn, &ctx.run_id, Pushed, push_out.pushed_oid.as_deref())?;
+
             let pr_output =
                 find_or_create_pr_and_finalize(&ctx, ctx.client.as_ref(), &worker_result).await?;
             store.save_finalization(
@@ -262,26 +333,75 @@ pub(crate) async fn run_resume_finalization(
                     pr_url: pr_output.pr_url,
                 },
             )?;
-            persist_checkpoint(&conn, &ctx.run_id, PrCreated, None, None, None)?;
-            post_completion_only(&ctx, ctx.client.as_ref(), &worker_result).await?;
-            persist_checkpoint(&conn, &ctx.run_id, Commented, None, None, None)?;
-            persist_checkpoint(&conn, &ctx.run_id, AwaitingReview, None, None, None)?;
+            checkpoint(
+                &conn,
+                &ctx.run_id,
+                PrCreated,
+                pr_output.pr_number.map(|n| n.to_string()).as_deref(),
+            )?;
+
+            let comment_out =
+                post_completion_only(&ctx, ctx.client.as_ref(), &worker_result).await?;
+            checkpoint(
+                &conn,
+                &ctx.run_id,
+                Commented,
+                comment_out.comment_id.map(|n| n.to_string()).as_deref(),
+            )?;
+
+            checkpoint(&conn, &ctx.run_id, AwaitingReview, None)?;
         }
         PrCreated => {
-            persist_checkpoint(&conn, &ctx.run_id, PrCreated, None, None, None)?;
-            post_completion_only(&ctx, ctx.client.as_ref(), &worker_result).await?;
-            persist_checkpoint(&conn, &ctx.run_id, Commented, None, None, None)?;
-            persist_checkpoint(&conn, &ctx.run_id, AwaitingReview, None, None, None)?;
+            // Re-run PR create-or-reuse (idempotent), then record the checkpoint.
+            let pr_output =
+                find_or_create_pr_and_finalize(&ctx, ctx.client.as_ref(), &worker_result).await?;
+            store.save_finalization(
+                &ctx.claim,
+                crate::state::queue::FinalizationCheckpoint {
+                    run_id: ctx.run_id.clone(),
+                    branch_name: ctx.worktree.branch_name.clone(),
+                    result_path: result_path.clone(),
+                    stage: crate::state::queue::FinalizationStage::PrCreated,
+                    commit_oid: None,
+                    pr_number: pr_output.pr_number,
+                    pr_url: pr_output.pr_url,
+                },
+            )?;
+            checkpoint(
+                &conn,
+                &ctx.run_id,
+                PrCreated,
+                pr_output.pr_number.map(|n| n.to_string()).as_deref(),
+            )?;
+
+            let comment_out =
+                post_completion_only(&ctx, ctx.client.as_ref(), &worker_result).await?;
+            checkpoint(
+                &conn,
+                &ctx.run_id,
+                Commented,
+                comment_out.comment_id.map(|n| n.to_string()).as_deref(),
+            )?;
+
+            checkpoint(&conn, &ctx.run_id, AwaitingReview, None)?;
         }
         Commented | AwaitingReview | Done => {
-            // The comment is already posted; no further action needed.
-            // Persist the AwaitingReview checkpoint (the poller will
-            // handle the terminal transition when the PR is merged).
-            persist_checkpoint(&conn, &ctx.run_id, Commented, None, None, None)?;
-            persist_checkpoint(&conn, &ctx.run_id, AwaitingReview, None, None, None)?;
+            // Re-run the comment post (idempotent marker check), then
+            // persist the Commented and AwaitingReview checkpoints.
+            let comment_out =
+                post_completion_only(&ctx, ctx.client.as_ref(), &worker_result).await?;
+            checkpoint(
+                &conn,
+                &ctx.run_id,
+                Commented,
+                comment_out.comment_id.map(|n| n.to_string()).as_deref(),
+            )?;
+            checkpoint(&conn, &ctx.run_id, AwaitingReview, None)?;
         }
         InvestigationReady | InvestigationCommented => {
-            // Pass through — investigation stages handled by separate path
+            // Investigation stages do not post durable remote effects in
+            // scope of this change; remote_marker None is the documented
+            // exception per spec.
         }
     }
 
@@ -299,37 +419,28 @@ pub(crate) async fn run_code_finalize(
 ) -> CaduceusResult<FinalizeOutput> {
     let conn = store::open_in(&ctx.config.state_dir)?;
 
-    // Stage 1: ResultValidated — about to commit
-    persist_checkpoint(
-        &conn,
-        &ctx.run_id,
-        crate::state::queue::FinalizationStage::ResultValidated,
-        None,
-        None,
-        None,
-    )?;
-    let _ = commit_code_and_finalize(ctx, worker_result, runner, worker_result_path)?;
+    // Stage 1: ResultValidated — no external effect to record yet.
+    checkpoint(&conn, &ctx.run_id, FinalizationStage::ResultValidated, None)?;
 
-    // Stage 2: Committed — about to push
-    persist_checkpoint(
+    // Stage 2: Commit the validated changes, then record the commit OID.
+    let commit_out = commit_code_and_finalize(ctx, worker_result, runner, worker_result_path)?;
+    checkpoint(
         &conn,
         &ctx.run_id,
-        crate::state::queue::FinalizationStage::Committed,
-        None,
-        None,
-        None,
+        FinalizationStage::Committed,
+        commit_out.commit_oid.as_deref(),
     )?;
-    push_and_finalize(ctx, runner).await?;
 
-    // Stage 3: Pushed — about to create PR
-    persist_checkpoint(
+    // Stage 3: Push the daemon branch, then record the remote OID.
+    let push_out = push_and_finalize(ctx, runner).await?;
+    checkpoint(
         &conn,
         &ctx.run_id,
-        crate::state::queue::FinalizationStage::Pushed,
-        None,
-        None,
-        None,
+        FinalizationStage::Pushed,
+        push_out.pushed_oid.as_deref(),
     )?;
+
+    // Stage 4: Create or reuse the PR, then record the PR number.
     let pr_output = find_or_create_pr_and_finalize(ctx, client, worker_result).await?;
     // Persist the durable finalization checkpoint so the awaiting-review
     // poller can satisfy its `finalization.pr_number.is_some()` filter.
@@ -341,49 +452,34 @@ pub(crate) async fn run_code_finalize(
             branch_name: ctx.worktree.branch_name.clone(),
             result_path: worker_result_path.to_path_buf(),
             stage: crate::state::queue::FinalizationStage::PrCreated,
-            commit_oid: None,
+            commit_oid: commit_out.commit_oid.clone(),
             pr_number: pr_output.pr_number,
             pr_url: pr_output.pr_url,
         },
     )?;
-
-    // Stage 4: PrCreated — about to post completion comment
-    persist_checkpoint(
+    checkpoint(
         &conn,
         &ctx.run_id,
-        crate::state::queue::FinalizationStage::PrCreated,
-        None,
-        None,
-        None,
+        FinalizationStage::PrCreated,
+        pr_output.pr_number.map(|n| n.to_string()).as_deref(),
     )?;
 
-    // Post the completion comment but do NOT close the issue.
+    // Stage 5: Post the completion comment but do NOT close the issue.
     // The issue stays open until human review merges the PR.
-    post_completion_only(ctx, client, worker_result).await?;
-
-    // Stage 5: Commented — comment posted
-    persist_checkpoint(
+    let comment_out = post_completion_only(ctx, client, worker_result).await?;
+    checkpoint(
         &conn,
         &ctx.run_id,
-        crate::state::queue::FinalizationStage::Commented,
-        None,
-        None,
-        None,
+        FinalizationStage::Commented,
+        comment_out.comment_id.map(|n| n.to_string()).as_deref(),
     )?;
 
     // Transition queue entry to AwaitingReview so the polling
     // loop can track the PR merge status.
     store.complete_awaiting_review(&ctx.issue.key)?;
 
-    // Stage 6: AwaitingReview — waiting for human merge
-    persist_checkpoint(
-        &conn,
-        &ctx.run_id,
-        crate::state::queue::FinalizationStage::AwaitingReview,
-        None,
-        None,
-        None,
-    )?;
+    // Stage 6: AwaitingReview — waiting for human merge; no new external effect.
+    checkpoint(&conn, &ctx.run_id, FinalizationStage::AwaitingReview, None)?;
 
     // Return WITHOUT Done checkpoint or close — the human
     // review lifecycle handles the terminal transition.
@@ -391,6 +487,9 @@ pub(crate) async fn run_code_finalize(
         action: crate::finalize::FinalizeAction::AwaitingReview,
         pr_url: None,
         pr_number: None,
+        commit_oid: None,
+        pushed_oid: None,
+        comment_id: None,
         idempotency_observations: vec![
             "awaiting_review".to_string(),
             format!("issue={}", ctx.issue.key.display_key()),

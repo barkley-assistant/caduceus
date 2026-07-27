@@ -120,6 +120,16 @@ pub struct FinalizeOutput {
     pub pr_url: Option<String>,
     /// GitHub PR number, if the action created or updated one.
     pub pr_number: Option<u64>,
+    /// The commit OID, after `commit_code_and_finalize` succeeds.
+    /// `None` for stages that do not produce a commit.
+    pub commit_oid: Option<String>,
+    /// The remote OID after `push_and_finalize` succeeds.
+    /// `None` for stages that do not push.
+    pub pushed_oid: Option<String>,
+    /// The GitHub comment ID after `post_completion_only` posts a
+    /// comment. `None` if no comment was posted, or if the response
+    /// body did not include an `id` field (defensive parse).
+    pub comment_id: Option<u64>,
     /// Per-step idempotency notes (e.g. "comment already posted",
     /// "branch already pushed"). The orchestrator logs these
     /// but does not retry on them.

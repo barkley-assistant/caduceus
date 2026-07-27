@@ -241,6 +241,10 @@ name = "checkpoint_crash_matrix_test"
 path = "tests/state/checkpoint_crash_matrix_test.rs"
 
 [[test]]
+name = "checkpoint_recovery_test"
+path = "tests/state/checkpoint_recovery_test.rs"
+
+[[test]]
 name = "claim_test"
 path = "tests/state/claim_test.rs"
 

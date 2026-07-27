@@ -432,6 +432,9 @@ pub fn commit_code_and_finalize(
         action: FinalizeAction::Committed,
         pr_url: None,
         pr_number: None,
+        commit_oid: Some(outcome.commit_oid.clone()),
+        pushed_oid: None,
+        comment_id: None,
         idempotency_observations: vec![
             "committed".to_string(),
             format!("oid={}", outcome.commit_oid),
