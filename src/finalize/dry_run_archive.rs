@@ -186,6 +186,9 @@ pub fn dry_run_finalize(
         action: FinalizeAction::Previewed,
         pr_url: None,
         pr_number: None,
+        commit_oid: None,
+        pushed_oid: None,
+        comment_id: None,
         idempotency_observations: vec![
             "dry-run".to_string(),
             format!("report={}", report_path.display()),

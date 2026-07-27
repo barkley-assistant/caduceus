@@ -153,6 +153,9 @@ pub async fn push_and_finalize(
         action: FinalizeAction::Pushed,
         pr_url: None,
         pr_number: None,
+        commit_oid: None,
+        pushed_oid: Some(outcome.remote_oid.clone()),
+        comment_id: None,
         idempotency_observations: vec![
             "pushed".to_string(),
             format!("branch={}", outcome.branch),
