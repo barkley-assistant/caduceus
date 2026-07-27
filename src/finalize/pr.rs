@@ -148,6 +148,7 @@ pub async fn find_or_create_pr_and_finalize(
     Ok(FinalizeOutput {
         action: FinalizeAction::PrCreated,
         pr_url: Some(pr.url.clone()),
+        pr_number: Some(pr.number),
         idempotency_observations: observations,
     })
 }

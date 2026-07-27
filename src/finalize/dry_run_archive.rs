@@ -185,6 +185,7 @@ pub fn dry_run_finalize(
     Ok(FinalizeOutput {
         action: FinalizeAction::Previewed,
         pr_url: None,
+        pr_number: None,
         idempotency_observations: vec![
             "dry-run".to_string(),
             format!("report={}", report_path.display()),

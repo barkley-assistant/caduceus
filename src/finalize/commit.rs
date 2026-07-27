@@ -431,6 +431,7 @@ pub fn commit_code_and_finalize(
     Ok(FinalizeOutput {
         action: FinalizeAction::Committed,
         pr_url: None,
+        pr_number: None,
         idempotency_observations: vec![
             "committed".to_string(),
             format!("oid={}", outcome.commit_oid),

@@ -150,6 +150,7 @@ pub async fn post_failure_comment_and_finalize(
     Ok(FinalizeOutput {
         action: FinalizeAction::Commented,
         pr_url: None,
+        pr_number: None,
         idempotency_observations: vec![format!(
             "failure_comment_posted={}",
             outcome.comment_posted
@@ -245,6 +246,7 @@ pub async fn post_investigation_comment_and_finalize(
     Ok(FinalizeOutput {
         action: FinalizeAction::InvestigationCommented,
         pr_url: None,
+        pr_number: None,
         idempotency_observations: vec![
             format!("investigation_comment_posted={}", outcome.comment_posted),
             format!("investigation_label_removed={}", outcome.label_removed),

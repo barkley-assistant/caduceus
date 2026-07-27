@@ -118,6 +118,8 @@ pub struct FinalizeOutput {
     pub action: FinalizeAction,
     /// Canonical PR URL, if the action created or updated one.
     pub pr_url: Option<String>,
+    /// GitHub PR number, if the action created or updated one.
+    pub pr_number: Option<u64>,
     /// Per-step idempotency notes (e.g. "comment already posted",
     /// "branch already pushed"). The orchestrator logs these
     /// but does not retry on them.
