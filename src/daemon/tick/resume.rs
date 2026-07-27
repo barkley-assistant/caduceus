@@ -89,7 +89,7 @@ pub(crate) fn next_stage_after(
 pub(crate) async fn run_resume_finalization(
     cfg: Config,
     services: &Services,
-    _store: &StateStore,
+    store: &StateStore,
     _meta: &MetaStore,
     client: Arc<Client>,
     claimed: ClaimedEntry,
@@ -204,7 +204,20 @@ pub(crate) async fn run_resume_finalization(
             persist_checkpoint(&conn, &ctx.run_id, Committed, None, None, None)?;
             push_and_finalize(&ctx, &runner).await?;
             persist_checkpoint(&conn, &ctx.run_id, Pushed, None, None, None)?;
-            find_or_create_pr_and_finalize(&ctx, ctx.client.as_ref(), &worker_result).await?;
+            let pr_output =
+                find_or_create_pr_and_finalize(&ctx, ctx.client.as_ref(), &worker_result).await?;
+            store.save_finalization(
+                &ctx.claim,
+                crate::state::queue::FinalizationCheckpoint {
+                    run_id: ctx.run_id.clone(),
+                    branch_name: ctx.worktree.branch_name.clone(),
+                    result_path: result_path.clone(),
+                    stage: crate::state::queue::FinalizationStage::PrCreated,
+                    commit_oid: None,
+                    pr_number: pr_output.pr_number,
+                    pr_url: pr_output.pr_url,
+                },
+            )?;
             persist_checkpoint(&conn, &ctx.run_id, PrCreated, None, None, None)?;
             post_completion_only(&ctx, ctx.client.as_ref(), &worker_result).await?;
             persist_checkpoint(&conn, &ctx.run_id, Commented, None, None, None)?;
@@ -214,7 +227,20 @@ pub(crate) async fn run_resume_finalization(
             persist_checkpoint(&conn, &ctx.run_id, Committed, None, None, None)?;
             push_and_finalize(&ctx, &runner).await?;
             persist_checkpoint(&conn, &ctx.run_id, Pushed, None, None, None)?;
-            find_or_create_pr_and_finalize(&ctx, ctx.client.as_ref(), &worker_result).await?;
+            let pr_output =
+                find_or_create_pr_and_finalize(&ctx, ctx.client.as_ref(), &worker_result).await?;
+            store.save_finalization(
+                &ctx.claim,
+                crate::state::queue::FinalizationCheckpoint {
+                    run_id: ctx.run_id.clone(),
+                    branch_name: ctx.worktree.branch_name.clone(),
+                    result_path: result_path.clone(),
+                    stage: crate::state::queue::FinalizationStage::PrCreated,
+                    commit_oid: None,
+                    pr_number: pr_output.pr_number,
+                    pr_url: pr_output.pr_url,
+                },
+            )?;
             persist_checkpoint(&conn, &ctx.run_id, PrCreated, None, None, None)?;
             post_completion_only(&ctx, ctx.client.as_ref(), &worker_result).await?;
             persist_checkpoint(&conn, &ctx.run_id, Commented, None, None, None)?;
@@ -222,7 +248,20 @@ pub(crate) async fn run_resume_finalization(
         }
         Pushed => {
             persist_checkpoint(&conn, &ctx.run_id, Pushed, None, None, None)?;
-            find_or_create_pr_and_finalize(&ctx, ctx.client.as_ref(), &worker_result).await?;
+            let pr_output =
+                find_or_create_pr_and_finalize(&ctx, ctx.client.as_ref(), &worker_result).await?;
+            store.save_finalization(
+                &ctx.claim,
+                crate::state::queue::FinalizationCheckpoint {
+                    run_id: ctx.run_id.clone(),
+                    branch_name: ctx.worktree.branch_name.clone(),
+                    result_path: result_path.clone(),
+                    stage: crate::state::queue::FinalizationStage::PrCreated,
+                    commit_oid: None,
+                    pr_number: pr_output.pr_number,
+                    pr_url: pr_output.pr_url,
+                },
+            )?;
             persist_checkpoint(&conn, &ctx.run_id, PrCreated, None, None, None)?;
             post_completion_only(&ctx, ctx.client.as_ref(), &worker_result).await?;
             persist_checkpoint(&conn, &ctx.run_id, Commented, None, None, None)?;
@@ -291,7 +330,22 @@ pub(crate) async fn run_code_finalize(
         None,
         None,
     )?;
-    find_or_create_pr_and_finalize(ctx, client, worker_result).await?;
+    let pr_output = find_or_create_pr_and_finalize(ctx, client, worker_result).await?;
+    // Persist the durable finalization checkpoint so the awaiting-review
+    // poller can satisfy its `finalization.pr_number.is_some()` filter.
+    // The PR number is the only durable link from queue entry → PR.
+    store.save_finalization(
+        &ctx.claim,
+        crate::state::queue::FinalizationCheckpoint {
+            run_id: ctx.run_id.clone(),
+            branch_name: ctx.worktree.branch_name.clone(),
+            result_path: worker_result_path.to_path_buf(),
+            stage: crate::state::queue::FinalizationStage::PrCreated,
+            commit_oid: None,
+            pr_number: pr_output.pr_number,
+            pr_url: pr_output.pr_url,
+        },
+    )?;
 
     // Stage 4: PrCreated — about to post completion comment
     persist_checkpoint(
