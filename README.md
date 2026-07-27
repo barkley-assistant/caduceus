@@ -9,7 +9,8 @@ Caduceus is a Unix daemon, shipped as a Hermes plugin, that polls
 GitHub for labeled issues, runs your AI harness against them in
 isolated worktrees, enforces hard timeouts, and finalizes the
 result as branch → push → PR → close. Linux is tier-1; macOS
-works because the supervisor is portable. Windows is not a
+compiles and runs but the supervisor's process-group kill guarantees
+are Linux-only (`prctl`, `/proc`, `setsid`). Windows is not a
 target. This is not the project for you if that's a problem.
 
 We're opinionated about three things, and the rest of this
@@ -81,8 +82,8 @@ you either.
                 └─────────────────────────────┘
 ```
 
-The daemon polls, picks at most one issue per tick, claims
-it under a host-wide flock, provisions a worktree, spawns
+The daemon polls, picks one or more issues per tick, claims each
+under a host-wide flock, provisions a worktree, spawns
 the bridge as a child of a Rust worker supervisor (not
 systemd, not a shell), waits for exit, then finalizes:
 commit, push, find-or-create the PR, post the completion
