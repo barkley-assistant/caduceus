@@ -15,9 +15,7 @@ use crate::worktree::GitRunner;
 
 use sha2::{Digest, Sha256};
 
-// ---------------------------------------------------------------------------
 // Push: idempotent, credential-scoped, remote-aware
-// ---------------------------------------------------------------------------
 
 /// Outcome of the push step. The `PushOutcome` is the
 /// orchestrator's view: the local branch is durable on
@@ -57,12 +55,11 @@ pub struct PushOutcome {
 ///    <local>` fast-forwards it.
 ///    If present and not an ancestor: returns
 ///    `CaduceusError::PushCollision`.
-/// 3. The push runs through the runner's
-///    `git_timeout_seconds`; a hanging remote is killed
-///    via the runner's process-group kill (the runner
-///    already implements the cancellation contract from
-///    Task 4.1).
-/// 4. The PAT is **never** placed in arguments, URLs, or
+    /// 3. The push runs through the runner's
+    ///    `git_timeout_seconds`; a hanging remote is killed
+    ///    via the runner's process-group kill (the runner
+    ///    already implements the cancellation contract).
+    /// 4. The PAT is **never** placed in arguments, URLs, or
 ///    environment. The runner's credential allowlist
 ///    handles authentication; the function only passes
 ///    the branch ref name.

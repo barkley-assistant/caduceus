@@ -15,10 +15,6 @@ use crate::worktree::GitRunner;
 
 use sha2::{Digest, Sha256};
 
-// ---------------------------------------------------------------------------
-// Reconcile helpers (Task 4.2 — FINAL-001)
-// ---------------------------------------------------------------------------
-
 /// Reconcile a push effect against remote state. Queries the
 /// remote branch via `ls-remote` and compares the OID against
 /// the local checkpoint marker.

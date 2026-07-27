@@ -18,12 +18,10 @@ use crate::github::issue::IssueKey;
 use crate::infra::config::Config;
 use crate::infra::error::{scrub, CaduceusError, CaduceusResult};
 
-// ---------------------------------------------------------------------------
 // Test-only Config helper. `Config::test_defaults` is documented as the
 // canonical root-anchored builder, but `find_main_clone` and the runner
 // only need a couple of fields; this keeps the inline tests focused on
 // pure logic.
-// ---------------------------------------------------------------------------
 
 impl Config {
     #[doc(hidden)]

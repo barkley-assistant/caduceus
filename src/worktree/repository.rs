@@ -18,10 +18,6 @@ use crate::github::issue::IssueKey;
 use crate::infra::config::Config;
 use crate::infra::error::{scrub, CaduceusError, CaduceusResult};
 
-// ---------------------------------------------------------------------------
-// Repository discovery
-// ---------------------------------------------------------------------------
-
 /// Outcome of [`find_main_clone`]: the resolved on-disk clone
 /// plus the metadata the daemon needs to create worktrees off
 /// it.

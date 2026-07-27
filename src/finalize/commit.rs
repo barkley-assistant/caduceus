@@ -15,9 +15,7 @@ use crate::worktree::GitRunner;
 
 use sha2::{Digest, Sha256};
 
-// ---------------------------------------------------------------------------
 // Code result finalization: inspect, validate, commit
-// ---------------------------------------------------------------------------
 
 /// Finalization checkpoint stage. The checkpoint is the
 /// durable state the orchestrator persists between
@@ -52,10 +50,9 @@ pub struct CommitOutcome {
 pub const WORKER_CONTROL_FILE_NAMES: &[&str] = &["worker-result.json"];
 
 /// Default identity used by the daemon when committing
-/// worker results. The values match the documented
-/// "configured daemon identity" wording in Task 6.1; the
-/// contract treats them as authoritative until Phase 6
-/// adds operator-tunable identity fields.
+/// worker results. The contract treats these values as
+/// authoritative until operator-tunable identity fields are
+/// added.
 pub const DEFAULT_GIT_USER_NAME: &str = "Caduceus Daemon";
 pub const DEFAULT_GIT_USER_EMAIL: &str = "caduceus@daemon.local";
 
@@ -125,7 +122,8 @@ pub fn commit_code_result(
         // `canonicalize` and verify it stays inside the
         // worktree root. This catches symlink-escape attacks
         // that use absolute or `..` paths that resolve outside
-        // the worktree (AC-03).
+        // the worktree (worker changes must stay inside the
+        // worktree).
         let full_path = ctx.worktree.path.join(&entry.path);
         let canonical_worktree =
             std::fs::canonicalize(&ctx.worktree.path).unwrap_or_else(|_| ctx.worktree.path.clone());

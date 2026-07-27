@@ -16,10 +16,10 @@ use crate::scheduler::circuit::{CircuitState, ExhaustedEntry};
 
 /// Refuse any request to enable auto-merge on a pull request.
 ///
-/// This is the runtime defence for AC-04 ("Never auto-merge").
-/// The grep-time evidence (`grep -RE '/pulls/.*/merge' src/`)
-/// must return zero production hits; this function is the one
-/// explicit refuse-list entry in the GitHub client.
+/// This is the runtime defence for the "Never auto-merge"
+/// contract. The grep-time evidence (`grep -RE '/pulls/.*/merge'
+/// src/`) must return zero production hits; this function is the
+/// one explicit refuse-list entry in the GitHub client.
 pub fn refuse_auto_merge() -> CaduceusResult<()> {
     Err(CaduceusError::Other(
         "auto-merge is refused: human review is required for all PR merges \

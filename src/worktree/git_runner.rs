@@ -18,9 +18,7 @@ use crate::github::issue::IssueKey;
 use crate::infra::config::Config;
 use crate::infra::error::{scrub, CaduceusError, CaduceusResult};
 
-// ---------------------------------------------------------------------------
 // GitRunner — the single entry point for every git subprocess.
-// ---------------------------------------------------------------------------
 
 /// Cap on captured stdout/stderr per invocation. The runner truncates
 /// anything longer than this and appends a `...<truncated N bytes>`
@@ -562,10 +560,13 @@ fn write_credential_helper(fd: &std::os::unix::io::OwnedFd) -> Option<std::path:
 ///
 /// The following hardening is applied:
 /// * Ambient config neutralisation: `-c core.hooksPath=/dev/null`
-///   (prepended, AC-04), `GIT_CONFIG_NOSYSTEM=1` (env, AC-04),
-///   `GIT_DIR`/`GIT_WORK_TREE` set from `cwd` (AC-04).
+///   (prepended so hooks can never fire), `GIT_CONFIG_NOSYSTEM=1`
+///   (env, suppressing system gitconfig), `GIT_DIR`/`GIT_WORK_TREE`
+///   set from `cwd` (discarding ambient repo pointers).
 /// * Credential broker: `GIT_ASKPASS` and `GIT_ASKPASS_FD` set
-///   when *credential_fd* is `Some` (AC-05).
+///   when *credential_fd* is `Some`, so the PAT is delivered
+///   through a private fd and never appears in environment
+///   variables or command-line arguments.
 fn build_command(
     args: &[&OsStr],
     cwd: Option<&Path>,
