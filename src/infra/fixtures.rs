@@ -2,7 +2,7 @@
 //! the Python bridge, and the Rust daemon must agree on.
 //!
 //! These lists are the **single source of truth** for cross-document
-//! pinning under Task 8.1. Public docs, the bridge Python module, and
+//! pinning. Public docs, the bridge Python module, and
 //! the daemon's `Config` all derive their names from this module.
 //!
 //! The companion test (`tests/architecture/docs_contract_test.rs`) loads

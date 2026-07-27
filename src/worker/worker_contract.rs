@@ -23,9 +23,9 @@
 //! but the finalization path ignores them. Code tickets require
 //! meaningful repository changes later in finalize.
 //!
-//! The deny-by-default worker environment lives here too. Task 5.2
-//! pins [`sanitized_env`] as the single allowlist-and-denylist
-//! authority and [`spawn`] as the canonical spawn that calls
+//! The deny-by-default worker environment lives here too.
+//! [`sanitized_env`] is the single allowlist-and-denylist
+//! authority and [`spawn`] is the canonical spawn that calls
 //! [`std::process::Command::env_clear`] before injecting the
 //! sanitized env. The supervisor (`worker_supervisor`) sits on top
 //! of this surface.
@@ -304,9 +304,7 @@ pub fn spawn(
     Ok(cmd)
 }
 
-// ---------------------------------------------------------------------------
 // Deny / allow helpers
-// ---------------------------------------------------------------------------
 
 /// Return true when *name* (an `OsStr`) is a credential or
 /// daemon-internal secret the worker must never see.

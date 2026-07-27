@@ -15,9 +15,7 @@ use crate::worktree::GitRunner;
 
 use sha2::{Digest, Sha256};
 
-// ---------------------------------------------------------------------------
 // Pull request: find or create, idempotent
-// ---------------------------------------------------------------------------
 
 /// Find or create the pull request for the daemon branch.
 ///

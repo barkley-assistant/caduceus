@@ -13,11 +13,6 @@ use sha2::{Digest, Sha256};
 use crate::github::issue::IssueKey;
 use crate::infra::error::{CaduceusError, CaduceusResult};
 
-// -----------------------------------------------------------------------
-// DaemonLock — nonblocking exclusive lock for the entire tick.
-// CONTRACTS.md invariant #1.
-// -----------------------------------------------------------------------
-
 /// Filename of the daemon-wide tick lock. Distinct from
 /// `STATE_LOCK_FILENAME` (which guards state-store mutations); the
 /// daemon lock is held for an entire cron tick.

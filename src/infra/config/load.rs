@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 use crate::infra::error::{CaduceusError, CaduceusResult};
 
 // Resolution chain
-// ---------------------------------------------------------------------------
 
 /// Where the configuration came from. Used in error messages so the
 /// operator can tell which level of the chain produced the failure.

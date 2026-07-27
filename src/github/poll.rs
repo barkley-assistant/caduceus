@@ -1,10 +1,11 @@
-//! Polling: discover watched repos and merge labeled open issues into the
-//! queue. Phase 2 implements the body; the stub defines the typed surface.
+//! Polling: discover watched repositories and merge labeled open issues
+//! into the queue.
 //!
-//! The repository discovery path is implemented in Task 2.2; the
-//! labeled-issue poll is implemented in Task 2.3; the trigger-label
-//! verification lives in Task 2.5. The module exposes the public
-//! surface owned by Phase 2; per-task additions are layered on top.
+//! [`discover_watched_repos`] returns either the configured repo list or the
+//! user's accessible, non-archived repositories. [`poll_code`] and
+//! [`poll_investigation`] each poll one trigger label across all watched
+//! repos. [`merge_outcomes`] resolves the rare case where an issue carries
+//! both trigger labels.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -15,7 +16,7 @@ use url::Url;
 use crate::github::issue::IssueKey;
 use crate::github::{rate_limit_from_headers, Client, Response, ACCEPT_VALUE};
 
-// Preserve the historical public surface: tests reach this helper through
+// Re-exported so tests can reach the pagination helper through
 // `caduceus::poll::next_url_from_link_header`.
 pub use crate::github::link_header::next_url_from_link_header;
 use crate::infra::config::{is_valid_repo_slug, Config};
@@ -38,8 +39,7 @@ pub const ISSUES_PER_PAGE: u32 = 100;
 pub const REPOS_PER_PAGE: u32 = 100;
 
 /// One open issue surfaced by polling. The structured shape used by
-/// the daemon's queue writer (Task 3.x) and the verification flow
-/// (Task 2.5).
+/// the daemon's queue writer and the verification flow.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IssueSummary {
     pub key: IssueKey,
@@ -99,9 +99,9 @@ pub struct IssuePollOutcome {
 /// ``rel="next"`` Link header, dropping archived and disabled
 /// repositories, and capped at [`MAX_PAGES_PER_ENDPOINT`] pages.
 ///
-/// Repository discovery uses the persistent HTTP cache (Task 2.1),
-/// so repeat ticks are bandwidth-friendly. The configured bypass
-/// is fully deterministic — no cache lookup is attempted.
+/// Repository discovery uses the persistent HTTP cache, so repeat ticks
+/// are bandwidth-friendly. The configured bypass is fully
+/// deterministic — no cache lookup is attempted.
 pub async fn discover_watched_repos(client: &Client, cfg: &Config) -> CaduceusResult<Vec<String>> {
     if !cfg.watched_repos.is_empty() {
         return Ok(validated_configured_repos(&cfg.watched_repos));
@@ -155,7 +155,7 @@ async fn discover_via_api(client: &Client, max_pages: usize) -> CaduceusResult<V
         // Rate-limit responses carry `x-ratelimit-remaining: 0` plus
         // a `x-ratelimit-reset` Unix timestamp; surface them as a
         // typed RateLimited error so the meta layer can persist the
-        // observation (Task 2.4). Non-zero `remaining` (or a 429
+        // observation. Non-zero `remaining` (or a 429
         // response) is observed for cadence but does not short-circuit
         // a successful page.
         if let Some(observation) = rate_limit_from_headers(&response.headers, response.status) {
@@ -241,10 +241,6 @@ struct RepoObject {
     #[serde(default)]
     disabled: bool,
 }
-
-// ---------------------------------------------------------------------------
-// Task 2.3 — labeled-issue poll
-// ---------------------------------------------------------------------------
 
 /// Poll for label `ticket_label_code` across every watched repo.
 /// Returns a `Vec<IssueSummary>` and a `Vec<IssuePollDiagnostic>`;

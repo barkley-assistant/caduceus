@@ -13,12 +13,6 @@ use sha2::{Digest, Sha256};
 use crate::github::issue::IssueKey;
 use crate::infra::error::{CaduceusError, CaduceusResult};
 
-// -----------------------------------------------------------------------
-// acquire_next_locked — the body of acquire_next, factored out so
-// the retry-on-race path stays linear and the borrow on `state`
-// stays scoped to a single iteration.
-// -----------------------------------------------------------------------
-
 pub(crate) fn acquire_next_locked(
     store: &StateStore,
     claims_dir: &Path,
@@ -159,9 +153,6 @@ pub(crate) fn set_mode_0600(file: &File) -> CaduceusResult<()> {
 pub(crate) fn set_mode_0600(_file: &File) -> CaduceusResult<()> {
     Ok(())
 }
-// -----------------------------------------------------------------------
-// Free-standing helpers
-// -----------------------------------------------------------------------
 
 pub(crate) fn matches_token(entry: &QueueEntry, claim: &ClaimToken) -> bool {
     if entry.phase != Phase::InProgress {
@@ -283,10 +274,10 @@ pub fn unlink_claim_best_effort(claims_dir: &Path, claim: &ClaimToken) {
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
         Err(err) => {
-            // Per CONTRACTS.md / Task 3.1: "a claim-unlink failure
-            // is reported without rolling back the durable phase
-            // and is repaired idempotently by the reaper." We log
-            // and continue; the reaper will pick it up.
+            // Per CONTRACTS.md: a claim-unlink failure is reported
+            // without rolling back the durable phase and is repaired
+            // idempotently by the reaper. We log and continue; the
+            // reaper will pick it up.
             tracing::warn!(error = %err, path = %path.display(), "claim unlink failed; reaper will clean up");
         }
     }

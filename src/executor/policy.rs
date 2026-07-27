@@ -235,10 +235,6 @@ fn resolve_secret_grants(
     // records which grants are honoured.
     let mut handles = Vec::new();
     for grant_name in &config.secret_grants {
-        // Create an ephemeral file for each granted secret.
-        // The value is resolved from the daemon's secret store.
-        // For now, we write a placeholder that the daemon's
-        // secret resolution will replace.
         let handle =
             EphemeralSecretFile::write(&[(grant_name.clone(), format!("${{{grant_name}}}"))])?;
         handles.push(handle);
@@ -246,6 +242,4 @@ fn resolve_secret_grants(
     Ok(handles)
 }
 
-// ---------------------------------------------------------------------------
 // Tests live in `tests/executor/policy_test.rs`.
-// ---------------------------------------------------------------------------

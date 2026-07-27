@@ -32,9 +32,7 @@ use crate::worker::prompt::{build_prompt, write_prompt};
 use crate::worker::WorkerResult;
 use crate::worktree::{create as create_worktree, find_main_clone, GitRunner};
 
-// ---------------------------------------------------------------------------
 // Per-claim work loop
-// ---------------------------------------------------------------------------
 
 pub(crate) struct Outcome304(pub(crate) bool);
 
@@ -191,9 +189,8 @@ pub(crate) async fn run_claim(
     }
 
     // 13. Spawn the worker through the executor trait object. The
-    // factory in `Services::production` selected the matching
-    // concrete executor (TrustedHostExecutor today, OciExecutor
-    // stub once Task 6.2 lands) based on `cfg.executor_mode`.
+    // factory in `Services::production` selected the concrete
+    // executor based on `cfg.executor_mode`.
     let self_exe = std::env::current_exe().map_err(|err| CaduceusError::Worktree {
         context: "tick",
         stderr: format!("current_exe: {err}"),
@@ -227,7 +224,9 @@ pub(crate) async fn run_claim(
     }
     let _ = services.clock.now();
 
-    // 14. Reject when worker exited nonzero (RUN-001 AC-04).
+    // 14. Reject a worker that exited nonzero without being
+    //     signalled: the result is invalid, so treat it as a
+    //     worker-attributable failure through the retry budget.
     if !supervisor_outcome.signaled && supervisor_outcome.status != 0 {
         let err = CaduceusError::Worker {
             context: "result",
@@ -240,7 +239,8 @@ pub(crate) async fn run_claim(
         return handle_infra_or_retry(cfg, guard, &err, class).await;
     }
 
-    // 15. Read the worker result from the worktree (RUN-001 AC-02).
+    // 15. Read the worker result from the worktree; a missing
+    //     or unparseable result is a worker-attributable failure.
     let worktree_result_path = worktree.path.join("worker-result.json");
     let worker_result =
         match crate::worker::parse_result_file(&worktree_result_path, &claimed.entry.key) {
@@ -255,7 +255,8 @@ pub(crate) async fn run_claim(
             }
         };
 
-    // 16. Archive the result before finalization (RUN-001 AC-03).
+    // 16. Archive the parsed result before finalization so the
+    //     daemon can resume from it later.
     let archive_path = match archive_worker_result(&worktree_result_path, &cfg.state_dir, &run_id) {
         Ok(p) => p,
         Err(err) => {

@@ -33,7 +33,7 @@ pub enum ReconcileResult {
 /// Generate a deterministic operation ID for a given run
 /// and stage. The ID is `sha256(run_id + ":" + stage)` and
 /// is used as the durable operation ID stamped before every
-/// external effect (FINAL-001 contract, Task 4.2).
+/// external effect (FINAL-001 contract).
 ///
 /// The hash is deterministic: the same inputs always produce
 /// the same output, so recovery can reconstruct the expected
@@ -69,30 +69,22 @@ pub struct FinalizeRequest {
     pub worktree_path: PathBuf,
 }
 
-/// Inputs that every finalization stage consumes. The struct
-/// is the canonical argument to the Phase 6
-/// implementation; Task 5.0 only defines the type so
-/// earlier tasks can compile against it.
+/// Inputs that every finalization stage consumes.
 ///
-/// `client` is the shared `Arc<Client>` produced by the
-/// daemon's [`crate::daemon::orchestration::Services::production`]
-/// helper. Phase 6 already owns the concrete HTTP surface; the
-/// shared `Arc` lets the daemon, the status reporter, and the
-/// finalization stages share one connection pool + persistent
-/// cache without rebuilding the client three times. `config`
-/// is the live daemon config, and `repository` is the
-/// cloned-repo metadata. `issue` is the fetched issue detail;
-/// `claim`/`run_id`/`worktree` carry the active run's
-/// identity. `result` is the worker's output — the same
-/// [`FinalizeRequest`] payload the worker writes to
+/// `client` is the shared `Arc<Client>` produced by the daemon.
+/// Reusing the same client lets the daemon and the finalization
+/// stages share one connection pool + persistent cache without
+/// rebuilding the client for every stage. `config` is the live
+/// daemon config, and `repository` is the cloned-repo metadata.
+/// `issue` is the fetched issue detail; `claim`/`run_id`/`worktree`
+/// carry the active run's identity. `result` is the worker's output
+/// — the same [`FinalizeRequest`] payload the worker writes to
 /// `worker-result.json`.
 #[derive(Clone)]
 pub struct FinalizeContext {
-    /// Shared GitHub API client. The `Arc<Client>` is the
-    /// production value; the previous `()` placeholder is
-    /// removed because Phase 7's orchestrator shares the
-    /// same client through the [`crate::daemon::orchestration::Services`]
-    /// bundle.
+    /// Shared GitHub API client. The same `Arc<Client>` is reused
+    /// from the daemon services bundle so the daemon and the
+    /// finalization stages share one connection pool.
     pub client: Arc<Client>,
     /// Live daemon config (allowlist, timeouts, …).
     pub config: Config,
@@ -105,8 +97,7 @@ pub struct FinalizeContext {
     pub claim: crate::state::queue::ClaimToken,
     /// Active run id.
     pub run_id: String,
-    /// Active worktree handle. Task 5.0 keeps the existing
-    /// `Worktree` struct from `worktree.rs`.
+    /// Active worktree handle.
     pub worktree: crate::worktree::Worktree,
     /// Worker output (`worker-result.json`).
     pub result: FinalizeRequest,
@@ -268,9 +259,7 @@ pub fn terminal_from_voice(err: VoiceError) -> CaduceusError {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Public-voice-driven PR body and title rendering
-// ---------------------------------------------------------------------------
 
 /// Hard cap on the rendered PR body in bytes. The daemon
 /// never emits a body larger than this; the validator's

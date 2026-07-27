@@ -32,10 +32,6 @@ use rusqlite::{params, Connection};
 use crate::daemon::orchestration::Clock;
 use crate::infra::error::{CaduceusError, CaduceusResult};
 
-// ---------------------------------------------------------------------------
-// CircuitState
-// ---------------------------------------------------------------------------
-
 /// The state of a single circuit breaker.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CircuitState {
@@ -77,10 +73,6 @@ impl FromStr for CircuitState {
     }
 }
 
-// ---------------------------------------------------------------------------
-// CircuitScope
-// ---------------------------------------------------------------------------
-
 /// The scope of a circuit breaker — either a provider or a
 /// repository.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -117,10 +109,6 @@ impl FromStr for CircuitScope {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// CircuitConfig
-// ---------------------------------------------------------------------------
 
 /// Configuration for a circuit breaker.
 #[derive(Clone, Debug)]
@@ -161,10 +149,6 @@ impl CircuitConfig {
     }
 }
 
-// ---------------------------------------------------------------------------
-// CircuitRecord
-// ---------------------------------------------------------------------------
-
 /// A row from the `circuit_state` table.
 #[derive(Clone, Debug)]
 pub struct CircuitRecord {
@@ -176,10 +160,6 @@ pub struct CircuitRecord {
     pub opened_at: Option<i64>,
     pub last_probe_at: Option<i64>,
 }
-
-// ---------------------------------------------------------------------------
-// AdmissionResult
-// ---------------------------------------------------------------------------
 
 /// The outcome of a [`CircuitStore::try_admit`] call.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -202,10 +182,6 @@ pub enum AdmissionResult {
     NoCircuit,
 }
 
-// ---------------------------------------------------------------------------
-// ExhaustedEntry
-// ---------------------------------------------------------------------------
-
 /// A circuit that has been open longer than the max degraded age.
 #[derive(Clone, Debug)]
 pub struct ExhaustedEntry {
@@ -215,10 +191,6 @@ pub struct ExhaustedEntry {
     pub last_failure_at: Option<i64>,
     pub opened_at: Option<i64>,
 }
-
-// ---------------------------------------------------------------------------
-// CircuitStore
-// ---------------------------------------------------------------------------
 
 /// SQLite-backed circuit breaker store.
 ///
@@ -485,10 +457,6 @@ impl CircuitStore {
         &self.conn
     }
 
-    // -----------------------------------------------------------------------
-    // Internal helpers
-    // -----------------------------------------------------------------------
-
     fn read_record(
         conn: &Connection,
         scope: &str,
@@ -521,10 +489,6 @@ impl CircuitStore {
         Ok(record)
     }
 }
-
-// ---------------------------------------------------------------------------
-// Inline tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod inline_tests {

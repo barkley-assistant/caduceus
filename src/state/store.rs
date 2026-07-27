@@ -28,24 +28,24 @@ use crate::infra::error::{CaduceusError, CaduceusResult};
 /// Current schema version. Bumping it is a breaking change — the
 /// store refuses to open a database with a *higher* version.
 ///
-/// ## v2 (Task 4.2)
+/// ## v2
 ///
 /// - `checkpoints` table gains `operation_id TEXT` and
 ///   `remote_marker TEXT` columns for durable operation IDs and
 ///   remote reconciliation markers. Existing rows get NULL.
 ///
-/// ## v3 (Task 5.1)
+/// ## v3
 ///
 /// - `leases` table for per-issue fenced leases with fencing
 ///   tokens, owner tracking, and expiry.
 ///
-/// ## v4 (Task 5.3)
+/// ## v4
 ///
 /// - `circuit_state` table replaces dead `circuit_breakers` table.
 ///   Keyed by `(scope, scope_id)` for per-provider and
 ///   per-repository circuit state.
 ///
-/// ## v5 (Task 6.2)
+/// ## v5
 ///
 /// - `oci_runs` table for per-container lifecycle state tracking.
 ///   Keyed by `run_id` with indices on `container_id`, `daemon_id`,
@@ -55,9 +55,7 @@ pub const SCHEMA_VERSION: i64 = 5;
 /// Name of the SQLite database file inside the state directory.
 pub const DB_FILENAME: &str = "state.db";
 
-// ---------------------------------------------------------------------------
-// Schema DDL (applied atomically at open time)
-// ---------------------------------------------------------------------------
+// Schema DDL (applied atomically at open time).
 
 const SCHEMA_SQL: &str = "
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -140,9 +138,7 @@ CREATE INDEX IF NOT EXISTS idx_oci_runs_daemon_id ON oci_runs(daemon_id);
 CREATE INDEX IF NOT EXISTS idx_oci_runs_state ON oci_runs(state);
 ";
 
-// ---------------------------------------------------------------------------
-// Open / initialise
-// ---------------------------------------------------------------------------
+// Open / initialise.
 
 /// Open or create a versioned SQLite database at `path`. If the
 /// database is new it is initialised with the current schema. If
@@ -282,10 +278,6 @@ fn record_version_in_tx(tx: &Transaction, db_path: &Path) -> CaduceusResult<()> 
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Migration: v1 → v2
-// ---------------------------------------------------------------------------
-
 /// Migrate from schema v1 to v2 by adding the `operation_id` and
 /// `remote_marker` columns to the `checkpoints` table. Both columns
 /// are nullable so existing rows get NULL defaults.
@@ -304,10 +296,6 @@ fn migrate_v1_to_v2(conn: &Connection, db_path: &Path, from_version: i64) -> Cad
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Migration: v2 → v3
-// ---------------------------------------------------------------------------
-
 /// Migrate from schema v2 to v3. The `leases` table is created by
 /// `apply_schema`, so this is a no-op migration that exists for
 /// the migration wiring convention.
@@ -321,10 +309,6 @@ fn migrate_v2_to_v3(conn: &Connection, db_path: &Path, from_version: i64) -> Cad
     let _ = db_path;
     Ok(())
 }
-
-// ---------------------------------------------------------------------------
-// Migration: v3 → v4
-// ---------------------------------------------------------------------------
 
 /// Migrate from schema v3 to v4. Drops the dead `circuit_breakers`
 /// table and creates the new `circuit_state` table via `apply_schema`.
@@ -340,10 +324,6 @@ fn migrate_v3_to_v4(conn: &Connection, db_path: &Path, from_version: i64) -> Cad
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Migration: v4 → v5
-// ---------------------------------------------------------------------------
-
 /// Migrate from schema v4 to v5. The `oci_runs` table is created by
 /// `apply_schema`, so this is a no-op migration that exists for the
 /// migration wiring convention.
@@ -358,19 +338,11 @@ fn migrate_v4_to_v5(conn: &Connection, db_path: &Path, from_version: i64) -> Cad
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Convenience accessors
-// ---------------------------------------------------------------------------
-
 /// Open or create the database under `state_dir`.
 pub fn open_in(state_dir: &Path) -> CaduceusResult<Connection> {
     let path = state_dir.join(DB_FILENAME);
     open(&path)
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

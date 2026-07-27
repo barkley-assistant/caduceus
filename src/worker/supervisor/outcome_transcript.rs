@@ -15,9 +15,7 @@ use tokio::process::{Child, Command as TokioCommand};
 use crate::github::issue::IssueKey;
 use crate::infra::error::{CaduceusError, CaduceusResult};
 
-// ---------------------------------------------------------------------------
 // Worker outcome + transcript
-// ---------------------------------------------------------------------------
 
 /// Outcome the daemon sees when the supervisor returns. The
 /// daemon's `spawn` returns this to the orchestration loop.
@@ -163,9 +161,7 @@ pub fn truncate_transcript(path: &Path, max_bytes: u64) -> CaduceusResult<bool> 
     Ok(true)
 }
 
-// ---------------------------------------------------------------------------
 // BoundedTranscriptWriter — bounded stderr capture
-// ---------------------------------------------------------------------------
 
 /// Bounded writer that wraps a transcript file with a byte cap.
 /// Writes that would exceed the cap trigger truncation; subsequent

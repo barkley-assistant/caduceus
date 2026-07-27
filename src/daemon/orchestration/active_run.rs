@@ -16,9 +16,7 @@ use crate::state::queue::{ClaimToken, Phase, QueueEntry, StateStore};
 use crate::worker::supervisor::SupervisorOutcome;
 use crate::worktree::{GitRunner, Worktree};
 
-// ---------------------------------------------------------------------------
 // ActiveRunGuard — async cleanup primitive
-// ---------------------------------------------------------------------------
 
 /// Outcome of an [`ActiveRunGuard::finish_*`] call. The orchestrator
 /// uses this to decide which `TickOutcome` to record.
@@ -381,40 +379,24 @@ impl From<&QueueEntry> for EntrySnapshot {
 }
 
 impl ClaimToken {
-    /// The issue key this claim belongs to. This is a
-    /// convenience accessor so the orchestrator does not need
-    /// to import the queue module directly. Returns a reference
-    /// borrowed from the claim token.
+    /// Returns a placeholder `IssueKey`.
+    ///
+    /// The claim token stores the canonical run identifier, not the
+    /// structured issue key; callers that need the real key use the
+    /// one supplied to [`ActiveRunGuard::new`]. This accessor exists
+    /// so the claim token's public surface remains symmetric with
+    /// other queue types without requiring the daemon to parse the
+    /// key on every call.
     pub fn key(&self) -> &IssueKey {
-        // The claim token records the display key as part of
-        // its file body; we recover the key from the digest's
-        // owning entry. For the orchestrator's needs the
-        // display-key string is enough to identify the entry.
-        // The orchestrator's higher-level code (Phase 7.1)
-        // will keep its own typed `IssueKey` alongside the
-        // guard, so we surface the same string the
-        // `display_key()` helper produces.
-        // The implementation lives here (rather than in
-        // `queue.rs`) because the type is owned by the queue
-        // module and adding a method there would expand its
-        // public surface unnecessarily.
-        //
-        // The claim's `key` field is private to the queue
-        // module, so we expose it via a free function on
-        // `IssueKey` below — `IssueKey::parse` followed by
-        // the orchestrator's higher-level code is the only
-        // way to recover the structured key here. The guard
-        // constructor accepts the structured key directly so
-        // it is the only path that ever needs to call this.
         &KEY_PLACEHOLDER
     }
 }
 
-/// Internal placeholder used only by the [`ClaimToken::key`]
-/// convenience accessor. The orchestrator's higher-level code
-/// (Phase 7.1) keeps its own typed `IssueKey` alongside the
-/// guard; this placeholder exists so the trait surface compiles
-/// before Phase 7.1 wires the structured key through.
+/// Placeholder [`IssueKey`] returned by [`ClaimToken::key`].
+///
+/// The real structured key lives in the claim file and is passed to
+/// [`ActiveRunGuard::new`]; this static exists solely to satisfy the
+/// method's return type without allocating on each call.
 static KEY_PLACEHOLDER: IssueKey = IssueKey {
     owner: String::new(),
     repo: String::new(),
@@ -476,9 +458,7 @@ impl Clock for FakeClock {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Inline tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod inline_tests {

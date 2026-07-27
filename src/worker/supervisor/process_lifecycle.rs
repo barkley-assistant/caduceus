@@ -15,9 +15,7 @@ use tokio::process::{Child, Command as TokioCommand};
 use crate::github::issue::IssueKey;
 use crate::infra::error::{CaduceusError, CaduceusResult};
 
-// ---------------------------------------------------------------------------
 // Hidden command name
-// ---------------------------------------------------------------------------
 
 /// Hidden command name that the binary recognises before public
 /// Clap parsing. The token is reserved and must never appear in
@@ -35,13 +33,10 @@ pub const PROTOCOL_VERSION: u32 = 1;
 /// on every Unix we support while leaving room for the
 /// envelope.
 pub const MAX_FRAME_BYTES: usize = 64 * 1024;
-// ---------------------------------------------------------------------------
 // Subreaper + setsid + signal helpers (safe wrappers via nix)
-// ---------------------------------------------------------------------------
 
 #[cfg(target_os = "linux")]
-#[allow(dead_code)]
-pub(crate) fn try_set_subreaper() -> CaduceusResult<()> {
+fn try_set_subreaper() -> CaduceusResult<()> {
     nix::sys::prctl::set_child_subreaper(true).map_err(|err| CaduceusError::Worker {
         context: "supervisor:subreaper",
         stderr: format!("prctl(PR_SET_CHILD_SUBREAPER) failed: {err}"),
@@ -49,7 +44,7 @@ pub(crate) fn try_set_subreaper() -> CaduceusResult<()> {
 }
 
 #[cfg(not(target_os = "linux"))]
-pub(crate) fn try_set_subreaper() -> CaduceusResult<()> {
+fn try_set_subreaper() -> CaduceusResult<()> {
     Ok(())
 }
 
@@ -106,11 +101,8 @@ pub(crate) fn parse_stat_parent(stat: &str) -> Option<i32> {
     Some(ppid)
 }
 
-// ---------------------------------------------------------------------------
 // Process-identity helpers — read /proc/<pid>/stat starttime to detect PID
-// reuse before signalling. Used by the deadline-enforcement machinery in
-// later work units.
-// ---------------------------------------------------------------------------
+// reuse before signalling.
 
 /// Parse field 22 (starttime in clock ticks) from a `/proc/<pid>/stat`
 /// string. Returns `None` if the line is malformed.
@@ -184,9 +176,7 @@ pub fn kill_pgid(pgid: i32, signal: i32) {
     let _ = killpg(Pid::from_raw(pgid), sig);
 }
 
-// ---------------------------------------------------------------------------
 // Hidden command dispatch + env construction
-// ---------------------------------------------------------------------------
 
 /// Build the `caduceus __worker-supervisor` command for *args*.
 /// The hidden command is dispatched before Clap parsing so it

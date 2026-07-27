@@ -90,9 +90,5 @@ pub use crate::finalize::{
     DEFAULT_COMMENT_MAX_BYTES, DEFAULT_PR_BODY_MAX_BYTES, DEFAULT_PR_TITLE_MAX_BYTES,
 };
 
-/// Backwards-compatible alias for [`Client`]. Earlier code paths
-/// (and Task 6.6's voice-rule tests) refer to the HTTP client as
-/// `HttpClient`; renaming the type would have rippled into tests
-/// outside this task's ownership. The alias keeps the surface
-/// stable while Phase 2 is in flight.
+/// Backwards-compatible alias for [`Client`].
 pub type HttpClient = Client;

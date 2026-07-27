@@ -1,9 +1,9 @@
 //! `caduceus migrate-state` and corruption-marker recovery.
 //!
-//! Task 9.1 fills in the legacy v0 import path, dry-run rollout,
+//! This module owns the legacy v0 import path, dry-run rollout,
 //! corrupt-state and corrupt-metadata recovery, and the canonical
 //! atomic-install sequence that protects callers from half-written
-//! state. The module owns the public surface the CLI calls into:
+//! state. The public surface the CLI calls into is:
 //!
 //! - [`run`] — the import path used by `caduceus migrate-state`.
 //! - [`recover_state`] — the corruption-marker recovery path used
@@ -567,10 +567,6 @@ pub fn recover_sqlite_state(
         cleared_marker: cleared,
     })
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

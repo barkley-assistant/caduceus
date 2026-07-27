@@ -3,8 +3,8 @@
 //! Secrets travel through a mode-0600 temporary file whose path is
 //! passed as `--env-file` to the OCI CLI. The `SecretHandle`'s `Drop`
 //! impl deletes the file on every exit path (success, failure, cancel,
-//! panic). The secret value NEVER appears in argv, logs, or Debug
-//! output (AC-04).
+//! panic). The secret value never appears in argv, logs, or Debug
+//! output.
 
 use std::fs;
 use std::io::Write;
@@ -12,10 +12,6 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
 use crate::infra::error::{CaduceusError, CaduceusResult};
-
-// ---------------------------------------------------------------------------
-// EphemeralSecretFile
-// ---------------------------------------------------------------------------
 
 /// Factory for creating ephemeral mode-0600 secret files.
 #[derive(Debug)]
@@ -63,10 +59,6 @@ fn write_secret_file(key: &str, value: &str) -> CaduceusResult<PathBuf> {
     Ok(path)
 }
 
-// ---------------------------------------------------------------------------
-// SecretHandle
-// ---------------------------------------------------------------------------
-
 /// Handle to ephemeral secret files. The `Drop` impl deletes every
 /// file on any exit path (including panic).
 ///
@@ -105,10 +97,6 @@ impl Drop for SecretHandle {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod inline_tests {

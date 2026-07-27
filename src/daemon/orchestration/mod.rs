@@ -6,10 +6,9 @@
 //! * [`Services`] — the bundle of dependency-injection traits
 //!   (`clock`, `github`, `git`, `executor`) used only where deterministic
 //!   testing requires them. Production adapters are thin wrappers
-//!   around the concrete types owned by [`crate::config`],
+//!   around the concrete types owned by [`crate::infra::config`],
 //!   [`crate::github`], [`crate::worktree`], and
 //!   [`crate::worker::supervisor`].
-//!   [`crate::worker_supervisor`].
 //! * [`FailureClass`] and [`classify_error`] — the exhaustive
 //!   mapping from a [`CaduceusError`] to the four failure classes
 //!   the orchestrator cares about (`Worker`, `Infrastructure`,
