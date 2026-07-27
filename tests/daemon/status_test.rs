@@ -576,7 +576,13 @@ fn report_json_includes_app_version_from_cargo_pkg_version() {
     std::fs::create_dir_all(&cfg.state_dir).expect("state dir");
     let (output, _diag) = report(cfg.state_dir.as_path(), true).expect("report");
     let parsed: serde_json::Value = serde_json::from_str(&output).expect("valid json");
-    assert_eq!(parsed["app_version"].as_str(), Some(env!("CARGO_PKG_VERSION")));
+    assert_eq!(
+        parsed["app_version"].as_str(),
+        Some(env!("CARGO_PKG_VERSION"))
+    );
     assert_eq!(parsed["version"].as_str(), Some(STATUS_SCHEMA_VERSION));
-    assert_eq!(parsed["report"]["version"].as_str(), Some(STATUS_SCHEMA_VERSION));
+    assert_eq!(
+        parsed["report"]["version"].as_str(),
+        Some(STATUS_SCHEMA_VERSION)
+    );
 }
