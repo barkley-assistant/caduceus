@@ -549,6 +549,7 @@ pub fn report(state_dir: &Path, json: bool) -> CaduceusResult<(String, Option<St
         // "no state yet" / "corrupt" cases without
         // parsing the human format.
         let payload = serde_json::json!({
+            "app_version": env!("CARGO_PKG_VERSION"),
             "version": report.version,
             "state_dir": report.state_dir,
             "diagnostic": match diagnostic.as_ref() {
