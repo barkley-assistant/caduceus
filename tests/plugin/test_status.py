@@ -65,7 +65,7 @@ def test_status_slash_redacts_token_like_strings(
         "#!/usr/bin/env bash\n"
         'if [ "$1" = "status" ]; then\n'
         '  if [ "$2" = "--json" ]; then\n'
-        '    printf \'{"version":"0.1.0","last_tick":"never","last_outcome":"idle"}\'\n'
+        '    printf \'{"app_version":"0.1.0","version":"0.1.0","diagnostic":null,"report":{"version":"0.1.0","last_tick_started":null,"last_tick_finished":null,"last_outcome":"idle","phases":{"queued":0},"next_head":null,"rate_limit":null}}\'\n'
         "  fi\n"
         "  exit 0\n"
         "fi\n"
