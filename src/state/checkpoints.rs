@@ -1,10 +1,10 @@
 //! Durable finalization checkpoints — the crash-safe record of
 //! every FINAL-001 stage transition.
 //!
-//! Each checkpoint is written *before* its corresponding external
-//! effect (commit, push, PR creation, comment, close). Recovery
-//! reads the last durable checkpoint for a given `run_id` and
-//! resumes from that stage.
+//! Each checkpoint is written *after* its corresponding external
+//! effect (commit, push, PR creation, comment, close) succeeds.
+//! Recovery reads the last durable checkpoint for a given `run_id`
+//! and resumes from the next stage.
 //!
 //! The backing table is the `checkpoints` table in the SQLite
 //! state store (schema in [`crate::state::store`]).
@@ -18,11 +18,11 @@
 //!   -> AwaitingReview -> Done
 //! ```
 //!
-//! Each checkpoint is committed before beginning the next
-//! externally visible action. Recovery resumes from the last
-//! durable checkpoint and uses idempotency keys or remote
-//! reconciliation so a crash does not duplicate commits, pushes,
-//! pull requests, comments, or issue updates.
+//! Each checkpoint is committed after the corresponding external
+//! effect succeeds. Recovery resumes from the last durable
+//! checkpoint and uses idempotency keys or remote reconciliation
+//! so a crash does not duplicate commits, pushes, pull requests,
+//! comments, or issue updates.
 
 use rusqlite::{params, Connection};
 
@@ -43,13 +43,14 @@ pub struct CheckpointRow {
     /// RFC-3339 timestamp of when the checkpoint was created.
     pub created_at: String,
     /// Durable operation ID derived from the run and stage
-    /// (FINAL-001). Persisted before the external effect
-    /// fires. NULL for pre-migration checkpoints.
+    /// (FINAL-001). Persisted together with the checkpoint,
+    /// which is written *after* the external effect succeeds.
+    /// NULL for pre-migration checkpoints.
     pub operation_id: Option<String>,
     /// Exact remote marker (e.g. commit SHA, PR number,
-    /// comment ID) used for reconciliation. Persisted after
+    /// comment ID) used for reconciliation. Persisted *after*
     /// the external effect succeeds. NULL for pre-migration
-    /// checkpoints.
+    /// checkpoints and for stages with no external effect.
     pub remote_marker: Option<String>,
 }
 
@@ -71,8 +72,9 @@ impl CheckpointRow {
 /// It must be `None` or a valid JSON string.
 ///
 /// `operation_id` is the durable operation ID derived from the
-/// run and stage (FINAL-001). Persisted *before* the external
-/// effect fires.
+/// run and stage (FINAL-001). Persisted together with the
+/// checkpoint, which is written *after* the external effect
+/// succeeds.
 ///
 /// `remote_marker` is the exact remote marker (e.g. commit SHA,
 /// PR number, comment ID) persisted *after* the external effect
@@ -80,11 +82,16 @@ impl CheckpointRow {
 ///
 /// ## Crash guarantee
 ///
-/// The checkpoint is written and committed *before* the caller
-/// begins the corresponding external effect. If the daemon
-/// crashes between this write and the external effect, recovery
-/// resumes from *this* checkpoint and re-executes the effect
-/// idempotently.
+/// The checkpoint is written and committed *after* the
+/// caller finishes the corresponding external effect.
+/// If the daemon crashes between the external effect and
+/// this write, recovery resumes from the previous stage's
+/// checkpoint and re-executes the effect idempotently
+/// (the effect itself is idempotent: `git commit` on
+/// already-committed content no-ops, `git push` on an
+/// already-current ref is a no-op, the PR is found by
+/// branch name, the completion comment is found by the
+/// `<!-- automation-run:<run_id> -->` marker).
 pub fn persist_checkpoint(
     conn: &Connection,
     run_id: &str,

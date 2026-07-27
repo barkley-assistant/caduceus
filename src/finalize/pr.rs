@@ -149,6 +149,9 @@ pub async fn find_or_create_pr_and_finalize(
         action: FinalizeAction::PrCreated,
         pr_url: Some(pr.url.clone()),
         pr_number: Some(pr.number),
+        commit_oid: None,
+        pushed_oid: None,
+        comment_id: None,
         idempotency_observations: observations,
     })
 }
