@@ -452,15 +452,3 @@ fn parse_watched_repo(s: &str) -> Option<(String, String)> {
     }
     Some((owner.to_string(), repo.to_string()))
 }
-
-#[doc(hidden)]
-pub fn gc_legacy_state_dir(
-    _state_dir: &Path,
-    _older_than_days: u64,
-    _dry_run: bool,
-) -> CaduceusResult<u64> {
-    Err(CaduceusError::Worktree {
-        context: "gc",
-        stderr: "use gc(config, ...); the state-dir-only signature was retired in 4.5".to_string(),
-    })
-}

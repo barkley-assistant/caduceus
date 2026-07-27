@@ -389,5 +389,5 @@ async fn git_string(
 /// field is the only one the runner consults; everything else
 /// is filler so we can pass a reference into the runner.
 pub(crate) fn runner_inner_cfg() -> Config {
-    Config::minimal_workdir_for_runner_tests()
+    Config::test_defaults(Path::new("/tmp"))
 }

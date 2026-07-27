@@ -218,7 +218,7 @@ impl GitRunner {
     /// stream can attribute failures.
     pub async fn run(&self, operation: &'static str, args: &[&OsStr]) -> CaduceusResult<GitOutput> {
         self.run_in(
-            &Config::minimal_workdir_for_runner_tests(),
+            &Config::test_defaults(Path::new("/tmp")),
             operation,
             args,
             None,

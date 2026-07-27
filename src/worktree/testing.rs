@@ -24,8 +24,7 @@ use crate::infra::error::{scrub, CaduceusError, CaduceusResult};
 // pure logic.
 
 impl Config {
-    #[doc(hidden)]
-    pub(crate) fn minimal_workdir_for_runner_tests() -> Self {
+    fn minimal_workdir_for_runner_tests() -> Self {
         Self {
             poll_interval_seconds: 0,
             state_dir: PathBuf::from("/tmp"),

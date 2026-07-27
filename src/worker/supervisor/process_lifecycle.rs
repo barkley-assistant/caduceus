@@ -36,8 +36,7 @@ pub const MAX_FRAME_BYTES: usize = 64 * 1024;
 // Subreaper + setsid + signal helpers (safe wrappers via nix)
 
 #[cfg(target_os = "linux")]
-#[allow(dead_code)]
-pub(crate) fn try_set_subreaper() -> CaduceusResult<()> {
+fn try_set_subreaper() -> CaduceusResult<()> {
     nix::sys::prctl::set_child_subreaper(true).map_err(|err| CaduceusError::Worker {
         context: "supervisor:subreaper",
         stderr: format!("prctl(PR_SET_CHILD_SUBREAPER) failed: {err}"),
@@ -45,7 +44,7 @@ pub(crate) fn try_set_subreaper() -> CaduceusResult<()> {
 }
 
 #[cfg(not(target_os = "linux"))]
-pub(crate) fn try_set_subreaper() -> CaduceusResult<()> {
+fn try_set_subreaper() -> CaduceusResult<()> {
     Ok(())
 }
 
