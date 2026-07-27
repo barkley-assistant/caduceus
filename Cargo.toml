@@ -445,6 +445,10 @@ name = "integration_test"
 path = "tests/integration/integration_test.rs"
 
 [[test]]
+name = "finalize_pr_number_test"
+path = "tests/integration/finalize_pr_number_test.rs"
+
+[[test]]
 name = "docs_contract_test"
 path = "tests/architecture/docs_contract_test.rs"
 
