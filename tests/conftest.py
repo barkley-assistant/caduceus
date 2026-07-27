@@ -133,7 +133,7 @@ def install_with_fake_binary(install_plugin: Path) -> Path:
         ' in real setup\n'
         'if [ "$1" = "status" ]; then\n'
         '  if [ "$2" = "--json" ]; then\n'
-        '    printf \'{"version":"0.1.0","last_tick":"never","last_outcome":"idle","phases":{"queued":0},"next_head":null,"rate_limit":null}\'\n'
+        '    printf \'{"app_version":"0.1.0","version":"0.1.0","diagnostic":null,"report":{"version":"0.1.0","last_tick_started":null,"last_tick_finished":null,"last_outcome":"idle","phases":{"queued":0},"next_head":null,"rate_limit":null}}\'\n'
         "  else\n"
         '    echo "caduceus: stub status"\n'
         "  fi\n"
