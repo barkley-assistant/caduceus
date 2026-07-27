@@ -316,19 +316,39 @@ def _handle_caduceus_status(raw_args: str) -> Optional[str]:
 
 
 def _format_status_for_chat(payload: Dict[str, Any]) -> str:
-    """Render a status JSON payload as a short chat-friendly summary."""
-    version = payload.get("version") or "unknown"
-    last_tick = payload.get("last_tick") or "never"
-    last_outcome = payload.get("last_outcome") or "n/a"
-    phases = payload.get("phases") or {}
-    phase_counts = ", ".join(f"{k}={v}" for k, v in phases.items()) or "none"
-    next_head = payload.get("next_head") or "none"
-    rate_limit = payload.get("rate_limit") or {}
-    rl = (
-        f"rate_limit={rate_limit.get('remaining')}/{rate_limit.get('limit')}"
-        if rate_limit.get("limit")
-        else "rate_limit=unknown"
+    """Render a status JSON payload as a short chat-friendly summary.
+
+    Reads from the nested ``report`` sub-object when present and falls
+    back to the root level for backward compatibility with flat payloads.
+    Prefers the new ``app_version`` field over the legacy ``version``
+    field so the chat output reflects the actual crate version rather
+    than the JSON schema version. Surfaces ``last_tick_started`` and
+    ``last_tick_finished`` separately because there is no combined
+    ``last_tick`` field in the Rust output.
+    """
+    if isinstance(payload, dict):
+        data = payload.get("report", payload)
+    else:
+        data = {}
+    version = (
+        data.get("app_version")
+        or payload.get("app_version")
+        or data.get("version")
+        or payload.get("version")
+        or "unknown"
     )
+    started = data.get("last_tick_started") or "never"
+    finished = data.get("last_tick_finished") or "never"
+    last_tick = f"started={started} finished={finished}"
+    last_outcome = data.get("last_outcome") or "n/a"
+    phases = data.get("phases") or {}
+    phase_counts = ", ".join(f"{k}={v}" for k, v in phases.items()) or "none"
+    next_head = data.get("next_head") or "none"
+    rate_limit = data.get("rate_limit") or {}
+    if rate_limit.get("limit"):
+        rl = f"rate_limit={rate_limit.get('remaining')}/{rate_limit.get('limit')}"
+    else:
+        rl = "rate_limit=unknown"
     return (
         f"caduceus {version} — last tick: {last_tick} ({last_outcome})\n"
         f"  queue: {phase_counts}\n"
