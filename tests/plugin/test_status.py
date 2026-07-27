@@ -79,3 +79,67 @@ def test_status_slash_redacts_token_like_strings(
     # No ``ghp_`` token made it into chat output.
     assert "ghp_" not in result
     assert "<redacted>" not in result  # the fake didn't leak one — defensive
+
+
+def test_format_status_for_chat_reads_nested_report_key(adapter) -> None:
+    """When the payload carries a nested ``report`` key, the formatter reads
+    the app version from there. This is the shape the live ``caduceus
+    status --json`` produces today.
+    """
+    payload = {
+        "report": {
+            "app_version": "1.2.3",
+            "last_tick_started": None,
+            "last_tick_finished": None,
+            "last_outcome": "idle",
+            "phases": {},
+        }
+    }
+    result = adapter._format_status_for_chat(payload)
+    assert "1.2.3" in result
+    assert "started=" in result
+    assert "finished=" in result
+
+
+def test_format_status_for_chat_falls_back_to_root(adapter) -> None:
+    """When the payload is flat (no ``report`` key), the formatter falls
+    back to the root level so legacy consumers keep working.
+    """
+    payload = {"version": "1.2.3", "phases": {}}
+    result = adapter._format_status_for_chat(payload)
+    assert "1.2.3" in result
+
+
+def test_format_status_for_chat_prefers_app_version_over_version(adapter) -> None:
+    """When both ``app_version`` and ``version`` are present, the formatter
+    prefers ``app_version`` so the chat shows the real crate version, not
+    the JSON schema version.
+    """
+    payload = {
+        "app_version": "2.0.0",
+        "version": "7.5.0",
+        "report": {"version": "7.5.0"},
+    }
+    result = adapter._format_status_for_chat(payload)
+    assert "2.0.0" in result
+    assert "7.5.0" not in result
+
+
+def test_format_status_for_chat_shows_last_tick_started_and_finished(
+    adapter,
+) -> None:
+    """The summary surfaces both ``last_tick_started`` and
+    ``last_tick_finished`` timestamps, not a single non-existent
+    ``last_tick`` field.
+    """
+    payload = {
+        "report": {
+            "app_version": "1.0.0",
+            "last_tick_started": "2024-01-01T00:00:00Z",
+            "last_tick_finished": "2024-01-01T00:00:30Z",
+            "phases": {},
+        }
+    }
+    result = adapter._format_status_for_chat(payload)
+    assert "2024-01-01T00:00:00Z" in result
+    assert "2024-01-01T00:00:30Z" in result
