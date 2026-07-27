@@ -397,32 +397,34 @@ fn setup_config_preserves_existing_mode_and_yaml() {
 
 #[test]
 fn setup_config_interrupt_before_rename_is_retryable() {
-    let root = tempdir("ac08-retry");
-    let hermes_home = root.join("hermes");
-    std::fs::create_dir_all(&hermes_home).expect("create hermes_home");
+    with_env(&[("CADUCEUS_CONFIG", None)], || {
+        let root = tempdir("ac08-retry");
+        let hermes_home = root.join("hermes");
+        std::fs::create_dir_all(&hermes_home).expect("create hermes_home");
 
-    // Simulate a leftover .tmp file from a previous interrupted run
-    let tmp_path = hermes_home.join("config.yaml.tmp");
-    write(&tmp_path, "leftover garbage\n");
+        // Simulate a leftover .tmp file from a previous interrupted run
+        let tmp_path = hermes_home.join("config.yaml.tmp");
+        write(&tmp_path, "leftover garbage\n");
 
-    // First run should succeed and clean up the tmp file
-    let report = caduceus::config::setup_config(&hermes_home, false)
-        .expect("first setup_config succeeds despite leftover tmp");
-    assert_eq!(report.action, SetupAction::Created, "should be Created");
-    assert!(report.path.is_file(), "config file should exist");
+        // First run should succeed and clean up the tmp file
+        let report = caduceus::config::setup_config(&hermes_home, false)
+            .expect("first setup_config succeeds despite leftover tmp");
+        assert_eq!(report.action, SetupAction::Created, "should be Created");
+        assert!(report.path.is_file(), "config file should exist");
 
-    // The tmp file should be gone
-    assert!(!tmp_path.is_file(), "leftover tmp file should be removed");
+        // The tmp file should be gone
+        assert!(!tmp_path.is_file(), "leftover tmp file should be removed");
 
-    // Second run should succeed (idempotent)
-    let report2 =
-        caduceus::config::setup_config(&hermes_home, false).expect("second setup_config succeeds");
-    assert_eq!(
-        report2.action,
-        SetupAction::Updated,
-        "second run should Update"
-    );
-    assert!(report2.path.is_file(), "config file should still exist");
+        // Second run should succeed (idempotent)
+        let report2 = caduceus::config::setup_config(&hermes_home, false)
+            .expect("second setup_config succeeds");
+        assert_eq!(
+            report2.action,
+            SetupAction::Updated,
+            "second run should Update"
+        );
+        assert!(report2.path.is_file(), "config file should still exist");
+    });
 }
 
 #[test]
