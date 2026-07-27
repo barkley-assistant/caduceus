@@ -16,9 +16,7 @@ use crate::state::queue::{ClaimToken, Phase, QueueEntry, StateStore};
 use crate::worker::supervisor::SupervisorOutcome;
 use crate::worktree::{GitRunner, Worktree};
 
-// ---------------------------------------------------------------------------
 // FailureClass and classify_error
-// ---------------------------------------------------------------------------
 
 /// How a single [`CaduceusError`] should be classified for the
 /// orchestrator's retry / requeue / terminal decisions.
@@ -163,19 +161,18 @@ pub fn classify_error(err: &CaduceusError) -> FailureClass {
         CaduceusError::CircuitOpen { .. } => FailureClass::Infrastructure,
         CaduceusError::MaxDegradedAgeExceeded { .. } => FailureClass::Infrastructure,
 
-        // New variants for daemon-owned repo storage (Task 5.4).
-        // See REPO-ERROR-001: SymlinkedStorageRoot and
-        // ModeNotPreserved are Infrastructure; WorktreeReuseAfterFailure
-        // is Worker because the worker left the worktree in an
-        // unsafe state.
+        // Daemon-owned repository storage errors.
+        // SymlinkedStorageRoot and ModeNotPreserved are infrastructure;
+        // WorktreeReuseAfterFailure is a worker failure because the worker
+        // left the worktree in an unsafe state.
         CaduceusError::SymlinkedStorageRoot { .. } => FailureClass::Infrastructure,
         CaduceusError::WorktreeReuseAfterFailure { .. } => FailureClass::Worker,
         CaduceusError::ModeNotPreserved { .. } => FailureClass::Infrastructure,
 
-        // Executor-mode errors (Task 6.1). Both fire from
-        // config-validation or unsupported-mode selection; the
-        // orchestrator treats them as infrastructure so they do
-        // not count against the worker retry budget.
+        // OCI executor errors. These fire from config validation or
+        // unsupported mode selection; the orchestrator treats them as
+        // infrastructure so they do not count against the worker retry
+        // budget.
         CaduceusError::OciCliNotFound { .. } => FailureClass::Infrastructure,
         CaduceusError::OciEngineUnavailable { .. } => FailureClass::Infrastructure,
         CaduceusError::OciMismatchedCliVersion { .. } => FailureClass::Infrastructure,

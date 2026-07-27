@@ -16,9 +16,7 @@ use crate::state::queue::{ClaimToken, Phase, QueueEntry, StateStore};
 use crate::worker::supervisor::SupervisorOutcome;
 use crate::worktree::{GitRunner, Worktree};
 
-// ---------------------------------------------------------------------------
 // Services — the dependency-injection surface the orchestrator uses
-// ---------------------------------------------------------------------------
 
 /// Trait abstraction over wall-clock access. Production callers
 /// use [`SystemClock`]; tests use a fake that returns deterministic
