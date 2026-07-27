@@ -3,7 +3,7 @@
 ## Reporting a Vulnerability
 
 Do not open public issues for suspected security vulnerabilities. Email
-`barkleyassistant@gmail.com` with "Caduceus" in the subject line instead.
+`barkley@agentmail.to` with "Caduceus" in the subject line instead.
 
 Include a clear description, affected version, reproduction steps or a minimal
 proof of concept, and the potential impact. Please say whether the report has
