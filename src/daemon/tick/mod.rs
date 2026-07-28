@@ -214,8 +214,19 @@ pub async fn tick(
 
     // 2. Open the metadata + state stores and enforce the
     //    rate-limit and cadence gates.
-    let meta = LeaderToken::with_lock(&state_dir, || MetaStore::open(&state_dir))?;
-    let gate = LeaderToken::with_lock(&state_dir, || CadenceGate::open(&state_dir))?;
+    let use_sqlite = cfg.state_backend == "sqlite";
+    let meta = LeaderToken::with_lock(&state_dir, || {
+        if use_sqlite {
+            MetaStore::open_sqlite(&state_dir)
+        } else {
+            MetaStore::open(&state_dir)
+        }
+    })?;
+    let gate = if use_sqlite {
+        CadenceGate::open_with_store(MetaStore::open_sqlite(&state_dir)?)
+    } else {
+        LeaderToken::with_lock(&state_dir, || CadenceGate::open(&state_dir))?
+    };
     let now = services.clock.now();
     gate.record_tick_started(now)?;
     let precheck = gate.precheck(now, cfg.poll_interval_seconds);
@@ -239,7 +250,11 @@ pub async fn tick(
 
     // 3. Reap stale claims / abandoned worktrees.
     let store = Arc::new(LeaderToken::with_lock(&state_dir, || {
-        StateStore::open(&state_dir)
+        if use_sqlite {
+            StateStore::open_sqlite(&state_dir)
+        } else {
+            StateStore::open(&state_dir)
+        }
     })?);
     let _ = crate::state::queue::reap_stale_claims(
         &state_dir,

@@ -172,6 +172,8 @@ pub fn run(from: &Path, state_dir: &Path, dry_run: bool) -> CaduceusResult<Migra
     // present in `target`. Anything already in the live state
     // is left alone and counted as skipped when the legacy
     // file would have introduced it.
+    // The `_lock` binding is function-scoped so the RAII guard
+    // covers all migration I/O below.
     let _lock = if !dry_run {
         let lock = DaemonLock::try_acquire(state_dir)?.ok_or_else(|| CaduceusError::Queue {
             context: "migrate",
@@ -342,6 +344,8 @@ pub fn recover_state(
     } else {
         None
     };
+    // `_lock` is function-scoped and covers the read, archive,
+    // install, and marker-clear I/O below.
 
     let bytes = fs::read(repaired).map_err(|err| CaduceusError::StateCorrupt {
         path: repaired.to_path_buf(),
@@ -502,6 +506,8 @@ pub fn recover_sqlite_state(
     } else {
         None
     };
+    // `_lock` is function-scoped and covers the integrity check,
+    // archive, and restore I/O below.
 
     let db_path = state_dir.join(store::DB_FILENAME);
     let marker = state_dir.join("state.db.corrupt");

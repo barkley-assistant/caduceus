@@ -36,6 +36,7 @@
 
 #![allow(dead_code)]
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -44,6 +45,7 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Duration, Utc};
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
 use crate::github::issue::IssueKey;
@@ -172,15 +174,33 @@ pub struct DaemonDiagnostic {
     pub message: String,
 }
 
+/// Storage backend for [`MetaStore`]. The JSON variant persists
+/// to `state_meta.json` with a corrupt-file marker; the SQLite
+/// variant persists to the `state_meta` table in `state.db`.
+#[derive(Debug)]
+enum MetaStoreBackend {
+    Json {
+        meta_path: PathBuf,
+        corrupt_marker: PathBuf,
+    },
+    Sqlite(PathBuf),
+}
+
+thread_local! {
+    /// Thread-local transaction connection used by SQLite-backed
+    /// [`MetaStore::update`] so that a sequence of reads and writes
+    /// can share one `BEGIN IMMEDIATE` transaction.
+    static META_TX_CONN: RefCell<Option<Connection>> = const { RefCell::new(None) };
+}
+
 /// Read-modify-write store for `StateMeta`. The mutex serialises
 /// concurrent updates so concurrent HTTP responses can merge
 /// rate-limit observations without losing fields.
 #[derive(Debug)]
 pub struct MetaStore {
     state_dir: PathBuf,
-    meta_path: PathBuf,
-    corrupt_marker: PathBuf,
     inner: Mutex<StateMeta>,
+    backend: MetaStoreBackend,
 }
 
 impl MetaStore {
@@ -197,9 +217,29 @@ impl MetaStore {
         };
         Ok(Self {
             state_dir: state_dir.to_path_buf(),
-            meta_path,
-            corrupt_marker,
             inner: Mutex::new(meta),
+            backend: MetaStoreBackend::Json {
+                meta_path,
+                corrupt_marker,
+            },
+        })
+    }
+
+    /// Open a SQLite-backed metadata store. The database schema is
+    /// created if needed and the current `state_meta` rows are read
+    /// into the in-memory cache.
+    pub fn open_sqlite(state_dir: &Path) -> CaduceusResult<Self> {
+        // Open once to ensure the schema is present.
+        let _conn = crate::state::store::open_in(state_dir)?;
+        let meta = if let Ok(conn) = crate::state::store::open_in(state_dir) {
+            load_sqlite(&conn, state_dir).unwrap_or_else(|_| StateMeta::empty())
+        } else {
+            StateMeta::empty()
+        };
+        Ok(Self {
+            state_dir: state_dir.to_path_buf(),
+            inner: Mutex::new(meta),
+            backend: MetaStoreBackend::Sqlite(state_dir.to_path_buf()),
         })
     }
 
@@ -212,35 +252,88 @@ impl MetaStore {
     {
         let mut guard = self.inner.lock().expect("meta mutex poisoned");
         f(&mut guard);
-        save_atomic(&self.meta_path, &guard)
+        match &self.backend {
+            MetaStoreBackend::Json { meta_path, .. } => save_atomic(meta_path, &guard),
+            MetaStoreBackend::Sqlite(state_dir) => {
+                if let Some(conn) = take_meta_tx_conn() {
+                    save_sqlite(&conn, state_dir, &guard)
+                } else {
+                    let conn = crate::state::store::open_in(state_dir)?;
+                    conn.execute("BEGIN IMMEDIATE", []).map_err(|e| {
+                        CaduceusError::StateCorrupt {
+                            path: state_dir.join(crate::state::store::DB_FILENAME),
+                            message: format!("cannot begin meta transaction: {e}"),
+                        }
+                    })?;
+                    let res = save_sqlite(&conn, state_dir, &guard);
+                    if res.is_ok() {
+                        conn.execute("COMMIT", [])
+                            .map_err(|e| CaduceusError::StateCorrupt {
+                                path: state_dir.join(crate::state::store::DB_FILENAME),
+                                message: format!("cannot commit meta transaction: {e}"),
+                            })?;
+                    } else {
+                        let _ = conn.execute("ROLLBACK", []);
+                    }
+                    res
+                }
+            }
+        }
     }
 
     /// Borrow the metadata without modifying it.
     pub fn snapshot(&self) -> StateMeta {
-        self.inner.lock().expect("meta mutex poisoned").clone()
+        match &self.backend {
+            MetaStoreBackend::Json { .. } => {
+                self.inner.lock().expect("meta mutex poisoned").clone()
+            }
+            MetaStoreBackend::Sqlite(state_dir) => {
+                // Re-read from SQLite so concurrent writers are
+                // visible even when the cache is stale.
+                crate::state::store::open_in(state_dir)
+                    .and_then(|conn| load_sqlite(&conn, state_dir))
+                    .unwrap_or_else(|_| self.inner.lock().expect("meta mutex poisoned").clone())
+            }
+        }
     }
 
-    /// True when the corrupt marker is present.
+    /// True when the corrupt marker is present. Always `false` for
+    /// the SQLite backend, whose corruption surfaces as open errors
+    /// instead of marker files.
     pub fn is_corrupt(&self) -> bool {
-        self.corrupt_marker.exists()
+        match &self.backend {
+            MetaStoreBackend::Json { corrupt_marker, .. } => corrupt_marker.exists(),
+            MetaStoreBackend::Sqlite(_) => false,
+        }
     }
 
-    /// Clear the corrupt marker after a successful recovery.
+    /// Clear the corrupt marker after a successful recovery. No-op
+    /// for the SQLite backend.
     pub fn clear_corrupt_marker(&self) -> CaduceusResult<()> {
-        if self.corrupt_marker.exists() {
-            fs::remove_file(&self.corrupt_marker)?;
+        if let MetaStoreBackend::Json { corrupt_marker, .. } = &self.backend {
+            if corrupt_marker.exists() {
+                fs::remove_file(corrupt_marker)?;
+            }
         }
         Ok(())
     }
 
-    /// Path to the corrupt marker (test seam).
+    /// Path to the corrupt marker (test seam). For SQLite, returns
+    /// the state directory.
     pub fn corrupt_marker_path(&self) -> &Path {
-        &self.corrupt_marker
+        match &self.backend {
+            MetaStoreBackend::Json { corrupt_marker, .. } => corrupt_marker,
+            MetaStoreBackend::Sqlite(_) => &self.state_dir,
+        }
     }
 
-    /// Path to the active metadata file (test seam).
+    /// Path to the active metadata file (test seam). For SQLite,
+    /// returns the state directory.
     pub fn meta_path(&self) -> &Path {
-        &self.meta_path
+        match &self.backend {
+            MetaStoreBackend::Json { meta_path, .. } => meta_path,
+            MetaStoreBackend::Sqlite(_) => &self.state_dir,
+        }
     }
 
     /// The state directory (test seam).
@@ -322,11 +415,18 @@ pub struct CadenceGate {
 impl CadenceGate {
     /// Open the gate rooted at *state_dir*. The wrapped
     /// `MetaStore` is created on demand and reuses the
-    /// existing metadata file.
+    /// existing JSON metadata file.
     pub fn open(state_dir: &Path) -> CaduceusResult<Self> {
         Ok(Self {
             store: MetaStore::open(state_dir)?,
         })
+    }
+
+    /// Wrap an existing `MetaStore`. Used by the daemon tick when
+    /// the configured backend is SQLite so the gate observes the
+    /// same storage as the rest of the tick.
+    pub fn open_with_store(store: MetaStore) -> Self {
+        Self { store }
     }
 
     /// Borrow the underlying metadata store (test seam).
@@ -570,6 +670,94 @@ fn quarantine_corrupt(meta_path: &Path, reason: &str) -> CaduceusResult<()> {
         backup.display()
     );
     fs::write(&marker, body)?;
+    Ok(())
+}
+
+fn take_meta_tx_conn() -> Option<Connection> {
+    META_TX_CONN.with(|cell| cell.borrow_mut().take())
+}
+
+fn is_in_meta_tx() -> bool {
+    META_TX_CONN.with(|cell| cell.borrow().is_some())
+}
+
+fn load_sqlite(conn: &Connection, state_dir: &Path) -> CaduceusResult<StateMeta> {
+    let db_path = state_dir.join(crate::state::store::DB_FILENAME);
+    let rows: Result<Vec<(String, String)>, _> = conn
+        .prepare(
+            "SELECT key, value FROM state_meta WHERE key LIKE 'meta_%' OR key IN
+             ('version', 'last_tick_started', 'last_tick_finished', 'last_outcome',
+              'last_http_status', 'next_allowed_poll_at', 'last_reap_at',
+              'last_reaped_count', 'rate_limit', 'last_error', 'recent_diagnostics')",
+        )
+        .map_err(|e| CaduceusError::StateCorrupt {
+            path: db_path.clone(),
+            message: format!("cannot prepare state_meta select: {e}"),
+        })?
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|e| CaduceusError::StateCorrupt {
+            path: db_path.clone(),
+            message: format!("cannot query state_meta: {e}"),
+        })?
+        .collect();
+    let rows = rows.map_err(|e| CaduceusError::StateCorrupt {
+        path: db_path.clone(),
+        message: format!("cannot read state_meta: {e}"),
+    })?;
+    if rows.is_empty() {
+        return Ok(StateMeta::empty());
+    }
+    let mut obj = serde_json::Map::new();
+    for (k, v) in rows {
+        let parsed: serde_json::Value = serde_json::from_str(&v).unwrap_or(serde_json::Value::Null);
+        obj.insert(k, parsed);
+    }
+    let value = serde_json::Value::Object(obj);
+    let meta: StateMeta =
+        serde_json::from_value(value).map_err(|e| CaduceusError::StateCorrupt {
+            path: db_path.clone(),
+            message: format!("cannot decode state_meta: {e}"),
+        })?;
+    if meta.version != META_VERSION {
+        return Err(CaduceusError::StateCorrupt {
+            path: db_path,
+            message: format!(
+                "unsupported metadata version: got {}, expected {}",
+                meta.version, META_VERSION
+            ),
+        });
+    }
+    Ok(meta)
+}
+
+fn save_sqlite(conn: &Connection, state_dir: &Path, meta: &StateMeta) -> CaduceusResult<()> {
+    let db_path = state_dir.join(crate::state::store::DB_FILENAME);
+    let value = serde_json::to_value(meta).map_err(|e| CaduceusError::StateCorrupt {
+        path: db_path.clone(),
+        message: format!("cannot serialize state_meta: {e}"),
+    })?;
+    let obj = value
+        .as_object()
+        .ok_or_else(|| CaduceusError::StateCorrupt {
+            path: db_path.clone(),
+            message: "state_meta serialized to non-object".to_string(),
+        })?;
+    for (k, v) in obj {
+        let json = serde_json::to_string(v).map_err(|e| CaduceusError::StateCorrupt {
+            path: db_path.clone(),
+            message: format!("cannot encode state_meta field {k}: {e}"),
+        })?;
+        conn.execute(
+            "INSERT OR REPLACE INTO state_meta (key, value) VALUES (?1, ?2)",
+            params![k, json],
+        )
+        .map_err(|e| CaduceusError::StateCorrupt {
+            path: db_path.clone(),
+            message: format!("cannot write state_meta key {k}: {e}"),
+        })?;
+    }
     Ok(())
 }
 

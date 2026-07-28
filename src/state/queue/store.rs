@@ -1,5 +1,6 @@
 #![allow(dead_code, unused_imports)]
 use super::*;
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
@@ -7,11 +8,22 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use fs2::FileExt;
+use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::github::issue::IssueKey;
-use crate::infra::error::{CaduceusError, CaduceusResult};
+use crate::infra::error::{scrub, CaduceusError, CaduceusResult};
+
+thread_local! {
+    /// Thread-local transaction connection used by SQLite-backed
+    /// [`StateStore::with_exclusive`]. The connection is opened at
+    /// the start of the exclusive section, stored here so that inner
+    /// calls to [`load_validated_sqlite`] and [`persist_sqlite`] can
+    /// participate in the same `BEGIN IMMEDIATE` transaction, and
+    /// removed once the section finishes.
+    static SQLITE_TX_CONN: RefCell<Option<Connection>> = const { RefCell::new(None) };
+}
 
 impl StateStore {
     /// Open the store. Creates the state directory and the
@@ -30,9 +42,12 @@ impl StateStore {
         let lock_path = state_dir.join(STATE_LOCK_FILENAME);
         let store = Self {
             state_dir: state_dir.to_path_buf(),
-            state_path,
             claims_dir,
-            lock_path,
+            backend: StateStoreBackend::Json {
+                state_path: state_path.clone(),
+                lock_path: lock_path.clone(),
+                state_dir: state_dir.to_path_buf(),
+            },
         };
         // Force a load+validate at open so a corrupt file is
         // reported immediately rather than on the first mutation.
@@ -40,10 +55,39 @@ impl StateStore {
         Ok(store)
     }
 
+    /// Open a SQLite-backed store. Creates the state directory and
+    /// the `claims/` subdirectory if they are missing and ensures
+    /// the database schema is present. Claim files remain on disk for
+    /// both backends per the crash-safety contract.
+    pub fn open_sqlite(state_dir: &Path) -> CaduceusResult<Self> {
+        fs::create_dir_all(state_dir)?;
+        let claims_dir = state_dir.join(CLAIMS_DIRNAME);
+        fs::create_dir_all(&claims_dir)?;
+        // Open the database once to initialize the schema; further
+        // operations open their own short-lived connections so the
+        // store remains `Send`/`Sync` and can be shared across async
+        // tasks via `Arc`.
+        let _conn = crate::state::store::open_in(state_dir)?;
+        let store = Self {
+            state_dir: state_dir.to_path_buf(),
+            claims_dir,
+            backend: StateStoreBackend::Sqlite(state_dir.to_path_buf()),
+        };
+        // Like the JSON path, force a load so a corrupt/unknown
+        // schema is reported at open time.
+        let _ = store.load_validated()?;
+        Ok(store)
+    }
+
     /// Path of the active state file (mainly for status/diagnostic
     /// code paths).
     pub fn state_path(&self) -> PathBuf {
-        self.state_path.clone()
+        match &self.backend {
+            StateStoreBackend::Json { state_path, .. } => state_path.clone(),
+            StateStoreBackend::Sqlite(state_dir) => {
+                state_dir.join(crate::state::store::DB_FILENAME)
+            }
+        }
     }
 
     /// Path of the claims directory.
@@ -61,24 +105,36 @@ impl StateStore {
     /// missing state file is treated as the empty version-1
     /// envelope.
     pub fn snapshot(&self) -> CaduceusResult<QueueState> {
-        // Acquire the shared flock by opening an existing lock file
-        // (or creating it on first run). The lock's existence is
-        // independent of `state.json` so a fresh install with no
-        // state file still gets proper serialisation. The state
-        // load itself tolerates a missing file.
-        let lock_file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&self.lock_path)?;
-        lock_file.lock_shared().map_err(into_lock_error)?;
-        let result = self.load_validated();
-        let unlock = lock_file.unlock();
-        if let Err(err) = unlock {
-            tracing::debug!(error = %scrub(&format!("{err:?}")), "snapshot unlock");
+        match &self.backend {
+            StateStoreBackend::Json { lock_path, .. } => {
+                let lock_file = OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .truncate(false)
+                    .open(lock_path)?;
+                lock_file.lock_shared().map_err(into_lock_error)?;
+                let result = self.load_validated();
+                let unlock = lock_file.unlock();
+                if let Err(err) = unlock {
+                    tracing::debug!(error = %scrub(&format!("{err:?}")), "snapshot unlock");
+                }
+                result
+            }
+            StateStoreBackend::Sqlite(state_dir) => {
+                // If we are already inside an exclusive section, reuse
+                // its IMMEDIATE transaction. Otherwise open a fresh
+                // connection for a read-only snapshot.
+                SQLITE_TX_CONN.with(|cell| {
+                    if let Some(conn) = cell.borrow().as_ref() {
+                        load_validated_sqlite(conn, state_dir)
+                    } else {
+                        let conn = crate::state::store::open_in(state_dir)?;
+                        load_validated_sqlite(&conn, state_dir)
+                    }
+                })
+            }
         }
-        result
     }
 
     /// Insert a new queue entry, no-op against an existing entry,
@@ -584,49 +640,97 @@ impl StateStore {
     }
 
     pub(crate) fn load_validated(&self) -> CaduceusResult<QueueState> {
-        match fs::read(&self.state_path) {
-            Ok(bytes) => parse_queue_state(std::str::from_utf8(&bytes).map_err(|err| {
-                CaduceusError::StateCorrupt {
-                    path: self.state_path.clone(),
-                    message: format!("state file is not UTF-8: {err}"),
+        match &self.backend {
+            StateStoreBackend::Json { state_path, .. } => load_validated_json(state_path),
+            StateStoreBackend::Sqlite(state_dir) => SQLITE_TX_CONN.with(|cell| {
+                if let Some(conn) = cell.borrow().as_ref() {
+                    load_validated_sqlite(conn, state_dir)
+                } else {
+                    let conn = crate::state::store::open_in(state_dir)?;
+                    load_validated_sqlite(&conn, state_dir)
                 }
-            })?)
-            .map_err(|err| match err {
-                CaduceusError::StateCorrupt { message, .. } => CaduceusError::StateCorrupt {
-                    path: self.state_path.clone(),
-                    message,
-                },
-                other => other,
             }),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(QueueState::empty()),
-            Err(err) => Err(err.into()),
         }
     }
 
     pub(crate) fn persist(&self, state: &QueueState) -> CaduceusResult<()> {
-        let body = serialize_queue_state(state)?;
-        atomic_write(&self.state_path, body.as_bytes())?;
-        sync_dir(&self.state_dir)?;
-        Ok(())
+        match &self.backend {
+            StateStoreBackend::Json {
+                state_path,
+                state_dir,
+                ..
+            } => {
+                let body = serialize_queue_state(state)?;
+                atomic_write(state_path, body.as_bytes())?;
+                sync_dir(state_dir)
+            }
+            StateStoreBackend::Sqlite(state_dir) => SQLITE_TX_CONN.with(|cell| {
+                if let Some(conn) = cell.borrow().as_ref() {
+                    persist_sqlite(conn, state)
+                } else {
+                    let conn = crate::state::store::open_in(state_dir)?;
+                    persist_sqlite(&conn, state)
+                }
+            }),
+        }
     }
 
     pub(crate) fn with_exclusive<R>(
         &self,
         op: impl FnOnce(&Self) -> CaduceusResult<R>,
     ) -> CaduceusResult<R> {
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&self.lock_path)?;
-        file.lock_exclusive().map_err(into_lock_error)?;
-        let result = op(self);
-        let unlock = file.unlock();
-        if let Err(err) = unlock {
-            tracing::debug!(error = %scrub(&format!("{err:?}")), "exclusive unlock");
+        match &self.backend {
+            StateStoreBackend::Json { lock_path, .. } => {
+                let file = OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .truncate(false)
+                    .open(lock_path)?;
+                file.lock_exclusive().map_err(into_lock_error)?;
+                let result = op(self);
+                let unlock = file.unlock();
+                if let Err(err) = unlock {
+                    tracing::debug!(error = %scrub(&format!("{err:?}")), "exclusive unlock");
+                }
+                result
+            }
+            StateStoreBackend::Sqlite(state_dir) => {
+                // Open one connection, start an IMMEDIATE transaction,
+                // and make inner `load_validated`/`persist` calls
+                // participate in that transaction via the thread-local.
+                let conn = crate::state::store::open_in(state_dir)?;
+                conn.execute("BEGIN IMMEDIATE", [])
+                    .map_err(|e| CaduceusError::StateCorrupt {
+                        path: state_dir.join(crate::state::store::DB_FILENAME),
+                        message: format!("cannot begin IMMEDIATE transaction: {e}"),
+                    })?;
+                SQLITE_TX_CONN.with(|cell| {
+                    *cell.borrow_mut() = Some(conn);
+                });
+                let result = op(self);
+                let commit_error: Option<CaduceusError> = SQLITE_TX_CONN.with(|cell| {
+                    cell.borrow_mut().take().and_then(|conn| {
+                        if result.is_ok() {
+                            match conn.execute("COMMIT", []) {
+                                Ok(_) => None,
+                                Err(e) => Some(CaduceusError::StateCorrupt {
+                                    path: state_dir.join(crate::state::store::DB_FILENAME),
+                                    message: format!("cannot commit exclusive transaction: {e}"),
+                                }),
+                            }
+                        } else {
+                            let _ = conn.execute("ROLLBACK", []);
+                            None
+                        }
+                    })
+                });
+                if let Some(err) = commit_error {
+                    return Err(err);
+                }
+                result
+            }
         }
-        result
     }
 
     pub(crate) fn verify_claim_run_id(&self, claim: &ClaimToken) -> CaduceusResult<()> {
@@ -641,4 +745,233 @@ impl StateStore {
         }
         Ok(())
     }
+}
+
+fn load_validated_json(state_path: &Path) -> CaduceusResult<QueueState> {
+    match fs::read(state_path) {
+        Ok(bytes) => parse_queue_state(std::str::from_utf8(&bytes).map_err(|err| {
+            CaduceusError::StateCorrupt {
+                path: state_path.to_path_buf(),
+                message: format!("state file is not UTF-8: {err}"),
+            }
+        })?)
+        .map_err(|err| match err {
+            CaduceusError::StateCorrupt { message, .. } => CaduceusError::StateCorrupt {
+                path: state_path.to_path_buf(),
+                message,
+            },
+            other => other,
+        }),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(QueueState::empty()),
+        Err(err) => Err(err.into()),
+    }
+}
+
+fn phase_from_str(s: &str) -> Option<Phase> {
+    serde_json::from_str::<Phase>(&format!("\"{s}\"")).ok()
+}
+
+fn ticket_type_from_str(s: &str) -> Option<TicketType> {
+    serde_json::from_str::<TicketType>(&format!("\"{s}\"")).ok()
+}
+
+fn load_validated_sqlite(conn: &Connection, state_dir: &Path) -> CaduceusResult<QueueState> {
+    let db_path = state_dir.join(crate::state::store::DB_FILENAME);
+    let mut stmt = conn
+        .prepare(
+            "SELECT issue_key, phase, ticket_type, attempts, last_error, last_run_id,
+                    next_attempt_at, finalization, queued_at, updated_at, generation
+             FROM queue_entries",
+        )
+        .map_err(|e| CaduceusError::StateCorrupt {
+            path: db_path.clone(),
+            message: format!("cannot prepare queue_entries select: {e}"),
+        })?;
+    let rows = stmt
+        .query_map([], row_to_entry)
+        .map_err(|e| CaduceusError::StateCorrupt {
+            path: db_path.clone(),
+            message: format!("cannot read queue_entries: {e}"),
+        })?;
+    let mut entries = BTreeMap::new();
+    for row in rows {
+        let entry = row.map_err(|e| CaduceusError::StateCorrupt {
+            path: db_path.clone(),
+            message: format!("cannot decode queue entry: {e}"),
+        })?;
+        entries.insert(entry.key.display_key(), entry);
+    }
+    Ok(QueueState {
+        version: QUEUE_FILE_VERSION,
+        entries,
+    })
+}
+
+fn row_to_entry(row: &rusqlite::Row) -> rusqlite::Result<QueueEntry> {
+    let issue_key: String = row.get(0)?;
+    let phase_str: String = row.get(1)?;
+    let ticket_type_str: String = row.get(2)?;
+    let attempts: i64 = row.get(3)?;
+    let last_error: Option<String> = row.get(4)?;
+    let last_run_id: Option<String> = row.get(5)?;
+    let next_attempt_at: Option<String> = row.get(6)?;
+    let finalization: Option<String> = row.get(7)?;
+    let queued_at: String = row.get(8)?;
+    let updated_at: String = row.get(9)?;
+    let generation: i64 = row.get(10)?;
+
+    let key = IssueKey::parse(&issue_key).map_err(|err| {
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("invalid issue_key {issue_key}: {err:?}"),
+            )),
+        )
+    })?;
+    let phase = phase_from_str(&phase_str).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            1,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("invalid phase {phase_str}"),
+            )),
+        )
+    })?;
+    let ticket_type = ticket_type_from_str(&ticket_type_str).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            2,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("invalid ticket_type {ticket_type_str}"),
+            )),
+        )
+    })?;
+
+    Ok(QueueEntry {
+        key,
+        phase,
+        ticket_type,
+        attempts: attempts.max(0) as u32,
+        last_error,
+        last_run_id,
+        next_attempt_at: next_attempt_at
+            .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
+            .map(|dt| dt.with_timezone(&Utc)),
+        finalization: finalization.and_then(|s| serde_json::from_str(&s).ok()),
+        queued_at: DateTime::parse_from_rfc3339(&queued_at)
+            .map(|dt| dt.with_timezone(&Utc))
+            .map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    8,
+                    rusqlite::types::Type::Text,
+                    Box::new(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("invalid queued_at {queued_at}: {e}"),
+                    )),
+                )
+            })?,
+        updated_at: DateTime::parse_from_rfc3339(&updated_at)
+            .map(|dt| dt.with_timezone(&Utc))
+            .map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    9,
+                    rusqlite::types::Type::Text,
+                    Box::new(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("invalid updated_at {updated_at}: {e}"),
+                    )),
+                )
+            })?,
+        generation: generation.max(0) as u32,
+    })
+}
+
+fn phase_to_string(phase: &Phase) -> CaduceusResult<String> {
+    serde_json::to_string(phase)
+        .map(|s| s.trim_matches('"').to_string())
+        .map_err(|e| CaduceusError::StateCorrupt {
+            path: PathBuf::new(),
+            message: format!("cannot serialize phase: {e}"),
+        })
+}
+
+fn ticket_type_to_string(ticket_type: &TicketType) -> CaduceusResult<String> {
+    serde_json::to_string(ticket_type)
+        .map(|s| s.trim_matches('"').to_string())
+        .map_err(|e| CaduceusError::StateCorrupt {
+            path: PathBuf::new(),
+            message: format!("cannot serialize ticket_type: {e}"),
+        })
+}
+
+fn persist_sqlite(conn: &Connection, state: &QueueState) -> CaduceusResult<()> {
+    // If we are inside an exclusive section we reuse its transaction,
+    // otherwise create a short-lived one for this single write.
+    let owns_tx = !is_in_sqlite_tx();
+    if owns_tx {
+        conn.execute("BEGIN IMMEDIATE", [])
+            .map_err(|e| CaduceusError::StateCorrupt {
+                path: PathBuf::new(),
+                message: format!("cannot begin persist transaction: {e}"),
+            })?;
+    }
+    let result = (|| {
+        conn.execute("DELETE FROM queue_entries", [])
+            .map_err(|e| CaduceusError::StateCorrupt {
+                path: PathBuf::new(),
+                message: format!("cannot clear queue_entries: {e}"),
+            })?;
+        for entry in state.entries.values() {
+            let key = entry.key.display_key();
+            let phase = phase_to_string(&entry.phase)?;
+            let ticket_type = ticket_type_to_string(&entry.ticket_type)?;
+            conn.execute(
+                "INSERT OR REPLACE INTO queue_entries
+                 (issue_key, phase, ticket_type, attempts, last_error, last_run_id,
+                  next_attempt_at, finalization, queued_at, updated_at, generation)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![
+                    key,
+                    phase,
+                    ticket_type,
+                    entry.attempts as i64,
+                    entry.last_error,
+                    entry.last_run_id,
+                    entry.next_attempt_at.map(|dt| dt.to_rfc3339()),
+                    entry
+                        .finalization
+                        .as_ref()
+                        .map(|c| serde_json::to_string(c).unwrap_or_default()),
+                    entry.queued_at.to_rfc3339(),
+                    entry.updated_at.to_rfc3339(),
+                    entry.generation as i64,
+                ],
+            )
+            .map_err(|e| CaduceusError::StateCorrupt {
+                path: PathBuf::new(),
+                message: format!("cannot persist queue entry {key}: {e}"),
+            })?;
+        }
+        Ok(())
+    })();
+    if owns_tx {
+        if result.is_ok() {
+            conn.execute("COMMIT", [])
+                .map_err(|e| CaduceusError::StateCorrupt {
+                    path: PathBuf::new(),
+                    message: format!("cannot commit persist transaction: {e}"),
+                })?;
+        } else {
+            let _ = conn.execute("ROLLBACK", []);
+        }
+    }
+    result
+}
+
+fn is_in_sqlite_tx() -> bool {
+    SQLITE_TX_CONN.with(|cell| cell.borrow().is_some())
 }

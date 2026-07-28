@@ -64,6 +64,7 @@ pub const DEFAULT_CIRCUIT_OPEN_INTERVAL_SECONDS: u64 = 1800;
 pub const DEFAULT_CIRCUIT_MAX_DEGRADED_SECONDS: u64 = 86400;
 pub const DEFAULT_DISCOVERY_MAX_PAGES: u32 = 20;
 pub const DEFAULT_REPO_STORAGE_ROOT: &str = "repos";
+pub const DEFAULT_STATE_BACKEND: &str = "json";
 pub const DEFAULT_EXECUTOR_MODE: crate::executor::ExecutorKind =
     crate::executor::ExecutorKind::TrustedHost;
 
@@ -87,6 +88,7 @@ pub const DEFAULT_OCI_RECONCILE_TIMEOUT_SECONDS: u64 = 60;
 pub struct Config {
     pub poll_interval_seconds: u64,
     pub state_dir: PathBuf,
+    pub state_backend: String,
     pub log_path: PathBuf,
     pub workdir_base: PathBuf,
     pub watched_repos: Vec<String>,
@@ -199,6 +201,7 @@ pub struct Config {
 pub struct RawConfig {
     pub poll_interval_seconds: Option<u64>,
     pub state_dir: Option<PathBuf>,
+    pub state_backend: Option<String>,
     pub log_path: Option<PathBuf>,
     pub workdir_base: Option<PathBuf>,
     pub watched_repos: Option<Vec<String>>,
@@ -488,6 +491,15 @@ impl Config {
         };
         validate_secure_path(&state_dir, "state_dir", &mut errors);
 
+        let state_backend = raw
+            .state_backend
+            .unwrap_or_else(|| DEFAULT_STATE_BACKEND.to_string());
+        if state_backend != "json" && state_backend != "sqlite" {
+            errors.push(format!(
+                "state_backend must be 'json' or 'sqlite', got: {state_backend}"
+            ));
+        }
+
         let repo_storage_root = match raw.repo_storage_root {
             Some(p) => expand_leading_tilde(p),
             None => state_dir.join(DEFAULT_REPO_STORAGE_ROOT),
@@ -702,6 +714,7 @@ impl Config {
         Ok(Config {
             poll_interval_seconds,
             state_dir,
+            state_backend,
             log_path,
             workdir_base,
             watched_repos,
@@ -815,6 +828,7 @@ impl Config {
         Self {
             poll_interval_seconds: DEFAULT_POLL_INTERVAL_SECONDS,
             state_dir,
+            state_backend: "json".to_string(),
             log_path,
             workdir_base,
             watched_repos: Vec::new(),

@@ -28,6 +28,7 @@ impl Config {
         Self {
             poll_interval_seconds: 0,
             state_dir: PathBuf::from("/tmp"),
+            state_backend: "json".to_string(),
             log_path: PathBuf::from("/tmp/processor.log"),
             workdir_base: PathBuf::from("/tmp"),
             watched_repos: Vec::new(),
