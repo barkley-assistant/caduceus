@@ -21,7 +21,7 @@
 use std::path::PathBuf;
 
 use crate::executor::network::NetworkPolicy;
-use crate::executor::oci_args::{build_argv, MountSpec};
+use crate::executor::oci_args::{build_argv, find_image_position, MountSpec};
 use crate::executor::secret_transport::EphemeralSecretFile;
 use crate::executor::ExecutorSpec;
 use crate::infra::config::{Config, OciPullPolicy};
@@ -78,9 +78,15 @@ impl IsolationPolicy {
         // 6. Add baseline enforcement flags.
         argv = inject_baseline_flags(argv, config)?;
 
-        // 7. Merge network flags from NetworkPolicy.
+        // 7. Merge network flags from NetworkPolicy before the image token.
         let network_args = NetworkPolicy::build_network_args(spec, config)?;
-        argv.extend(network_args);
+        let image_idx =
+            find_image_position(&argv).ok_or_else(|| CaduceusError::OciBaselineViolation {
+                detail: "image token not found in argv after baseline injection".to_string(),
+            })?;
+        for (i, arg) in network_args.into_iter().enumerate() {
+            argv.insert(image_idx + i, arg);
+        }
 
         // 8. Compute secret handles from config.secret_grants.
         //    (Secrets are resolved at the daemon level; the policy
@@ -149,37 +155,49 @@ fn inject_baseline_flags(mut argv: Vec<String>, _config: &Config) -> CaduceusRes
     // worker container. The oci_args builder already sets --user.
     let has_user = argv.iter().any(|a| a == "--user");
     if !has_user {
-        // Insert --user 1000:1000 after the "run" command.
-        let run_pos = argv.iter().position(|a| a == "run").unwrap_or(0);
-        argv.insert(run_pos + 1, "--user".to_string());
-        argv.insert(run_pos + 2, "1000:1000".to_string());
+        // Insert --user 1000:1000 right after the "create" command.
+        let create_pos = argv.iter().position(|a| a == "create").unwrap_or(1);
+        argv.insert(create_pos + 1, "--user".to_string());
+        argv.insert(create_pos + 2, "1000:1000".to_string());
     }
 
     // --cap-drop ALL
     let has_cap_drop = argv.iter().any(|a| a == "--cap-drop");
     if !has_cap_drop {
-        let run_pos = argv.iter().position(|a| a == "run").unwrap_or(0);
+        let create_pos = argv.iter().position(|a| a == "create").unwrap_or(1);
         // Find the insertion point after --user if present
-        let insert_pos = if argv.get(run_pos + 1).is_some_and(|a| a == "--user") {
-            run_pos + 3
+        let insert_pos = if argv.get(create_pos + 1).is_some_and(|a| a == "--user") {
+            create_pos + 3
         } else {
-            run_pos + 1
+            create_pos + 1
         };
         argv.insert(insert_pos, "--cap-drop".to_string());
         argv.insert(insert_pos + 1, "ALL".to_string());
     }
 
+    // All remaining baseline flags must appear BEFORE the image token so
+    // the engine interprets them as container options, not worker args.
+    let image_idx =
+        find_image_position(&argv).ok_or_else(|| CaduceusError::OciBaselineViolation {
+            detail: "image token not found in argv".to_string(),
+        })?;
+
     // --security-opt no-new-privileges
     let has_no_new = argv.iter().any(|a| a == "no-new-privileges");
     if !has_no_new {
-        argv.push("--security-opt".to_string());
-        argv.push("no-new-privileges".to_string());
+        argv.insert(image_idx, "--security-opt".to_string());
+        argv.insert(image_idx + 1, "no-new-privileges".to_string());
     }
 
     // --read-only
     let has_read_only = argv.iter().any(|a| a == "--read-only");
     if !has_read_only {
-        argv.push("--read-only".to_string());
+        // Recompute image position because previous inserts shifted it.
+        let image_idx =
+            find_image_position(&argv).ok_or_else(|| CaduceusError::OciBaselineViolation {
+                detail: "image token not found in argv".to_string(),
+            })?;
+        argv.insert(image_idx, "--read-only".to_string());
     }
 
     // --tmpfs /tmp:size=64M
@@ -188,8 +206,12 @@ fn inject_baseline_flags(mut argv: Vec<String>, _config: &Config) -> CaduceusRes
         // Don't duplicate --tmpfs flags
         let has_tmpfs = argv.iter().any(|a| a == "--tmpfs");
         if !has_tmpfs {
-            argv.push("--tmpfs".to_string());
-            argv.push("/tmp:size=64M".to_string());
+            let image_idx =
+                find_image_position(&argv).ok_or_else(|| CaduceusError::OciBaselineViolation {
+                    detail: "image token not found in argv".to_string(),
+                })?;
+            argv.insert(image_idx, "--tmpfs".to_string());
+            argv.insert(image_idx + 1, "/tmp:size=64M".to_string());
         }
     }
 

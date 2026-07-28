@@ -54,8 +54,7 @@ pub fn build_argv(
     let cli = cfg.oci_cli.to_string_lossy().to_string();
     let mut argv = vec![
         cli,
-        "run".to_string(),
-        "-d".to_string(),
+        "create".to_string(),
         "--name".to_string(),
         spec.run_id.clone(),
     ];
@@ -138,4 +137,14 @@ fn derive_daemon_id(cfg: &Config) -> String {
 /// not yet exist.
 fn derive_image_name(_cfg: &Config) -> String {
     "caduceus-worker".to_string()
+}
+
+/// Find the position of the image token in an OCI CLI argv vector.
+///
+/// The image token is content-addressable: it always contains `@sha256:`
+/// because `policy::validate_image_digest` guarantees a digest-pinned
+/// reference. This marker is used to separate engine flags (before the
+/// image) from worker command arguments (after the image).
+pub fn find_image_position(argv: &[String]) -> Option<usize> {
+    argv.iter().position(|arg| arg.contains("@sha256:"))
 }
