@@ -69,6 +69,10 @@ name = "admission_guard_test"
 path = "tests/scheduler/admission_guard_test.rs"
 
 [[test]]
+name = "concurrent_workers_test"
+path = "tests/scheduler/concurrent_workers_test.rs"
+
+[[test]]
 name = "circuit_test"
 path = "tests/scheduler/circuit_test.rs"
 

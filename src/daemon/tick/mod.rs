@@ -67,6 +67,8 @@ use crate::worker::prompt::{build_prompt, write_prompt};
 use crate::worker::WorkerResult;
 use crate::worktree::{create as create_worktree, find_main_clone, GitRunner};
 
+use tokio::task::JoinSet;
+
 // Public surface
 
 /// Cron / no-argument entry point. Loads config from the
@@ -296,72 +298,73 @@ pub async fn tick(
         return Err(err);
     }
 
-    // 6. Acquire the next eligible entry.
-    let run_id_candidate = Ulid::new().to_string();
-    let store_clone = Arc::clone(&store);
-    let clock_now = services.clock.now();
-    let claimed = match LeaderToken::with_lock(&state_dir, || {
-        store_clone.acquire_next(&run_id_candidate, std::process::id(), clock_now)
-    })? {
-        Some(c) => c,
-        None => {
-            let outcome = if any_304 && !any_200 {
-                TickOutcome::Idle304
-            } else {
-                TickOutcome::IdleEmpty
-            };
-            finish_tick_outcome(&gate, &meta, now, outcome, None, None)?;
-            return Ok(outcome);
-        }
-    };
+    // 6. Drain the queue into a bounded `JoinSet` dispatch loop.
+    //
+    // Each iteration: (a) `acquire_next` under `LeaderToken::with_lock`
+    // (existing API, no change); (b) the circuit-breaker probe inlined
+    // from the synchronous version (preserves NeedsAttention routing);
+    // (c) `pool.admit(&repo_key)` — a lazy, per-iteration acquire that
+    // keeps `in_flight <= worker_parallelism`; (d) `run_claim` is
+    // spawned into a `JoinSet` that owns its own `_admit: Admission`
+    // (RAII on drop), preserving the per-task admission lifetime
+    // contract from #91 / PR #104; (e) when the JoinSet reaches
+    // `worker_parallelism`, `join_next` is awaited and the result is
+    // folded into the outer `http_status` / `last_error`. The loop
+    // drains until `acquire_next` returns `None`; a final drain loop
+    // ensures no spawned task is orphaned.
+    //
+    // `services` and `meta` are wrapped in `Arc` so the spawned
+    // closures can hold their own `'static` references; `store` and
+    // `client` were already `Arc`-backed. Each spawned task gets its
+    // own `Option<u16>` http-status slot, returned alongside the
+    // `CaduceusResult<TickOutcome>` so the dispatch loop can fold
+    // any non-`None` value into the outer `http_status`.
+    let services = Arc::new(services);
+    let meta = Arc::new(meta);
+    let client: Arc<Client> = Arc::clone(services.github.inner());
+    let mut http_status: Option<u16> = None;
+    let mut last_error: Option<CaduceusError> = None;
+    let worker_parallelism = cfg.worker_parallelism.max(1) as usize;
 
-    // 6.5. Check the circuit breaker before admitting the entry
-    //  to the worker pool. If the circuit is open for the repo
-    //  or the provider, route to NeedsAttention.
-    let repo_key = format!("{}/{}", claimed.entry.key.owner, claimed.entry.key.repo);
-    let repo_admit = circuit_store.try_admit("repository", &repo_key, services.clock.as_ref())?;
-    let provider_admit = circuit_store.try_admit("provider", "github", services.clock.as_ref())?;
+    let mut set: JoinSet<(CaduceusResult<TickOutcome>, Option<u16>)> = JoinSet::new();
 
-    let circuit_blocked = matches!(
-        (&repo_admit, &provider_admit),
-        (
-            AdmissionResult::CircuitOpen { .. } | AdmissionResult::MaxDegradedAgeExceeded,
-            _
-        ) | (
-            _,
-            AdmissionResult::CircuitOpen { .. } | AdmissionResult::MaxDegradedAgeExceeded
-        )
-    );
-
-    if circuit_blocked {
-        let log_path = state_dir.join("processor.log");
-        let mut guard = ActiveRunGuard::new(
-            claimed.claim.clone(),
-            Arc::clone(&store),
-            log_path,
-            claimed.entry.key.clone(),
-        );
-        let err = CaduceusError::CircuitOpen {
-            scope: "repository",
-            scope_id: repo_key.clone(),
-            retry_after: 1800,
-            probe_in_flight: false,
+    'dispatch: loop {
+        // 6.1. Acquire the next eligible entry under the
+        //      scheduler lock. Existing API, preserved exactly.
+        let run_id_candidate = Ulid::new().to_string();
+        let store_clone = Arc::clone(&store);
+        let clock_now = services.clock.now();
+        let claimed = match LeaderToken::with_lock(&state_dir, || {
+            store_clone.acquire_next(&run_id_candidate, std::process::id(), clock_now)
+        })? {
+            Some(c) => c,
+            None => break 'dispatch,
         };
-        let class = classify_error(&err);
-        let outcome = handle_infra_or_retry(cfg, &mut guard, &err, class).await?;
-        finish_tick_outcome(&gate, &meta, now, outcome, None, Some(&err))?;
-        return Ok(outcome);
-    }
 
-    // 6.6. Admit the entry to the worker pool. This gates the
-    //  global concurrency and per-repo exclusion before any
-    //  setup or worker dispatch occurs.
-    let repo_key = format!("{}/{}", claimed.entry.key.owner, claimed.entry.key.repo);
-    let admit = match pool.admit(&repo_key).await {
-        Ok(a) => a,
-        Err(err) => {
-            // PoolSaturated is an infrastructure failure; requeue with
-            // backoff and surface as NeedsAttention.
+        // 6.2. Circuit-breaker probe (inlined from the prior
+        //      synchronous path). On a circuit-blocked repo or
+        //      provider, requeue the entry and continue the
+        //      drain; the spec's "partial cancellation releases
+        //      guards" scenario demands the tick continue past
+        //      a single blocked entry.
+        let repo_key = format!("{}/{}", claimed.entry.key.owner, claimed.entry.key.repo);
+        let repo_admit =
+            circuit_store.try_admit("repository", &repo_key, services.clock.as_ref())?;
+        let provider_admit =
+            circuit_store.try_admit("provider", "github", services.clock.as_ref())?;
+
+        let circuit_blocked = matches!(
+            (&repo_admit, &provider_admit),
+            (
+                AdmissionResult::CircuitOpen { .. } | AdmissionResult::MaxDegradedAgeExceeded,
+                _
+            ) | (
+                _,
+                AdmissionResult::CircuitOpen { .. } | AdmissionResult::MaxDegradedAgeExceeded
+            )
+        );
+
+        if circuit_blocked {
             let log_path = state_dir.join("processor.log");
             let mut guard = ActiveRunGuard::new(
                 claimed.claim.clone(),
@@ -369,55 +372,176 @@ pub async fn tick(
                 log_path,
                 claimed.entry.key.clone(),
             );
+            let err = CaduceusError::CircuitOpen {
+                scope: "repository",
+                scope_id: repo_key.clone(),
+                retry_after: 1800,
+                probe_in_flight: false,
+            };
             let class = classify_error(&err);
-            let outcome = handle_infra_or_retry(cfg, &mut guard, &err, class).await?;
-            finish_tick_outcome(&gate, &meta, now, outcome, None, Some(&err))?;
-            return Ok(outcome);
+            let outcome = handle_infra_or_retry(cfg.clone(), &mut guard, &err, class).await?;
+            let _ = outcome;
+            if last_error.is_none() {
+                last_error = Some(err);
+            }
+            continue 'dispatch;
         }
-    };
 
-    // 7. Build the guard and run the work, finalization, and
-    //  teardown phases inside one explicit cleanup scope.
-    let log_path = state_dir.join("processor.log");
-    let mut guard = ActiveRunGuard::new(
-        claimed.claim.clone(),
-        Arc::clone(&store),
-        log_path,
-        claimed.entry.key.clone(),
-    );
-    let mut http_status: Option<u16> = None;
-    let outcome = run_claim(
-        cfg,
-        &services,
-        Arc::clone(&pool),
-        admit,
-        store.as_ref(),
-        &meta,
-        client,
-        claimed,
-        &mut guard,
-        cancellation,
-        &mut http_status,
-    )
-    .await;
+        // 6.3. Admit the entry to the worker pool. The pool's
+        //      lazy, per-iteration acquire ensures
+        //      `in_flight <= worker_parallelism` whenever the
+        //      dispatch loop pulls a new claim.
+        let admit = match pool.admit(&repo_key).await {
+            Ok(a) => a,
+            Err(err) => {
+                // PoolSaturated / DrainTimeout is an
+                // infrastructure failure: requeue with backoff
+                // via the existing path and continue the drain.
+                let log_path = state_dir.join("processor.log");
+                let mut guard = ActiveRunGuard::new(
+                    claimed.claim.clone(),
+                    Arc::clone(&store),
+                    log_path,
+                    claimed.entry.key.clone(),
+                );
+                let class = classify_error(&err);
+                let outcome = handle_infra_or_retry(cfg.clone(), &mut guard, &err, class).await?;
+                let _ = outcome;
+                if last_error.is_none() {
+                    last_error = Some(err);
+                }
+                continue 'dispatch;
+            }
+        };
 
-    let outcome_for_finish = match &outcome {
-        Ok(o) => *o,
-        Err(_) => TickOutcome::Failed,
+        // 6.4. Spawn `run_claim` into the JoinSet. The closure
+        //      owns its own `Admission` (RAII on drop), an owned
+        //      `ActiveRunGuard`, and an owned per-task
+        //      `http_status` slot. The outer slot is folded on
+        //      each `join_next` completion.
+        let log_path = state_dir.join("processor.log");
+        let guard = ActiveRunGuard::new(
+            claimed.claim.clone(),
+            Arc::clone(&store),
+            log_path,
+            claimed.entry.key.clone(),
+        );
+        let services_for_task = Arc::clone(&services);
+        let pool_for_task = Arc::clone(&pool);
+        let store_for_task = Arc::clone(&store);
+        let meta_for_task = Arc::clone(&meta);
+        let client_for_task = Arc::clone(&client);
+        let cfg_for_task = cfg.clone();
+        let cancellation_for_task = cancellation.clone();
+
+        set.spawn(async move {
+            let mut guard = guard;
+            let mut task_http_status: Option<u16> = None;
+            let outcome = run_claim(
+                cfg_for_task,
+                &services_for_task,
+                pool_for_task,
+                admit,
+                store_for_task.as_ref(),
+                &meta_for_task,
+                client_for_task,
+                claimed,
+                &mut guard,
+                cancellation_for_task,
+                &mut task_http_status,
+            )
+            .await;
+            (outcome, task_http_status)
+        });
+
+        // 6.5. When the JoinSet is at the cap, await one
+        //      completion before pulling the next claim. This
+        //      enforces `in_flight < worker_parallelism - 1`
+        //      before each new acquire (Req 2 — lazy acquire
+        //      maintains invariant).
+        if set.len() >= worker_parallelism {
+            if let Some(joined) = set.join_next().await {
+                match joined {
+                    Ok((Ok(_outcome), Some(status))) => {
+                        if http_status.is_none() {
+                            http_status = Some(status);
+                        }
+                    }
+                    Ok((Ok(_outcome), None)) => {}
+                    Ok((Err(err), status_opt)) => {
+                        if let Some(s) = status_opt {
+                            if http_status.is_none() {
+                                http_status = Some(s);
+                            }
+                        }
+                        if last_error.is_none() {
+                            last_error = Some(err);
+                        }
+                    }
+                    Err(join_err) => {
+                        // Task panicked or was aborted. Surface
+                        // as last_error but do not abort the
+                        // tick — drain remaining workers.
+                        if last_error.is_none() {
+                            last_error = Some(CaduceusError::Other(format!(
+                                "worker task join error: {join_err}"
+                            )));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 6.6. Drain any remaining in-flight tasks. We pull from
+    //      the JoinSet until empty; every per-task http_status
+    //      gets folded into the outer slot, every per-task
+    //      error is captured in `last_error`.
+    while let Some(joined) = set.join_next().await {
+        match joined {
+            Ok((Ok(_outcome), Some(status))) => {
+                if http_status.is_none() {
+                    http_status = Some(status);
+                }
+            }
+            Ok((Ok(_outcome), None)) => {}
+            Ok((Err(err), status_opt)) => {
+                if let Some(s) = status_opt {
+                    if http_status.is_none() {
+                        http_status = Some(s);
+                    }
+                }
+                if last_error.is_none() {
+                    last_error = Some(err);
+                }
+            }
+            Err(join_err) => {
+                if last_error.is_none() {
+                    last_error = Some(CaduceusError::Other(format!(
+                        "worker task join error: {join_err}"
+                    )));
+                }
+            }
+        }
+    }
+
+    // 7. Persist the final tick outcome. With the queue
+    //    drained, the tick reports `Idle304` if every polled
+    //    repo returned a cached 304, otherwise `IdleEmpty`.
+    let outcome = if any_304 && !any_200 {
+        TickOutcome::Idle304
+    } else {
+        TickOutcome::IdleEmpty
     };
-    let last_error = outcome.as_ref().err();
-    let _ = outcome;
-    // cfg is consumed by run_claim; record_tick_finished
-    // doesn't need it because the gate is owned.
     finish_tick_outcome(
         &gate,
-        &meta,
+        meta.as_ref(),
         now,
-        outcome_for_finish,
+        outcome,
         http_status,
-        last_error,
+        last_error.as_ref(),
     )?;
-    Ok(outcome_for_finish)
+    Ok(outcome)
 }
 
 // Submodule declarations and re-exports. These preserve the historical
