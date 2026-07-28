@@ -94,6 +94,11 @@ jobs:
       - name: clippy
         run: cargo clippy --locked --all-targets -- -D warnings
       - name: test
+        # hermes_lifecycle tests (ac04/ac06/ac07/ac08) each shell out to
+        # `hermes caduceus setup` which takes 2-3 minutes to compile the
+        # release binary; running four of them in parallel saturates the
+        # 240s per-test timeout. Allow up to 15 minutes for the test step.
+        timeout-minutes: 15
         run: cargo test --locked --all-targets
 
   python:

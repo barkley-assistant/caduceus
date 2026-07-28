@@ -18,8 +18,8 @@ fn drain_config() -> DrainConfig {
 async fn drain_completes_when_workers_finish() {
     // GIVEN 2 workers are in-flight (pool is at capacity 2/2)
     let pool = Arc::new(Pool::new(2, drain_config()));
-    let p1 = pool.admit("owner/repo-a").await.unwrap();
-    let p2 = pool.admit("owner/repo-b").await.unwrap();
+    let p1 = pool.admit("owner/repo-a", "owner/repo-a").await.unwrap();
+    let p2 = pool.admit("owner/repo-b", "owner/repo-b").await.unwrap();
 
     // Start drain in background
     let pool_clone = Arc::clone(&pool);
@@ -36,7 +36,7 @@ async fn drain_completes_when_workers_finish() {
     // arrive as either `DrainTimeout` (drain flag was set first) or
     // `PoolSaturated` (semaphore was full first). Both are valid
     // "drain in progress" responses.
-    let admit_result = pool.admit("owner/repo-c").await;
+    let admit_result = pool.admit("owner/repo-c", "owner/repo-c").await;
     assert!(
         matches!(
             &admit_result,
@@ -75,7 +75,7 @@ async fn drain_with_no_active_workers_completes_immediately() {
 async fn drain_rejects_new_admissions_until_workers_complete() {
     // GIVEN one in-flight worker (1/2 slots used, room for one more)
     let pool = Arc::new(Pool::new(2, drain_config()));
-    let _p1 = pool.admit("owner/repo-a").await.unwrap();
+    let _p1 = pool.admit("owner/repo-a", "owner/repo-a").await.unwrap();
 
     // Start drain
     let pool_clone = Arc::clone(&pool);
@@ -88,7 +88,10 @@ async fn drain_rejects_new_admissions_until_workers_complete() {
     tokio::task::yield_now().await;
 
     // New admissions are rejected during drain with DrainTimeout.
-    let err = pool.admit("owner/repo-new").await.unwrap_err();
+    let err = pool
+        .admit("owner/repo-new", "owner/repo-new")
+        .await
+        .unwrap_err();
     assert!(
         matches!(&err, caduceus::CaduceusError::DrainTimeout { .. }),
         "expected DrainTimeout during drain, got {err}"
@@ -105,7 +108,7 @@ async fn drain_timeout_when_workers_exceed_deadline() {
     // and a very short drain timeout
     let short_drain = DrainConfig::from_seconds_and_ms(0, 100); // 0s drain timeout
     let pool = Arc::new(Pool::new(1, short_drain));
-    let _admitted = pool.admit("owner/repo-a").await.unwrap();
+    let _admitted = pool.admit("owner/repo-a", "owner/repo-a").await.unwrap();
 
     // WHEN drain is triggered — the worker holds the only permit
     // for longer than the drain timeout

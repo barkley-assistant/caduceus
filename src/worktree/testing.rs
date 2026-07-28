@@ -53,6 +53,7 @@ impl Config {
             discovery_max_pages: 20,
             compiled_ignore_patterns: Vec::new(),
             scheduler_lease_ttl_seconds: 60,
+            worker_lease_ttl_seconds: 600,
             scheduler_transaction_budget_ms: 100,
             drain_timeout_seconds: 30,
             backpressure_budget_ms: 5000,

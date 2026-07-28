@@ -106,10 +106,25 @@ pub fn run_blocking(cfg: Config) -> CaduceusResult<TickOutcome> {
         .build()
         .map_err(|err| CaduceusError::Other(format!("build tokio runtime: {err}")))?;
     let cancellation = CancellationToken::new();
-    let pool = Arc::new(Pool::new(
-        cfg.worker_parallelism,
-        DrainConfig::from_seconds_and_ms(cfg.drain_timeout_seconds, cfg.backpressure_budget_ms),
-    ));
+    // Open the host-wide lease store once per process. The pool
+    // consults this before granting a permit so overlapping cron
+    // ticks cannot exceed the configured `worker_parallelism`
+    // (issue #106 — closes the SCHED-001 "bounded single-host
+    // concurrency" contract gap). `LeaseStore::open` returns
+    // `CaduceusError::State(...)` on I/O failure, which surfaces as
+    // a non-zero exit per the CLI contract.
+    // Lease store is opened lazily on first pool.admit() — idle ticks
+    // never create state.db on disk.
+    let pool = Arc::new(
+        Pool::new(
+            cfg.worker_parallelism,
+            DrainConfig::from_seconds_and_ms(cfg.drain_timeout_seconds, cfg.backpressure_budget_ms),
+        )
+        .with_lease_store_dir(
+            cfg.state_dir.clone(),
+            std::time::Duration::from_secs(cfg.worker_lease_ttl_seconds),
+        ),
+    );
     rt.block_on(async move {
         tokio::select! {
         outcome = run_with_config(cfg, Arc::clone(&pool), cancellation.clone()) => outcome,
@@ -390,8 +405,11 @@ pub async fn tick(
         // 6.3. Admit the entry to the worker pool. The pool's
         //      lazy, per-iteration acquire ensures
         //      `in_flight <= worker_parallelism` whenever the
-        //      dispatch loop pulls a new claim.
-        let admit = match pool.admit(&repo_key).await {
+        //      dispatch loop pulls a new claim. The lease store
+        //      wired into the pool at construction promotes the
+        //      "one worker per repo" contract from process-local
+        //      to host-wide (issue #106 / SCHED-001).
+        let admit = match pool.admit(&format!("repo:{repo_key}"), &repo_key).await {
             Ok(a) => a,
             Err(err) => {
                 // PoolSaturated / DrainTimeout is an

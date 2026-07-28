@@ -16,15 +16,18 @@ fn drain_config() -> DrainConfig {
 async fn admission_guard_enforces_parallelism_cap() {
     // GIVEN worker_parallelism = 2 and two slots are already held
     let pool = Pool::new(2, drain_config());
-    let _admit_a = pool.admit("owner/repo-a").await.unwrap();
-    let _admit_b = pool.admit("owner/repo-b").await.unwrap();
+    let _admit_a = pool.admit("owner/repo-a", "owner/repo-a").await.unwrap();
+    let _admit_b = pool.admit("owner/repo-b", "owner/repo-b").await.unwrap();
 
     // THEN the pool reports itself as saturated
     assert_eq!(pool.state(), PoolState::Saturated);
 
     // AND a third admit on a distinct repo is rejected with the
     // expected saturation error.
-    let err = pool.admit("owner/repo-c").await.unwrap_err();
+    let err = pool
+        .admit("owner/repo-c", "owner/repo-c")
+        .await
+        .unwrap_err();
     assert!(
         matches!(
             err,
@@ -41,8 +44,8 @@ async fn admission_guard_enforces_parallelism_cap() {
 async fn admission_guard_restores_capacity_on_drop() {
     // GIVEN worker_parallelism = 2 and two slots are held
     let pool = Pool::new(2, drain_config());
-    let admit_a = pool.admit("owner/repo-a").await.unwrap();
-    let admit_b = pool.admit("owner/repo-b").await.unwrap();
+    let admit_a = pool.admit("owner/repo-a", "owner/repo-a").await.unwrap();
+    let admit_b = pool.admit("owner/repo-b", "owner/repo-b").await.unwrap();
     assert_eq!(pool.state(), PoolState::Saturated);
 
     // WHEN the first admission is dropped
