@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use caduceus::executor::oci_args::{build_argv, MountSpec, OciEngine};
+use caduceus::executor::oci_args::{build_argv, find_image_position, MountSpec, OciEngine};
 use caduceus::executor::ExecutorSpec;
 use caduceus::github::issue::IssueKey;
 use caduceus::infra::config::Config;
@@ -207,5 +207,48 @@ fn oci_engine_detects_docker_or_podman() {
         OciEngine::from_binary_name("nerdctl"),
         OciEngine::Docker,
         "unknown binary defaults to Docker"
+    );
+}
+
+// find_image_position (used by policy.rs to keep engine flags before image)
+
+#[test]
+fn find_image_position_finds_sha256() {
+    assert_eq!(
+        find_image_position(&[
+            "docker".to_string(),
+            "create".to_string(),
+            "caduceus-worker@sha256:abc123".to_string(),
+            "bridge.py".to_string(),
+        ]),
+        Some(2)
+    );
+}
+
+#[test]
+fn find_image_position_none_when_missing() {
+    assert_eq!(
+        find_image_position(&["docker".to_string(), "create".to_string()]),
+        None
+    );
+}
+
+#[test]
+fn find_image_position_correct_among_other_tokens() {
+    assert_eq!(
+        find_image_position(&[
+            "docker".to_string(),
+            "create".to_string(),
+            "--mount".to_string(),
+            "type=bind,src=/host,dst=/container".to_string(),
+            "-e".to_string(),
+            "FOO=bar".to_string(),
+            "-v".to_string(),
+            "/data:/data:ro".to_string(),
+            "caduceus-worker@sha256:abc123".to_string(),
+            "bridge.py".to_string(),
+            "--arg".to_string(),
+        ]),
+        Some(8)
     );
 }
