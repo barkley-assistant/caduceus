@@ -56,7 +56,7 @@ async fn closed_circuit_allows_pool_admission() {
     );
 
     // AND pool admission succeeds
-    let result = pool.admit("owner/repo").await;
+    let result = pool.admit("owner/repo", "owner/repo").await;
     assert!(
         result.is_ok(),
         "pool admission should succeed: {:?}",
@@ -91,7 +91,7 @@ async fn open_circuit_blocks_admission() {
     );
 
     // Pool admission would still succeed (the circuit check is the gate)
-    let result = pool.admit("owner/repo").await;
+    let result = pool.admit("owner/repo", "owner/repo").await;
     assert!(
         result.is_ok(),
         "pool should still admit when circuit is open (dispatch hook checks circuit first)"
@@ -125,7 +125,7 @@ async fn half_open_probe_admitted() {
     );
 
     // Pool admission should also succeed
-    let result = pool.admit("owner/repo").await;
+    let result = pool.admit("owner/repo", "owner/repo").await;
     assert!(
         result.is_ok(),
         "pool should admit after circuit probe: {:?}",
@@ -176,7 +176,7 @@ async fn successful_probe_after_dispatch_resets_circuit() {
         admit
     );
 
-    let result = pool.admit("owner/repo").await;
+    let result = pool.admit("owner/repo", "owner/repo").await;
     assert!(
         result.is_ok(),
         "pool admission should succeed after circuit reset: {:?}",

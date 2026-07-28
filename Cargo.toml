@@ -233,6 +233,10 @@ name = "scheduler_leases_test"
 path = "tests/scheduler/scheduler_leases_test.rs"
 
 [[test]]
+name = "cross_process_lease_test"
+path = "tests/scheduler/cross_process_lease_test.rs"
+
+[[test]]
 name = "api_base_allowlist_test"
 path = "tests/state/api_base_allowlist_test.rs"
 

@@ -19,5 +19,5 @@ pub mod pool;
 pub use circuit::CircuitStore;
 pub use exclusion::RepoExclusionMap;
 pub use leadership::LeaderToken;
-pub use leases::LeaseStore;
+pub use leases::{LeaseGuard, LeaseStore};
 pub use pool::{Admission, DrainConfig, Pool, PoolState};
