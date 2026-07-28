@@ -301,6 +301,18 @@ name = "migration_test"
 path = "tests/state/migration_test.rs"
 
 [[test]]
+name = "migrate_to_sqlite_test"
+path = "tests/state/migrate_to_sqlite_test.rs"
+
+[[test]]
+name = "migrate_to_sqlite_backend_test"
+path = "tests/migrate_to_sqlite_backend_test.rs"
+
+[[test]]
+name = "migrate_to_sqlite_lock_race_test"
+path = "tests/migrate_to_sqlite_lock_race_test.rs"
+
+[[test]]
 name = "queue_model_test"
 path = "tests/state/queue_model_test.rs"
 

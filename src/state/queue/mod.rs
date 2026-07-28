@@ -45,6 +45,7 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use fs2::FileExt;
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -246,6 +247,19 @@ pub struct ResetOutcome {
     pub dropped_checkpoint: Option<FinalizationCheckpoint>,
 }
 
+/// Back-end implementation for [`StateStore`]. The JSON variant keeps
+/// the original file-backed `flock`-serialised store; the SQLite
+/// variant persists to the `queue_entries` table in `state.db`.
+#[derive(Debug)]
+enum StateStoreBackend {
+    Json {
+        state_path: PathBuf,
+        lock_path: PathBuf,
+        state_dir: PathBuf,
+    },
+    Sqlite(PathBuf),
+}
+
 /// Opaque claim token. Constructed by [`StateStore::acquire_next`]
 /// and consumed by the matching terminal transition
 /// ([`StateStore::complete`], [`StateStore::retry_or_fail`], …).
@@ -397,12 +411,11 @@ pub fn serialize_queue_state(state: &QueueState) -> CaduceusResult<String> {
 /// `snapshot` is the only operation that never rewrites the file.
 /// Everything else follows the standard write-temp → fsync → rename
 /// → fsync-dir pattern.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct StateStore {
     state_dir: PathBuf,
-    state_path: PathBuf,
     claims_dir: PathBuf,
-    lock_path: PathBuf,
+    backend: StateStoreBackend,
 }
 
 // Submodule declarations and re-exports. The public surface keeps

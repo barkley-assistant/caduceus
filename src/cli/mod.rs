@@ -427,8 +427,9 @@ fn run_queue_reprocess(issue: &str, dry_run: bool) -> CaduceusResult<()> {
 /// `caduceus migrate-state --to-sqlite [--dry-run]` —
 /// migrate the current JSON state to the SQLite store.
 fn run_migrate_state_to_sqlite(dry_run: bool) -> CaduceusResult<()> {
-    let config = match std::env::var_os("CADUCEUS_CONFIG") {
-        Some(path) => Config::load_from(std::path::Path::new(&path))?,
+    let cfg_path = resolve_config_path_for_write();
+    let config = match cfg_path.as_ref() {
+        Some(path) => Config::load_from(path)?,
         None => Config::load()?,
     };
     let state_dir = config.state_dir.clone();
@@ -436,19 +437,39 @@ fn run_migrate_state_to_sqlite(dry_run: bool) -> CaduceusResult<()> {
         &state_dir,
         dry_run,
         caduceus::migrate_to_sqlite::LockPolicy::Acquire,
+        cfg_path.as_deref(),
     )?;
     match &report.outcome {
         caduceus::migrate_to_sqlite::SqliteMigrationOutcome::Migrated { entries } => {
-            println!("caduceus migrate-state: migrated {entries} entries to SQLite");
+            println!(
+                "caduceus migrate-state: migrated {entries} entries to SQLite (backend: sqlite)"
+            );
         }
         caduceus::migrate_to_sqlite::SqliteMigrationOutcome::DryRun { would_migrate } => {
-            println!("caduceus migrate-state: dry-run; would migrate {would_migrate} entries");
+            println!("caduceus migrate-state: dry-run; would migrate {would_migrate} entries (backend would be: sqlite)");
         }
         caduceus::migrate_to_sqlite::SqliteMigrationOutcome::AlreadyCurrent => {
-            println!("caduceus migrate-state: already current; no changes");
+            println!("caduceus migrate-state: already current; backend: json");
         }
     }
     Ok(())
+}
+
+/// Best-effort resolution of the config file path so the migration
+/// command can write `state_backend` back to the same file the daemon
+/// loads from. Returns `None` when no canonical path is known (the
+/// migration still succeeds, but the config is left untouched).
+fn resolve_config_path_for_write() -> Option<std::path::PathBuf> {
+    if let Some(path) = std::env::var_os("CADUCEUS_CONFIG") {
+        return Some(std::path::PathBuf::from(path));
+    }
+    if let Some(hermes_home) = std::env::var_os("HERMES_HOME") {
+        return Some(std::path::PathBuf::from(hermes_home).join("config.yaml"));
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        return Some(std::path::PathBuf::from(home).join(".config/caduceus/config.yaml"));
+    }
+    None
 }
 
 /// `caduceus migrate-state --from <path> [--dry-run]` —

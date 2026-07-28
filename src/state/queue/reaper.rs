@@ -389,9 +389,12 @@ impl StateStore {
         })?;
         Ok(Self {
             state_dir: state_dir.to_path_buf(),
-            state_path: state_dir.join(STATE_FILENAME),
             claims_dir,
-            lock_path: state_dir.join(STATE_LOCK_FILENAME),
+            backend: StateStoreBackend::Json {
+                state_path: state_dir.join(STATE_FILENAME),
+                lock_path: state_dir.join(STATE_LOCK_FILENAME),
+                state_dir: state_dir.to_path_buf(),
+            },
         })
     }
 
@@ -406,7 +409,11 @@ impl StateStore {
         // drop. The lock file may not exist yet on a cold
         // start; we create it (mode 0600) before flocking.
         use std::os::unix::fs::PermissionsExt;
-        let lock_path = &self.lock_path;
+        let StateStoreBackend::Json { lock_path, .. } = &self.backend else {
+            // SQLite: the reaper only runs in JSON mode right now;
+            // caller holds the daemon lock for the whole tick.
+            return f(self);
+        };
         fs::create_dir_all(&self.state_dir).ok();
         let lock_file = OpenOptions::new()
             .create(true)

@@ -51,16 +51,23 @@ pub fn migrate_to_sqlite(
     state_dir: &Path,
     dry_run: bool,
     lock_policy: LockPolicy,
+    cfg_path: Option<&Path>,
 ) -> CaduceusResult<SqliteMigrationReport> {
-    // Acquire the daemon lock to prevent concurrent ticks.
-    if lock_policy == LockPolicy::Acquire && !dry_run {
-        let _lock = crate::state::queue::DaemonLock::try_acquire(state_dir)?.ok_or_else(|| {
-            CaduceusError::Queue {
-                context: "migrate-to-sqlite",
-                stderr: "another tick holds daemon.lock; refusing to migrate".to_string(),
-            }
-        })?;
-    }
+    // Acquire the daemon lock to prevent concurrent ticks. Bind the
+    // guard to function scope so it is dropped only after the migration
+    // report is built and all I/O has completed.
+    let _lock = if lock_policy == LockPolicy::Acquire && !dry_run {
+        Some(
+            crate::state::queue::DaemonLock::try_acquire(state_dir)?.ok_or_else(|| {
+                CaduceusError::Queue {
+                    context: "migrate-to-sqlite",
+                    stderr: "another tick holds daemon.lock; refusing to migrate".to_string(),
+                }
+            })?,
+        )
+    } else {
+        None
+    };
 
     // Read JSON queue state.
     let state_path = state_dir.join(crate::state::queue::STATE_FILENAME);
@@ -111,17 +118,17 @@ pub fn migrate_to_sqlite(
         Vec::new()
     };
 
+    if json_entries.is_empty() && json_meta.is_empty() {
+        return Ok(SqliteMigrationReport {
+            outcome: SqliteMigrationOutcome::AlreadyCurrent,
+        });
+    }
+
     if dry_run {
         return Ok(SqliteMigrationReport {
             outcome: SqliteMigrationOutcome::DryRun {
                 would_migrate: json_entries.len() as u64,
             },
-        });
-    }
-
-    if json_entries.is_empty() && json_meta.is_empty() {
-        return Ok(SqliteMigrationReport {
-            outcome: SqliteMigrationOutcome::AlreadyCurrent,
         });
     }
 
@@ -215,11 +222,95 @@ pub fn migrate_to_sqlite(
         message: format!("cannot commit migration transaction: {e}"),
     })?;
 
+    if let Some(path) = cfg_path {
+        write_state_backend_config(path, "sqlite", false)?;
+    }
+
     Ok(SqliteMigrationReport {
         outcome: SqliteMigrationOutcome::Migrated {
             entries: json_entries.len() as u64,
         },
     })
+}
+
+/// Update `state_backend` in the operator's config file. The file may
+/// be a standalone Caduceus YAML document or a Hermes-shaped file with
+/// a top-level `caduceus:` section. The change writes through a temp
+/// file and atomic rename in the same directory.
+pub(crate) fn write_state_backend_config(
+    cfg_path: &Path,
+    backend: &str,
+    dry_run: bool,
+) -> CaduceusResult<()> {
+    if dry_run {
+        println!(
+            "caduceus migrate-state: dry-run; would set state_backend: {} in {}",
+            backend,
+            cfg_path.display()
+        );
+        return Ok(());
+    }
+
+    let text = std::fs::read_to_string(cfg_path).map_err(|e| {
+        CaduceusError::Config(format!("failed to read config {}: {e}", cfg_path.display()))
+    })?;
+    let mut outer: serde_yaml::Value = serde_yaml::from_str(&text).map_err(|e| {
+        CaduceusError::Config(format!(
+            "failed to parse config {}: {e}",
+            cfg_path.display()
+        ))
+    })?;
+    let is_hermes_shape = outer
+        .as_mapping()
+        .map(|m| m.contains_key("caduceus"))
+        .unwrap_or(false);
+
+    fn set_state_backend(mapping: &mut serde_yaml::Mapping, backend: &str) {
+        mapping.insert(
+            serde_yaml::Value::String("state_backend".to_string()),
+            serde_yaml::Value::String(backend.to_string()),
+        );
+    }
+
+    if is_hermes_shape {
+        if let Some(serde_yaml::Value::Mapping(caduceus)) = outer.get_mut("caduceus") {
+            set_state_backend(caduceus, backend);
+        }
+    } else if let Some(mapping) = outer.as_mapping_mut() {
+        if mapping.contains_key("caduceus") {
+            return Err(CaduceusError::Config(format!(
+                "config {} looks Hermes-shaped but caduceus section is malformed",
+                cfg_path.display()
+            )));
+        }
+        set_state_backend(mapping, backend);
+    } else {
+        return Err(CaduceusError::Config(format!(
+            "config {} is not a YAML mapping",
+            cfg_path.display()
+        )));
+    }
+
+    let new_text = serde_yaml::to_string(&outer).map_err(|e| {
+        CaduceusError::Config(format!(
+            "failed to serialize config {}: {e}",
+            cfg_path.display()
+        ))
+    })?;
+    let tmp = cfg_path.with_extension("yaml.tmp");
+    std::fs::write(&tmp, new_text).map_err(|e| {
+        CaduceusError::Config(format!(
+            "failed to write temp config {}: {e}",
+            tmp.display()
+        ))
+    })?;
+    std::fs::rename(&tmp, cfg_path).map_err(|e| {
+        CaduceusError::Config(format!(
+            "failed to replace config {}: {e}",
+            cfg_path.display()
+        ))
+    })?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -245,7 +336,8 @@ mod tests {
     #[test]
     fn migrate_empty_state_is_already_current() {
         let dir = state_dir();
-        let report = migrate_to_sqlite(&dir, false, LockPolicy::Skip).expect("migrate empty state");
+        let report =
+            migrate_to_sqlite(&dir, false, LockPolicy::Skip, None).expect("migrate empty state");
         assert_eq!(report.outcome, SqliteMigrationOutcome::AlreadyCurrent);
         let _ = fs::remove_dir_all(&dir);
     }
@@ -265,7 +357,7 @@ mod tests {
         .to_string();
         write_state_json(&dir, &state_body);
 
-        let report = migrate_to_sqlite(&dir, true, LockPolicy::Skip).expect("dry run");
+        let report = migrate_to_sqlite(&dir, true, LockPolicy::Skip, None).expect("dry run");
         assert_eq!(
             report.outcome,
             SqliteMigrationOutcome::DryRun { would_migrate: 1 }
@@ -297,7 +389,7 @@ mod tests {
         .to_string();
         write_state_json(&dir, &state_body);
 
-        let report = migrate_to_sqlite(&dir, false, LockPolicy::Skip).expect("migrate");
+        let report = migrate_to_sqlite(&dir, false, LockPolicy::Skip, None).expect("migrate");
         assert_eq!(
             report.outcome,
             SqliteMigrationOutcome::Migrated { entries: 2 }
@@ -340,7 +432,7 @@ mod tests {
         .to_string();
         write_state_json(&dir, &state_body);
 
-        migrate_to_sqlite(&dir, false, LockPolicy::Skip).expect("migrate");
+        migrate_to_sqlite(&dir, false, LockPolicy::Skip, None).expect("migrate");
         assert!(
             dir.join(crate::state::queue::STATE_FILENAME).is_file(),
             "JSON state must be preserved as backup"
@@ -351,7 +443,7 @@ mod tests {
     #[test]
     fn migrate_when_already_current_is_noop() {
         let dir = state_dir();
-        let report = migrate_to_sqlite(&dir, false, LockPolicy::Skip).expect("migrate empty");
+        let report = migrate_to_sqlite(&dir, false, LockPolicy::Skip, None).expect("migrate empty");
         assert_eq!(report.outcome, SqliteMigrationOutcome::AlreadyCurrent);
         let _ = fs::remove_dir_all(&dir);
     }
