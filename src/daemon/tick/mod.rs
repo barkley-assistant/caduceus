@@ -113,16 +113,15 @@ pub fn run_blocking(cfg: Config) -> CaduceusResult<TickOutcome> {
     // concurrency" contract gap). `LeaseStore::open` returns
     // `CaduceusError::State(...)` on I/O failure, which surfaces as
     // a non-zero exit per the CLI contract.
-    let lease_store = Arc::new(std::sync::Mutex::new(crate::scheduler::LeaseStore::open(
-        &cfg.state_dir,
-    )?));
+    // Lease store is opened lazily on first pool.admit() — idle ticks
+    // never create state.db on disk.
     let pool = Arc::new(
         Pool::new(
             cfg.worker_parallelism,
             DrainConfig::from_seconds_and_ms(cfg.drain_timeout_seconds, cfg.backpressure_budget_ms),
         )
-        .with_lease_store(
-            lease_store,
+        .with_lease_store_dir(
+            cfg.state_dir.clone(),
             std::time::Duration::from_secs(cfg.worker_lease_ttl_seconds),
         ),
     );

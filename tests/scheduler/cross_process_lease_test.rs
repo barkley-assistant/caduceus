@@ -146,3 +146,37 @@ async fn lease_released_on_drop_with_panic_safety() {
         .await
         .expect("second admit must succeed after first dropped");
 }
+
+#[tokio::test]
+async fn pool_with_lease_store_dir_does_not_create_state_db_until_first_admit() {
+    // Regression for the SIGINT-idle-tick failure: building a Pool
+    // with `with_lease_store_dir(path, ttl)` must NOT call
+    // `LeaseStore::open` on construction, because that creates
+    // state.db on disk. Idle ticks (no admissions) should leave
+    // the state dir untouched so the existing
+    // `idle_cancellation_does_not_mutate_state` assertion holds.
+
+    let dir = temp_state_dir();
+    let path: PathBuf = dir.path().to_path_buf();
+
+    // WHEN the pool is built but no admission happens
+    let pool =
+        Pool::new(2, drain_config()).with_lease_store_dir(path.clone(), Duration::from_secs(60));
+
+    // THEN state.db must not exist yet
+    assert!(
+        !path.join("state.db").exists(),
+        "with_lease_store_dir must NOT eagerly open the lease store; \
+         state.db should not exist until first pool.admit()"
+    );
+
+    // AND admit still works when we actually need it
+    let _admit = pool
+        .admit(&lease_key("owner/repo"), "owner/repo")
+        .await
+        .expect("admit must succeed after first lazy open");
+    assert!(
+        path.join("state.db").exists(),
+        "state.db should now exist after first admission"
+    );
+}

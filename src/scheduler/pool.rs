@@ -16,10 +16,11 @@
 //!
 //! The [`Admission`] guard releases the semaphore permit, the per-repo
 //! mutex guard, and (when configured) the lease on drop.
-
-use std::sync::{Arc, Mutex};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
+use chrono::Utc;
 use tokio::sync::{OwnedMutexGuard, OwnedSemaphorePermit, Semaphore};
 
 use super::exclusion::RepoExclusionMap;
@@ -138,7 +139,13 @@ pub struct Pool {
     /// the lease store before the in-process exclusion and semaphore
     /// so the per-repo "one worker at a time" contract is enforced
     /// across all processes sharing the store.
-    lease_store: Option<Arc<Mutex<LeaseStore>>>,
+    /// Wrapped in `OnceLock` so the SQLite connection is opened
+    /// lazily — only the first `admit` call touches disk. Idle
+    /// ticks (no admissions) don't create `state.db`.
+    lease_store: Option<Arc<OnceLock<Arc<Mutex<LeaseStore>>>>>,
+    /// State dir used to lazily open the lease store on first
+    /// admission. Set by `with_lease_store_dir`.
+    lease_store_dir: Option<PathBuf>,
     /// TTL for leases acquired from `lease_store`. Default 600s.
     worker_lease_ttl: Duration,
     /// Identity used as the lease `owner_id`. Composed once per pool
@@ -170,22 +177,44 @@ impl Pool {
             draining: std::sync::Mutex::new(false),
             drain_config,
             lease_store: None,
+            lease_store_dir: None,
             worker_lease_ttl: Duration::from_secs(600),
-            worker_owner_id: format!("{}@{}", std::process::id(), chrono::Utc::now().timestamp()),
+            worker_owner_id: format!("{}@{}", std::process::id(), Utc::now().timestamp()),
         }
     }
 
-    /// Builder: attach a host-wide lease store so `admit` enforces
-    /// the per-repo contract across all processes sharing the store.
+    /// Builder: attach a host-wide lease store by state directory
+    /// path. The connection is opened lazily on the first `admit`
+    /// call (via `OnceLock`); idle ticks that never admit anything
+    /// won't touch disk and won't create `state.db`.
+    ///
     /// The supplied `worker_lease_ttl` is the TTL on every acquired
     /// lease and bounds the worst-case leak when a worker panics
     /// between acquire and the RAII Drop of the `LeaseGuard`.
+    pub fn with_lease_store_dir(mut self, state_dir: PathBuf, worker_lease_ttl: Duration) -> Self {
+        self.lease_store = Some(Arc::new(OnceLock::new()));
+        self.lease_store_dir = Some(state_dir);
+        self.worker_lease_ttl = worker_lease_ttl;
+        self
+    }
+
+    /// Builder: attach a host-wide lease store that's already been
+    /// opened. The connection is used lazily on first `admit` call
+    /// (via `OnceLock`); idle ticks that never admit anything won't
+    /// touch the connection.
+    ///
+    /// Prefer `with_lease_store_dir` for production code paths so
+    /// the open happens at first use. This builder is intended for
+    /// tests that need to seed a pre-opened store.
     pub fn with_lease_store(
         mut self,
         store: Arc<Mutex<LeaseStore>>,
         worker_lease_ttl: Duration,
     ) -> Self {
-        self.lease_store = Some(store);
+        let cell = Arc::new(OnceLock::new());
+        let _ = cell.set(Arc::clone(&store));
+        self.lease_store = Some(cell);
+        self.lease_store_dir = None;
         self.worker_lease_ttl = worker_lease_ttl;
         self
     }
@@ -227,8 +256,23 @@ impl Pool {
             }
         }
 
-        // 2. Host-wide per-repo lease (when configured).
-        let lease_guard = if let Some(store_arc) = &self.lease_store {
+        // 2. Host-wide per-repo lease (when configured). The connection
+        // is opened lazily here (via the OnceLock) so idle ticks that
+        // never reach this point don't create state.db.
+        let lease_guard = if let Some(store_cell) = &self.lease_store {
+            // Resolve or lazily open the lease store on first use.
+            let store_arc = if let Some(dir) = &self.lease_store_dir {
+                store_cell.get_or_init(|| {
+                    let opened = LeaseStore::open(dir).expect("lease store open");
+                    Arc::new(Mutex::new(opened))
+                })
+            } else {
+                // Pre-opened store from with_lease_store(); the OnceLock
+                // was seeded in the constructor.
+                store_cell
+                    .get()
+                    .expect("lease store should be pre-seeded by with_lease_store")
+            };
             let lease = {
                 let mut store = store_arc.lock().expect("lease store lock");
                 match store.acquire(issue_key, &self.worker_owner_id, self.worker_lease_ttl) {
