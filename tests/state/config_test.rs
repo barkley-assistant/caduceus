@@ -55,6 +55,7 @@ fn test_defaults_match_contract() {
     assert!(!cfg.dry_run);
     assert!(cfg.github_token.is_none());
     assert!(cfg.compiled_ignore_patterns.is_empty());
+    assert_eq!(cfg.state_backend, "json");
 }
 
 #[test]
@@ -425,6 +426,59 @@ fn invalid_watched_repo_slug_is_rejected() {
 }
 
 // Duplicate / equal labels
+
+#[test]
+fn state_backend_defaults_to_json() {
+    let root = tempdir("state-backend-default");
+    let yaml = r#"
+        worker_command: ["python3", "bridge.py"]
+        reduced_containment_acknowledged: true
+        "#;
+    let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
+    let cfg = Config::from_raw(raw, &ctx(&root)).expect("config validates");
+    assert_eq!(cfg.state_backend, "json");
+}
+
+#[test]
+fn state_backend_json_is_accepted() {
+    let root = tempdir("state-backend-json");
+    let yaml = r#"
+        state_backend: "json"
+        worker_command: ["python3", "bridge.py"]
+        reduced_containment_acknowledged: true
+        "#;
+    let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
+    let cfg = Config::from_raw(raw, &ctx(&root)).expect("config validates");
+    assert_eq!(cfg.state_backend, "json");
+}
+
+#[test]
+fn state_backend_sqlite_is_accepted() {
+    let root = tempdir("state-backend-sqlite");
+    let yaml = r#"
+        state_backend: "sqlite"
+        worker_command: ["python3", "bridge.py"]
+        reduced_containment_acknowledged: true
+        "#;
+    let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
+    let cfg = Config::from_raw(raw, &ctx(&root)).expect("config validates");
+    assert_eq!(cfg.state_backend, "sqlite");
+}
+
+#[test]
+fn state_backend_invalid_value_is_rejected() {
+    let root = tempdir("state-backend-invalid");
+    let yaml = r#"
+        state_backend: "unsupported"
+        worker_command: ["python3", "bridge.py"]
+        reduced_containment_acknowledged: true
+        "#;
+    let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
+    let err = Config::from_raw(raw, &ctx(&root)).expect_err("invalid backend must fail");
+    let msg = format!("{err:?}");
+    assert!(msg.contains("state_backend"), "got: {msg}");
+    assert!(msg.contains("json") && msg.contains("sqlite"), "got: {msg}");
+}
 
 #[test]
 fn duplicate_trigger_labels_are_rejected() {

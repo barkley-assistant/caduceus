@@ -116,6 +116,44 @@ fn open_existing_state_round_trips() {
     assert_eq!(snap, state);
 }
 
+#[test]
+fn open_sqlite_creates_state_dir_and_claims_dir() {
+    let root = tempdir("open-sqlite-creates");
+    let state_dir = root.join("state");
+    assert!(!state_dir.exists());
+
+    let store = StateStore::open_sqlite(&state_dir).expect("open sqlite");
+    assert!(state_dir.is_dir(), "state dir created");
+    assert!(state_dir.join("claims").is_dir(), "claims dir created");
+
+    let snap = store.snapshot().expect("snapshot");
+    assert_eq!(snap.entries.len(), 0);
+    assert_eq!(snap.version, QUEUE_FILE_VERSION);
+}
+
+#[test]
+fn open_sqlite_round_trips_entries() {
+    let root = tempdir("open-sqlite-roundtrip");
+    let state_dir = root.join("state");
+    let store = StateStore::open_sqlite(&state_dir).expect("open sqlite");
+
+    let outcome = store
+        .enqueue(&key("Owner", "Repo", 1), TicketType::Code, false)
+        .expect("enqueue");
+    assert!(matches!(outcome, EnqueueOutcome::Inserted));
+
+    let snap = store.snapshot().expect("snapshot");
+    let e = snap.entry(&key("Owner", "Repo", 1)).expect("present");
+    assert_eq!(e.phase, Phase::Queued);
+    assert_eq!(e.ticket_type, TicketType::Code);
+    assert_eq!(e.attempts, 0);
+
+    // Re-open the same SQLite store and verify the entry survives.
+    let reopened = StateStore::open_sqlite(&state_dir).expect("reopen sqlite");
+    let snap2 = reopened.snapshot().expect("snapshot after reopen");
+    assert_eq!(snap, snap2);
+}
+
 // Enqueue
 
 #[test]

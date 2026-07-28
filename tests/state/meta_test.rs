@@ -67,6 +67,34 @@ fn write_raw(path: &PathBuf, body: &[u8]) {
 // Round-trip
 
 #[test]
+fn empty_meta_round_trips_sqlite() {
+    let root = tempdir("empty-sqlite");
+    let store = MetaStore::open_sqlite(&root).expect("open sqlite");
+    let meta = StateMeta::empty();
+    store.update(|_| {}).expect("no-op update");
+    let loaded = store.snapshot();
+    assert_eq!(loaded, meta);
+}
+
+#[test]
+fn full_meta_round_trips_sqlite() {
+    let root = tempdir("full-sqlite");
+    let store = MetaStore::open_sqlite(&root).expect("open sqlite");
+    let meta = sample_meta();
+    store.update(|m| *m = meta.clone()).expect("store meta");
+    let loaded = store.snapshot();
+    assert_eq!(loaded, meta);
+}
+
+#[test]
+fn open_sqlite_returns_empty_when_no_meta_yet() {
+    let root = tempdir("sqlite-no-meta");
+    let store = MetaStore::open_sqlite(&root).expect("open sqlite");
+    assert_eq!(store.snapshot(), StateMeta::empty());
+    assert!(!store.is_corrupt());
+}
+
+#[test]
 fn empty_meta_round_trips() {
     let root = tempdir("empty");
     let meta = StateMeta::empty();
