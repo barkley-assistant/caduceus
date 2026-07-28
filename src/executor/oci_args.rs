@@ -54,8 +54,7 @@ pub fn build_argv(
     let cli = cfg.oci_cli.to_string_lossy().to_string();
     let mut argv = vec![
         cli,
-        "run".to_string(),
-        "-d".to_string(),
+        "create".to_string(),
         "--name".to_string(),
         spec.run_id.clone(),
     ];
