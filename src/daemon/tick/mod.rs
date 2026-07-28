@@ -56,7 +56,7 @@ use crate::infra::config::Config;
 use crate::infra::error::{CaduceusError, CaduceusResult};
 use crate::logging;
 use crate::scheduler::circuit::{AdmissionResult, CircuitConfig, CircuitStore};
-use crate::scheduler::{DrainConfig, LeaderToken, Pool};
+use crate::scheduler::{Admission, DrainConfig, LeaderToken, Pool};
 use crate::signals;
 use crate::state::checkpoints::{last_checkpoint_for_run, persist_checkpoint};
 use crate::state::meta::{CadenceDecision, CadenceGate, MetaStore, TickOutcome};
@@ -357,21 +357,24 @@ pub async fn tick(
     //  global concurrency and per-repo exclusion before any
     //  setup or worker dispatch occurs.
     let repo_key = format!("{}/{}", claimed.entry.key.owner, claimed.entry.key.repo);
-    if let Err(err) = pool.admit(&repo_key).await {
-        // PoolSaturated is an infrastructure failure; requeue with
-        // backoff and surface as NeedsAttention.
-        let log_path = state_dir.join("processor.log");
-        let mut guard = ActiveRunGuard::new(
-            claimed.claim.clone(),
-            Arc::clone(&store),
-            log_path,
-            claimed.entry.key.clone(),
-        );
-        let class = classify_error(&err);
-        let outcome = handle_infra_or_retry(cfg, &mut guard, &err, class).await?;
-        finish_tick_outcome(&gate, &meta, now, outcome, None, Some(&err))?;
-        return Ok(outcome);
-    }
+    let admit = match pool.admit(&repo_key).await {
+        Ok(a) => a,
+        Err(err) => {
+            // PoolSaturated is an infrastructure failure; requeue with
+            // backoff and surface as NeedsAttention.
+            let log_path = state_dir.join("processor.log");
+            let mut guard = ActiveRunGuard::new(
+                claimed.claim.clone(),
+                Arc::clone(&store),
+                log_path,
+                claimed.entry.key.clone(),
+            );
+            let class = classify_error(&err);
+            let outcome = handle_infra_or_retry(cfg, &mut guard, &err, class).await?;
+            finish_tick_outcome(&gate, &meta, now, outcome, None, Some(&err))?;
+            return Ok(outcome);
+        }
+    };
 
     // 7. Build the guard and run the work, finalization, and
     //  teardown phases inside one explicit cleanup scope.
@@ -387,6 +390,7 @@ pub async fn tick(
         cfg,
         &services,
         Arc::clone(&pool),
+        admit,
         store.as_ref(),
         &meta,
         client,
