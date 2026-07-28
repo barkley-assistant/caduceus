@@ -5,19 +5,26 @@
 //! - A `tokio::sync::Semaphore` sized by `worker_parallelism` for global
 //!   slot control.
 //! - A [`RepoExclusionMap`](super::exclusion::RepoExclusionMap) that
-//!   serialises admissions for the same repository.
+//!   serialises admissions for the same repository inside the process.
+//! - When configured, a host-wide [`LeaseStore`](super::leases::LeaseStore)
+//!   consulted before the in-process exclusion; this is what promotes
+//!   the per-repo "one worker at a time" contract from process-local to
+//!   host-local so two overlapping cron ticks cannot exceed
+//!   `worker_parallelism`.
 //! - A draining flag that stops new admissions and awaits in-flight
 //!   workers during graceful shutdown.
 //!
-//! The [`Admission`] guard releases both the semaphore permit and the
-//! per-repo mutex guard on drop.
-
-use std::sync::Arc;
+//! The [`Admission`] guard releases the semaphore permit, the per-repo
+//! mutex guard, and (when configured) the lease on drop.
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
+use chrono::Utc;
 use tokio::sync::{OwnedMutexGuard, OwnedSemaphorePermit, Semaphore};
 
 use super::exclusion::RepoExclusionMap;
+use super::leases::{LeaseGuard, LeaseStore};
 use crate::infra::error::CaduceusError;
 
 /// Configuration for pool drain behaviour.
@@ -72,12 +79,14 @@ impl std::fmt::Display for PoolState {
 /// [`CaduceusError`] variants but carry owned guard fields so the
 /// caller can inspect them without a reference to the pool.
 pub enum Admission {
-    /// Admission succeeded. The caller holds a semaphore permit and a
-    /// per-repo exclusion lock; both are released when this value is
-    /// dropped.
+    /// Admission succeeded. The caller holds a semaphore permit, a
+    /// per-repo exclusion lock, and (when the pool was built with a
+    /// `LeaseStore`) a host-wide per-repo lease. All three are
+    /// released when this value is dropped.
     Admitted {
         _permit: OwnedSemaphorePermit,
         _exclusion: OwnedMutexGuard<()>,
+        _lease: Option<LeaseGuard>,
     },
     /// Pool is saturated or admission timed out.
     PoolSaturated { current_depth: u32, max_depth: u32 },
@@ -108,9 +117,13 @@ impl std::fmt::Debug for Admission {
 /// Bounded concurrency worker pool with per-repository exclusion.
 ///
 /// The pool is shared across tick dispatches via `Arc<Pool>`. The
-/// design is in-memory only — it resets on daemon restart, which is
-/// safe because scheduler leases already guard against concurrent
-/// scheduler transactions.
+/// design is in-memory only for the semaphore and exclusion map —
+/// they reset on daemon restart, which is safe because scheduler
+/// leases already guard against concurrent scheduler transactions.
+/// When configured with a `LeaseStore`, the per-repo lease persists
+/// across restarts so overlapping ticks on different processes (or
+/// the same process after a crash before TTL expiry) cannot exceed
+/// `worker_parallelism` host-wide.
 pub struct Pool {
     /// Global slot counter. Sized by `worker_parallelism`.
     semaphore: Arc<Semaphore>,
@@ -122,6 +135,23 @@ pub struct Pool {
     draining: std::sync::Mutex<bool>,
     /// Drain configuration.
     drain_config: DrainConfig,
+    /// Optional host-wide lease store. When `Some`, `admit` consults
+    /// the lease store before the in-process exclusion and semaphore
+    /// so the per-repo "one worker at a time" contract is enforced
+    /// across all processes sharing the store.
+    /// Wrapped in `OnceLock` so the SQLite connection is opened
+    /// lazily — only the first `admit` call touches disk. Idle
+    /// ticks (no admissions) don't create `state.db`.
+    lease_store: Option<Arc<OnceLock<Arc<Mutex<LeaseStore>>>>>,
+    /// State dir used to lazily open the lease store on first
+    /// admission. Set by `with_lease_store_dir`.
+    lease_store_dir: Option<PathBuf>,
+    /// TTL for leases acquired from `lease_store`. Default 600s.
+    worker_lease_ttl: Duration,
+    /// Identity used as the lease `owner_id`. Composed once per pool
+    /// from `pid@start_unix_secs` so a recycled PID cannot collide
+    /// with a stale lease within the TTL window.
+    worker_owner_id: String,
 }
 
 impl std::fmt::Debug for Pool {
@@ -135,7 +165,10 @@ impl std::fmt::Debug for Pool {
 
 impl Pool {
     /// Create a new pool with `parallelism` slots and the given drain
-    /// configuration.
+    /// configuration. No lease store is configured — the in-process
+    /// exclusion map is the only per-repo gate. Production cron ticks
+    /// build the pool via [`Pool::with_lease_store`] so the per-repo
+    /// "one worker at a time" contract is enforced host-wide.
     pub fn new(parallelism: u32, drain_config: DrainConfig) -> Self {
         Self {
             semaphore: Arc::new(Semaphore::new(parallelism as usize)),
@@ -143,22 +176,76 @@ impl Pool {
             excl_map: RepoExclusionMap::new(),
             draining: std::sync::Mutex::new(false),
             drain_config,
+            lease_store: None,
+            lease_store_dir: None,
+            worker_lease_ttl: Duration::from_secs(600),
+            worker_owner_id: format!("{}@{}", std::process::id(), Utc::now().timestamp()),
         }
     }
 
-    /// Attempt to admit a new worker for the given repo key.
+    /// Builder: attach a host-wide lease store by state directory
+    /// path. The connection is opened lazily on the first `admit`
+    /// call (via `OnceLock`); idle ticks that never admit anything
+    /// won't touch disk and won't create `state.db`.
+    ///
+    /// The supplied `worker_lease_ttl` is the TTL on every acquired
+    /// lease and bounds the worst-case leak when a worker panics
+    /// between acquire and the RAII Drop of the `LeaseGuard`.
+    pub fn with_lease_store_dir(mut self, state_dir: PathBuf, worker_lease_ttl: Duration) -> Self {
+        self.lease_store = Some(Arc::new(OnceLock::new()));
+        self.lease_store_dir = Some(state_dir);
+        self.worker_lease_ttl = worker_lease_ttl;
+        self
+    }
+
+    /// Builder: attach a host-wide lease store that's already been
+    /// opened. The connection is used lazily on first `admit` call
+    /// (via `OnceLock`); idle ticks that never admit anything won't
+    /// touch the connection.
+    ///
+    /// Prefer `with_lease_store_dir` for production code paths so
+    /// the open happens at first use. This builder is intended for
+    /// tests that need to seed a pre-opened store.
+    pub fn with_lease_store(
+        mut self,
+        store: Arc<Mutex<LeaseStore>>,
+        worker_lease_ttl: Duration,
+    ) -> Self {
+        let cell = Arc::new(OnceLock::new());
+        let _ = cell.set(Arc::clone(&store));
+        self.lease_store = Some(cell);
+        self.lease_store_dir = None;
+        self.worker_lease_ttl = worker_lease_ttl;
+        self
+    }
+
+    /// Attempt to admit a new worker for the given `issue_key` and
+    /// `repo_key`.
+    ///
+    /// The two arguments are intentionally distinct: `issue_key` is
+    /// what gets recorded in the lease store (callers use a synthetic
+    /// `repo:<owner>/<repo>` prefix to keep the row self-documenting
+    /// in `sqlite3` inspection), and `repo_key` is the raw
+    /// `<owner>/<repo>` used by the in-process exclusion map.
     ///
     /// The admission flow:
     /// 1. Check the draining flag — if set, return `DrainTimeout`.
-    /// 2. Acquire the per-repo exclusion lock (via `excl_map`).
-    /// 3. Acquire a semaphore permit within `backpressure_budget`.
-    /// 4. On timeout, return `PoolSaturated`.
-    /// 5. On success, return `Admitted` with both guards.
+    /// 2. If a `LeaseStore` is configured, acquire the per-repo
+    ///    lease. `LeadershipContended` maps to `PoolSaturated` so the
+    ///    dispatch loop's existing retry path is reused unchanged;
+    ///    `LeaseStale` is propagated as-is so the operator sees a
+    ///    hard infrastructure failure.
+    /// 3. Acquire the per-repo exclusion lock (via `excl_map`).
+    /// 4. Acquire a semaphore permit within `backpressure_budget`.
+    /// 5. On timeout, return `PoolSaturated`.
+    /// 6. On success, return `Admitted` with permit + exclusion +
+    ///    optional lease guards.
     ///
-    /// The exclusion lock is acquired *before* the semaphore permit to
-    /// avoid deadlock: a semaphore slot is never held while waiting for
-    /// a repo lock, and repo locks are scoped to a single admit call.
-    pub async fn admit(&self, repo_key: &str) -> Result<Admission, CaduceusError> {
+    /// The lease is acquired before the exclusion lock and the
+    /// semaphore permit so the host-wide gate fails fast without
+    /// touching the heavier in-process primitives on contention. The
+    /// lease is released by `LeaseGuard`'s `Drop` impl (RAII).
+    pub async fn admit(&self, issue_key: &str, repo_key: &str) -> Result<Admission, CaduceusError> {
         // 1. Check draining flag.
         {
             let draining = self.draining.lock().expect("draining lock");
@@ -169,7 +256,50 @@ impl Pool {
             }
         }
 
-        // 2. Get the per-repo exclusion lock.
+        // 2. Host-wide per-repo lease (when configured). The connection
+        // is opened lazily here (via the OnceLock) so idle ticks that
+        // never reach this point don't create state.db.
+        let lease_guard = if let Some(store_cell) = &self.lease_store {
+            // Resolve or lazily open the lease store on first use.
+            let store_arc = if let Some(dir) = &self.lease_store_dir {
+                store_cell.get_or_init(|| {
+                    let opened = LeaseStore::open(dir).expect("lease store open");
+                    Arc::new(Mutex::new(opened))
+                })
+            } else {
+                // Pre-opened store from with_lease_store(); the OnceLock
+                // was seeded in the constructor.
+                store_cell
+                    .get()
+                    .expect("lease store should be pre-seeded by with_lease_store")
+            };
+            let lease = {
+                let mut store = store_arc.lock().expect("lease store lock");
+                match store.acquire(issue_key, &self.worker_owner_id, self.worker_lease_ttl) {
+                    Ok(l) => l,
+                    Err(CaduceusError::LeadershipContended { .. }) => {
+                        // Map to PoolSaturated so the dispatch loop's
+                        // existing handle_infra_or_retry + classify_error
+                        // retry path handles this case unchanged.
+                        return Err(CaduceusError::PoolSaturated {
+                            current_depth: self.current_depth(),
+                            max_depth: self.max_permits,
+                        });
+                    }
+                    Err(e) => return Err(e),
+                }
+            };
+            Some(LeaseGuard::new(
+                Arc::clone(store_arc),
+                lease.issue_key,
+                lease.owner_id,
+                lease.fencing_token,
+            ))
+        } else {
+            None
+        };
+
+        // 3. Get the per-repo exclusion lock.
         let excl_lock = self.excl_map.get_or_init(repo_key);
 
         // We need to acquire the exclusion lock. We use lock_owned on
@@ -177,7 +307,7 @@ impl Pool {
         // tied to the local borrow.
         let excl_guard = excl_lock.lock_owned().await;
 
-        // 3. Acquire a semaphore permit within the backpressure budget.
+        // 4. Acquire a semaphore permit within the backpressure budget.
         let max_permits = self.max_permits;
         match tokio::time::timeout(
             self.drain_config.backpressure_budget,
@@ -188,16 +318,21 @@ impl Pool {
             Ok(Ok(permit)) => Ok(Admission::Admitted {
                 _permit: permit,
                 _exclusion: excl_guard,
+                _lease: lease_guard,
             }),
             Ok(Err(_)) => {
-                // Semaphore closed — treat as saturated.
+                // Semaphore closed — treat as saturated. The
+                // lease_guard (if any) is dropped here, releasing
+                // the per-repo lease via its Drop impl.
                 Err(CaduceusError::PoolSaturated {
                     current_depth: self.current_depth(),
                     max_depth: max_permits,
                 })
             }
             Err(_elapsed) => {
-                // Timeout — backpressure budget exceeded.
+                // Timeout — backpressure budget exceeded. The
+                // lease_guard (if any) is dropped here, releasing
+                // the per-repo lease via its Drop impl.
                 Err(CaduceusError::PoolSaturated {
                     current_depth: self.current_depth(),
                     max_depth: max_permits,

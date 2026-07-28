@@ -6,6 +6,7 @@
 //! of truth across restarts.
 
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use chrono::Utc;
@@ -74,6 +75,15 @@ impl LeaseStore {
     /// and not expired, returns `LeadershipContended`.
     ///
     /// The fencing token is atomically incremented in the database.
+    ///
+    /// Issue-key convention: per-issue leases use the
+    /// `<owner>/<repo>#<number>` form (the canonical issue key).
+    /// Host-wide per-repo worker leases use a synthetic
+    /// `repo:<owner>/<repo>` prefix to keep the row self-documenting
+    /// in `sqlite3` inspection and to avoid colliding with any real
+    /// issue key. The `repo:` prefix maps 1:1 onto the in-process
+    /// `RepoExclusionMap` "one worker per repo" contract, just
+    /// promoted host-wide.
     pub fn acquire(
         &mut self,
         issue_key: &str,
@@ -281,5 +291,58 @@ impl LeaseStore {
             });
         }
         Ok(())
+    }
+}
+
+/// RAII guard that releases a lease on drop.
+///
+/// The guard owns a clone of the shared `LeaseStore` mutex plus the
+/// identity of the held lease (issue_key, owner_id, fencing_token).
+/// On `Drop` it calls [`LeaseStore::release_definitively_dead`] with
+/// the captured fencing token so two releases of the same lease
+/// cannot both succeed (CAS-safe).
+///
+/// The mutex used here is `std::sync::Mutex` (not tokio) because
+/// `Drop` is sync. Lock contention is negligible: one release per
+/// worker completion, serialised only against in-process admits.
+/// Cross-process contention hits the SQLite file lock, not this
+/// mutex.
+#[derive(Debug)]
+pub struct LeaseGuard {
+    store: Arc<Mutex<LeaseStore>>,
+    issue_key: String,
+    owner_id: String,
+    fencing_token: u64,
+}
+
+impl LeaseGuard {
+    /// Build a new guard for a freshly-acquired lease.
+    pub fn new(
+        store: Arc<Mutex<LeaseStore>>,
+        issue_key: String,
+        owner_id: String,
+        fencing_token: u64,
+    ) -> Self {
+        Self {
+            store,
+            issue_key,
+            owner_id,
+            fencing_token,
+        }
+    }
+}
+
+impl Drop for LeaseGuard {
+    fn drop(&mut self) {
+        // Best-effort release. A failure here (stale token because
+        // a prior holder already released, or I/O error) is not
+        // fatal — the lease TTL still bounds the worst-case leak.
+        if let Ok(mut store) = self.store.lock() {
+            let _ = store.release_definitively_dead(
+                &self.issue_key,
+                &self.owner_id,
+                self.fencing_token,
+            );
+        }
     }
 }

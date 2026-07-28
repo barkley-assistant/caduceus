@@ -54,6 +54,7 @@ pub const DEFAULT_TICKET_LABEL_INVESTIGATION: &str = "🤖 auto-fix-investigate"
 pub const DEFAULT_API_BASE: &str = "https://api.github.com";
 pub const DEFAULT_WORKER_PARALLELISM: u32 = 1;
 pub const DEFAULT_SCHEDULER_LEASE_TTL_SECONDS: u64 = 60;
+pub const DEFAULT_WORKER_LEASE_TTL_SECONDS: u64 = 600;
 pub const DEFAULT_SCHEDULER_TRANSACTION_BUDGET_MS: u64 = 100;
 pub const DEFAULT_DRAIN_TIMEOUT_SECONDS: u64 = 30;
 pub const DEFAULT_BACKPRESSURE_BUDGET_MS: u64 = 5000;
@@ -118,6 +119,14 @@ pub struct Config {
     pub compiled_ignore_patterns: Vec<Regex>,
     /// TTL in seconds for scheduler leases. Default 60.
     pub scheduler_lease_ttl_seconds: u64,
+    /// TTL in seconds for the per-repo worker lease enforced by
+    /// `Pool::admit` across the host. Bounds the worst-case leak
+    /// when a worker panics between acquire and the RAII Drop of
+    /// the `LeaseGuard`. Default 600. The contract label
+    /// `contract/SCHED-001` ("bounded single-host concurrency")
+    /// relies on this lease to keep overlapping cron ticks from
+    /// exceeding `worker_parallelism`.
+    pub worker_lease_ttl_seconds: u64,
     /// Maximum time in milliseconds for a scheduler transaction.
     /// Default 100.
     pub scheduler_transaction_budget_ms: u64,
@@ -216,6 +225,7 @@ pub struct RawConfig {
     pub worker_parallelism: Option<u32>,
     pub discovery_max_pages: Option<u32>,
     pub scheduler_lease_ttl_seconds: Option<u64>,
+    pub worker_lease_ttl_seconds: Option<u64>,
     pub scheduler_transaction_budget_ms: Option<u64>,
     pub drain_timeout_seconds: Option<u64>,
     pub backpressure_budget_ms: Option<u64>,
@@ -726,6 +736,9 @@ impl Config {
             scheduler_lease_ttl_seconds: raw
                 .scheduler_lease_ttl_seconds
                 .unwrap_or(DEFAULT_SCHEDULER_LEASE_TTL_SECONDS),
+            worker_lease_ttl_seconds: raw
+                .worker_lease_ttl_seconds
+                .unwrap_or(DEFAULT_WORKER_LEASE_TTL_SECONDS),
             scheduler_transaction_budget_ms: raw
                 .scheduler_transaction_budget_ms
                 .unwrap_or(DEFAULT_SCHEDULER_TRANSACTION_BUDGET_MS),
@@ -827,6 +840,7 @@ impl Config {
             discovery_max_pages: DEFAULT_DISCOVERY_MAX_PAGES,
             compiled_ignore_patterns: Vec::new(),
             scheduler_lease_ttl_seconds: DEFAULT_SCHEDULER_LEASE_TTL_SECONDS,
+            worker_lease_ttl_seconds: DEFAULT_WORKER_LEASE_TTL_SECONDS,
             scheduler_transaction_budget_ms: DEFAULT_SCHEDULER_TRANSACTION_BUDGET_MS,
             drain_timeout_seconds: DEFAULT_DRAIN_TIMEOUT_SECONDS,
             backpressure_budget_ms: DEFAULT_BACKPRESSURE_BUDGET_MS,

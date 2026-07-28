@@ -29,7 +29,7 @@ async fn parallelism_limit_enforced() {
     // WHEN 5 dispatches are submitted simultaneously across distinct repos
     for i in 0..5 {
         let repo = format!("owner/repo-{i}");
-        let admit = pool.admit(&repo).await;
+        let admit = pool.admit(&repo, &repo).await;
         match admit {
             Ok(admitted) => permits.push(admitted),
             Err(_) => break, // pool saturated
@@ -62,7 +62,10 @@ async fn same_repo_exclusion_serializes() {
     let started1 = Arc::clone(&started);
     let finished1 = Arc::clone(&finished);
     let handle1 = tokio::spawn(async move {
-        let _admit = pool1.admit("owner/same-repo").await.unwrap();
+        let _admit = pool1
+            .admit("owner/same-repo", "owner/same-repo")
+            .await
+            .unwrap();
         started1.store(true, std::sync::atomic::Ordering::SeqCst);
         tokio::time::sleep(Duration::from_millis(100)).await;
         finished1.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -72,7 +75,10 @@ async fn same_repo_exclusion_serializes() {
     tokio::time::sleep(Duration::from_millis(5)).await;
     let pool2 = Arc::clone(&pool);
     let handle2 = tokio::spawn(async move {
-        let _admit = pool2.admit("owner/same-repo").await.unwrap();
+        let _admit = pool2
+            .admit("owner/same-repo", "owner/same-repo")
+            .await
+            .unwrap();
     });
 
     // THEN the first is started before the second (exclusion held)
@@ -93,14 +99,14 @@ async fn distinct_repos_run_concurrently() {
     // WHEN admissions for DIFFERENT repos are submitted
     let pool1 = Arc::clone(&pool);
     let handle1 = tokio::spawn(async move {
-        let _admit = pool1.admit("owner/repo-a").await.unwrap();
+        let _admit = pool1.admit("owner/repo-a", "owner/repo-a").await.unwrap();
         tokio::time::sleep(Duration::from_millis(100)).await;
     });
 
     tokio::time::sleep(Duration::from_millis(5)).await;
     let pool2 = Arc::clone(&pool);
     let handle2 = tokio::spawn(async move {
-        let _admit = pool2.admit("owner/repo-b").await.unwrap();
+        let _admit = pool2.admit("owner/repo-b", "owner/repo-b").await.unwrap();
     });
 
     // THEN both can proceed concurrently (parallelism allows both)
@@ -116,10 +122,10 @@ async fn backpressure_budget_respected() {
     let pool = Pool::new(1, cfg);
 
     // Hold the only slot
-    let _holder = pool.admit("owner/repo-a").await.unwrap();
+    let _holder = pool.admit("owner/repo-a", "owner/repo-a").await.unwrap();
 
     // WHEN a second dispatch is submitted
-    let result = pool.admit("owner/repo-b").await;
+    let result = pool.admit("owner/repo-b", "owner/repo-b").await;
 
     // THEN it returns PoolSaturated (or error after timeout)
     match result {
@@ -138,8 +144,8 @@ async fn backpressure_budget_respected() {
 async fn drain_blocks_new_admissions() {
     // GIVEN 2 workers in-flight
     let pool = Arc::new(Pool::new(2, drain_config()));
-    let _permit1 = pool.admit("owner/repo-a").await.unwrap();
-    let _permit2 = pool.admit("owner/repo-b").await.unwrap();
+    let _permit1 = pool.admit("owner/repo-a", "owner/repo-a").await.unwrap();
+    let _permit2 = pool.admit("owner/repo-b", "owner/repo-b").await.unwrap();
     assert_eq!(pool.state(), PoolState::Saturated);
 
     // WHEN drain is triggered
@@ -149,7 +155,7 @@ async fn drain_blocks_new_admissions() {
     });
 
     // THEN new admissions are blocked
-    let admit_result = pool.admit("owner/repo-c").await;
+    let admit_result = pool.admit("owner/repo-c", "owner/repo-c").await;
     assert!(
         admit_result.is_err(),
         "admit should fail during drain, got {admit_result:?}"
@@ -172,11 +178,11 @@ async fn pool_state_transitions() {
     assert_eq!(pool.state(), PoolState::Idle);
 
     // WHEN one slot is acquired
-    let _permit = pool.admit("owner/repo-a").await.unwrap();
+    let _permit = pool.admit("owner/repo-a", "owner/repo-a").await.unwrap();
     assert_eq!(pool.state(), PoolState::Active(1));
 
     // WHEN both slots are acquired
-    let _permit2 = pool.admit("owner/repo-b").await.unwrap();
+    let _permit2 = pool.admit("owner/repo-b", "owner/repo-b").await.unwrap();
     assert_eq!(pool.state(), PoolState::Saturated);
 
     // WHEN one is released

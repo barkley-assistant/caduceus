@@ -58,7 +58,7 @@ async fn joinset_dispatch_caps_in_flight_at_parallelism() {
 
     // WHEN the dispatch loop runs the new tick() shape:
     //   - acquire_next lazily per iteration (mocked)
-    //   - pool.admit(&repo_key) per entry
+    //   - pool.admit(&repo_key, &repo_key) per entry
     //   - spawn into JoinSet; join_next when at the cap
     let mut set: JoinSet<()> = JoinSet::new();
 
@@ -73,7 +73,7 @@ async fn joinset_dispatch_caps_in_flight_at_parallelism() {
         // distinct repo keys, every admit succeeds while the
         // in_flight count stays at or below the cap.
         let admit = pool
-            .admit(&claimed.repo_key)
+            .admit(&claimed.repo_key, &claimed.repo_key)
             .await
             .expect("admit succeeds for distinct repo under cap");
 
@@ -179,7 +179,7 @@ async fn joinset_dispatch_never_exceeds_cap_under_backpressure() {
             None => break,
         };
 
-        let admit = match pool.admit(&claimed.repo_key).await {
+        let admit = match pool.admit(&claimed.repo_key, &claimed.repo_key).await {
             Ok(a) => a,
             Err(_) => {
                 // Pool saturation — back off briefly and try
@@ -254,7 +254,7 @@ async fn admission_drop_releases_permit_for_next_dispatch() {
 
     for i in 0..6 {
         let repo = format!("owner/release-{i}");
-        let admit = pool.admit(&repo).await.expect("admit under cap");
+        let admit = pool.admit(&repo, &repo).await.expect("admit under cap");
 
         let in_flight_for_task = Arc::clone(&in_flight);
         set.spawn(async move {
