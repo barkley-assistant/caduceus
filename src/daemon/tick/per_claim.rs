@@ -21,7 +21,7 @@ use crate::infra::config::Config;
 use crate::infra::error::{CaduceusError, CaduceusResult};
 use crate::logging;
 use crate::scheduler::circuit::{AdmissionResult, CircuitConfig, CircuitStore};
-use crate::scheduler::{DrainConfig, LeaderToken, Pool};
+use crate::scheduler::{Admission, DrainConfig, LeaderToken, Pool};
 use crate::signals;
 use crate::state::checkpoints::{last_checkpoint_for_run, persist_checkpoint};
 use crate::state::meta::{CadenceDecision, CadenceGate, MetaStore, TickOutcome};
@@ -41,6 +41,7 @@ pub(crate) async fn run_claim(
     cfg: Config,
     services: &Services,
     _pool: Arc<Pool>,
+    _admit: Admission,
     store: &StateStore,
     _meta: &MetaStore,
     client: Arc<Client>,
