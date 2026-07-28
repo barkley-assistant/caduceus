@@ -6,6 +6,7 @@
 use std::path::PathBuf;
 
 use caduceus::executor::network::NetworkProfile;
+use caduceus::executor::oci_args::find_image_position;
 use caduceus::executor::policy::IsolationPolicy;
 use caduceus::executor::ExecutorSpec;
 use caduceus::github::issue::IssueKey;
@@ -292,4 +293,118 @@ fn no_network_profile_gives_none() {
             panic!("enforcement failed with: {e:?}");
         }
     }
+}
+
+// EXEC-002 positional regression: every engine flag must appear before the
+// image token. If any flag lands after the image, Docker treats it as a
+// worker argument and the isolation is silently dropped.
+
+#[test]
+fn isolation_flags_precede_image() {
+    let cfg = test_cfg();
+    let spec = test_spec("test-flag-position");
+
+    let enforced = IsolationPolicy::enforce(&spec, &cfg).expect("enforce must succeed");
+    let argv = &enforced.argv;
+
+    let image_idx = find_image_position(argv).expect("image token must be present");
+
+    let engine_flags = [
+        "--user",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--read-only",
+        "--tmpfs",
+        "--network",
+        "none",
+    ];
+
+    for flag in &engine_flags {
+        let pos = argv
+            .iter()
+            .position(|a| a == *flag)
+            .unwrap_or_else(|| panic!("expected engine flag {flag} in argv: {argv:?}"));
+        assert!(
+            pos < image_idx,
+            "engine flag {flag} at index {pos} must be before image at index {image_idx}: {argv:?}"
+        );
+    }
+
+    // The tmpfs mount target is a separate value that must also precede image.
+    let tmpfs_target_idx = argv
+        .iter()
+        .position(|a| a.starts_with("/tmp:size="))
+        .expect("tmpfs target must be present");
+    assert!(
+        tmpfs_target_idx < image_idx,
+        "tmpfs target at index {tmpfs_target_idx} must be before image at index {image_idx}: {argv:?}"
+    );
+}
+
+/// Verify that every engine flag in `argv` appears before the image token.
+fn assert_flags_before_image(argv: &[String]) -> Result<(), String> {
+    let image_idx =
+        find_image_position(argv).ok_or_else(|| "image token not found in argv".to_string())?;
+
+    let engine_flags = [
+        "--user",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--read-only",
+        "--tmpfs",
+        "--network",
+    ];
+
+    for flag in &engine_flags {
+        if let Some(pos) = argv.iter().position(|a| a == *flag) {
+            if pos >= image_idx {
+                return Err(format!(
+                    "engine flag {flag} at index {pos} is after image at index {image_idx}"
+                ));
+            }
+        }
+    }
+
+    if let Some(pos) = argv.iter().position(|a| a.starts_with("/tmp:size=")) {
+        if pos >= image_idx {
+            return Err(format!(
+                "tmpfs target at index {pos} is after image at index {image_idx}"
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+#[test]
+fn rejects_post_image_flags() {
+    // Manually construct the buggy argv shape: baseline flags trail the image
+    // token, which is exactly how Docker interprets them as worker args.
+    let broken_argv = vec![
+        "docker".to_string(),
+        "create".to_string(),
+        "caduceus-worker@sha256:abc123".to_string(),
+        "--security-opt".to_string(),
+        "no-new-privileges".to_string(),
+        "--read-only".to_string(),
+        "--tmpfs".to_string(),
+        "/tmp:size=64M".to_string(),
+    ];
+    assert!(
+        assert_flags_before_image(&broken_argv).is_err(),
+        "broken argv with flags after image must be rejected"
+    );
+
+    // The fixed enforcement output must pass the same assertion.
+    let cfg = test_cfg();
+    let spec = test_spec("test-regression-clean");
+    let enforced = IsolationPolicy::enforce(&spec, &cfg).expect("enforce must succeed");
+    assert!(
+        assert_flags_before_image(&enforced.argv).is_ok(),
+        "enforced argv must keep all engine flags before image"
+    );
 }
