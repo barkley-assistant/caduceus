@@ -21,9 +21,9 @@ across this period.
 - **Scheduler leadership.** A single leader is elected per host with
   TTL-based leases. Followers defer to the leader's tick, eliminating
   the dual-tick race that v0.1.0 silently tolerated.
-- **Bounded concurrency.** Up to N workers run in flight at once, and
-  a single repository never runs two workers concurrently. Replaces
-  the host-wide tick lock.
+- **Bounded concurrency.** Up to N workers run in flight at once per
+  cron tick (bounded-across-the-tick), and a single repository never
+  runs two workers concurrently. Replaces the host-wide tick lock.
 - **Circuit breakers.** Per-destination breakers trip after consecutive
   failures and cool down on a configured schedule, bounding the blast
   radius of an upstream outage.
