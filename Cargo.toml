@@ -65,6 +65,10 @@ name = "pool_test"
 path = "tests/scheduler/pool_test.rs"
 
 [[test]]
+name = "admission_guard_test"
+path = "tests/scheduler/admission_guard_test.rs"
+
+[[test]]
 name = "circuit_test"
 path = "tests/scheduler/circuit_test.rs"
 
