@@ -82,13 +82,24 @@ pub enum IssuePollDiagnostic {
 }
 
 /// Outcome of one labeled-issue poll across all watched repos.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IssuePollOutcome {
     /// Unique issues matched exactly one of the two trigger
     /// labels, ready for queue admission.
     pub summaries: Vec<IssueSummary>,
     /// Objects the daemon intentionally skipped.
     pub diagnostics: Vec<IssuePollDiagnostic>,
+    pub from_cache: bool,
+}
+
+impl Default for IssuePollOutcome {
+    fn default() -> Self {
+        Self {
+            summaries: Vec::new(),
+            diagnostics: Vec::new(),
+            from_cache: true,
+        }
+    }
 }
 
 /// Discover the watched repositories for the current tick. If
@@ -283,6 +294,7 @@ async fn poll_label(
 ) -> CaduceusResult<IssuePollOutcome> {
     let max_pages = cfg.discovery_max_pages as usize;
     let mut outcome = IssuePollOutcome::default();
+    let mut from_cache = true;
     for repo in repos {
         if !is_valid_repo_slug(repo) {
             return Err(CaduceusError::Config(format!(
@@ -306,6 +318,7 @@ async fn poll_label(
             }
             pages += 1;
             let response = client.get_url(&url, ACCEPT_VALUE).await?;
+            from_cache &= response.from_cache;
             if let Some(observation) = rate_limit_from_headers(&response.headers, response.status) {
                 if observation.remaining == 0 {
                     return Err(rate_limit_error(observation));
@@ -326,6 +339,7 @@ async fn poll_label(
     // Stable order so callers can diff snapshots across ticks.
     outcome.summaries.sort_by_key(|a| a.key.display_key());
     outcome.diagnostics.sort_by_key(diagnostic_key);
+    outcome.from_cache = from_cache;
     Ok(outcome)
 }
 
@@ -487,6 +501,7 @@ pub fn merge_outcomes(code: IssuePollOutcome, investigation: IssuePollOutcome) -
     IssuePollOutcome {
         summaries: merged,
         diagnostics,
+        from_cache: code.from_cache && investigation.from_cache,
     }
 }
 
