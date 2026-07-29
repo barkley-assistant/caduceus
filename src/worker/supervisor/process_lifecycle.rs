@@ -225,8 +225,9 @@ pub fn build_supervisor_command(
     cmd.arg("--issue-body").arg(issue_body);
     cmd.arg("--issue-labels-json").arg(&labels_json);
     cmd.arg("--branch-name").arg(branch_name);
+    cmd.arg("--");
     for arg in worker_command {
-        cmd.arg("--").arg(arg);
+        cmd.arg(arg);
     }
     // The supervisor's stdin/stdout/stderr are the daemon's
     // control/status pipes. Stderr is captured separately so a
