@@ -302,7 +302,7 @@ pub async fn tick(
     let mut any_200 = false;
     let mut last_error: Option<CaduceusError> = None;
     for repo in &repos {
-        match poll_repo(repo, &client, &cfg, store.as_ref(), &meta).await {
+        match poll_repo(repo, &client, &cfg, store.as_ref()).await {
             Ok(Outcome304(true)) => {
                 any_304 = true;
             }

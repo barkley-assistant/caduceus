@@ -22,6 +22,7 @@ use caduceus::github::{Client, HttpCache};
 use caduceus::issue::IssueKey;
 use caduceus::poll::{
     merge_outcomes, poll_code, poll_investigation, url_encode_label, IssuePollDiagnostic,
+    IssuePollOutcome,
 };
 use caduceus::queue::TicketType;
 use wiremock::matchers::{method, path, query_param_is_missing};
@@ -482,6 +483,53 @@ async fn events_api_fields_are_ignored() {
     let outcome = poll_code(&client, &cfg, &cfg.watched_repos).await.unwrap();
     assert_eq!(outcome.summaries.len(), 1);
     assert!(outcome.diagnostics.is_empty());
+}
+
+// from_cache AND semantics
+
+#[test]
+fn merge_outcomes_ands_from_cache_both_true() {
+    let code = IssuePollOutcome {
+        summaries: vec![],
+        diagnostics: vec![],
+        from_cache: true,
+    };
+    let investigation = IssuePollOutcome {
+        summaries: vec![],
+        diagnostics: vec![],
+        from_cache: true,
+    };
+    assert!(merge_outcomes(code, investigation).from_cache);
+}
+
+#[test]
+fn merge_outcomes_ands_from_cache_any_false() {
+    let code = IssuePollOutcome {
+        summaries: vec![],
+        diagnostics: vec![],
+        from_cache: true,
+    };
+    let investigation = IssuePollOutcome {
+        summaries: vec![],
+        diagnostics: vec![],
+        from_cache: false,
+    };
+    assert!(!merge_outcomes(code, investigation).from_cache);
+}
+
+#[test]
+fn merge_outcomes_ands_from_cache_both_false() {
+    let code = IssuePollOutcome {
+        summaries: vec![],
+        diagnostics: vec![],
+        from_cache: false,
+    };
+    let investigation = IssuePollOutcome {
+        summaries: vec![],
+        diagnostics: vec![],
+        from_cache: false,
+    };
+    assert!(!merge_outcomes(code, investigation).from_cache);
 }
 
 // Multiple repos
