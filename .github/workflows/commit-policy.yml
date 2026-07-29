@@ -76,3 +76,5 @@ jobs:
             fi
             echo "range=${prev_sha}..${head_sha}" >> "$GITHUB_OUTPUT"
           fi
+      - name: validate commit subjects
+        run: bash scripts/check-commits.sh "${{ steps.subjects.outputs.range }}"
