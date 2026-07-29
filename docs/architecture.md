@@ -75,27 +75,82 @@ without breaking any operator contract.
 
 ## The Lock Discipline
 
-Two locks:
+The daemon uses two independent locks. Their roles differ by
+state backend; the active backend is selected by the
+`state_backend` config field (`"json"` or `"sqlite"`).
 
-- **The daemon lock (`<state_dir>/daemon.lock`)** — a
-  whole-tick nonblocking `flock`. A second cron
-  invocation exits 0 without polling or claiming.
-  This lock covers the entire tick.
-- **The state lock (`<state_dir>/state.lock`)** — an
-  exclusive `flock` taken by `StateStore` for every
-  read-modify-write cycle of `state.json`. Concurrent
-  `StateStore` instances pointing at the same state
-  directory see the queue as strictly serialised.
+### The daemon lock (`<state_dir>/daemon.lock`)
 
-The daemon lock is per-host. The state lock is per-
-state directory. They are not the same lock.
+A whole-tick nonblocking `flock`. The first cron invocation
+holds it; a second concurrent invocation exits 0 without
+polling or claiming. This lock covers the entire tick and is
+used in both backends. Operators running `caduceus queue reset`
+or `caduceus migrate-state` also take the daemon lock so a
+tick cannot start while recovery is in flight.
 
-Operators running `caduceus queue reset` or
-`caduceus migrate-state` take the daemon lock so a
-tick cannot start while the recovery is in flight.
-This is why those commands can fail with "another tick
-holds daemon.lock; retry after the next tick
-completes."
+The daemon lock is per-host, not per-state-directory. It is
+not the same as the state lock described below.
+
+### The state lock — JSON backend (`<state_dir>/state.lock`)
+
+With the `"json"` backend, `state.lock` is an exclusive `flock`
+taken by `StateStore` for every read-modify-write cycle of
+`state.json`. Concurrent `StateStore` instances pointing at
+the same state directory see the queue as strictly serialised.
+
+### SQLite backend — no separate state lock
+
+With the `"sqlite"` backend, there is no `state.lock`. The
+SQLite connection itself serialises concurrent access:
+
+- The database is opened with `PRAGMA journal_mode=WAL` for
+  read concurrency without blocking writers.
+- Every read-modify-write cycle runs inside a
+  `BEGIN IMMEDIATE` transaction, which acquires a reserved
+  lock on the database file and blocks concurrent writers.
+- Write transactions use `INSERT OR REPLACE` inside a single
+  SQLite transaction. The database engine guarantees
+  atomicity and serialisability; no separate `flock` is
+  needed.
+
+Claims (`<state_dir>/claims/`) remain as files on disk in
+both backends per the crash-safety contract — they are not
+moved into SQLite.
+
+### Dual-model summary
+
+| Lock | JSON backend | SQLite backend |
+|---|---|---|
+| `daemon.lock` (flock) | Prevents concurrent ticks | Same |
+| `state.lock` (flock) | Serialises state-file writes | Not used — SQLite transactions handle serialisation |
+| SQLite WAL / IMMEDIATE | N/A | Read concurrency + write serialisation |
+
+The daemon lock is per-host. The state-level serialisation is
+per-state-directory. They are not the same lock.
+
+### State-backend dual model
+
+The daemon supports two state backends, selected by the
+`state_backend` config field:
+
+- **SQLite** (`"sqlite"`): the active, default store. Queue
+  entries and metadata live in `<state_dir>/state.db`, opened
+  with WAL journal mode. The `caduceus migrate-state
+  --to-sqlite` command migrates from JSON.
+- **JSON** (`"json"`): the legacy store. Queue entries live in
+  `state.json`, metadata in `state_meta.json`. This backend is
+  retained for pre-migration operators and as a validated
+  backup after migration.
+
+JSON files are never silently deleted. After `migrate-state
+--to-sqlite`, the JSON files remain on disk as a validated
+backup at their original paths. The SQLite store is the
+authoritative source once the migration completes.
+
+For new installations the daemon initialises the SQLite
+backend automatically. The JSON backend is only needed when
+upgrading from a v0.1.x installation that still has
+`state.json` files.
 
 ## The Polling Loop
 
@@ -190,9 +245,13 @@ The orchestrator classifies failures into:
   transport errors, local I/O errors, rate-limit
   responses, operator-cancellation signals. Does not
   consume the retry budget.
-- **Corruption** — `state.json` or `state_meta.json`
-  is malformed. The daemon refuses to start; recovery
-  is documented in `state-recovery.md`.
+- **Corruption** — The active state store is unreadable.
+  For the JSON backend this means `state.json` or
+  `state_meta.json` is malformed; for the SQLite backend
+  this means the database cannot be opened, fails schema
+  validation, or reports integrity violations via
+  `PRAGMA integrity_check`. The daemon refuses to start;
+  recovery is documented in `state-recovery.md`.
 - **Configuration** — config-load errors. The daemon
   refuses to start; fix the config and retry.
 - **Invariant** — something the daemon's own logic
