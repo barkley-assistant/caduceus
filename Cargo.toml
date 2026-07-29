@@ -487,3 +487,11 @@ path = "tests/architecture/docs_contract_test.rs"
 [[test]]
 name = "fixtures_self_test"
 path = "tests/architecture/fixtures_self_test.rs"
+
+[[test]]
+name = "awaiting_review_test"
+path = "tests/daemon/awaiting_review_test.rs"
+
+[[test]]
+name = "idle304_integration_test"
+path = "tests/daemon/idle304_integration_test.rs"

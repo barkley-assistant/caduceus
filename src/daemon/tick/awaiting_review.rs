@@ -16,7 +16,7 @@ use crate::finalize::{
     push_and_finalize, FinalizeContext, FinalizeOutput, FinalizeRequest,
 };
 use crate::github::poll::{discover_watched_repos, merge_outcomes, poll_code, poll_investigation};
-use crate::github::{Client, RateLimitInfo, Response};
+use crate::github::{Client, RateLimitInfo};
 use crate::infra::config::Config;
 use crate::infra::error::{CaduceusError, CaduceusResult};
 use crate::logging;
@@ -130,51 +130,40 @@ pub(crate) async fn poll_repo(
     client: &Client,
     cfg: &Config,
     store: &StateStore,
-    meta: &MetaStore,
 ) -> CaduceusResult<Outcome304> {
     let repos: Vec<String> = vec![slug.to_string()];
     let code = poll_code(client, cfg, &repos).await?;
     let inv = poll_investigation(client, cfg, &repos).await?;
     let merged = merge_outcomes(code, inv);
-    let _ = Response {
-        status: 200,
-        final_url: format!("https://api.github.com/repos/{slug}/issues"),
-        body: Vec::new(),
-        from_cache: false,
-        headers: reqwest::header::HeaderMap::new(),
-    };
-    let _ = meta; // The meta is queried through the gate above.
-                  // Polling enqueue paths share the same store.
-    let _ = enqueue_summaries(store, &merged.summaries, cfg.dry_run);
-    Ok(Outcome304(false))
+    enqueue_summaries(store, &merged.summaries, cfg.dry_run)?;
+    Ok(Outcome304(merged.from_cache))
 }
 
-pub(crate) fn enqueue_summaries(
+pub fn enqueue_summaries(
     store: &StateStore,
     summaries: &[crate::github::poll::IssueSummary],
     dry_run: bool,
-) -> Option<DateTime<Utc>> {
+) -> CaduceusResult<Option<DateTime<Utc>>> {
     let mut earliest: Option<DateTime<Utc>> = None;
     for summary in summaries {
-        if let Ok(_outcome) = store.enqueue(&summary.key, summary.ticket_type, dry_run) {
-            // The enqueue outcome is a binary inserted/already/promoted
-            // signal; the backoff window is whatever the entry's
-            // existing `next_attempt_at` carries.
-            if let Some(entry) = store
-                .snapshot()
-                .ok()
-                .and_then(|s| s.entry(&summary.key).cloned())
-            {
-                if let Some(b) = entry.next_attempt_at {
-                    earliest = Some(match earliest {
-                        Some(e) => e.min(b),
-                        None => b,
-                    });
-                }
+        let _outcome = store.enqueue(&summary.key, summary.ticket_type, dry_run)?;
+        // The enqueue outcome is a binary inserted/already/promoted
+        // signal; the backoff window is whatever the entry's
+        // existing `next_attempt_at` carries.
+        if let Some(entry) = store
+            .snapshot()
+            .ok()
+            .and_then(|s| s.entry(&summary.key).cloned())
+        {
+            if let Some(b) = entry.next_attempt_at {
+                earliest = Some(match earliest {
+                    Some(e) => e.min(b),
+                    None => b,
+                });
             }
         }
     }
-    earliest
+    Ok(earliest)
 }
 
 pub(crate) async fn handle_infra_or_retry(
