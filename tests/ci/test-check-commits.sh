@@ -76,6 +76,8 @@ fi
 # Good cases
 run_case 0 "fix(ci): add validation to commit-policy" "valid subject with scope"
 run_case 0 "feat(api)!: breaking api change" "valid breaking change subject"
+run_case 0 "fix(scheduler): add max_issues_per_tick (closes #108)" "valid subject with closes ref"
+run_case 0 "feat(ci): add check-commits.sh script for commit subject validation" "valid subject with .sh filename"
 
 # Bad cases
 run_case 1 "Refactor: remove planning scaffolding and simplify Rust implementation across src/ (#85)" "historical violation: uppercase type, missing scope, length"

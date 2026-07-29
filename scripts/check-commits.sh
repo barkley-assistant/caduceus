@@ -13,7 +13,15 @@
 set -euo pipefail
 
 readonly MAX_LEN=80
-readonly RE='^(build|chore|ci|docs|feat|fix|perf|refactor|style|test)(\([a-z0-9_-]+\))!?: [a-z][^.]*$'
+# AGENTS.md says "no trailing period", not "no period anywhere". The previous
+# regex used `[^.]*$` which incorrectly rejected valid subjects containing
+# period characters in the middle (e.g. filenames like `check-commits.sh`).
+# The scope group is REQUIRED per AGENTS.md (`type(<scope>): <description>`
+# with `a required, non-empty scope`), so we do not allow `?` on the scope
+# group. Permissive pattern + explicit trailing-period check below matches
+# the AGENTS.md contract faithfully without false positives.
+readonly RE='^(build|chore|ci|docs|feat|fix|perf|refactor|style|test)\([a-z0-9_-]+\)!?: [a-z].*$'
+readonly TRAILING_PERIOD_RE='\.$'
 
 if [ "$#" -ne 1 ] || [ -z "$1" ]; then
   echo "usage: check-commits.sh <git-range>" >&2
@@ -34,6 +42,11 @@ while IFS= read -r line; do
 
   if [[ ! "${subject}" =~ ${RE} ]]; then
     echo "::error file=${hash},line=1,title=Conventional commit::Subject does not match <type>(<scope>): <description> pattern"
+    failures=$((failures + 1))
+  fi
+
+  if [[ "${subject}" =~ ${TRAILING_PERIOD_RE} ]]; then
+    echo "::error file=${hash},line=1,title=Trailing period::Subject ends with a period (AGENTS.md: no trailing period)"
     failures=$((failures + 1))
   fi
 done < <(git log --no-merges --format='%H %s' "${range}")
