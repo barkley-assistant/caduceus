@@ -82,13 +82,18 @@ Two locks:
   invocation exits 0 without polling or claiming.
   This lock covers the entire tick.
 - **The state lock (`<state_dir>/state.lock`)** — an
-  exclusive `flock` taken by `StateStore` for every
-  read-modify-write cycle of `state.json`. Concurrent
-  `StateStore` instances pointing at the same state
-  directory see the queue as strictly serialised.
+  exclusive `flock` taken by the JSON `StateStore`
+  backend for every read-modify-write cycle. When
+  the daemon is configured with the SQLite backend
+  (`state_backend: sqlite`), the state lock is not
+  used; SQLite itself serialises concurrent access
+  through its own locking protocol. WAL mode
+  (`PRAGMA journal_mode=WAL`) allows concurrent
+  readers with a single writer.
 
 The daemon lock is per-host. The state lock is per-
-state directory. They are not the same lock.
+state directory (only relevant for the JSON backend).
+They are not the same lock.
 
 Operators running `caduceus queue reset` or
 `caduceus migrate-state` take the daemon lock so a
@@ -96,6 +101,25 @@ tick cannot start while the recovery is in flight.
 This is why those commands can fail with "another tick
 holds daemon.lock; retry after the next tick
 completes."
+
+### Dual State Model
+
+The daemon supports two state backends:
+
+- **SQLite** (`state.db` in the state directory) — the
+  active, recommended store. Enabled with
+  `state_backend: sqlite` in configuration. Uses WAL
+  mode for read concurrency and foreign-key enforcement.
+- **JSON** (`state.json` / `state_meta.json`) — the
+  legacy store, preserved as a migration import source.
+  `caduceus migrate-state` reads this format and writes
+  the SQLite equivalent. The JSON backend is still
+  functional but new installs should use SQLite.
+
+The two backends are mutually exclusive in a single
+state directory; the daemon selects one at start based
+on `state_backend` (default: `json` for backward
+compatibility).
 
 ## The Polling Loop
 
@@ -191,8 +215,10 @@ The orchestrator classifies failures into:
   responses, operator-cancellation signals. Does not
   consume the retry budget.
 - **Corruption** — `state.json` or `state_meta.json`
-  is malformed. The daemon refuses to start; recovery
-  is documented in `state-recovery.md`.
+  is malformed (JSON backend), or the SQLite store
+  (`state.db`) fails `PRAGMA integrity_check`. The
+  daemon refuses to start; recovery is documented in
+  `state-recovery.md`.
 - **Configuration** — config-load errors. The daemon
   refuses to start; fix the config and retry.
 - **Invariant** — something the daemon's own logic

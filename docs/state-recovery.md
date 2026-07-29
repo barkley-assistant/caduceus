@@ -1,10 +1,10 @@
 # State Recovery
 
 The daemon owns its state. Operators own their recovery.
-**Do not edit `state.json`, `state_meta.json`, claim
-files, or transcripts in place.** The lock and
-atomic-write discipline only hold for the programmatic
-API. This doc is the API.
+**Do not edit `state.db`, `state.json`, `state_meta.json`,
+claim files, or transcripts in place.** SQLite's WAL
+journal and the daemon's lock discipline only hold for
+the programmatic API. This doc is the API.
 
 The migration procedure from a prior installation is
 in [`../MIGRATION.md`](../MIGRATION.md) at the
@@ -12,20 +12,44 @@ repository root. This doc covers in-place recovery,
 which is different: state has become corrupt
 in-place and the daemon is refusing to start.
 
+## How to Detect Corruption
+
+The daemon's loader runs `PRAGMA integrity_check` on
+the SQLite store (`state.db`) at open time. When it
+finds corruption, the daemon surfaces a
+`StateCorrupt` error with the SQLite error message on
+stderr:
+
+```
+cannot open SQLite store at /path/to/state.db:
+database disk image is malformed
+```
+
+Other corruption signals:
+
+- `caduceus status --json` reports `state_corrupt:
+  true`.
+- The daemon writes a corruption marker at
+  `<state_dir>/state.db.corrupt`.
+- The original corrupt file is archived at
+  `<state_dir>/state.db.corrupt-<unix-ts>`.
+- The daemon exits non-zero and refuses to call the
+  GitHub API while the marker is present.
+
+If you see a `StateCorrupt` error, use the recovery
+path below.
+
 ## The Failure Modes
 
-The daemon's loader validates `state.json` and
-`state_meta.json` on every `state_dir` open. When it
-finds a malformed file:
+When the daemon detects corruption on the SQLite
+store:
 
-1. The file is preserved at its original path (no silent
-   truncation; no overwrite with empty state).
+1. The file is preserved at its original path (no
+   silent truncation; no overwrite with empty state).
 2. A timestamped archive is written at
-   `<state_dir>/state.json.corrupt-<unix-ts>` (or
-   `state_meta.json.corrupt-<unix-ts>`).
+   `<state_dir>/state.db.corrupt-<unix-ts>`.
 3. A corruption marker file is written at
-   `<state_dir>/state.json.corrupt` (or
-   `state_meta.corrupt`).
+   `<state_dir>/state.db.corrupt`.
 4. The daemon exits with the `StateCorrupt` error and
    a non-zero exit code.
 
@@ -38,65 +62,102 @@ corruption marker is present. The documentation says
 Recovery is a sequence, not a single command. Do not
 skip steps.
 
-1. **Stop the daemon.** Whichever path you used to
-   start it (Hermes cron, system cron, manual
-   invocation), kill the active tick. The daemon's
-   whole-tick flock handles in-flight locks, but new
-   ticks would race your recovery.
-2. **Read the marker file.** The marker file is empty;
-   its presence is the signal. `cat
-   $STATE_DIR/state.json.corrupt` (or
-   `state_meta.corrupt`) will return immediately.
-3. **Read the archive.** The original file lives at
-   `state.json.corrupt-<ts>` (or the metadata
-   equivalent). Open it; understand what's wrong. The
-   most common causes are:
-   - A half-written file from a crash mid-write (the
-     atomic-write discipline should prevent this; if
-     you see it, file a bug).
-   - Operator hand-edit (the daemon never does this;
-     see the warning at the top of this doc).
-   - Filesystem corruption (rare; check `dmesg` for
-     I/O errors).
-4. **Build a repaired file.** The repaired file must
-   be a valid envelope:
-   - `state.json` must parse as the `QueueState`
-     schema (`entries` as a map of display keys to
-     `QueueEntry` records).
-   - `state_meta.json` must parse as the `StateMeta`
-     schema.
-   If you don't know how to write that by hand, the
-    easiest path is to run `caduceus migrate-state
-    --from <file>` against a prior-state JSON file
-    (see `MIGRATION.md`).
-5. **Apply the repaired file.** There are two paths
-   here; pick the one that fits the situation:
-   - **Library API:** if you have a Rust binary at
-     hand and want the safe, daemon-lock-protected
-     path, call `caduceus::migrate::recover_state(
-     repaired_path, state_dir, /*clear_marker=*/ true,
-     /*hold_daemon_lock=*/ true)`. The function
-     archives the corrupt original, atomically
-     installs the repaired file, and only then clears
-     the corruption marker. The canonical source for
-     this API is `src/state/migrate.rs` in the Caduceus
-     source tree.
-   - **Direct install:** if you understand what
-     you're doing, manually move the corrupt file
-     aside (rename `state.json` →
-     `state.json.corrupt-<your-ts>`), write the
-     repaired content with the canonical
-     temp+fsync+rename pattern, and remove the
-     corruption marker with `rm
-     <state_dir>/state.json.corrupt`. **This path
-     bypasses the daemon-lock protection and the
-     library's archive logic.** Use the library path
-     if you can.
-6. **Verify.** `caduceus status --json` should report
-   the recovered state and a clean `state_corrupt:
-   false`. If it doesn't, do not push; the recovery
-   didn't take.
-7. **Restart the daemon.**
+### 1. Stop the Daemon
+
+Whichever path you used to start it (Hermes cron,
+system cron, manual invocation), kill the active tick.
+The daemon's whole-tick flock handles in-flight locks,
+but new ticks would race your recovery.
+
+### 2. Inspect the Corruption
+
+Read the marker file — its presence is the signal.
+`cat $STATE_DIR/state.db.corrupt` returns immediately
+(the file is empty; it's a flag). Then inspect the
+archive at `state.db.corrupt-<unix-ts>` to understand
+the scope of the damage:
+
+```bash
+# Check integrity on the archived copy.
+sqlite3 $STATE_DIR/state.db.corrupt-<ts> 'PRAGMA integrity_check;'
+```
+
+The most common causes of SQLite corruption are:
+
+- An unclean shutdown mid-write (WAL should prevent
+  this; if you see it routinely, check your filesystem
+  sync settings).
+- Operator hand-edit (opening `state.db` with a text
+  editor or hex editor breaks the B-tree).
+- Filesystem corruption (rare; check `dmesg` for I/O
+  errors).
+
+### 3. Choose a Repair Strategy
+
+You have three options, depending on what you have
+available:
+
+**Option A — Surgical repair (localised corruption)**: if
+the corruption is in a specific row or table and you
+can identify it, open the archived corrupt database
+with `sqlite3` and delete or repair the affected rows:
+
+```bash
+sqlite3 $STATE_DIR/state.db.corrupt-<ts>
+sqlite> PRAGMA integrity_check;
+-- identifies the table / row
+sqlite> DELETE FROM queue_entries WHERE issue_key = 'broken-repo#1';
+sqlite> INSERT OR REPLACE INTO queue_entries (...) VALUES (...);
+sqlite> PRAGMA integrity_check;  -- must return 'ok'
+sqlite> .quit
+cp $STATE_DIR/state.db.corrupt-<ts> $STATE_DIR/state.db
+```
+
+**Option B — Restore from a backup**: if you have a
+known-good backup, validate it first:
+
+```bash
+sqlite3 /path/to/backup.db 'PRAGMA integrity_check;'
+# Must return "ok".
+```
+
+Then install it. The daemon provides a library-level
+recovery function (`caduceus::migrate::recover_sqlite_state`)
+that archives the corrupt database, validates the
+backup, and installs it atomically while holding the
+daemon lock. If you are writing a recovery tool, use
+that function. The canonical source is
+`src/state/migrate.rs`.
+
+**Option C — Start fresh**: if you have no backup and
+the corruption is too broad to surgically repair,
+remove the corrupt database and the marker and let
+the daemon create a fresh store on the next tick:
+
+```bash
+# The daemon archives the corrupt file for you —
+# it's already at state.db.corrupt-<ts>. You just
+# need to remove the current (corrupt) database and
+# the marker so the next start creates a fresh store.
+rm $STATE_DIR/state.db
+rm $STATE_DIR/state.db.corrupt
+```
+
+### 4. Verify the Repair
+
+```bash
+caduceus status --json
+```
+
+Should report `state_corrupt: false` and show the
+recovered queue. If it does not, the repair did not
+take — return to step 2.
+
+### 5. Restart the Daemon
+
+Restart through your usual path. The daemon will open
+the store, run `PRAGMA integrity_check`, find it
+clean, and proceed with the next tick.
 
 ## The `migrate-state` Subcommand
 
@@ -104,13 +165,14 @@ skip steps.
 caduceus migrate-state --from <file> [--dry-run]
 ```
 
-Imports a JSON-formatted state file from a prior installation into
-the current schema. Documented in detail in `MIGRATION.md`. This is
-*not* the same as recovery; recovery is for in-place corruption,
-migration is for cross-format import.
+Imports a JSON-formatted state file from a prior
+installation into the current SQLite schema.
+Documented in detail in `MIGRATION.md`. This is *not*
+the same as recovery; recovery is for in-place
+corruption, migration is for cross-format import.
 
-If your `~/.caduceus/caduceus.db` is already SQLite, migration is
-not needed.
+If your `~/.caduceus/state.db` is already SQLite,
+migration is not needed.
 
 ## The `queue reset` Subcommand
 
@@ -136,25 +198,68 @@ explicit reset path clears it.
 
 ## Backup Retention
 
-Every migration install writes a new
-`state.json.bak-<unix-ts>` to the state directory.
-The daemon does not currently sweep these. Operators
-can `rm` old backups manually:
+The daemon writes `state.db.corrupt-<unix-ts>` archives
+during corruption recovery. The daemon does not
+currently sweep these. Operators can `rm` old archives
+manually:
 
 ```bash
 # keep the most recent 5
-ls -t $STATE_DIR/state.json.bak-* | tail -n +6 | xargs rm -f
+ls -t $STATE_DIR/state.db.corrupt-* | tail -n +6 | xargs rm -f
 ```
 
 A retention sweep inside the daemon is a future
 feature; the operator is responsible for
 housekeeping.
 
+## Appendix: JSON Recovery (Pre-SQLite Migrations)
+
+The procedure below applies to installations still
+using the JSON backend (`state_backend: json`) or
+operators recovering a `state.json` file from a
+pre-SQLite install. If you have already migrated to
+SQLite, use the SQLite recovery workflow above.
+
+### JSON Failure Modes
+
+The daemon's JSON loader validates `state.json` and
+`state_meta.json` on every `state_dir` open. When it
+finds a malformed file:
+
+1. The file is preserved at its original path.
+2. A timestamped archive is written at
+   `<state_dir>/state.json.corrupt-<unix-ts>` (or
+   `state_meta.json.corrupt-<unix-ts>`).
+3. A corruption marker file is written at
+   `<state_dir>/state.json.corrupt` (or
+   `state_meta.corrupt`).
+4. The daemon exits with `StateCorrupt` and a non-zero
+   exit code.
+
+### JSON Recovery Workflow
+
+1. **Stop the daemon.**
+2. **Read the marker file.** The marker file is empty;
+   its presence is the signal.
+3. **Read the archive at `state.json.corrupt-<ts>`.**
+   Common causes: half-written file from a crash
+   mid-write; operator hand-edit; filesystem
+   corruption.
+4. **Build a repaired file.** The repaired file must
+   be a valid `QueueState` envelope. The easiest path
+   is `caduceus migrate-state --from <file>`.
+5. **Apply the repaired file** via
+   `caduceus::migrate::recover_state()` (library API,
+   recommended) or the temp+fsync+rename pattern
+   (direct install, bypasses lock protection).
+6. **Verify** with `caduceus status --json`.
+7. **Restart the daemon.**
+
 ## When to File a Bug
 
-- The daemon wrote a `state.json.corrupt-<ts>` archive
-  whose content is parseable as the current schema
-  (this means the daemon's loader had a false positive;
+- The daemon wrote a `state.db.corrupt-<ts>` archive
+  whose content passes `PRAGMA integrity_check` (this
+  means the daemon's loader had a false positive;
   please file with the archive attached).
 - The daemon refused a recovery that, in your
   judgement, was valid (attach both the corrupted
