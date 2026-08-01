@@ -50,6 +50,3 @@ config.local.*
 # Rooted for the same reason as the runtime artefacts above.
 prompts/
 /prompts/
-
-# Cargo lock for libraries (keep for binaries)
-# Cargo.lock
