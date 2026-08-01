@@ -486,6 +486,38 @@ fn save_finalization_persists_checkpoint() {
 }
 
 #[test]
+fn save_resumed_finalization_preserves_original_run_id() {
+    let root = tempdir("save-resumed-finalization");
+    let store = StateStore::open(&root).expect("open");
+    let now = Utc::now();
+    store
+        .enqueue(&key("Owner", "Repo", 1), TicketType::Code, false)
+        .unwrap();
+    let claimed = store.acquire_next("RUN-NEW", 1, now).unwrap().unwrap();
+    let checkpoint = FinalizationCheckpoint {
+        run_id: "RUN-ORIGINAL".to_string(),
+        branch_name: "automation/issue-1-run-original".to_string(),
+        result_path: root.join("runs").join("RUN-ORIGINAL.result.json"),
+        stage: FinalizationStage::Committed,
+        commit_oid: Some("abc123".to_string()),
+        pr_number: None,
+        pr_url: None,
+    };
+    store
+        .save_resumed_finalization(&claimed.claim, checkpoint)
+        .expect("save resumed checkpoint");
+    let snap = store.snapshot().unwrap();
+    let stored = snap
+        .entry(&key("Owner", "Repo", 1))
+        .unwrap()
+        .finalization
+        .as_ref()
+        .expect("finalization present");
+    assert_eq!(stored.run_id, "RUN-ORIGINAL");
+    assert_eq!(stored.branch_name, "automation/issue-1-run-original");
+}
+
+#[test]
 fn save_finalization_with_wrong_run_id_is_rejected() {
     let root = tempdir("save-finalization-wrong");
     let store = StateStore::open(&root).expect("open");

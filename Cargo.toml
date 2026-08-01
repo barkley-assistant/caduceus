@@ -121,6 +121,10 @@ name = "tick_dispatch_test"
 path = "tests/daemon/tick_dispatch_test.rs"
 
 [[test]]
+name = "per_claim_test"
+path = "tests/daemon/per_claim_test.rs"
+
+[[test]]
 name = "oci_config_test"
 path = "tests/executor/oci_config_test.rs"
 

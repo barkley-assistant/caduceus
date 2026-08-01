@@ -32,7 +32,7 @@ use crate::state::queue::{
 use crate::state::store;
 use crate::worker::context::{build_context, encode_context, BuildInputs};
 use crate::worker::prompt::{build_prompt, write_prompt};
-use crate::worker::WorkerResult;
+use crate::worker::{WorkerResult, WorkerStatus};
 use crate::worktree::{create as create_worktree, find_main_clone, GitRunner};
 
 // Checkpoint resume helpers
@@ -121,8 +121,18 @@ pub(crate) async fn run_resume_finalization(
 ) -> CaduceusResult<TickOutcome> {
     use crate::state::queue::FinalizationStage::*;
 
+    let resume_checkpoint =
+        claimed
+            .entry
+            .finalization
+            .clone()
+            .ok_or_else(|| CaduceusError::StateCorrupt {
+                path: cfg.state_dir.join("state.json"),
+                message: "resume requested without a finalization checkpoint".to_string(),
+            })?;
+
     // Build the minimal context needed for finalization.
-    let run_id = guard.run_id().to_string();
+    let run_id = resume_checkpoint.run_id.clone();
     let runner = services.git.runner().clone();
     let repository = match find_main_clone(&cfg, &runner, &claimed.entry.key).await {
         Ok(r) => r,
@@ -140,6 +150,22 @@ pub(crate) async fn run_resume_finalization(
                 return handle_infra_or_retry(cfg, guard, &err, class).await;
             }
         };
+    if worktree.branch_name != resume_checkpoint.branch_name {
+        if let Err(err) = crate::worktree::remove(&worktree).await {
+            tracing::warn!(
+                error = %err,
+                worktree = %worktree.path.display(),
+                "failed to clean up mismatched resume worktree"
+            );
+        }
+        return Err(CaduceusError::StateCorrupt {
+            path: cfg.state_dir.join("state.json"),
+            message: format!(
+                "resume checkpoint branch {:?} does not match reconstructed branch {:?}",
+                resume_checkpoint.branch_name, worktree.branch_name
+            ),
+        });
+    }
 
     // Check for cancellation
     if cancellation.is_cancelled() {
@@ -188,26 +214,28 @@ pub(crate) async fn run_resume_finalization(
 
     // Resume at the appropriate stage
     // We need a worker_result to pass to the step functions. On resume, we
-    // read the worker result from disk.
-    let result_path = ctx
-        .config
-        .state_dir
-        .join("runs")
-        .join(format!("{}.result.json", ctx.run_id));
-    let worker_result = match std::fs::read_to_string(&result_path) {
-        Ok(json) => match serde_json::from_str::<WorkerResult>(&json) {
-            Ok(wr) => wr,
-            Err(err) => {
-                return Err(CaduceusError::StateCorrupt {
-                    path: result_path,
-                    message: format!("failed to deserialize worker result for resume: {err}"),
-                });
-            }
-        },
+    // read the archived worker result through the canonical parser so the
+    // same read-side invariants (O_NOFOLLOW, size cap, field validation)
+    // and the `WorkerStatus::Failure` retry contract apply as on the
+    // fresh path (issue #118). Bypassing them let a malformed or
+    // failure-status archived result silently finalize.
+    let result_path = resume_checkpoint.result_path.clone();
+    let worker_result = match crate::worker::parse_result_file(&result_path, &ctx.issue.key) {
+        Ok(wr) => wr,
         Err(err) => {
-            return Err(CaduceusError::Io(err));
+            return Err(CaduceusError::Worker {
+                context: "resume",
+                stderr: format!("{}: {err}", result_path.display()),
+            });
         }
     };
+    if worker_result.status == WorkerStatus::Failure {
+        return Err(CaduceusError::Worker {
+            context: "resume",
+            stderr: "archived worker result declared failure; refusing to resume finalization"
+                .to_string(),
+        });
+    }
 
     let archive_path = match archive_worker_result(&result_path, &ctx.config.state_dir, &ctx.run_id)
     {
@@ -237,7 +265,7 @@ pub(crate) async fn run_resume_finalization(
 
             let pr_output =
                 find_or_create_pr_and_finalize(&ctx, ctx.client.as_ref(), &worker_result).await?;
-            store.save_finalization(
+            store.save_resumed_finalization(
                 &ctx.claim,
                 crate::state::queue::FinalizationCheckpoint {
                     run_id: ctx.run_id.clone(),
@@ -284,7 +312,7 @@ pub(crate) async fn run_resume_finalization(
 
             let pr_output =
                 find_or_create_pr_and_finalize(&ctx, ctx.client.as_ref(), &worker_result).await?;
-            store.save_finalization(
+            store.save_resumed_finalization(
                 &ctx.claim,
                 crate::state::queue::FinalizationCheckpoint {
                     run_id: ctx.run_id.clone(),
@@ -321,7 +349,7 @@ pub(crate) async fn run_resume_finalization(
 
             let pr_output =
                 find_or_create_pr_and_finalize(&ctx, ctx.client.as_ref(), &worker_result).await?;
-            store.save_finalization(
+            store.save_resumed_finalization(
                 &ctx.claim,
                 crate::state::queue::FinalizationCheckpoint {
                     run_id: ctx.run_id.clone(),
@@ -355,7 +383,7 @@ pub(crate) async fn run_resume_finalization(
             // Re-run PR create-or-reuse (idempotent), then record the checkpoint.
             let pr_output =
                 find_or_create_pr_and_finalize(&ctx, ctx.client.as_ref(), &worker_result).await?;
-            store.save_finalization(
+            store.save_resumed_finalization(
                 &ctx.claim,
                 crate::state::queue::FinalizationCheckpoint {
                     run_id: ctx.run_id.clone(),
@@ -402,10 +430,20 @@ pub(crate) async fn run_resume_finalization(
             // Investigation stages do not post durable remote effects in
             // scope of this change; remote_marker None is the documented
             // exception per spec.
+            //
+            // Investigation tickets have no PR/merge step, so resume
+            // completes the entry to Done.
+            guard.finish_investigation().await?;
+            return Ok(TickOutcome::Processed);
         }
     }
 
-    guard.finish_success().await?;
+    // Code-ticket resume arms (ResultValidated..AwaitingReview, plus
+    // the no-op Done arm) must leave the entry in AwaitingReview —
+    // the merge poller owns the AwaitingReview -> Done transition.
+    // Resume must not call finish_success() here, which would mark an
+    // unmerged PR Done (issue #118 audit).
+    guard.finish_awaiting_review().await?;
     Ok(TickOutcome::Processed)
 }
 
