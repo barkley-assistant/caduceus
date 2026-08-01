@@ -81,14 +81,28 @@ Two locks:
   whole-tick nonblocking `flock`. A second cron
   invocation exits 0 without polling or claiming.
   This lock covers the entire tick.
-- **The state lock (`<state_dir>/state.lock`)** — an
-  exclusive `flock` taken by `StateStore` for every
-  read-modify-write cycle of `state.json`. Concurrent
-  `StateStore` instances pointing at the same state
-  directory see the queue as strictly serialised.
+- **The state access lock** — depends on the
+  configured `state_backend`:
 
-The daemon lock is per-host. The state lock is per-
-state directory. They are not the same lock.
+  - **SQLite (opt-in via migration):** There is no
+    separate `state.lock`. The SQLite connection
+    uses WAL mode (`PRAGMA journal_mode=WAL`) for
+    concurrent reads. Short-lived connections are
+    opened per operation, and the database's own
+    locking (SHARED / RESERVED / EXCLUSIVE at the
+    WAL level) serialises concurrent writes without
+    an external lock file. Exclusive sections use
+    thread-local `IMMEDIATE` transactions.
+  - **JSON (default backend):** An exclusive
+    `flock` on `<state_dir>/state.lock` is taken by
+    `StateStore` for every read-modify-write cycle
+    of `state.json`. Concurrent `StateStore`
+    instances pointing at the same state directory
+    see the queue as strictly serialised.
+
+The daemon lock is per-host. The state access
+boundary is per-state-directory. They are not the
+same lock.
 
 Operators running `caduceus queue reset` or
 `caduceus migrate-state` take the daemon lock so a
@@ -96,6 +110,28 @@ tick cannot start while the recovery is in flight.
 This is why those commands can fail with "another tick
 holds daemon.lock; retry after the next tick
 completes."
+
+### Dual Backend Model
+
+The daemon supports two state backends:
+
+- **SQLite** — the optional, migration-enabled
+  backend. State lives in `<state_dir>/state.db`
+  (WAL mode, versioned schema). The `queue_entries`
+  and `state_meta` tables replace the old JSON
+  files.
+- **JSON** — the default backend. State lives in
+  `<state_dir>/state.json` and
+  `<state_dir>/state_meta.json`. The legacy format
+  is also the import source for
+  `caduceus migrate-state`.
+
+The backend is selected by the `state_backend`
+configuration key. The default is `json` for new
+installations; running `caduceus migrate-state
+--to-sqlite` imports the JSON state into the SQLite
+store and updates the configuration key to
+`sqlite`.
 
 ## The Polling Loop
 
@@ -191,8 +227,11 @@ The orchestrator classifies failures into:
   responses, operator-cancellation signals. Does not
   consume the retry budget.
 - **Corruption** — `state.json` or `state_meta.json`
-  is malformed. The daemon refuses to start; recovery
-  is documented in `state-recovery.md`.
+  is malformed (default JSON backend), or the
+  SQLite integrity check (`PRAGMA integrity_check`)
+  fails on `state.db` (opt-in SQLite backend). The
+  daemon refuses to start; recovery is documented
+  in `state-recovery.md`.
 - **Configuration** — config-load errors. The daemon
   refuses to start; fix the config and retry.
 - **Invariant** — something the daemon's own logic
