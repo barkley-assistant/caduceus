@@ -260,6 +260,27 @@ impl StateStore {
                 ),
             });
         }
+        self.save_finalization_verified(claim, checkpoint)
+    }
+
+    /// Persist a checkpoint found during recovery under the currently
+    /// valid claim. The checkpoint run ID intentionally remains the
+    /// original run ID so future SQLite/result lookups use the durable
+    /// recovery cursor rather than the fresh claim ID.
+    pub fn save_resumed_finalization(
+        &self,
+        claim: &ClaimToken,
+        checkpoint: FinalizationCheckpoint,
+    ) -> CaduceusResult<()> {
+        self.verify_claim_run_id(claim)?;
+        self.save_finalization_verified(claim, checkpoint)
+    }
+
+    fn save_finalization_verified(
+        &self,
+        claim: &ClaimToken,
+        checkpoint: FinalizationCheckpoint,
+    ) -> CaduceusResult<()> {
         self.with_exclusive(|store| {
             let mut state = store.load_validated()?;
             let entry = state

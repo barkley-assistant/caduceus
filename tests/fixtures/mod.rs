@@ -18,6 +18,8 @@
 #[cfg(test)]
 mod crash_point;
 #[cfg(test)]
+mod git_daemon;
+#[cfg(test)]
 mod git_origin;
 #[cfg(test)]
 mod github;
@@ -29,6 +31,12 @@ mod release_binary;
 #[cfg(test)]
 #[allow(unused_imports)]
 pub use crash_point::CrashPoint;
+#[cfg(test)]
+#[allow(unused_imports)]
+pub use git_daemon::{
+    clone_main, free_port_127, git_in, init_bare_with_empty_main, run_with_timeout,
+    wait_for_port_127, GitDaemon,
+};
 #[cfg(test)]
 #[allow(unused_imports)]
 pub use git_origin::LocalOrigin;

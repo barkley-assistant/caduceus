@@ -46,12 +46,10 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::Read;
-use std::net::TcpListener;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use tempfile::TempDir;
 use wiremock::ResponseTemplate;
@@ -64,7 +62,7 @@ use caduceus::queue::{
 #[path = "../fixtures/mod.rs"]
 mod fixtures;
 
-use fixtures::MockGitHub;
+use fixtures::{clone_main, run_with_timeout, GitDaemon, MockGitHub};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -212,42 +210,6 @@ fn build_release_binary() -> (PathBuf, String) {
 }
 
 // ---------------------------------------------------------------------------
-// Harness: run a subprocess with a timeout (no Instant::now — REQ-09).
-// ---------------------------------------------------------------------------
-
-/// Spawn `cmd` and wait up to `timeout`, returning `(exit_code, stdout,
-/// stderr)`. Uses `SystemTime` for the deadline (REQ-09: no
-/// `Instant::now()` in canary logic). Panics if the process does not
-/// exit in time (after killing it).
-fn run_with_timeout(cmd: &mut Command, timeout: Duration, label: &str) -> (i32, String, String) {
-    let mut child = cmd.spawn().unwrap_or_else(|e| panic!("spawn {label}: {e}"));
-    let deadline = SystemTime::now() + timeout;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(s)) => break s,
-            Ok(None) => {
-                if SystemTime::now() > deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    panic!("{label} did not exit within {timeout:?}");
-                }
-                std::thread::sleep(Duration::from_millis(100));
-            }
-            Err(e) => panic!("{label} try_wait: {e}"),
-        }
-    };
-    let mut stdout = String::new();
-    let mut stderr = String::new();
-    if let Some(mut s) = child.stdout.take() {
-        let _ = s.read_to_string(&mut stdout);
-    }
-    if let Some(mut s) = child.stderr.take() {
-        let _ = s.read_to_string(&mut stderr);
-    }
-    (status.code().unwrap_or(-1), stdout, stderr)
-}
-
-// ---------------------------------------------------------------------------
 // Harness: isolated HERMES_HOME tempdir (REQ-03).
 // ---------------------------------------------------------------------------
 
@@ -312,234 +274,6 @@ fn enable_plugin(hermes: &Path, home: &Path) -> i32 {
         Duration::from_secs(30),
     )
     .0
-}
-
-// ---------------------------------------------------------------------------
-// Harness: disposable git origin served by `git daemon` on 127.0.0.1
-// (REQ-04, AC-02).
-// ---------------------------------------------------------------------------
-
-/// Owns a `git daemon` subprocess serving a bare repo at
-/// `git://127.0.0.1:<port>/owner/repo`. The host `127.0.0.1` matches the
-/// wiremock api_base host so `validate_origin_host` accepts the origin.
-/// `receivepack` is enabled so the daemon's `git push` succeeds.
-struct GitDaemon {
-    _root: TempDir,
-    bare: PathBuf,
-    port: u16,
-    child: std::process::Child,
-    #[allow(dead_code)]
-    head_oid: String,
-}
-
-impl GitDaemon {
-    /// Create the bare repo, seed an empty commit on `main`, and start
-    /// `git daemon` on a free 127.0.0.1 port.
-    fn start(label: &str) -> Self {
-        let root = TempDir::with_prefix(format!("caduceus-canary-origin-{label}-"))
-            .expect("origin tempdir");
-        let gitroot = root.path().join("gitroot");
-        let bare = gitroot.join(OWNER).join(REPO);
-        fs::create_dir_all(&bare).expect("mkdir bare");
-
-        let (bare, head_oid) = init_bare_with_empty_main(&bare);
-
-        // Enable push over the git protocol.
-        git_in(&bare, &["config", "daemon.receivepack", "true"]);
-        git_in(&bare, &["config", "daemon.uploadarch", "true"]);
-
-        let port = free_port_127();
-        let log_path = root.path().join("git-daemon.log");
-        let log = fs::File::create(&log_path).expect("create daemon log");
-        let child = Command::new("git")
-            .args([
-                "daemon",
-                "--reuseaddr",
-                "--listen=127.0.0.1",
-                &format!("--port={port}"),
-                &format!("--base-path={}", gitroot.display()),
-                "--export-all",
-            ])
-            .stdin(Stdio::null())
-            .stdout(Stdio::from(log.try_clone().expect("clone log")))
-            .stderr(Stdio::from(log))
-            .spawn()
-            .unwrap_or_else(|e| panic!("spawn git daemon: {e}"));
-
-        // Wait for the daemon to accept a connection so the clone below
-        // does not race the bind.
-        wait_for_port_127(port, Duration::from_secs(5));
-
-        Self {
-            _root: root,
-            bare,
-            port,
-            child,
-            head_oid,
-        }
-    }
-
-    /// `git://127.0.0.1:<port>/owner/repo` — the URL the daemon's clone
-    /// should use as `remote.origin.url`.
-    fn uri(&self) -> String {
-        format!("git://127.0.0.1:{}/{OWNER}/{REPO}", self.port)
-    }
-
-    /// Number of refs under `refs/heads/` in the bare repo. Used to prove
-    /// the scheduled tick pushed exactly one new branch.
-    fn head_refs(&self) -> Vec<String> {
-        let out = Command::new("git")
-            .current_dir(&self.bare)
-            .args(["for-each-ref", "--format=%(refname)", "refs/heads/"])
-            .output()
-            .expect("for-each-ref");
-        String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .map(|s| s.to_string())
-            .collect()
-    }
-
-    /// Count commits on `refs/heads/main`.
-    fn main_commit_count(&self) -> usize {
-        rev_list_count(&self.bare, "refs/heads/main")
-    }
-
-    /// Count commits on `branch` that are not on `main` (the new work
-    /// the scheduled tick pushed).
-    fn branch_commits_beyond_main(&self, branch: &str) -> usize {
-        let out = Command::new("git")
-            .current_dir(&self.bare)
-            .args(["rev-list", "--count", branch, "^refs/heads/main"])
-            .output()
-            .expect("rev-list count");
-        String::from_utf8_lossy(&out.stdout)
-            .trim()
-            .parse::<usize>()
-            .unwrap_or(0)
-    }
-}
-
-impl Drop for GitDaemon {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-fn rev_list_count(bare: &Path, refspec: &str) -> usize {
-    let out = Command::new("git")
-        .current_dir(bare)
-        .args(["rev-list", "--count", refspec])
-        .output()
-        .expect("rev-list --count");
-    String::from_utf8_lossy(&out.stdout)
-        .trim()
-        .parse::<usize>()
-        .unwrap_or(0)
-}
-
-/// `git init --bare` at `path`, seed an empty commit on `main`, return
-/// `(bare_path, head_oid)`.
-fn init_bare_with_empty_main(path: &Path) -> (PathBuf, String) {
-    git_in(path, &["init", "--bare"]);
-    git_in(path, &["symbolic-ref", "HEAD", "refs/heads/main"]);
-    let tree = String::from_utf8(
-        Command::new("git")
-            .current_dir(path)
-            .args(["hash-object", "-w", "-t", "tree", "/dev/null"])
-            .output()
-            .expect("hash-object")
-            .stdout,
-    )
-    .expect("utf8")
-    .trim()
-    .to_string();
-    let commit = String::from_utf8(
-        Command::new("git")
-            .current_dir(path)
-            .args(["commit-tree", &tree, "-m", "initial"])
-            .output()
-            .expect("commit-tree")
-            .stdout,
-    )
-    .expect("utf8")
-    .trim()
-    .to_string();
-    git_in(path, &["update-ref", "refs/heads/main", &commit]);
-    (path.to_path_buf(), commit)
-}
-
-fn git_in(dir: &Path, args: &[&str]) {
-    let status = Command::new("git")
-        .current_dir(dir)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .status()
-        .expect("git spawn");
-    assert!(
-        status.success(),
-        "git {:?} in {} failed",
-        args,
-        dir.display()
-    );
-}
-
-/// Grab a free TCP port on 127.0.0.1 by briefly binding, then drop the
-/// listener so `git daemon` can take it.
-fn free_port_127() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind probe");
-    let port = listener.local_addr().expect("local addr").port();
-    drop(listener);
-    port
-}
-
-/// Poll until a TCP connection to `127.0.0.1:port` succeeds (the daemon
-/// is accepting). Falls back to checking the child has not already
-/// exited with an error.
-fn wait_for_port_127(port: u16, timeout: Duration) {
-    use std::net::TcpStream;
-    let deadline = SystemTime::now() + timeout;
-    while SystemTime::now() < deadline {
-        if let Ok(addr) = format!("127.0.0.1:{port}").parse() {
-            if TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok() {
-                return;
-            }
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    panic!("git daemon did not accept on 127.0.0.1:{port} within {timeout:?}");
-}
-
-// ---------------------------------------------------------------------------
-// Harness: clone the main working repo at <workdir_base>/owner/repo.
-// ---------------------------------------------------------------------------
-
-/// Clone the bare origin into `workdir_base/owner/repo` so the daemon's
-/// `find_main_clone` discovers it with `remote.origin.url` =
-/// `git://127.0.0.1:<port>/owner/repo`.
-fn clone_main(workdir_base: &Path, origin_uri: &str) -> PathBuf {
-    let main_path = workdir_base.join(OWNER).join(REPO);
-    fs::create_dir_all(workdir_base).expect("mkdir workdir_base");
-    let status = Command::new("git")
-        .args([
-            "clone",
-            "-b",
-            "main",
-            origin_uri,
-            &main_path.to_string_lossy(),
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .status()
-        .expect("git clone");
-    assert!(
-        status.success(),
-        "git clone of disposable origin failed (status {status})"
-    );
-    main_path
 }
 
 // ---------------------------------------------------------------------------
@@ -812,7 +546,7 @@ async fn release_binary_canary() {
     mount_github_surface(&gh).await;
 
     // --- REQ-04 / AC-02: disposable git origin on 127.0.0.1 ---
-    let origin = GitDaemon::start("canary");
+    let origin = GitDaemon::start("canary", OWNER, REPO);
     let origin_uri = origin.uri();
     assert!(
         origin_uri.starts_with("git://127.0.0.1:"),
@@ -839,8 +573,8 @@ async fn release_binary_canary() {
     // Clone a clean main working repo for each phase. Its
     // `remote.origin.url` is the `git://127.0.0.1` URI so
     // `validate_origin_host` accepts it.
-    let _main_dry = clone_main(&workdir_base_dry, &origin_uri);
-    let _main_sched = clone_main(&workdir_base_sched, &origin_uri);
+    let _main_dry = clone_main(&workdir_base_dry, &origin_uri, OWNER, REPO);
+    let _main_sched = clone_main(&workdir_base_sched, &origin_uri, OWNER, REPO);
 
     // --- AC-01: install + enable the candidate plugin ---
     bootstrap_plugin(&home);
