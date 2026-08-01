@@ -25,11 +25,13 @@ use crate::scheduler::{Admission, DrainConfig, LeaderToken, Pool};
 use crate::signals;
 use crate::state::checkpoints::{last_checkpoint_for_run, persist_checkpoint};
 use crate::state::meta::{CadenceDecision, CadenceGate, MetaStore, TickOutcome};
-use crate::state::queue::{ClaimedEntry, Phase, QueueEntry, StateStore, TicketType};
+use crate::state::queue::{
+    ClaimedEntry, FinalizationStage, Phase, QueueEntry, StateStore, TicketType,
+};
 use crate::state::store;
 use crate::worker::context::{build_context, encode_context, BuildInputs};
 use crate::worker::prompt::{build_prompt, write_prompt};
-use crate::worker::WorkerResult;
+use crate::worker::{WorkerResult, WorkerStatus};
 use crate::worktree::{create as create_worktree, find_main_clone, GitRunner};
 
 // Per-claim work loop
@@ -51,14 +53,57 @@ pub(crate) async fn run_claim(
     http_status: &mut Option<u16>,
 ) -> CaduceusResult<TickOutcome> {
     // 7a. If the entry already has a finalization checkpoint,
-    //     jump to the resume stage and re-enter the pipeline
-    //     at the first uncompleted stage.
+    //     reconcile the durable state. A checkpoint at or beyond
+    //     `PrCreated` with a PR number means the PR already exists
+    //     durably: transition directly to `AwaitingReview` (the
+    //     merge poller owns the `Done` transition) without
+    //     re-dispatching the worker. This is the issue #118
+    //     recovery path — a prior run that created a PR but left
+    //     the entry `Queued` (e.g. after a retry verdict nulling
+    //     `last_run_id`) must not re-dispatch.
+    if let Some(fin) = claimed.entry.finalization.as_ref() {
+        if fin.stage == FinalizationStage::Done {
+            info!(
+                issue = %claimed.entry.key.display_key(),
+                "durable Done finalization checkpoint; preserving terminal state"
+            );
+            if claimed.entry.ticket_type == TicketType::Investigation {
+                guard.finish_investigation().await?;
+            } else {
+                guard.finish_success().await?;
+            }
+            return Ok(TickOutcome::Processed);
+        }
+        if matches!(
+            fin.stage,
+            FinalizationStage::PrCreated
+                | FinalizationStage::Commented
+                | FinalizationStage::AwaitingReview
+        ) && fin.pr_number.is_some()
+        {
+            info!(
+                issue = %claimed.entry.key.display_key(),
+                stage = ?fin.stage,
+                pr = ?fin.pr_number,
+                "durable finalization checkpoint with PR; reconciling to AwaitingReview"
+            );
+            guard.finish_awaiting_review().await?;
+            return Ok(TickOutcome::Processed);
+        }
+    }
+    // 7b. Otherwise, if a checkpoint exists but the PR was not yet
+    //     created durably, try to resume finalization from the last
+    //     recorded SQLite stage. The queue checkpoint's `run_id`
+    //     (not the freshly acquired claim run_id) is the resume
+    //     cursor when `last_run_id` was nulled by a retry verdict.
     if claimed.entry.finalization.is_some() {
         let conn = store::open_in(&cfg.state_dir)?;
         let run_id = claimed
             .entry
-            .last_run_id
-            .as_deref()
+            .finalization
+            .as_ref()
+            .map(|f| f.run_id.as_str())
+            .or(claimed.entry.last_run_id.as_deref())
             .unwrap_or_else(|| guard.run_id());
         match resume_from_checkpoint(&conn, run_id)? {
             ResumeAction::Skip(stage) => {
@@ -225,38 +270,51 @@ pub(crate) async fn run_claim(
     }
     let _ = services.clock.now();
 
-    // 14. Reject a worker that exited nonzero without being
-    //     signalled: the result is invalid, so treat it as a
-    //     worker-attributable failure through the retry budget.
-    if !supervisor_outcome.signaled && supervisor_outcome.status != 0 {
-        let err = CaduceusError::Worker {
-            context: "result",
-            stderr: format!(
-                "worker exited {} without producing a valid result",
-                supervisor_outcome.status
-            ),
-        };
-        let class = classify_error(&err);
-        return handle_infra_or_retry(cfg, guard, &err, class).await;
-    }
-
-    // 15. Read the worker result from the worktree; a missing
-    //     or unparseable result is a worker-attributable failure.
+    // 14. Read the worker result from the worktree; a missing or
+    //     unparseable result is a worker-attributable failure through
+    //     the retry budget. A valid `worker-result.json` is the
+    //     success signal even if the bridge exited nonzero (issue
+    //     #118); a result whose own `status` is `failure` is still a
+    //     worker-attributable failure.
     let worktree_result_path = worktree.path.join("worker-result.json");
     let worker_result =
         match crate::worker::parse_result_file(&worktree_result_path, &claimed.entry.key) {
             Ok(r) => r,
-            Err(_) => {
+            Err(err) => {
+                let stderr = if !supervisor_outcome.signaled && supervisor_outcome.status != 0 {
+                    format!(
+                        "worker exited {} without producing a valid result",
+                        supervisor_outcome.status
+                    )
+                } else {
+                    format!("worker did not produce a valid worker-result.json: {err}")
+                };
                 let err = CaduceusError::Worker {
                     context: "result",
-                    stderr: "worker did not produce a valid worker-result.json".to_string(),
+                    stderr,
                 };
                 let class = classify_error(&err);
                 return handle_infra_or_retry(cfg, guard, &err, class).await;
             }
         };
+    if worker_result.status == WorkerStatus::Failure {
+        let stderr = if !supervisor_outcome.signaled && supervisor_outcome.status != 0 {
+            format!(
+                "worker reported failure (exit {})",
+                supervisor_outcome.status
+            )
+        } else {
+            "worker reported failure in worker-result.json".to_string()
+        };
+        let err = CaduceusError::Worker {
+            context: "result",
+            stderr,
+        };
+        let class = classify_error(&err);
+        return handle_infra_or_retry(cfg, guard, &err, class).await;
+    }
 
-    // 16. Archive the parsed result before finalization so the
+    // 15. Archive the parsed result before finalization so the
     //     daemon can resume from it later.
     let archive_path = match archive_worker_result(&worktree_result_path, &cfg.state_dir, &run_id) {
         Ok(p) => p,
@@ -266,7 +324,7 @@ pub(crate) async fn run_claim(
         }
     };
 
-    // 17. Run finalization.
+    // 16. Run finalization.
     let final_ctx = FinalizeContext {
         client: Arc::clone(&client),
         config: cfg.clone(),

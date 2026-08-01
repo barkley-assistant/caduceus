@@ -146,6 +146,7 @@ fn all_phase_counts_are_present() {
         "queued",
         "in_progress",
         "previewed",
+        "awaiting_review",
         "done",
         "failed",
         "skipped",
@@ -586,3 +587,9 @@ fn report_json_includes_app_version_from_cargo_pkg_version() {
         Some(STATUS_SCHEMA_VERSION)
     );
 }
+
+// LOOP-05 (issue #118) is an end-to-end test that runs the real
+// `caduceus run` with a worker that exits 1 after writing a success
+// result, then invokes `caduceus status --json` against the resulting
+// state. It lives in `tests/daemon/per_claim_test.rs` alongside the
+// other LOOP tests so it can reuse the shared harness.
