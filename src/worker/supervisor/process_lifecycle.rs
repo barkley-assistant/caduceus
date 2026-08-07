@@ -49,6 +49,11 @@ fn try_set_subreaper() -> CaduceusResult<()> {
 }
 
 /// `setsid` the calling process into a new session.
+///
+/// Called in the register phase, before the worker is forked and
+/// before the `READY{pgid}` frame is sent; the daemon records the
+/// returned PGID (== the supervisor's PID) and only then `ACK`s, at
+/// which point the supervisor spawns the worker.
 pub fn detach_session() -> CaduceusResult<()> {
     nix::unistd::setsid().map_err(|err| CaduceusError::Worker {
         context: "supervisor:setsid",
@@ -190,7 +195,9 @@ pub fn kill_pgid(pgid: i32, signal: i32) {
 /// The daemon-side uses `Child::stdin/stdout/stderr` for the
 /// control/status pipes — the supervisor inherits them as
 /// the canonical "inherited file descriptors" the contract
-/// requires.
+/// requires. The supervisor defers spawning the worker until
+/// the daemon acknowledges the `READY(pgid)` frame with
+/// `ACK`; until then no child process exists.
 #[allow(clippy::too_many_arguments)]
 pub fn build_supervisor_command(
     self_exe: &Path,

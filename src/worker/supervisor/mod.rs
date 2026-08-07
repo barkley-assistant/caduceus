@@ -12,12 +12,13 @@
 //!   versioned control/status framing protocol carried over
 //!   the supervisor's inherited `stdin` (daemon→supervisor)
 //!   and `stdout` (supervisor→daemon) descriptors.
-//! * The supervisor forks the worker behind an exec-gate pipe.
-//!   The worker calls `setsid` but cannot `exec` until the
-//!   supervisor confirms `READY(pgid)` and the daemon
-//!   acknowledges it with `ACK`. If either side dies before
-//!   `ACK`, the gate EOFs and the pre-exec child exits without
-//!   running the harness.
+//! * The supervisor `setsid`s and sends `READY(pgid)` *before*
+//!   forking the worker. It blocks on the daemon's `ACK`; only
+//!   after `ACK` does it spawn the worker. If the daemon dies
+//!   (EOF on stdin) or sends a non-`ACK` frame before `ACK`,
+//!   the supervisor exits without ever spawning a worker — so
+//!   no orphaned worker process can exist before the PGID is
+//!   confirmed.
 //! * After `ACK`, unexpected supervisor exit makes the daemon
 //!   kill the recorded session; daemon death closes the
 //!   control pipe (stdin) and makes the live supervisor kill

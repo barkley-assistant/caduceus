@@ -397,6 +397,10 @@ name = "worker_timeout_test"
 path = "tests/worker/worker_timeout_test.rs"
 
 [[test]]
+name = "supervisor_ack_gate_test"
+path = "tests/worker/supervisor_ack_gate_test.rs"
+
+[[test]]
 name = "worker_transcript_test"
 path = "tests/worker/worker_transcript_test.rs"
 

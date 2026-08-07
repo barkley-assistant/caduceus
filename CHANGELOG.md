@@ -123,6 +123,9 @@ across this period.
   after a commit or push resumes at the recorded stage instead of
   re-dispatching the worker and creating a duplicate branch/commit.
   Closes #119.
+- **Supervisor ACK gate.** The supervisor spawns the worker only after
+  the daemon ACKs the `READY(pgid)` frame, so no worker process exists
+  before the PGID is confirmed. Closes #125. Part of #94.
 
 ### Security
 
