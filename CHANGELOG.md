@@ -116,6 +116,13 @@ across this period.
   findings comment, mirroring the code-ticket durable-checkpoint
   pattern. A crash after the comment no longer re-dispatches the
   worker and posts a duplicate comment. Closes #120.
+- **Code-ticket pre-PR queue checkpoints.** The code finalization
+  path now persists a durable queue `FinalizationCheckpoint` at
+  `ResultValidated` / `Committed` / `Pushed` as well as `PrCreated`
+  (SQLite first, then queue), mirroring the #120 pattern. A crash
+  after a commit or push resumes at the recorded stage instead of
+  re-dispatching the worker and creating a duplicate branch/commit.
+  Closes #119.
 
 ### Security
 

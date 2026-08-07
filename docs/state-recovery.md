@@ -336,6 +336,25 @@ this command; the budget of three total worker
 attempts is preserved across label churn and only the
 explicit reset path clears it.
 
+## Finalization Checkpoints
+
+The daemon writes a durable `FinalizationCheckpoint` on
+the queue entry at every code-ticket finalization stage
+— `ResultValidated`, `Committed`, `Pushed`, and
+`PrCreated` — in addition to the SQLite `checkpoints`
+rows. Each stage persists the SQLite checkpoint first,
+then the queue checkpoint, so the queue field never
+advertises a stage whose SQLite row is missing. The
+queue checkpoint anchors recovery to the original
+`run_id`: a crash after a commit or push resumes at the
+recorded stage instead of re-dispatching the worker and
+creating a duplicate branch/commit (issue #119).
+Investigation tickets get the same durable queue
+checkpoint at `InvestigationReady` /
+`InvestigationCommented` (issue #120). A crashed
+finalization never needs manual queue manipulation —
+see `queue reset` above for the failure-path recovery.
+
 ## Backup Retention
 
 The **SQLite** database uses WAL mode, so when

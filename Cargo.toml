@@ -497,6 +497,10 @@ name = "investigation_finalize_checkpoint_test"
 path = "tests/integration/investigation_finalize_checkpoint_test.rs"
 
 [[test]]
+name = "code_pre_pr_checkpoint_recovery_test"
+path = "tests/integration/code_pre_pr_checkpoint_recovery_test.rs"
+
+[[test]]
 name = "docs_contract_test"
 path = "tests/architecture/docs_contract_test.rs"
 

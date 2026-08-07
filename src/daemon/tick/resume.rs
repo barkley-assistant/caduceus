@@ -248,8 +248,23 @@ pub(crate) async fn run_resume_finalization(
 
     match resume_stage {
         ResultValidated => {
-            // ResultValidated has no external effect to record yet.
+            // ResultValidated has no external effect to record yet, but
+            // the queue entry must durably record the resumed stage so a
+            // crash during recovery itself still resumes under the
+            // original run_id.
             checkpoint(&conn, &ctx.run_id, ResultValidated, None)?;
+            store.save_resumed_finalization(
+                &ctx.claim,
+                crate::state::queue::FinalizationCheckpoint {
+                    run_id: ctx.run_id.clone(),
+                    branch_name: ctx.worktree.branch_name.clone(),
+                    result_path: result_path.clone(),
+                    stage: crate::state::queue::FinalizationStage::ResultValidated,
+                    commit_oid: None,
+                    pr_number: None,
+                    pr_url: None,
+                },
+            )?;
 
             let commit_out =
                 commit_code_and_finalize(&ctx, &worker_result, &runner, &archive_path)?;
@@ -306,6 +321,18 @@ pub(crate) async fn run_resume_finalization(
                 Committed,
                 commit_out.commit_oid.as_deref(),
             )?;
+            store.save_resumed_finalization(
+                &ctx.claim,
+                crate::state::queue::FinalizationCheckpoint {
+                    run_id: ctx.run_id.clone(),
+                    branch_name: ctx.worktree.branch_name.clone(),
+                    result_path: result_path.clone(),
+                    stage: crate::state::queue::FinalizationStage::Committed,
+                    commit_oid: commit_out.commit_oid.clone(),
+                    pr_number: None,
+                    pr_url: None,
+                },
+            )?;
 
             let push_out = push_and_finalize(&ctx, &runner).await?;
             checkpoint(&conn, &ctx.run_id, Pushed, push_out.pushed_oid.as_deref())?;
@@ -346,6 +373,22 @@ pub(crate) async fn run_resume_finalization(
             // Re-run the push effect (idempotent), then record the checkpoint.
             let push_out = push_and_finalize(&ctx, &runner).await?;
             checkpoint(&conn, &ctx.run_id, Pushed, push_out.pushed_oid.as_deref())?;
+            // The Pushed resume arm has no commit_out in scope (it starts
+            // at push), so commit_oid is None, consistent with its
+            // PrCreated save below. commit_oid is not consumed by
+            // recovery routing.
+            store.save_resumed_finalization(
+                &ctx.claim,
+                crate::state::queue::FinalizationCheckpoint {
+                    run_id: ctx.run_id.clone(),
+                    branch_name: ctx.worktree.branch_name.clone(),
+                    result_path: result_path.clone(),
+                    stage: crate::state::queue::FinalizationStage::Pushed,
+                    commit_oid: None,
+                    pr_number: None,
+                    pr_url: None,
+                },
+            )?;
 
             let pr_output =
                 find_or_create_pr_and_finalize(&ctx, ctx.client.as_ref(), &worker_result).await?;
@@ -503,6 +546,15 @@ pub(crate) async fn run_resume_finalization(
     Ok(TickOutcome::Processed)
 }
 
+/// Runs code finalization with the same durable-checkpoint pattern as
+/// [`run_investigation_finalize`], minus the investigation comment.
+///
+/// The `ResultValidated`, `Committed`, and `Pushed` checkpoints are
+/// persisted (SQLite then queue) *before* the next external effect, and
+/// `PrCreated` after PR creation succeeds — so a crash after a commit or
+/// push leaves a durable record and recovery resumes at the recorded
+/// stage under the original `run_id` instead of re-dispatching the
+/// worker or creating a duplicate branch/commit.
 pub(crate) async fn run_code_finalize(
     ctx: &FinalizeContext,
     worker_result: &WorkerResult,
@@ -513,8 +565,22 @@ pub(crate) async fn run_code_finalize(
 ) -> CaduceusResult<FinalizeOutput> {
     let conn = store::open_in(&ctx.config.state_dir)?;
 
-    // Stage 1: ResultValidated — no external effect to record yet.
+    // Stage 1: ResultValidated — no external effect to record yet, but
+    // the queue entry must durably record that the code run began
+    // finalization so recovery does not re-dispatch the worker.
     checkpoint(&conn, &ctx.run_id, FinalizationStage::ResultValidated, None)?;
+    store.save_finalization(
+        &ctx.claim,
+        crate::state::queue::FinalizationCheckpoint {
+            run_id: ctx.run_id.clone(),
+            branch_name: ctx.worktree.branch_name.clone(),
+            result_path: worker_result_path.to_path_buf(),
+            stage: crate::state::queue::FinalizationStage::ResultValidated,
+            commit_oid: None,
+            pr_number: None,
+            pr_url: None,
+        },
+    )?;
 
     // Stage 2: Commit the validated changes, then record the commit OID.
     let commit_out = commit_code_and_finalize(ctx, worker_result, runner, worker_result_path)?;
@@ -524,6 +590,18 @@ pub(crate) async fn run_code_finalize(
         FinalizationStage::Committed,
         commit_out.commit_oid.as_deref(),
     )?;
+    store.save_finalization(
+        &ctx.claim,
+        crate::state::queue::FinalizationCheckpoint {
+            run_id: ctx.run_id.clone(),
+            branch_name: ctx.worktree.branch_name.clone(),
+            result_path: worker_result_path.to_path_buf(),
+            stage: crate::state::queue::FinalizationStage::Committed,
+            commit_oid: commit_out.commit_oid.clone(),
+            pr_number: None,
+            pr_url: None,
+        },
+    )?;
 
     // Stage 3: Push the daemon branch, then record the remote OID.
     let push_out = push_and_finalize(ctx, runner).await?;
@@ -532,6 +610,18 @@ pub(crate) async fn run_code_finalize(
         &ctx.run_id,
         FinalizationStage::Pushed,
         push_out.pushed_oid.as_deref(),
+    )?;
+    store.save_finalization(
+        &ctx.claim,
+        crate::state::queue::FinalizationCheckpoint {
+            run_id: ctx.run_id.clone(),
+            branch_name: ctx.worktree.branch_name.clone(),
+            result_path: worker_result_path.to_path_buf(),
+            stage: crate::state::queue::FinalizationStage::Pushed,
+            commit_oid: commit_out.commit_oid.clone(),
+            pr_number: None,
+            pr_url: None,
+        },
     )?;
 
     // Stage 4: Create or reuse the PR, then record the PR number.
