@@ -237,11 +237,13 @@ pub fn build_supervisor_command(
     for arg in worker_command {
         cmd.arg(arg);
     }
-    // The supervisor's stdin/stdout/stderr are the daemon's
-    // control/status pipes. Stderr is captured separately so a
-    // misbehaving supervisor can log to disk.
+    // The supervisor's stdin/stdout are the daemon's control/status
+    // pipes. The supervisor owns the transcript file (worker
+    // stdout+stderr); its own diagnostics inherit to the daemon's
+    // stderr so they reach the operator/journald without contending
+    // for the transcript.
     cmd.stdin(Stdio::piped());
     cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
+    cmd.stderr(Stdio::inherit());
     cmd
 }

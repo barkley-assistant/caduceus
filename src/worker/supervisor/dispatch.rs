@@ -32,12 +32,13 @@ use crate::infra::error::{CaduceusError, CaduceusResult};
 /// 4. Read `READY(pgid)` from the supervisor's stdout, send
 ///    `ACK` over its stdin so the supervisor opens the exec
 ///    gate.
-/// 5. Drain supervisor `stderr` into the transcript, bounded
-///    by `cfg.transcript_max_bytes`, with a single truncation
-///    marker and continuing drain/discard after truncation.
-/// 6. Await supervisor exit, both readers, and writer.
-/// 7. Remove the heartbeat, return the parsed
+/// 5. Await supervisor exit and the protocol reader.
+/// 6. Remove the heartbeat, return the parsed
 ///    [`SupervisorOutcome`].
+///
+/// The supervisor owns the transcript (worker stdout+stderr); the
+/// daemon does not open it. Supervisor diagnostics inherit to the
+/// daemon's stderr.
 ///
 /// `cancellation` is the daemon's
 /// `tokio_util::sync::CancellationToken`. When triggered, the
@@ -176,7 +177,6 @@ pub(crate) async fn run_supervisor(
         context: "supervisor:spawn",
         stderr: "supervisor stdout was not piped".to_string(),
     })?;
-    let stderr = child.stderr.take();
     // Capture the worker timeout into an owned value so the
     // `'static` protocol task can read it without borrowing `cfg`.
     let worker_timeout_seconds = cfg.worker_timeout_seconds;
@@ -327,42 +327,6 @@ pub(crate) async fn run_supervisor(
             }
         })
     };
-
-    // Stderr drain — write into the transcript, bounded by
-    // cfg.transcript_max_bytes.
-    if let Some(mut stderr) = stderr {
-        let path = paths.transcript_path.clone();
-        let max_bytes = cfg.transcript_max_bytes;
-        let _drain_task = tokio::spawn(async move {
-            let mut buf = vec![0u8; 4096];
-            let writer = match BoundedTranscriptWriter::new(path.clone(), max_bytes) {
-                Ok(w) => std::sync::Arc::new(std::sync::Mutex::new(w)),
-                Err(_) => return,
-            };
-            loop {
-                match stderr.read(&mut buf).await {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        let chunk = buf[..n].to_vec();
-                        let w = writer.clone();
-                        let _ = tokio::task::spawn_blocking(move || {
-                            let mut guard = w.lock().unwrap();
-                            guard.write_bytes(&chunk);
-                        })
-                        .await;
-                    }
-                    Err(_) => break,
-                }
-            }
-            let guard = std::sync::Arc::try_unwrap(writer)
-                .unwrap_or_else(|_| panic!("writer arc still referenced"))
-                .into_inner()
-                .unwrap_or_else(|e| e.into_inner());
-            if let Err(err) = guard.finalize() {
-                tracing::warn!(error = %err, "transcript finalize");
-            }
-        });
-    }
 
     // Heartbeat refresh: every 5s while the worker is alive.
     let hb_path = paths.heartbeat_path.clone();
