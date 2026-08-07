@@ -12,8 +12,8 @@ use crate::daemon::orchestration::{
 };
 use crate::finalize::{
     archive_worker_result, commit_code_and_finalize, dry_run_finalize,
-    find_or_create_pr_and_finalize, post_completion_only, post_investigation_comment_and_finalize,
-    push_and_finalize, FinalizeContext, FinalizeOutput, FinalizeRequest,
+    find_or_create_pr_and_finalize, post_completion_only, push_and_finalize, FinalizeContext,
+    FinalizeOutput, FinalizeRequest,
 };
 use crate::github::poll::{discover_watched_repos, merge_outcomes, poll_code, poll_investigation};
 use crate::github::{Client, RateLimitInfo, Response};
@@ -72,6 +72,16 @@ pub(crate) async fn run_claim(
             } else {
                 guard.finish_success().await?;
             }
+            return Ok(TickOutcome::Processed);
+        }
+        if fin.stage == FinalizationStage::InvestigationCommented
+            && claimed.entry.ticket_type == TicketType::Investigation
+        {
+            info!(
+                issue = %claimed.entry.key.display_key(),
+                "durable InvestigationCommented checkpoint; finishing"
+            );
+            guard.finish_investigation().await?;
             return Ok(TickOutcome::Processed);
         }
         if matches!(
@@ -347,16 +357,18 @@ pub(crate) async fn run_claim(
     }
 
     if worker_result.investigation || claimed.entry.ticket_type == TicketType::Investigation {
-        match post_investigation_comment_and_finalize(
+        match run_investigation_finalize(
             &final_ctx,
-            client.as_ref(),
             &worker_result,
+            &archive_path,
+            client.as_ref(),
+            store,
             &cfg.ticket_label_investigation,
         )
         .await
         {
             Ok(_) => {
-                let _ = guard.finish_investigation().await;
+                guard.finish_investigation().await?;
                 return Ok(TickOutcome::Processed);
             }
             Err(err) => {

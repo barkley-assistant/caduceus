@@ -265,6 +265,10 @@ name = "checkpoint_recovery_test"
 path = "tests/state/checkpoint_recovery_test.rs"
 
 [[test]]
+name = "investigation_checkpoint_recovery_test"
+path = "tests/state/investigation_checkpoint_recovery_test.rs"
+
+[[test]]
 name = "claim_test"
 path = "tests/state/claim_test.rs"
 
@@ -487,6 +491,10 @@ path = "tests/integration/integration_test.rs"
 [[test]]
 name = "finalize_pr_number_test"
 path = "tests/integration/finalize_pr_number_test.rs"
+
+[[test]]
+name = "investigation_finalize_checkpoint_test"
+path = "tests/integration/investigation_finalize_checkpoint_test.rs"
 
 [[test]]
 name = "docs_contract_test"
