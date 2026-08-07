@@ -69,7 +69,7 @@ fn main() -> ExitCode {
 ///    - `Terminate` frame → clean cancel, no worker spawned
 ///    - timeout → emit FATAL, exit 124
 /// 4. on `ACK`: build `Command`, set process_group(0), spawn worker
-/// 5. start stdin-killer + stderr-drain threads, wait, write `DONE`
+/// 5. start stdin-killer + stdout/stderr-drain threads, wait, write `DONE`
 ///
 /// Until step 4 the daemon has not confirmed the PGID and no child
 /// process exists. On EOF, KILL, or TERM after spawn, the worker
@@ -282,12 +282,12 @@ fn run_supervisor_mode() -> CaduceusResult<()> {
     }
     cmd.current_dir(&worktree);
     cmd.stdin(std::process::Stdio::null());
-    // The worker's stdout is forwarded to the daemon over
-    // the supervisor's stderr (which the daemon captures into
-    // the transcript). The supervisor's stdout carries the
-    // framed control protocol only — this keeps the protocol
-    // bytes and the worker bytes from interleaving.
-    cmd.stdout(std::process::Stdio::null());
+    // The worker's stdout and stderr are piped and drained into
+    // the bounded transcript (see the drain block below). The
+    // supervisor's own stdout carries the framed control protocol
+    // only — this keeps the protocol bytes and the worker bytes
+    // from interleaving.
+    cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
 
     // When the daemon supplied the new issue-context flags,
@@ -393,27 +393,54 @@ fn run_supervisor_mode() -> CaduceusResult<()> {
         }
     });
 
-    // Forward worker stderr to the bounded transcript writer.
+    // Forward worker stdout and stderr to the bounded transcript
+    // writer, byte-interleaved into the one shared file. Two drain
+    // threads share the writer through an `Arc<Mutex<>>`, the same
+    // pattern the daemon-side transcript capture uses in
+    // `dispatch.rs`. Both streams compete for the single
+    // `transcript_max_bytes` budget; a flood drops bytes behind the
+    // truncation marker, identical to the old stderr-only drain.
+    let worker_stdout = child.stdout.take();
     let worker_stderr = child.stderr.take();
-    let mut writer = BoundedTranscriptWriter::new(transcript_path.clone(), transcript_max_bytes)
-        .map_err(|err| {
-            tracing::warn!(error = %err, "failed to open transcript");
-            err
-        })?;
+    let writer = std::sync::Arc::new(std::sync::Mutex::new(
+        BoundedTranscriptWriter::new(transcript_path.clone(), transcript_max_bytes).map_err(
+            |err| {
+                tracing::warn!(error = %err, "failed to open transcript");
+                err
+            },
+        )?,
+    ));
 
-    let tx_err = std::thread::spawn(move || {
-        let mut buf = [0u8; 4096];
-        if let Some(mut s) = worker_stderr {
-            loop {
-                match s.read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => writer.write_bytes(&buf[..n]),
-                    Err(_) => break,
+    let tx_out = {
+        let writer = std::sync::Arc::clone(&writer);
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            if let Some(mut s) = worker_stdout {
+                loop {
+                    match s.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => writer.lock().unwrap().write_bytes(&buf[..n]),
+                        Err(_) => break,
+                    }
                 }
             }
-        }
-        writer
-    });
+        })
+    };
+    let tx_err = {
+        let writer = std::sync::Arc::clone(&writer);
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            if let Some(mut s) = worker_stderr {
+                loop {
+                    match s.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => writer.lock().unwrap().write_bytes(&buf[..n]),
+                        Err(_) => break,
+                    }
+                }
+            }
+        })
+    };
 
     // Wait for the worker.
     let status = child
@@ -422,11 +449,26 @@ fn run_supervisor_mode() -> CaduceusResult<()> {
             context: "supervisor:worker_wait",
             stderr: format!("wait: {err}"),
         })?;
-    // Join the stderr drain thread and get the writer back.
-    let writer = tx_err.join().map_err(|_| caduceus::CaduceusError::Worker {
+    // Join both drain threads, then recover the writer. The threads
+    // drop their `Arc` clones on exit, so `try_unwrap` succeeds.
+    tx_out.join().map_err(|_| caduceus::CaduceusError::Worker {
         context: "supervisor",
-        stderr: "transcript writer thread panicked".to_string(),
+        stderr: "stdout drain thread panicked".to_string(),
     })?;
+    tx_err.join().map_err(|_| caduceus::CaduceusError::Worker {
+        context: "supervisor",
+        stderr: "stderr drain thread panicked".to_string(),
+    })?;
+    let writer = std::sync::Arc::try_unwrap(writer)
+        .map_err(|_| caduceus::CaduceusError::Worker {
+            context: "supervisor",
+            stderr: "transcript writer still referenced".to_string(),
+        })?
+        .into_inner()
+        .map_err(|_| caduceus::CaduceusError::Worker {
+            context: "supervisor",
+            stderr: "transcript writer lock poisoned".to_string(),
+        })?;
 
     // Finalize transcript — report truncation/write failures.
     // This must happen before DONE so a failed write is reported as a

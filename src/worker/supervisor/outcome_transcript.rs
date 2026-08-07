@@ -161,7 +161,7 @@ pub fn truncate_transcript(path: &Path, max_bytes: u64) -> CaduceusResult<bool> 
     Ok(true)
 }
 
-// BoundedTranscriptWriter — bounded stderr capture
+// BoundedTranscriptWriter — bounded worker output capture
 
 /// Bounded writer that wraps a transcript file with a byte cap.
 /// Writes that would exceed the cap trigger truncation; subsequent
