@@ -355,10 +355,21 @@ pub async fn tick(
     let mut http_status: Option<u16> = None;
     let mut last_error: Option<CaduceusError> = None;
     let worker_parallelism = cfg.worker_parallelism.max(1) as usize;
+    // Per-tick claim cap (issue #108): bounds how many queue entries
+    // one tick will claim before returning. 0 == unbounded (the
+    // pre-#108 drain-the-queue behavior). The cap only stops claiming
+    // new entries; the JoinSet drain below still runs to completion.
+    let max_issues_per_tick = cfg.max_issues_per_tick;
+    let mut processed: u32 = 0;
 
     let mut set: JoinSet<(CaduceusResult<TickOutcome>, Option<u16>)> = JoinSet::new();
 
     'dispatch: loop {
+        // Per-tick claim cap: check before acquiring the next entry
+        // so exactly `max_issues_per_tick` claims happen per tick.
+        if max_issues_per_tick != 0 && processed >= max_issues_per_tick {
+            break 'dispatch;
+        }
         // 6.1. Acquire the next eligible entry under the
         //      scheduler lock. Existing API, preserved exactly.
         let run_id_candidate = Ulid::new().to_string();
@@ -370,6 +381,11 @@ pub async fn tick(
             Some(c) => c,
             None => break 'dispatch,
         };
+        // Count the claim immediately: circuit-blocked and
+        // pool-saturated entries are requeued via `continue 'dispatch`
+        // below, but they still consume quota so a flood of blocked
+        // entries cannot starve real work (issue #108).
+        processed += 1;
 
         // 6.2. Circuit-breaker probe (inlined from the prior
         //      synchronous path). On a circuit-blocked repo or
