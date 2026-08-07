@@ -243,6 +243,17 @@ front door; the manual is in `docs/`:
   and the actual fix.
 - [`docs/faq.md`](docs/faq.md) — short.
 
+### Transcripts
+
+Each worker run produces one bounded transcript file at
+`<state-dir>/runs/<run-id>.log`. The supervisor captures
+both the worker's stdout and stderr into it,
+byte-interleaved without stream markers, up to
+`transcript_max_bytes`; output past the cap is dropped
+behind a truncation marker line. See
+[`docs/configuration.md`](docs/configuration.md) for the
+limit and retention knobs.
+
 ## Replacing a prior install
 
 If your state directory contains a JSON state file instead

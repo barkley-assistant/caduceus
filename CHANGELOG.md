@@ -94,6 +94,11 @@ across this period.
 
 ### Fixed
 
+- **Supervisor stdout capture.** The supervisor now pipes worker stdout
+  into the bounded transcript alongside stderr (byte-interleaved, one
+  shared writer) instead of discarding it. Previously worker stdout was
+  sent to `/dev/null` and only stderr was captured. Closes #126. Part
+  of #94.
 - **Supervisor cancel/DONE race.** The daemon-side protocol loop drains
   the worker's `DONE` frame before firing the cleanup cancel, so a
   worker that exits 0 cleanly is no longer reported as cancelled. The

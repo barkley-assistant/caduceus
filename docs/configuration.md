@@ -162,10 +162,10 @@ retry-budget cost).
 **Type:** `u64`. **Default:** `10485760` (10 MiB).
 
 Maximum transcript bytes retained per run. The daemon
-drains output continuously and writes the cap-aware
-transcript to the per-run log; output past the cap is
-dropped with a marker line. Cron never sees transcript
-output.
+drains worker stdout and stderr continuously and writes
+the cap-aware transcript to the per-run log; output past
+the cap is dropped with a marker line. Cron never sees
+transcript output.
 
 ### `run_retention_days`
 

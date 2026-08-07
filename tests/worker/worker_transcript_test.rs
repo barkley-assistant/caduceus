@@ -235,3 +235,108 @@ fn test_transcript_exact_fit_succeeds() {
     let exit_code = run_transcript_test(100, 100);
     assert_eq!(exit_code, 0, "exact fit should exit 0");
 }
+
+/// Run the supervisor with a worker that writes a marker to *stdout*
+/// (fd 1, not fd 2). Drives the control protocol (READY → ACK → DONE)
+/// and returns the supervisor exit code plus the final transcript file
+/// contents.
+fn run_stdout_transcript_test() -> (i32, String) {
+    let tree = ProcessTree::start("stdout_transcript");
+    let workdir = tree.workdir().to_path_buf();
+
+    let helper = write_worker_script(
+        &workdir,
+        "stdout_worker.sh",
+        r#"#!/bin/sh
+printf 'STDOUT_TOKEN_%s' "$$" >&1
+exit 0
+"#,
+    );
+
+    fs::create_dir_all(workdir.join("wt")).expect("create worktree");
+    let transcript = workdir.join("transcript.log");
+    let heartbeat = workdir.join("hbeat");
+    fs::File::create(&transcript).expect("create transcript");
+    fs::File::create(&heartbeat).expect("create heartbeat");
+
+    let exe = fixtures::ReleaseBinary::locate();
+    let mut cmd = Command::new(&exe);
+    cmd.arg("__worker-supervisor");
+    cmd.arg("--worktree").arg(workdir.join("wt"));
+    cmd.arg("--run-id").arg("RUN_STDOUT_CAPTURE");
+    cmd.arg("--issue").arg("owner/repo#1");
+    cmd.arg("--context-json").arg("{}");
+    cmd.arg("--transcript").arg(&transcript);
+    cmd.arg("--heartbeat").arg(&heartbeat);
+    cmd.arg("--timeout").arg("10");
+    cmd.arg("--transcript-max-bytes").arg("1048576");
+    cmd.arg("--").arg(&helper);
+    cmd.env_clear();
+    cmd.stdin(Stdio::piped());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+
+    let mut child = cmd.spawn().expect("spawn supervisor");
+    let mut stdin = child.stdin.take().expect("stdin");
+    let mut stdout = make_nonblocking(&mut child);
+
+    // READY frame.
+    let deadline = Instant::now() + std::time::Duration::from_secs(5);
+    let ready = read_frame_with_deadline(&mut stdout, deadline).expect("expected READY frame");
+    assert!(
+        matches!(ready, (ControlFrame::Ready { .. }, _)),
+        "expected READY, got {ready:?}"
+    );
+
+    // Send ACK.
+    let ack = worker_supervisor::encode_frame(&ControlFrame::Ack).expect("encode ack");
+    stdin.write_all(&ack).expect("write ack");
+    stdin.flush().ok();
+    // Keep stdin open — dropping it would trigger the killer thread.
+
+    // Wait for DONE frame OR process exit.
+    let done_deadline = Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if child.try_wait().ok().flatten().is_some() {
+            break; // process exited (success or finalize error)
+        }
+        #[allow(clippy::collapsible_match)]
+        if let Some((frame, _)) = read_frame_with_deadline(&mut stdout, done_deadline) {
+            if matches!(
+                frame,
+                ControlFrame::Done { .. } | ControlFrame::Fatal { .. }
+            ) {
+                break;
+            }
+        }
+        if Instant::now() >= done_deadline {
+            panic!("timeout waiting for supervisor exit");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    // Now close stdin so the supervisor can exit.
+    std::mem::drop(stdin);
+    std::mem::drop(stdout);
+
+    let output = child.wait_with_output().expect("wait for supervisor");
+    let su_stderr = String::from_utf8_lossy(&output.stderr);
+    if !su_stderr.is_empty() {
+        eprintln!("supervisor stderr: {su_stderr}");
+    }
+    let contents = fs::read_to_string(&transcript).expect("read transcript");
+    (output.status.code().unwrap_or(1), contents)
+}
+
+// 9.5 — Worker stdout (fd 1) is captured into the transcript alongside
+// stderr (regression for #126: stdout was previously sent to /dev/null)
+
+#[test]
+fn test_transcript_captures_worker_stdout() {
+    let (exit_code, contents) = run_stdout_transcript_test();
+    assert_eq!(exit_code, 0, "stdout write under limit should exit 0");
+    assert!(
+        contents.contains("STDOUT_TOKEN_"),
+        "transcript should contain worker stdout bytes, got: {contents:?}"
+    );
+}
