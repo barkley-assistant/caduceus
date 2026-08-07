@@ -18,8 +18,9 @@ use crate::infra::error::{CaduceusError, CaduceusResult};
 // Hidden command name
 
 /// Hidden command name that the binary recognises before public
-/// Clap parsing. The token is reserved and must never appear in
-/// `--help` output or be accepted from cron / plugin
+/// Clap parsing, matched only as the first argument after the
+/// binary name (`argv[1]`). The token is reserved and must never
+/// appear in `--help` output or be accepted from cron / plugin
 /// configuration.
 pub const HIDDEN_COMMAND: &str = "__worker-supervisor";
 
