@@ -398,12 +398,25 @@ pub(crate) async fn run_supervisor(
         stderr: format!("wait: {err}"),
     })?;
 
+    // Drain the protocol task before firing the cleanup cancel. The
+    // supervisor child is already dead, so its stdout closes and the
+    // task's pending `read_frame_async` resolves to either the buffered
+    // `DONE` frame or EOF. Cancelling first would race that buffered
+    // `DONE`: the `biased` select! polls the cancel arm first, so a
+    // worker that exited 0 was reported as `status: 130, cancelled:
+    // true`. Firing the cancel after the join keeps it a no-op cleanup
+    // signal while the protocol task still reports the real outcome.
+    //
+    // Cleanup (cancel + heartbeat abort) runs before the `?` so a
+    // panicked protocol task still tears down the heartbeat loop
+    // instead of leaking it until process exit.
+    let outcome_result = protocol_task.await;
     cancellation.cancel();
-    let outcome = protocol_task.await.map_err(|err| CaduceusError::Worker {
+    heartbeat_task.abort();
+    let outcome = outcome_result.map_err(|err| CaduceusError::Worker {
         context: "supervisor:join",
         stderr: format!("join protocol task: {err}"),
     })?;
-    heartbeat_task.abort();
 
     let signaled = supervisor_status.code().is_none();
     let _ = signaled;
