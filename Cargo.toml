@@ -405,6 +405,10 @@ name = "supervisor_frame_allocation_test"
 path = "tests/worker/supervisor_frame_allocation_test.rs"
 
 [[test]]
+name = "supervisor_cancel_vs_done_test"
+path = "tests/worker/supervisor_cancel_vs_done_test.rs"
+
+[[test]]
 name = "worker_transcript_test"
 path = "tests/worker/worker_transcript_test.rs"
 

@@ -94,6 +94,11 @@ across this period.
 
 ### Fixed
 
+- **Supervisor cancel/DONE race.** The daemon-side protocol loop drains
+  the worker's `DONE` frame before firing the cleanup cancel, so a
+  worker that exits 0 cleanly is no longer reported as cancelled. The
+  cancel path still wins when fired while the worker is alive and no
+  DONE is pending. Closes #130. Part of #94.
 - **Status exit codes.** Every status call now exits with the documented
   code instead of always returning 0.
 - **GitHub auth token resolution.** The daemon now resolves the GitHub
