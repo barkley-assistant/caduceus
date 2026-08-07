@@ -57,8 +57,22 @@ fn main() -> ExitCode {
 /// --transcript / --heartbeat / --timeout / -- <worker
 /// command>` arguments, sets the subreaper (Linux), then runs
 /// the worker session. Talks to the daemon over inherited
-/// stdin/stdout using the framed control protocol; on EOF
-/// (daemon death) or explicit TERM/KILL frames, the worker
+/// The supervisor runs as a hidden subcommand of the caduceus binary
+/// (see process_lifecycle::HIDDEN_COMMAND). It exchanges control
+/// frames with the daemon over the supervisor's stdin/stdout using
+/// the framed control protocol. Flow:
+///
+/// 1. `detach_session()` makes the supervisor a session leader
+/// 2. send `READY{pgid}` to the daemon and flush stdout
+/// 3. block on the daemon's `ACK` (30s handshake timeout)
+///    - EOF / decode error / unexpected frame → emit FATAL, exit clean
+///    - `Terminate` frame → clean cancel, no worker spawned
+///    - timeout → emit FATAL, exit 124
+/// 4. on `ACK`: build `Command`, set process_group(0), spawn worker
+/// 5. start stdin-killer + stderr-drain threads, wait, write `DONE`
+///
+/// Until step 4 the daemon has not confirmed the PGID and no child
+/// process exists. On EOF, KILL, or TERM after spawn, the worker
 /// session is reaped before this function returns.
 fn run_supervisor_mode() -> CaduceusResult<()> {
     use std::io::{Read, Write};
@@ -173,9 +187,100 @@ fn run_supervisor_mode() -> CaduceusResult<()> {
     let issue = caduceus::issue::IssueKey::parse(&issue_ref)?;
 
     // Detach into a new session so the worker has its own
-    // process group. The daemon recorded our PGID via the
+    // process group. The daemon records our PGID via the
     // `READY` frame we send next.
     detach_session()?;
+
+    // The supervisor process flow:
+    //
+    // 1. parse args + set subreaper
+    // 2. detach_session() — make the supervisor a session leader
+    // 3. send `READY{pgid}` to the daemon via stdout
+    // 4. block on stdin for the daemon's `ACK` (with 30s timeout)
+    // 5. on valid `ACK`: build `Command`, set process_group(0), spawn the worker
+    // 6. start stdin-killer + stderr-drain threads
+    // 7. wait for the worker, then write `DONE`
+    //
+    // Until step 4 (ACK received) no child process exists. If the daemon
+    // hangs (no ACK within 30s) we exit with code 124 and a FATAL frame.
+    // If the daemon dies (EOF before ACK) we exit cleanly with FATAL.
+
+    // Tell the daemon our PGID so it can record it for the
+    // post-ACK kill path. After `setsid()` we are the leader
+    // of a fresh process group whose PGID equals our PID.
+    let pgid = std::process::id() as i32;
+    let ready = encode_frame(&ControlFrame::Ready { pgid })?;
+    std::io::stdout().write_all(&ready).ok();
+    std::io::stdout().flush().ok();
+
+    // Wait for the daemon's ACK over our stdin, with a 30s
+    // handshake timeout. Until the ACK arrives no worker
+    // process exists: EOF (daemon died), a decode error, or a
+    // non-ACK frame all abort the handshake without spawning,
+    // while `Terminate` is a clean cancellation.
+    enum PreAck {
+        Ack,
+        Terminate,
+        Fatal(String),
+        Timeout,
+    }
+    let (ack_tx, ack_rx) = std::sync::mpsc::channel();
+    let _ack_reader = std::thread::spawn(move || {
+        use std::io::Read;
+        let mut header = [0u8; 4];
+        // Use `read_exact` (not `read`) so a partial header is
+        // treated as EOF rather than parsed as a length prefix —
+        // see defect #128 in #94 for the rationale.
+        let outcome = match std::io::stdin().read_exact(&mut header) {
+            Err(_) => PreAck::Fatal("daemon EOF before ACK".to_string()),
+            Ok(()) => {
+                let len = u32::from_le_bytes(header) as usize;
+                let mut body = vec![0u8; 4 + len];
+                body[..4].copy_from_slice(&header);
+                if std::io::stdin().read_exact(&mut body[4..]).is_err() {
+                    PreAck::Fatal("daemon EOF before ACK".to_string())
+                } else {
+                    match caduceus::worker_supervisor::decode_frame(&body) {
+                        Ok((frame, _)) => match frame {
+                            ControlFrame::Ack => PreAck::Ack,
+                            ControlFrame::Terminate { .. } => PreAck::Terminate,
+                            other => {
+                                PreAck::Fatal(format!("unexpected frame before ACK: {other:?}"))
+                            }
+                        },
+                        Err(_) => PreAck::Fatal("decode error before ACK".to_string()),
+                    }
+                }
+            }
+        };
+        let _ = ack_tx.send(outcome);
+    });
+    let pre_ack = match ack_rx.recv_timeout(std::time::Duration::from_secs(30)) {
+        Ok(pre_ack) => pre_ack,
+        Err(_) => PreAck::Timeout,
+    };
+    match pre_ack {
+        PreAck::Ack => {}
+        PreAck::Terminate => return Ok(()),
+        PreAck::Timeout => {
+            let fatal = encode_frame(&ControlFrame::Fatal {
+                reason: "handshake timeout".to_string(),
+            })?;
+            std::io::stdout().write_all(&fatal).ok();
+            std::io::stdout().flush().ok();
+            // `_ack_reader` is still blocked on `stdin().read_exact`.
+            // That's intentional — `exit(124)` reaps the thread via
+            // process exit. A future maintainer must not "fix" this
+            // to `return Ok(())` without also draining the reader.
+            std::process::exit(124);
+        }
+        PreAck::Fatal(reason) => {
+            let fatal = encode_frame(&ControlFrame::Fatal { reason })?;
+            std::io::stdout().write_all(&fatal).ok();
+            std::io::stdout().flush().ok();
+            return Ok(());
+        }
+    }
 
     // Spawn the worker as a child of the supervisor. The
     // supervisor's stdin/stdout are the daemon's control /
@@ -233,56 +338,6 @@ fn run_supervisor_mode() -> CaduceusResult<()> {
         context: "supervisor:worker_spawn",
         stderr: format!("spawn worker: {err}"),
     })?;
-
-    // Tell the daemon our PGID so it can record it for the
-    // post-ACK kill path. After `setsid()` we are the leader
-    // of a fresh process group whose PGID equals our PID.
-    let pgid = std::process::id() as i32;
-    let ready = encode_frame(&ControlFrame::Ready { pgid })?;
-    std::io::stdout().write_all(&ready).ok();
-    std::io::stdout().flush().ok();
-
-    // Wait for the daemon's ACK over our stdin. We read a
-    // full frame and dispatch on the opcode; if the read
-    // returns EOF (daemon closed stdin) we kill the worker.
-    // After the ACK, we continue reading frames in a
-    // background thread so a TERM / KILL frame from the
-    // daemon can interrupt the worker mid-run.
-    let mut buf = Vec::with_capacity(64);
-    let mut header = [0u8; 4];
-    match std::io::stdin().read(&mut header) {
-        Ok(0) | Err(_) => {
-            // Daemon closed stdin → kill the worker.
-            let _ = child.kill();
-            let _ = child.wait();
-            return Ok(());
-        }
-        Ok(_) => {
-            buf.resize(4, 0);
-            buf[..4].copy_from_slice(&header);
-            let len = u32::from_le_bytes(header) as usize;
-            let mut body = vec![0u8; 4 + len];
-            body[..4].copy_from_slice(&header);
-            std::io::stdin().read_exact(&mut body[4..]).ok();
-            buf = body;
-        }
-    }
-    // Decode and check ACK.
-    let (frame, _) = match caduceus::worker_supervisor::decode_frame(&buf) {
-        Ok(pair) => pair,
-        Err(_) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Ok(());
-        }
-    };
-    if !matches!(frame, ControlFrame::Ack) {
-        // Anything other than ACK before the worker is
-        // running is a protocol error — kill the worker.
-        let _ = child.kill();
-        let _ = child.wait();
-        return Ok(());
-    }
 
     // Spawn a background thread that listens for further
     // frames from the daemon (TERM / KILL). When it sees
