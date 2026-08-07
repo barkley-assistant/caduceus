@@ -416,6 +416,13 @@ pub(crate) async fn run_resume_finalization(
         Commented | AwaitingReview | Done => {
             // Re-run the comment post (idempotent marker check), then
             // persist the Commented and AwaitingReview checkpoints.
+            // Debug-only invariant: the per_claim `InvestigationCommented`
+            // short-circuit is the actual production guard against
+            // investigation entries reaching this code-path arm.
+            debug_assert!(
+                claimed.entry.ticket_type != TicketType::Investigation,
+                "investigation entries must resume via the InvestigationCommented arm"
+            );
             let comment_out =
                 post_completion_only(&ctx, ctx.client.as_ref(), &worker_result).await?;
             checkpoint(
@@ -426,13 +433,62 @@ pub(crate) async fn run_resume_finalization(
             )?;
             checkpoint(&conn, &ctx.run_id, AwaitingReview, None)?;
         }
-        InvestigationReady | InvestigationCommented => {
-            // Investigation stages do not post durable remote effects in
-            // scope of this change; remote_marker None is the documented
-            // exception per spec.
-            //
-            // Investigation tickets have no PR/merge step, so resume
-            // completes the entry to Done.
+        InvestigationCommented => {
+            // Resume target after an InvestigationReady crash: the
+            // findings comment was never durably recorded on the queue
+            // entry, so re-post it (idempotent — the marker carries the
+            // original run_id, so the existing-comment check suppresses
+            // a duplicate POST), persist the InvestigationCommented
+            // checkpoint, then finish the entry.
+            post_investigation_comment_and_finalize(
+                &ctx,
+                ctx.client.as_ref(),
+                &worker_result,
+                &ctx.config.ticket_label_investigation,
+            )
+            .await?;
+            store.save_resumed_finalization(
+                &ctx.claim,
+                crate::state::queue::FinalizationCheckpoint {
+                    run_id: ctx.run_id.clone(),
+                    branch_name: ctx.worktree.branch_name.clone(),
+                    result_path: result_path.clone(),
+                    stage: crate::state::queue::FinalizationStage::InvestigationCommented,
+                    commit_oid: None,
+                    pr_number: None,
+                    pr_url: None,
+                },
+            )?;
+            checkpoint(&conn, &ctx.run_id, InvestigationCommented, None)?;
+            guard.finish_investigation().await?;
+            return Ok(TickOutcome::Processed);
+        }
+        InvestigationReady => {
+            // Defensive: nothing maps to InvestigationReady as a resume
+            // target (`next_stage_after` has no predecessor producing
+            // it), but keep the same body as InvestigationCommented so
+            // a future stage-graph change cannot silently drop the
+            // findings comment.
+            post_investigation_comment_and_finalize(
+                &ctx,
+                ctx.client.as_ref(),
+                &worker_result,
+                &ctx.config.ticket_label_investigation,
+            )
+            .await?;
+            store.save_resumed_finalization(
+                &ctx.claim,
+                crate::state::queue::FinalizationCheckpoint {
+                    run_id: ctx.run_id.clone(),
+                    branch_name: ctx.worktree.branch_name.clone(),
+                    result_path: result_path.clone(),
+                    stage: crate::state::queue::FinalizationStage::InvestigationCommented,
+                    commit_oid: None,
+                    pr_number: None,
+                    pr_url: None,
+                },
+            )?;
+            checkpoint(&conn, &ctx.run_id, InvestigationCommented, None)?;
             guard.finish_investigation().await?;
             return Ok(TickOutcome::Processed);
         }
@@ -533,4 +589,76 @@ pub(crate) async fn run_code_finalize(
             format!("issue={}", ctx.issue.key.display_key()),
         ],
     })
+}
+
+/// Runs investigation finalization with the same durable-checkpoint
+/// pattern as [`run_code_finalize`], minus the git pipeline:
+/// investigation tickets commit/push nothing.
+///
+/// The `InvestigationReady` checkpoint is persisted (SQLite then queue)
+/// *before* the findings comment POST, and `InvestigationCommented`
+/// *after* it succeeds — so a crash after the comment leaves a durable
+/// record and recovery never re-dispatches the worker or duplicates the
+/// comment (the resume path re-posts idempotently under the original
+/// `run_id` marker instead).
+pub(crate) async fn run_investigation_finalize(
+    ctx: &FinalizeContext,
+    worker_result: &WorkerResult,
+    archive_path: &std::path::Path,
+    client: &Client,
+    store: &StateStore,
+    investigation_label: &str,
+) -> CaduceusResult<FinalizeOutput> {
+    let conn = store::open_in(&ctx.config.state_dir)?;
+
+    // Stage 1: InvestigationReady — no external effect yet, but the
+    // queue entry must durably record that the investigation run began
+    // finalization so recovery does not re-dispatch the worker.
+    checkpoint(
+        &conn,
+        &ctx.run_id,
+        FinalizationStage::InvestigationReady,
+        None,
+    )?;
+    store.save_finalization(
+        &ctx.claim,
+        crate::state::queue::FinalizationCheckpoint {
+            run_id: ctx.run_id.clone(),
+            branch_name: ctx.worktree.branch_name.clone(),
+            result_path: archive_path.to_path_buf(),
+            stage: crate::state::queue::FinalizationStage::InvestigationReady,
+            commit_oid: None,
+            pr_number: None,
+            pr_url: None,
+        },
+    )?;
+
+    // Stage 2: Post the findings comment (idempotent marker check).
+    let output =
+        post_investigation_comment_and_finalize(ctx, client, worker_result, investigation_label)
+            .await?;
+
+    // Stage 3: InvestigationCommented — the comment is now durable
+    // remote state; record it so recovery finishes the entry without
+    // re-posting.
+    checkpoint(
+        &conn,
+        &ctx.run_id,
+        FinalizationStage::InvestigationCommented,
+        None,
+    )?;
+    store.save_finalization(
+        &ctx.claim,
+        crate::state::queue::FinalizationCheckpoint {
+            run_id: ctx.run_id.clone(),
+            branch_name: ctx.worktree.branch_name.clone(),
+            result_path: archive_path.to_path_buf(),
+            stage: crate::state::queue::FinalizationStage::InvestigationCommented,
+            commit_oid: None,
+            pr_number: None,
+            pr_url: None,
+        },
+    )?;
+
+    Ok(output)
 }

@@ -16,6 +16,7 @@
 //! ```text
 //! ResultValidated -> Committed -> Pushed -> PrCreated -> Commented
 //!   -> AwaitingReview -> Done
+//! InvestigationReady -> InvestigationCommented -> Done
 //! ```
 //!
 //! Each checkpoint is committed after the corresponding external
@@ -23,6 +24,12 @@
 //! checkpoint and uses idempotency keys or remote reconciliation
 //! so a crash does not duplicate commits, pushes, pull requests,
 //! comments, or issue updates.
+//!
+//! The investigation stages (`InvestigationReady` /
+//! `InvestigationCommented`) carry no `remote_marker` — the
+//! GitHub comment idempotency check uses the `run_id`-bearing
+//! `<!-- automation-investigation:... -->` marker on the comment
+//! itself instead.
 
 use rusqlite::{params, Connection};
 

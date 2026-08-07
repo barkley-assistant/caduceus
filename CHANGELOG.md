@@ -110,6 +110,12 @@ across this period.
   also tolerates an empty `.worktrees/` directory when no worktree is
   registered. Operators no longer need to manually `rm` the lock file
   between failed dispatches.
+- **Investigation finalization checkpoint.** The investigation
+  finalization path now persists `InvestigationReady` /
+  `InvestigationCommented` checkpoints (queue + SQLite) around the
+  findings comment, mirroring the code-ticket durable-checkpoint
+  pattern. A crash after the comment no longer re-dispatches the
+  worker and posts a duplicate comment. Closes #120.
 
 ### Security
 
