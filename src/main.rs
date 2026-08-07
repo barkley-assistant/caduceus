@@ -10,11 +10,12 @@
 //! diagnostics go to stderr.
 //!
 //! The hidden `__worker-supervisor` mode is dispatched before public
-//! command parsing — the token is never shown in `--help` output and is
-//! never accepted from cron / plugin configuration. The supervisor
-//! executes the worker in its own Unix session and talks to the daemon
-//! over the inherited `stdin` / `stdout` file descriptors using the
-//! framed control protocol.
+//! command parsing — the token is matched only as the first argument
+//! after the binary name (`argv[1]`), is never shown in `--help`
+//! output, and is never accepted from cron / plugin configuration.
+//! The supervisor executes the worker in its own Unix session and
+//! talks to the daemon over the inherited `stdin` / `stdout` file
+//! descriptors using the framed control protocol.
 
 use std::os::unix::process::CommandExt;
 use std::process::ExitCode;
@@ -26,9 +27,15 @@ mod cli;
 fn main() -> ExitCode {
     // Hidden `__worker-supervisor` mode is dispatched first; the
     // token is reserved and never accepted from cron or plugin
-    // configuration. The supervisor runs the worker under
-    // supervision and exits once the worker session is reaped.
-    if std::env::args_os().any(|arg| arg == caduceus::worker_supervisor::HIDDEN_COMMAND) {
+    // configuration. The token is matched only as the first argument
+    // after the binary name (`argv[1]`), exactly how
+    // `build_supervisor_command` constructs the child argv. The
+    // supervisor runs the worker under supervision and exits once
+    // the worker session is reaped.
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|arg| arg == caduceus::worker_supervisor::HIDDEN_COMMAND)
+    {
         return match run_supervisor_mode() {
             Ok(()) => ExitCode::from(0),
             Err(err) => {
