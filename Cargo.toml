@@ -73,6 +73,10 @@ name = "concurrent_workers_test"
 path = "tests/scheduler/concurrent_workers_test.rs"
 
 [[test]]
+name = "max_issues_per_tick_test"
+path = "tests/scheduler/max_issues_per_tick_test.rs"
+
+[[test]]
 name = "circuit_test"
 path = "tests/scheduler/circuit_test.rs"
 
