@@ -126,6 +126,13 @@ across this period.
 - **Supervisor ACK gate.** The supervisor spawns the worker only after
   the daemon ACKs the `READY(pgid)` frame, so no worker process exists
   before the PGID is confirmed. Closes #125. Part of #94.
+- **Supervisor frame length validation and partial-header reads.** The
+  supervisor's stdin readers now validate the frame length against
+  `MAX_FRAME_BYTES` before allocating, and use `read_exact` for the
+  4-byte header so a partial read can no longer be parsed as a length
+  prefix. A malformed `0xFFFFFFFF` header or a truncated header from a
+  crashed/hostile worker is rejected without a multi-GB allocation.
+  Closes #127. Closes #128. Part of #94.
 
 ### Security
 
