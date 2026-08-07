@@ -94,6 +94,13 @@ across this period.
 
 ### Fixed
 
+- **Dual-writer transcript race.** The daemon no longer opens the run
+  transcript; the supervisor is the sole writer of
+  `<state-dir>/runs/<run-id>.log` (worker stdout+stderr). Previously
+  the daemon re-opened the same path with `truncate(true)` to capture
+  supervisor diagnostics, silently clobbering worker bytes written
+  before its open. Supervisor stderr now inherits to the daemon's
+  stderr. Closes #134. Part of #94.
 - **Supervisor stdout capture.** The supervisor now pipes worker stdout
   into the bounded transcript alongside stderr (byte-interleaved, one
   shared writer) instead of discarding it. Previously worker stdout was
