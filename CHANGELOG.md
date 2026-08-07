@@ -104,6 +104,11 @@ across this period.
   worker that exits 0 cleanly is no longer reported as cancelled. The
   cancel path still wins when fired while the worker is alive and no
   DONE is pending. Closes #130. Part of #94.
+- **Supervisor hidden-command dispatch.** The hidden
+  `__worker-supervisor` token is now matched only as the first argument
+  after the binary name, not anywhere in `argv`, so a copy-pasted
+  debugging recipe can no longer accidentally drop a normal CLI
+  invocation into supervisor mode. Closes #129. Part of #94.
 - **Status exit codes.** Every status call now exits with the documented
   code instead of always returning 0.
 - **GitHub auth token resolution.** The daemon now resolves the GitHub

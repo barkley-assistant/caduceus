@@ -353,7 +353,43 @@ ps -o pid=,pgid= -p $$ 1>&2
 }
 
 #[test]
+fn supervisor_hidden_command_must_be_first_arg() {
+    // The token must be matched only as the first argument after the
+    // binary name. `--help` at position 1 short-circuits inside clap;
+    // the token at position 2 must NOT trigger supervisor mode.
+    let exe = find_self_exe();
+    let output = Command::new(&exe)
+        .arg("--help")
+        .arg("__worker-supervisor")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("run --help with trailing token");
+    assert!(
+        output.status.success(),
+        "should not enter supervisor mode, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Usage:") || stdout.contains("caduceus"),
+        "expected help output, got: {stdout}"
+    );
+    assert!(
+        !String::from_utf8_lossy(&output.stderr).contains("--worktree"),
+        "supervisor mode must not be entered"
+    );
+}
+
+#[test]
 fn supervisor_handles_missing_required_argument() {
+    // This test also serves as the position-1 dispatch guard for the
+    // hidden `__worker-supervisor` token (defect 5 of #94 / issue
+    // #129): the token must be matched as argv[1]. Missing --worktree
+    // means supervisor mode was entered; if a future refactor broke
+    // position-1 dispatch, this test would either exit 0 (clap
+    // handled --transcript etc.) or fail with a different error.
     let dir = tempdir("missing_args");
     let transcript = dir.join("t.log");
     let heartbeat = dir.join("hbeat");
