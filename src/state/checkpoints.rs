@@ -30,6 +30,15 @@
 //! GitHub comment idempotency check uses the `run_id`-bearing
 //! `<!-- automation-investigation:... -->` marker on the comment
 //! itself instead.
+//!
+//! For code tickets the queue's durable `FinalizationCheckpoint`
+//! (not just the SQLite row) is persisted at every pre-PR stage —
+//! `ResultValidated`, `Committed`, `Pushed` — as well as at
+//! `PrCreated`, so a crash after a commit or push resumes at the
+//! recorded stage instead of re-dispatching the worker (issue #119).
+//! Ordering is always SQLite `checkpoint(...)` first, then the queue
+//! save, so the queue field never advertises a stage whose SQLite row
+//! is missing.
 
 use rusqlite::{params, Connection};
 
