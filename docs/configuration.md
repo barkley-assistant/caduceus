@@ -342,6 +342,18 @@ is a no-op. On the first non-dry tick, a still-labeled
 `Queued`, so previewing never prevents the eventual real
 run.
 
+### `max_issues_per_tick`
+
+**Type:** `u32`. **Default:** `worker_parallelism * 4`.
+
+Bounds how many queue entries a single tick will claim
+before returning, so wall-clock per tick is predictable
+even with a large eligible queue. The next cron tick
+picks up the remaining entries. `0` opts into the
+unbounded drain-the-queue behavior — in-flight workers
+always finish their current work on tick exit; the cap
+only stops claiming new entries.
+
 ## Environment Variables
 
 Caduceus reads these at process start. Set them in your

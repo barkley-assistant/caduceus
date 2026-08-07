@@ -53,6 +53,11 @@ pub const DEFAULT_TICKET_LABEL_CODE: &str = "🤖 auto-fix";
 pub const DEFAULT_TICKET_LABEL_INVESTIGATION: &str = "🤖 auto-fix-investigate";
 pub const DEFAULT_API_BASE: &str = "https://api.github.com";
 pub const DEFAULT_WORKER_PARALLELISM: u32 = 1;
+/// Multiplier applied to `worker_parallelism` to derive the default
+/// `max_issues_per_tick` cap. Bounded but generous — a tick with
+/// `worker_parallelism: N` processes up to `N * 4` issues, leaving
+/// the rest for the next tick (issue #108).
+pub const DEFAULT_MAX_ISSUES_PER_TICK_MULTIPLIER: u32 = 4;
 pub const DEFAULT_SCHEDULER_LEASE_TTL_SECONDS: u64 = 60;
 pub const DEFAULT_WORKER_LEASE_TTL_SECONDS: u64 = 600;
 pub const DEFAULT_SCHEDULER_TRANSACTION_BUDGET_MS: u64 = 100;
@@ -112,6 +117,15 @@ pub struct Config {
     pub dry_run: bool,
     /// Maximum number of concurrent worker processes. Default 1.
     pub worker_parallelism: u32,
+    /// Maximum number of queue entries a single tick will claim
+    /// before returning (issue #108). `0` means unbounded — the
+    /// pre-#108 drain-the-queue behavior. Default
+    /// `worker_parallelism * 4`, so unbounded is never accidental.
+    /// The JoinSet drain still runs to completion on tick exit;
+    /// this cap only stops claiming new entries and keeps
+    /// `contract/SCHED-001` (bounded single-host concurrency)
+    /// bounded across a long cron tick.
+    pub max_issues_per_tick: u32,
     /// Maximum number of pages to follow during paginated API
     /// discovery. Default 20.
     pub discovery_max_pages: u32,
@@ -226,6 +240,7 @@ pub struct RawConfig {
     pub api_base: Option<String>,
     pub dry_run: Option<bool>,
     pub worker_parallelism: Option<u32>,
+    pub max_issues_per_tick: Option<u32>,
     pub discovery_max_pages: Option<u32>,
     pub scheduler_lease_ttl_seconds: Option<u64>,
     pub worker_lease_ttl_seconds: Option<u64>,
@@ -707,6 +722,17 @@ impl Config {
         // delegate the merge.
         let dry_run = raw.dry_run.unwrap_or(false);
 
+        // Scheduler dispatch bounds. `worker_parallelism` caps
+        // in-flight workers; `max_issues_per_tick` defaults to a
+        // bounded multiple so a single cron tick never drains an
+        // unbounded queue (issue #108). Explicit `0` opts back into
+        // the unbounded drain-the-queue behavior — never the
+        // default.
+        let worker_parallelism = raw.worker_parallelism.unwrap_or(DEFAULT_WORKER_PARALLELISM);
+        let max_issues_per_tick = raw
+            .max_issues_per_tick
+            .unwrap_or(worker_parallelism.saturating_mul(DEFAULT_MAX_ISSUES_PER_TICK_MULTIPLIER));
+
         if !errors.is_empty() {
             return Err(CaduceusError::Config(errors.join("; ")));
         }
@@ -743,7 +769,8 @@ impl Config {
             }),
             api_base,
             dry_run,
-            worker_parallelism: raw.worker_parallelism.unwrap_or(DEFAULT_WORKER_PARALLELISM),
+            worker_parallelism,
+            max_issues_per_tick,
             discovery_max_pages,
             compiled_ignore_patterns,
             scheduler_lease_ttl_seconds: raw
@@ -851,6 +878,8 @@ impl Config {
             api_base: DEFAULT_API_BASE.to_string(),
             dry_run: false,
             worker_parallelism: DEFAULT_WORKER_PARALLELISM,
+            max_issues_per_tick: DEFAULT_WORKER_PARALLELISM
+                .saturating_mul(DEFAULT_MAX_ISSUES_PER_TICK_MULTIPLIER),
             discovery_max_pages: DEFAULT_DISCOVERY_MAX_PAGES,
             compiled_ignore_patterns: Vec::new(),
             scheduler_lease_ttl_seconds: DEFAULT_SCHEDULER_LEASE_TTL_SECONDS,

@@ -51,6 +51,9 @@ impl Config {
             api_base: DEFAULT_API_BASE.to_string(),
             dry_run: false,
             worker_parallelism: 1,
+            // These runner tests don't exercise the dispatch loop, so
+            // unbounded is safe here.
+            max_issues_per_tick: 0,
             discovery_max_pages: 20,
             compiled_ignore_patterns: Vec::new(),
             scheduler_lease_ttl_seconds: 60,

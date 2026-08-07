@@ -87,6 +87,15 @@ failures do **not** consume the worker budget. They count as transient
 and the daemon retries on the next tick without bumping the per-issue
 counter.
 
+## Per-Tick Claim Cap
+
+`max_issues_per_tick` (default `worker_parallelism * 4`) bounds how
+many queue entries a single tick will claim before returning. With the
+default, a tick with `worker_parallelism: 4` processes up to 16 issues
+and leaves the rest for the next tick. Set `0` to restore the unbounded
+drain-the-queue behavior. In-flight workers always finish their current
+work on tick exit; the cap only stops claiming new entries.
+
 ## State Recovery Procedure
 
 Both `queue.json` and `state_meta.json` use temp-file + `fsync` +
