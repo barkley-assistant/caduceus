@@ -226,33 +226,22 @@ fn run_supervisor_mode() -> CaduceusResult<()> {
     }
     let (ack_tx, ack_rx) = std::sync::mpsc::channel();
     let _ack_reader = std::thread::spawn(move || {
-        use std::io::Read;
-        let mut header = [0u8; 4];
-        // Use `read_exact` (not `read`) so a partial header is
-        // treated as EOF rather than parsed as a length prefix —
-        // see defect #128 in #94 for the rationale.
-        let outcome = match std::io::stdin().read_exact(&mut header) {
-            Err(_) => PreAck::Fatal("daemon EOF before ACK".to_string()),
-            Ok(()) => {
-                let len = u32::from_le_bytes(header) as usize;
-                let mut body = vec![0u8; 4 + len];
-                body[..4].copy_from_slice(&header);
-                if std::io::stdin().read_exact(&mut body[4..]).is_err() {
-                    PreAck::Fatal("daemon EOF before ACK".to_string())
-                } else {
-                    match caduceus::worker_supervisor::decode_frame(&body) {
-                        Ok((frame, _)) => match frame {
-                            ControlFrame::Ack => PreAck::Ack,
-                            ControlFrame::Terminate { .. } => PreAck::Terminate,
-                            other => {
-                                PreAck::Fatal(format!("unexpected frame before ACK: {other:?}"))
-                            }
-                        },
-                        Err(_) => PreAck::Fatal("decode error before ACK".to_string()),
-                    }
-                }
-            }
-        };
+        let mut buf = Vec::with_capacity(caduceus::worker_supervisor::MAX_FRAME_BYTES);
+        // `read_frame_sync` reads the header with `read_exact` and
+        // validates `len <= MAX_FRAME_BYTES` before allocating, so a
+        // partial header or an oversize length is rejected without a
+        // multi-GB allocation — defects #127/#128 in #94.
+        let outcome =
+            match caduceus::worker_supervisor::read_frame_sync(&mut std::io::stdin(), &mut buf) {
+                Ok(Some(ControlFrame::Ack)) => PreAck::Ack,
+                Ok(Some(ControlFrame::Terminate { .. })) => PreAck::Terminate,
+                Ok(Some(other)) => PreAck::Fatal(format!("unexpected frame before ACK: {other:?}")),
+                Ok(None) => PreAck::Fatal("daemon EOF before ACK".to_string()),
+                Err(err) if err.kind() == std::io::ErrorKind::InvalidData => PreAck::Fatal(
+                    format!("daemon sent frame length exceeding cap before ACK: {err}"),
+                ),
+                Err(err) => PreAck::Fatal(format!("daemon error before ACK: {err}")),
+            };
         let _ = ack_tx.send(outcome);
     });
     let pre_ack = match ack_rx.recv_timeout(std::time::Duration::from_secs(30)) {
@@ -353,54 +342,53 @@ fn run_supervisor_mode() -> CaduceusResult<()> {
     let pgid_for_kill: i32 = child.id() as i32;
     let child_id: u32 = child.id();
     let _stdin_killer = std::thread::spawn(move || {
-        use std::io::Read;
-        let mut local_buf = Vec::with_capacity(64);
-        let mut header = [0u8; 4];
+        let mut local_buf = Vec::with_capacity(caduceus::worker_supervisor::MAX_FRAME_BYTES);
+        // Send `signal` to the process group; fall through to KILL the
+        // PID directly in case the process group is empty (worker has
+        // already exec'd or the group is otherwise unreachable).
+        let send_signal = |signal: &str| {
+            let _ = std::process::Command::new("/bin/sh")
+                .arg("-c")
+                .arg(format!(
+                    "kill -{signal} -{pgid_for_kill} 2>/dev/null; kill -{signal} {child_id} 2>/dev/null"
+                ))
+                .output();
+        };
         loop {
-            match std::io::stdin().read(&mut header) {
-                Ok(0) => {
+            // `read_frame_sync` validates the length before allocating
+            // and uses `read_exact` for the header, so neither an
+            // oversize nor a partial header can OOM or corrupt the
+            // parse — defects #127/#128 in #94.
+            match caduceus::worker_supervisor::read_frame_sync(
+                &mut std::io::stdin(),
+                &mut local_buf,
+            ) {
+                Ok(None) => {
                     // Daemon closed stdin → kill session.
-                    let _ = std::process::Command::new("/bin/sh")
-                        .arg("-c")
-                        .arg(format!("kill -TERM -{pgid_for_kill} 2>/dev/null; kill -KILL {child_id} 2>/dev/null"))
-                        .output();
+                    send_signal("TERM");
                     break;
                 }
-                Ok(_) => {
-                    let len = u32::from_le_bytes(header) as usize;
-                    local_buf.resize(4 + len, 0);
-                    local_buf[..4].copy_from_slice(&header);
-                    if std::io::stdin().read_exact(&mut local_buf[4..]).is_err() {
-                        break;
-                    }
-                    let Ok((frame, _)) = caduceus::worker_supervisor::decode_frame(&local_buf)
-                    else {
-                        continue;
-                    };
-                    match frame {
-                        ControlFrame::Terminate { force: false } => {
-                            let _ = std::process::Command::new("/bin/sh")
-                                .arg("-c")
-                                .arg(format!(
-                                    "kill -TERM -{pgid_for_kill} 2>/dev/null; kill -KILL {child_id} 2>/dev/null"
-                                ))
-                                .output();
-                        }
-                        ControlFrame::Terminate { force: true } => {
-                            let _ = std::process::Command::new("/bin/sh")
-                                .arg("-c")
-                                .arg(format!(
-                                    "kill -KILL -{pgid_for_kill} 2>/dev/null; kill -KILL {child_id} 2>/dev/null"
-                                ))
-                                .output();
-                        }
-                        ControlFrame::Fatal { .. }
-                        | ControlFrame::Done { .. }
-                        | ControlFrame::Ack
-                        | ControlFrame::Ready { .. } => {}
-                    }
+                Ok(Some(ControlFrame::Terminate { force: false })) => {
+                    send_signal("TERM");
                 }
-                Err(_) => break,
+                Ok(Some(ControlFrame::Terminate { force: true })) => {
+                    send_signal("KILL");
+                }
+                Ok(Some(_)) => {
+                    // Not a signal frame — ignore and keep listening.
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => {
+                    // Daemon closed stdin mid-frame → the session is
+                    // orphaned → kill it.
+                    send_signal("TERM");
+                    break;
+                }
+                Err(_) => {
+                    // Malformed frame (oversize length, bad opcode):
+                    // the daemon is still connected. Ignore it and
+                    // keep listening so one bad frame cannot silence
+                    // the killer.
+                }
             }
         }
     });
