@@ -24,9 +24,10 @@ use crate::infra::error::{CaduceusError, CaduceusResult};
 /// version + opcode; the rest is opcode-specific payload text.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ControlFrame {
-    /// Supervisor announces that the worker has called
-    /// `setsid` and recorded its PGID. Payload: the PGID as a
-    /// decimal string.
+    /// Supervisor announces that it has called `setsid`, become the session
+    /// leader (PGID == its PID), and is ready for the daemon to record that
+    /// PGID. The worker is not yet spawned; the supervisor forks it only after
+    /// receiving `ACK`.
     Ready { pgid: i32 },
     /// Supervisor announces the worker exited and the session
     /// is reaped. Payload: the exit code as a decimal string,
@@ -39,8 +40,8 @@ pub enum ControlFrame {
     /// Payload: empty for SIGTERM, `kill` for SIGKILL after a
     /// 2-second grace period.
     Terminate { force: bool },
-    /// Daemon confirms it has recorded the PGID and the worker
-    /// may now `exec` the harness.
+    /// Daemon confirms it has recorded the PGID and the supervisor
+    /// may now spawn the worker.
     Ack,
 }
 
