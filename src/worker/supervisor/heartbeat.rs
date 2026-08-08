@@ -1,4 +1,5 @@
-use super::*;
+use super::set_mode;
+
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::unix::fs::OpenOptionsExt;

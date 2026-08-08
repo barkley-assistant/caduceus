@@ -485,9 +485,8 @@ fn parse_exit_code(output: &str) -> i32 {
 
 #[cfg(test)]
 mod inline_tests {
+    use super::{derive_daemon_id, parse_exit_code, CancellationToken, Config, ExecutorSpec};
     use std::path::Path;
-
-    use super::*;
 
     #[test]
     fn parse_exit_code_parses_number() {

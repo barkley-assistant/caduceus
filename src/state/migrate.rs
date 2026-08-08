@@ -574,7 +574,7 @@ pub fn recover_sqlite_state(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{recover_sqlite_state, store, PathBuf};
     use std::fs;
 
     fn state_dir() -> PathBuf {

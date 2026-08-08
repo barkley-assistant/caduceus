@@ -1,4 +1,4 @@
-use super::*;
+use super::{git_rev_in_async, FinalizeAction, FinalizeContext, FinalizeOutput};
 
 use serde::{Deserialize, Serialize};
 

@@ -1,4 +1,4 @@
-use super::*;
+use super::Config;
 
 use crate::infra::error::{CaduceusError, CaduceusResult};
 

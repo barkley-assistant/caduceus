@@ -315,7 +315,7 @@ pub(crate) fn write_state_backend_config(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{migrate_to_sqlite, params, store, LockPolicy, Path, SqliteMigrationOutcome};
     use std::fs;
 
     fn state_dir() -> std::path::PathBuf {

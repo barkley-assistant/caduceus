@@ -1,7 +1,3 @@
-// test-only: used by the inline test module in this file; remove when
-// inline tests move to tests/ (see #144)
-#[allow(unused_imports)]
-use super::*;
 use std::path::PathBuf;
 
 use crate::infra::config::Config;
@@ -87,7 +83,11 @@ const DEFAULT_API_BASE: &str = "https://api.github.com";
 
 #[cfg(test)]
 mod inline_tests {
-    use super::*;
+    use super::super::{
+        cap_text, clone_path, parse_origin, redact_and_cap, validate_origin_host,
+        GIT_OUTPUT_BYTE_CAP,
+    };
+    use super::{Config, IssueKey, PathBuf, DEFAULT_API_BASE};
 
     #[test]
     fn parse_origin_handles_https_form() {

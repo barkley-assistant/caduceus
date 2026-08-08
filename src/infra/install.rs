@@ -166,7 +166,7 @@ pub fn recover_temp_artifacts(dir: &Path) -> CaduceusResult<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{atomic_write, recover_temp_artifacts};
     use std::fs;
 
     #[test]
