@@ -1,6 +1,5 @@
 //! Typed issue identity and detail schema. The shape is normative and is
-//! re-exported from `lib.rs`. Validation rules live in this module per
-//! `CONTRACTS.md` "Issue identity and queue schema".
+//! re-exported from `lib.rs`. Validation rules live in this module.
 //!
 //! The detail fetcher issues three concurrent GitHub requests — the
 //! issue, its comments, and its timeline — and cancels the other two
@@ -77,7 +76,7 @@ impl IssueKey {
         Ok(key)
     }
 
-    /// Validate identifier components per `CONTRACTS.md`.
+    /// Validate identifier components.
     pub fn validate(&self) -> CaduceusResult<()> {
         validate_owner(&self.owner)?;
         validate_repo(&self.repo)?;
@@ -104,7 +103,7 @@ pub const MAX_RETAINED_COMMENTS: usize = 100;
 /// the comments cap.
 pub const MAX_RETAINED_EVENTS: usize = 100;
 /// Comments and events pages are capped at 20 per endpoint
-/// (matches the GitHub-side hard limit; CONTRACTS.md).
+/// (matches the GitHub-side hard limit).
 pub const MAX_PAGES: usize = 20;
 /// Per-page row count. GitHub's documented maximum.
 pub const COMMENTS_PER_PAGE: u32 = 100;

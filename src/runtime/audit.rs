@@ -23,7 +23,7 @@ use crate::scheduler::circuit::{CircuitState, ExhaustedEntry};
 pub fn refuse_auto_merge() -> CaduceusResult<()> {
     Err(CaduceusError::Other(
         "auto-merge is refused: human review is required for all PR merges \
-  (CONTRACTS.md FINAL-001 AC-04)"
+  (FINAL-001 AC-04; see src/state/checkpoints.rs)"
             .to_string(),
     ))
 }

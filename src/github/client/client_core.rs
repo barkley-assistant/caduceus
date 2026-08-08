@@ -585,7 +585,7 @@ impl Client {
     /// this method first — it always returns an error.
     ///
     /// The returned error carries the contract message from
-    /// CONTRACTS.md FINAL-001 AC-04.
+    /// FINAL-001 AC-04 (see `src/state/checkpoints.rs`).
     pub fn enable_auto_merge(&self) -> CaduceusResult<()> {
         crate::runtime::audit::refuse_auto_merge()
     }

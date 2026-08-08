@@ -7,8 +7,8 @@ lock and atomic-write discipline only hold for the
 programmatic API. This doc is the API.
 
 The migration procedure from a prior installation is
-in [`../MIGRATION.md`](../MIGRATION.md) at the
-repository root. This doc covers in-place recovery,
+in the README's ["Replacing a prior install"
+section](../README.md). This doc covers in-place recovery,
 which is different: state has become corrupt
 in-place and the daemon is refusing to start.
 
@@ -94,7 +94,7 @@ skip steps.
    If you don't know how to write that by hand, the
    easiest path is to run `caduceus migrate-state
    --from <file>` against a prior-state JSON file
-   (see `MIGRATION.md`).
+   (see [The migrate-state Subcommand](#the-migrate-state-subcommand)).
 5. **Apply the repaired file.** There are two paths
    here; pick the one that fits the situation:
    - **Library API:** if you have a Rust binary at
@@ -305,7 +305,8 @@ Two modes (mutually exclusive):
   updated to `sqlite`.
 - **`--from <file>`** — imports a JSON-formatted state
   file from a different state directory into the current
-  schema. Documented in detail in `MIGRATION.md`.
+  schema. Documented in detail in
+  [The migrate-state Subcommand](#the-migrate-state-subcommand).
 
 This is *not* the same as recovery; recovery is for
 in-place corruption, migration is for cross-format

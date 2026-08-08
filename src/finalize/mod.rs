@@ -1,7 +1,6 @@
 //! Finalization: commit, push, PR, comment/close, investigation comment.
 //!
-//! Idempotency across partial failures is the hard requirement — see
-//! `CONTRACTS.md` "Finalization contract".
+//! Idempotency across partial failures is the hard requirement.
 //!
 //! This module owns the public-voice validator that every outbound
 //! comment, PR title, and PR body must pass before the

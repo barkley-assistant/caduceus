@@ -76,8 +76,8 @@ pub const CANONICAL_WORKER_ENV_VARS: &[&str] = &[
     "CADUCEUS_WORKTREE_PATH",
 ];
 
-/// Default allowlist for the worker environment (CONTRACTS.md "Worker
-/// environment and result"). Operators may extend
+/// Default allowlist for the worker environment (the worker-result
+/// contract in `src/worker/worker_contract.rs`). Operators may extend
 /// `worker_env_allowlist`; the daemon's `validate_worker_env_allowlist`
 /// rejects partial matches and credential names. The bridge never reads
 /// or writes these — they describe what the daemon *preserves* from the

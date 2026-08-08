@@ -1,8 +1,8 @@
 //! Command-line entry point used by `src/main.rs`.
 //!
 //! The exact public surface (subcommands, flags, and no-argument rewriting)
-//! is documented in `CONTRACTS.md` under "CLI contract". This file holds the
-//! CLI parser and the entry-point function. Implementation of the
+//! is documented in the CLI contract. This file holds the CLI parser and the
+//! entry-point function. Implementation of the
 //! individual subcommand bodies lives in the relevant module; `caduceus run`
 //! ultimately delegates to `caduceus::tick::run_blocking`.
 
@@ -115,7 +115,7 @@ pub enum QueueAction {
 /// Drive the CLI from `main`.
 ///
 /// A bare `caduceus` invocation is rewritten to `caduceus run` before
-/// Clap parsing. The rewrite uses `args_os()` per `CONTRACTS.md`,
+/// Clap parsing. The rewrite uses `args_os()` per the CLI contract,
 /// "Implement no-argument behavior by inspecting `args_os` and inserting
 /// `run` before Clap parsing"; a `--version` / `--help` flag is *not*
 /// considered a bare invocation and is dispatched normally.
@@ -477,8 +477,8 @@ fn resolve_config_path_for_write() -> Option<std::path::PathBuf> {
 /// under `<state_dir>/state.json`. The import path is
 /// idempotent: a second invocation with the same input
 /// against an unchanged live state is a no-op. See
-/// `MIGRATION.md` for the rollout, rollback, and recovery
-/// procedures.
+/// "The migrate-state Subcommand" in `docs/state-recovery.md` for the
+/// rollout, rollback, and recovery procedures.
 fn run_migrate_state(from: &std::path::Path, dry_run: bool) -> CaduceusResult<()> {
     let config = match std::env::var_os("CADUCEUS_CONFIG") {
         Some(path) => Config::load_from(std::path::Path::new(&path))?,

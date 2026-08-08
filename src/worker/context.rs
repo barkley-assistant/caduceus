@@ -1,6 +1,5 @@
 //! Stable context JSON. The shape and the serialized form are pinned by
-//! `CONTRACTS.md` under "Worker environment and result" / "build stable
-//! context JSON".
+//! the worker-result contract in `src/worker/worker_contract.rs`.
 //!
 //! The context document is the worker's authoritative view of the
 //! issue. It carries:
@@ -168,7 +167,7 @@ pub fn build_context(inputs: BuildInputs<'_>) -> CaduceusResult<WorkerContext> {
     // already populated `trusted_comments` from
     // `feedback_author_allowlist`; here we extend the trust
     // filter to *also* exclude anyone matched by any ignore
-    // pattern, per CONTRACTS.md "comment_ignore_patterns".
+    // pattern.
     let allowlist = &config.feedback_author_allowlist;
     let ignored_authors = comments_matched_by_any_ignore(config, detail);
     let trust_set: std::collections::HashSet<&str> = allowlist.iter().map(String::as_str).collect();

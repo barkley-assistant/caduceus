@@ -21,8 +21,8 @@
 //! When the daemon has not yet entered a worker session — e.g.
 //! the state directory is empty, the queue is idle, or the
 //! cadence gate has skipped the tick — the first signal returns
-//! `TickOutcome::Cancelled` / exit 0 per the Cron model in
-//! `CONTRACTS.md`. The state files are not mutated by the
+//! `TickOutcome::Cancelled` / exit 0 per the Cron model. The
+//! state files are not mutated by the
 //! listener itself.
 
 use std::sync::Arc;
