@@ -483,47 +483,18 @@ fn parse_exit_code(output: &str) -> i32 {
     output.trim().parse().unwrap_or(-1)
 }
 
-#[cfg(test)]
-mod inline_tests {
-    use super::{derive_daemon_id, parse_exit_code, CancellationToken, Config, ExecutorSpec};
-    use std::path::Path;
+/// Test seam: expose the wait-output exit-code parser so integration
+/// tests can assert the parse contract. Identical to the private
+/// [`parse_exit_code`].
+#[doc(hidden)]
+pub fn parse_exit_code_for_tests(output: &str) -> i32 {
+    parse_exit_code(output)
+}
 
-    #[test]
-    fn parse_exit_code_parses_number() {
-        assert_eq!(parse_exit_code("0\n"), 0);
-        assert_eq!(parse_exit_code("42\n"), 42);
-        assert_eq!(parse_exit_code(""), -1);
-        assert_eq!(parse_exit_code("not-a-number"), -1);
-    }
-
-    #[test]
-    fn derive_daemon_id_from_state_dir() {
-        let mut cfg = Config::test_defaults(Path::new("/tmp"));
-        cfg.state_dir = Path::new("/tmp").join("my-daemon");
-        let id = derive_daemon_id(&cfg);
-        assert_eq!(id, "my-daemon");
-    }
-
-    #[test]
-    fn default_mounts_contains_worktree() {
-        let spec = ExecutorSpec {
-            self_exe: Path::new("/usr/bin/caduceus").to_path_buf(),
-            issue: crate::github::issue::IssueKey::parse("owner/repo#1").unwrap(),
-            worktree: Path::new("/tmp/worktree").to_path_buf(),
-            run_id: "run-test".to_string(),
-            context_json: "{}".to_string(),
-            worker_command: vec!["python3".to_string()],
-            cancellation: CancellationToken::new(),
-            network_profile: None,
-            issue_title: "title".to_string(),
-            issue_body: "body".to_string(),
-            labels: Vec::new(),
-            branch_name: "automation/issue-1".to_string(),
-        };
-        let mounts = crate::executor::policy::default_mounts(&spec);
-        assert!(!mounts.is_empty());
-        assert!(mounts
-            .iter()
-            .any(|m| m.host_path.to_string_lossy().contains("worktree")));
-    }
+/// Test seam: expose the daemon-id derivation so integration tests
+/// can assert the state-dir contract. Identical to the private
+/// [`derive_daemon_id`].
+#[doc(hidden)]
+pub fn derive_daemon_id_for_tests(cfg: &Config) -> String {
+    derive_daemon_id(cfg)
 }

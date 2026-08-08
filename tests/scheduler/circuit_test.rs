@@ -7,7 +7,9 @@
 //! - 24h age: circuit open for 24h → exhausted_to_needs_attention returns it
 //! - Restart: open circuit, save to SQLite, close connection, reopen, verify state preserved
 
-use caduceus::scheduler::circuit::{AdmissionResult, CircuitConfig, CircuitState, CircuitStore};
+use caduceus::scheduler::circuit::{
+    AdmissionResult, CircuitConfig, CircuitScope, CircuitState, CircuitStore,
+};
 use caduceus::FakeClock;
 
 /// Create an in-memory circuit store with the `circuit_state` table
@@ -183,4 +185,131 @@ fn restart_preserves_state() {
     }
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// State and scope round trips (moved from src/scheduler/circuit.rs inline tests)
+
+#[test]
+fn circuit_state_round_trip() {
+    assert_eq!(CircuitState::Closed.as_str(), "closed");
+    assert_eq!(CircuitState::Open.as_str(), "open");
+    assert_eq!(CircuitState::HalfOpen.as_str(), "half_open");
+    assert_eq!(
+        "closed".parse::<CircuitState>().unwrap(),
+        CircuitState::Closed
+    );
+    assert_eq!("open".parse::<CircuitState>().unwrap(), CircuitState::Open);
+    assert_eq!(
+        "half_open".parse::<CircuitState>().unwrap(),
+        CircuitState::HalfOpen
+    );
+    assert!("invalid".parse::<CircuitState>().is_err());
+}
+
+#[test]
+fn circuit_scope_round_trip() {
+    assert_eq!(CircuitScope::Provider.as_str(), "provider");
+    assert_eq!(CircuitScope::Repository.as_str(), "repository");
+    assert_eq!(
+        "provider".parse::<CircuitScope>().unwrap(),
+        CircuitScope::Provider
+    );
+    assert_eq!(
+        "repository".parse::<CircuitScope>().unwrap(),
+        CircuitScope::Repository
+    );
+    assert!("invalid".parse::<CircuitScope>().is_err());
+}
+
+// Admission paths (moved from src/scheduler/circuit.rs inline tests)
+
+#[test]
+fn closed_circuit_admits() {
+    // GIVEN a closed circuit
+    let (store, clock) = circuit_store();
+
+    // WHEN try_admit is called
+    let result = store.try_admit("repository", "owner/repo", &clock).unwrap();
+
+    // THEN admission is granted
+    assert_eq!(result, AdmissionResult::NoCircuit);
+}
+
+#[test]
+fn open_circuit_rejects_admission() {
+    // GIVEN an open circuit (3 failures)
+    let (store, clock) = circuit_store();
+    for _ in 0..3 {
+        let _ = store
+            .record_failure("repository", "owner/repo", &clock)
+            .unwrap();
+    }
+
+    // WHEN try_admit is called immediately
+    let result = store.try_admit("repository", "owner/repo", &clock).unwrap();
+
+    // THEN admission is rejected with CircuitOpen
+    match result {
+        AdmissionResult::CircuitOpen {
+            retry_after,
+            probe_in_flight,
+        } => {
+            assert!(retry_after > 0);
+            assert!(!probe_in_flight);
+        }
+        other => panic!("expected CircuitOpen, got {other:?}"),
+    }
+}
+
+#[test]
+fn failed_probe_reopens_circuit() {
+    // GIVEN an open circuit that transitions to HalfOpen
+    let (store, clock) = circuit_store();
+    for _ in 0..3 {
+        let _ = store
+            .record_failure("repository", "owner/repo", &clock)
+            .unwrap();
+    }
+    clock.advance(1800);
+    let _ = store.try_admit("repository", "owner/repo", &clock).unwrap();
+
+    // WHEN the probe fails
+    store
+        .record_probe_result("repository", "owner/repo", false, &clock)
+        .unwrap();
+
+    // THEN the circuit returns to Open
+    let record = store
+        .get_record("repository", "owner/repo")
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.state, CircuitState::Open);
+    assert!(record.opened_at.is_some());
+}
+
+// Escalation boundary (moved from src/scheduler/circuit.rs inline tests)
+
+#[test]
+fn open_less_than_24h_does_not_escalate() {
+    // GIVEN an open circuit
+    let (store, clock) = circuit_store();
+    for _ in 0..3 {
+        let _ = store
+            .record_failure("repository", "owner/repo", &clock)
+            .unwrap();
+    }
+
+    // WHEN only 5 minutes elapse (less than open interval of 30 min)
+    clock.advance(300);
+
+    // THEN try_admit does NOT return MaxDegradedAgeExceeded
+    let result = store.try_admit("repository", "owner/repo", &clock).unwrap();
+    match result {
+        AdmissionResult::CircuitOpen { .. } => {} // expected
+        other => panic!("expected CircuitOpen, got {other:?}"),
+    }
+
+    // AND exhausted_to_needs_attention returns empty
+    let exhausted = store.exhausted_to_needs_attention(&clock).unwrap();
+    assert!(exhausted.is_empty());
 }

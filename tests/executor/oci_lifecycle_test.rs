@@ -253,3 +253,23 @@ async fn reconcile_does_not_remove_unrelated() {
     assert!(row.is_some(), "unrelated row must still exist");
     assert_eq!(row.unwrap().state, OciLifecycleState::Running);
 }
+
+// parse_exit_code (moved from src/executor/oci_lifecycle.rs inline tests)
+
+#[test]
+fn parse_exit_code_parses_number() {
+    assert_eq!(oci_lifecycle::parse_exit_code_for_tests("0\n"), 0);
+    assert_eq!(oci_lifecycle::parse_exit_code_for_tests("42\n"), 42);
+    assert_eq!(oci_lifecycle::parse_exit_code_for_tests(""), -1);
+    assert_eq!(oci_lifecycle::parse_exit_code_for_tests("not-a-number"), -1);
+}
+
+// derive_daemon_id (moved from src/executor/oci_lifecycle.rs inline tests)
+
+#[test]
+fn derive_daemon_id_from_state_dir() {
+    let mut cfg = Config::test_defaults(Path::new("/tmp"));
+    cfg.state_dir = Path::new("/tmp").join("my-daemon");
+    let id = oci_lifecycle::derive_daemon_id_for_tests(&cfg);
+    assert_eq!(id, "my-daemon");
+}

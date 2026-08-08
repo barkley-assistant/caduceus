@@ -688,6 +688,21 @@ pub(crate) fn redact_and_cap(bytes: &[u8]) -> String {
     cap_text(scrub(&text).as_bytes())
 }
 
+/// Test seam: expose the byte-cap so integration tests can assert the
+/// truncation contract. Identical to the private [`cap_text`].
+#[doc(hidden)]
+pub fn cap_text_for_tests(bytes: &[u8]) -> String {
+    cap_text(bytes)
+}
+
+/// Test seam: expose the redact-then-cap pipeline so integration
+/// tests can assert the redaction contract. Identical to the private
+/// [`redact_and_cap`].
+#[doc(hidden)]
+pub fn redact_and_cap_for_tests(bytes: &[u8]) -> String {
+    redact_and_cap(bytes)
+}
+
 /// True when *bytes[..i]* is a valid UTF-8 prefix boundary.
 fn is_utf8_boundary(bytes: &[u8], i: usize) -> bool {
     if i >= bytes.len() {
