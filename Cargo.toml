@@ -235,6 +235,10 @@ name = "worktree_remove_test"
 path = "tests/repo/worktree_remove_test.rs"
 
 [[test]]
+name = "worktree_origin_test"
+path = "tests/repo/worktree_origin_test.rs"
+
+[[test]]
 name = "scheduler_leadership_test"
 path = "tests/scheduler/scheduler_leadership_test.rs"
 
@@ -381,6 +385,10 @@ path = "tests/state/config_token_resolution_test.rs"
 [[test]]
 name = "validate_test"
 path = "tests/state/validate_test.rs"
+
+[[test]]
+name = "install_test"
+path = "tests/infra/install_test.rs"
 
 [[test]]
 name = "worker_archive_test"
