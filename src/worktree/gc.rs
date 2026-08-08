@@ -1,22 +1,10 @@
-#![allow(dead_code, unused_imports)]
 use super::*;
-use std::ffi::OsStr;
-use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use fs2::FileExt;
-use nix::unistd::pipe;
-use tokio::process::Command as TokioCommand;
-use url::Url;
 
-use crate::github::issue::IssueKey;
 use crate::infra::config::Config;
-use crate::infra::error::{scrub, CaduceusError, CaduceusResult};
+use crate::infra::error::{CaduceusError, CaduceusResult};
 
 /// Worktree GC entry point shared by both `caduceus worktree-gc`
 /// `caduceus worktree-gc` — sweep stale worktrees across the

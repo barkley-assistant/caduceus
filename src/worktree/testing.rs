@@ -1,22 +1,15 @@
-#![allow(dead_code, unused_imports)]
+// test-only: used by the inline test module in this file; remove when
+// inline tests move to tests/ (see #144)
+#[allow(unused_imports)]
 use super::*;
-use std::ffi::OsStr;
-use std::fs::{self, OpenOptions};
-use std::path::{Path, PathBuf};
-use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::path::PathBuf;
 
-use chrono::{DateTime, Utc};
-use fs2::FileExt;
-use nix::unistd::pipe;
-use tokio::process::Command as TokioCommand;
-use url::Url;
-
-use crate::github::issue::IssueKey;
 use crate::infra::config::Config;
-use crate::infra::error::{scrub, CaduceusError, CaduceusResult};
+
+// test-only: used by the inline test module in this file; remove when
+// inline tests move to tests/ (see #144)
+#[allow(unused_imports)]
+use crate::github::issue::IssueKey;
 
 // Test-only Config helper. `Config::test_defaults` is documented as the
 // canonical root-anchored builder, but `find_main_clone` and the runner
@@ -24,6 +17,9 @@ use crate::infra::error::{scrub, CaduceusError, CaduceusResult};
 // pure logic.
 
 impl Config {
+    // test-only: used by the inline tests in this file; remove when
+    // inline tests move to tests/ (see #144)
+    #[allow(dead_code)]
     fn minimal_workdir_for_runner_tests() -> Self {
         Self {
             poll_interval_seconds: 0,
@@ -84,6 +80,9 @@ impl Config {
     }
 }
 
+// test-only: used by the inline tests in this file; remove when
+// inline tests move to tests/ (see #144)
+#[allow(dead_code)]
 const DEFAULT_API_BASE: &str = "https://api.github.com";
 
 #[cfg(test)]

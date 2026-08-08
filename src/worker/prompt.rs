@@ -30,8 +30,6 @@
 //! `fsync`, atomic rename — the contract pin in
 //! `src/finalize/mod.rs` (the finalization contract).
 
-#![allow(dead_code)]
-
 use std::fmt::Write as _;
 use std::fs::{self, OpenOptions};
 use std::io::Write as _;

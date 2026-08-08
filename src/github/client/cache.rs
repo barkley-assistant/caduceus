@@ -1,25 +1,13 @@
 //! Persistent conditional ETag cache for the GitHub API client.
 
-#![allow(dead_code)]
-#![allow(unused_imports)]
-
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::sync::{Mutex, OnceLock};
 
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, AUTHORIZATION, USER_AGENT};
-use reqwest::redirect::Policy;
 use serde::{Deserialize, Serialize};
-use url::Url;
 
-use crate::finalize::{
-    validate_comment, validate_pr_body, validate_pr_title, validate_public_text,
-};
-use crate::github::issue::IssueKey;
-use crate::infra::config::Config;
-use crate::infra::error::{CaduceusError, CaduceusResult, VoiceError};
+use crate::infra::error::{CaduceusError, CaduceusResult};
 
 use super::http_helpers::HTTP_CACHE_FILENAME;
 /// One cached response keyed by full URL + Accept header. The

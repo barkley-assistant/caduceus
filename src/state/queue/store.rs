@@ -1,16 +1,12 @@
-#![allow(dead_code, unused_imports)]
 use super::*;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use fs2::FileExt;
 use rusqlite::params;
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::github::issue::IssueKey;
 use crate::infra::error::{scrub, CaduceusError, CaduceusResult};

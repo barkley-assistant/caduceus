@@ -1,16 +1,10 @@
-#![allow(dead_code, unused_imports)]
 use super::*;
-use std::collections::BTreeMap;
-use std::fs::{self, File, OpenOptions};
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::fs::{self, OpenOptions};
+use std::path::Path;
 
 use chrono::{DateTime, Utc};
 use fs2::FileExt;
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
-use crate::github::issue::IssueKey;
 use crate::infra::error::{CaduceusError, CaduceusResult};
 
 /// Directory under `<state_dir>/claims` where malformed/future-stamped
@@ -381,7 +375,7 @@ impl StateStore {
     /// not take any flock — the reaper runs under the daemon
     /// tick's `DaemonLock`, which serialises the whole tick.
     #[doc(hidden)]
-    pub fn open_for_reap_only(state_dir: &Path) -> CaduceusResult<Self> {
+    pub(crate) fn open_for_reap_only(state_dir: &Path) -> CaduceusResult<Self> {
         let claims_dir = state_dir.join(CLAIMS_DIRNAME);
         fs::create_dir_all(&claims_dir).map_err(|err| CaduceusError::Queue {
             context: "state_open",
@@ -401,7 +395,7 @@ impl StateStore {
     /// Acquire the state lock for the duration of a callback
     /// in the reaper. The lock is released on return.
     #[doc(hidden)]
-    pub fn with_exclusive_reap_only<F, T>(&self, f: F) -> CaduceusResult<T>
+    pub(crate) fn with_exclusive_reap_only<F, T>(&self, f: F) -> CaduceusResult<T>
     where
         F: FnOnce(&Self) -> CaduceusResult<T>,
     {

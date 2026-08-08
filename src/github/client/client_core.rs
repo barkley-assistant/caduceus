@@ -1,33 +1,22 @@
 //! Typed GitHub API HTTP client and request methods.
 
-#![allow(dead_code)]
-#![allow(unused_imports)]
-
-use std::collections::BTreeMap;
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::Arc;
 use std::time::Duration;
 
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, AUTHORIZATION, USER_AGENT};
 use reqwest::redirect::Policy;
-use serde::{Deserialize, Serialize};
 use url::Url;
 
-use crate::finalize::{
-    validate_comment, validate_pr_body, validate_pr_title, validate_public_text,
-};
-use crate::github::issue::IssueKey;
 use crate::infra::config::{Config, OsEnv};
-use crate::infra::error::{CaduceusError, CaduceusResult, VoiceError};
+use crate::infra::error::{CaduceusError, CaduceusResult};
 
 use super::cache::{cache_key, inert_cache, is_valid_etag, CacheEntry, HttpCache};
 use super::http_helpers::{
-    header_value, join_path, map_status, read_bounded_body, same_origin, split_query, ACCEPT_VALUE,
-    BODY_TOO_LARGE_SENTINEL, CONNECT_TIMEOUT_SECONDS, GITHUB_API_VERSION_HEADER,
-    GITHUB_API_VERSION_VALUE, MAX_BODY_BYTES, MAX_REDIRECTS, USER_AGENT_PREFIX,
+    header_value, join_path, map_status, read_bounded_body, same_origin, split_query,
+    BODY_TOO_LARGE_SENTINEL, CONNECT_TIMEOUT_SECONDS, GITHUB_API_VERSION_VALUE, MAX_BODY_BYTES,
+    MAX_REDIRECTS, USER_AGENT_PREFIX,
 };
-use super::response::{RateLimitInfo, Response};
+use super::response::Response;
 /// Typed HTTP client. Owns the underlying reqwest::Client, the
 /// resolved token, the persistent ETag cache, and the
 /// redirect/timeout policies.

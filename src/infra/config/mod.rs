@@ -17,9 +17,7 @@
 //! Public field list, semantics, and defaults are pinned here —
 //! every field documented must be present.
 
-#![allow(unused_imports)]
-
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use regex::Regex;
@@ -1145,6 +1143,8 @@ use self::load::*;
 use self::setup::*;
 use self::token::*;
 
-pub use load::*;
+// `load` exposes only `pub(crate)` items, so its names are brought in
+// with a private glob; `setup` and `token` also export `pub` items and
+// are re-exported to keep `crate::infra::config::*` reachable.
 pub use setup::*;
 pub use token::*;
