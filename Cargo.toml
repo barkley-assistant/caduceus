@@ -54,6 +54,8 @@ assert_fs = "1"
 predicates = "3"
 serial_test = "3"
 temp-env = "0.3"
+filetime = "0.2"
+rusqlite = { version = "0.40", default-features = false, features = ["bundled"] }
 
 [profile.release]
 lto = "thin"
@@ -265,6 +267,10 @@ name = "checkpoint_recovery_test"
 path = "tests/state/checkpoint_recovery_test.rs"
 
 [[test]]
+name = "checkpoints_unit_test"
+path = "tests/state/checkpoints_unit_test.rs"
+
+[[test]]
 name = "investigation_checkpoint_recovery_test"
 path = "tests/state/investigation_checkpoint_recovery_test.rs"
 
@@ -313,6 +319,10 @@ name = "migration_test"
 path = "tests/state/migration_test.rs"
 
 [[test]]
+name = "migrate_recover_sqlite_test"
+path = "tests/state/migrate_recover_sqlite_test.rs"
+
+[[test]]
 name = "migrate_to_sqlite_test"
 path = "tests/state/migrate_to_sqlite_test.rs"
 
@@ -341,6 +351,10 @@ name = "reconcile_side_effects_test"
 path = "tests/state/reconcile_side_effects_test.rs"
 
 [[test]]
+name = "retention_test"
+path = "tests/state/retention_test.rs"
+
+[[test]]
 name = "retry_test"
 path = "tests/state/retry_test.rs"
 
@@ -351,6 +365,10 @@ path = "tests/state/review_lifecycle_test.rs"
 [[test]]
 name = "state_store_test"
 path = "tests/state/state_store_test.rs"
+
+[[test]]
+name = "sqlite_store_test"
+path = "tests/state/sqlite_store_test.rs"
 
 [[test]]
 name = "token_test"
