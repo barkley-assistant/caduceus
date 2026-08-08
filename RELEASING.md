@@ -1,54 +1,88 @@
-# Releasing Caduceus
+# Releasing
 
-This is the maintainer runbook for a public Caduceus release. Release only
-from a reviewed, clean `main` checkout. Do not move or rewrite a published
-release tag.
+This is the maintainer runbook for a public Caduceus release.
+Release only from a reviewed, clean `main` checkout. Do not
+move or rewrite a published release tag — a bad release gets
+a follow-up patch, never a retag.
 
 ## Versioning
 
-Caduceus follows [Semantic Versioning 2.0.0](https://semver.org/). The public
-surface includes the CLI and exit codes, configuration schema, Hermes plugin
-manifest, worker environment and result-file contracts, state format, and
-documented operator behavior.
+Caduceus follows [Semantic Versioning 2.0.0](https://semver.org/).
+The versioned surface — what a version number promises
+something about — is:
 
-- Use a patch release for compatible fixes.
-- Use a minor release for compatible additions and documented deprecations.
-- Use a major release for a change that requires operator action, including a
-  removed or incompatible public interface or state format.
+- **The `caduceus` CLI.** Subcommands, flags, exit codes,
+  and the `--json` output shape of `status`.
+- **The `Config` YAML schema.** Field names, types, and
+  defaults under the `caduceus:` block. `serde` rejects
+  unknown fields on purpose: an unknown key is a config
+  error, never a silent ignore.
+- **The plugin manifest.** `plugin.yaml` fields the Hermes
+  host loads: commands, skill references, cron contract.
+- **The worker contract.** The `CADUCEUS_*` environment
+  variables, the `worker-result.json` schema, and the
+  exit-code semantics. Your `worker-bridge.py` is your own
+  file; the contract it speaks is versioned.
+- **The state format.** `state.json` / `state_meta.json`
+  and the SQLite schema. The daemon validates both at open
+  and refuses to run against an unknown schema.
+- **The default `comment_forbidden_strings`.** The
+  public-voice rule's default list is part of the surface;
+  changing what the daemon refuses to say by default is a
+  breaking change.
 
-Every breaking state change must ship with a tested migration path and clear
-guidance in [MIGRATION.md](MIGRATION.md). Record all operator-visible changes
-in [CHANGELOG.md](CHANGELOG.md).
+A breaking change is any change to the surface above that
+could make an existing installation behave differently
+without the operator opting in.
 
-## Prepare the Release
+- Use a **patch** release for compatible fixes.
+- Use a **minor** release for compatible additions and
+  documented deprecations.
+- Use a **major** release for a change that requires
+  operator action — a removed or incompatible public
+  interface, or a state format change. Every breaking
+  state change must ship with a tested migration path and
+  clear guidance, documented before the release is tagged.
 
-1. Confirm the working tree is clean and all intended changes have passed
-   review. Commits must follow the scoped Conventional Commit rules in
-   [AGENTS.md](AGENTS.md) and [CONTRIBUTING.md](CONTRIBUTING.md).
-2. Choose the SemVer version and update it consistently in `Cargo.toml` and
-   `plugin.yaml`.
-3. Move the relevant entries from `Unreleased` into a dated version section in
-   `CHANGELOG.md`, then add a fresh `Unreleased` section.
-4. Update operator documentation and migration instructions for every public
-   change. Review [SECURITY.md](SECURITY.md) when the release fixes a security
-   issue.
-5. Build the release artifact and run the full required gate on the release
-   commit:
+Record all operator-visible changes in
+[CHANGELOG.md](CHANGELOG.md).
+
+## Prepare the release
+
+1. **Green main.** The tip of `main` passes CI and your
+   working tree is clean. Commits follow the scoped
+   Conventional Commit rules in `AGENTS.md` /
+   `CONTRIBUTING.md`.
+2. **Bump the version.** `Cargo.toml` is the source of
+   truth (`version = "X.Y.Z"`). Bump `plugin.yaml` too if
+   the plugin surface changed. Commit as
+   `chore(release): bump to vX.Y.Z`.
+3. **Finalise the changelog.** In `CHANGELOG.md`, rename
+   `## [Unreleased]` to `## [X.Y.Z] - <date>`, open a fresh
+   empty `## [Unreleased]`, and fix the compare links at
+   the bottom (`[Unreleased]` → `compare/vX.Y.Z...HEAD`,
+   `[X.Y.Z]` → `releases/tag/vX.Y.Z`). Commit.
+4. **Document and gate.** Update operator documentation for
+   every public change. Review `SECURITY.md` when the
+   release fixes a security issue. Run the full gate on the
+   release commit:
 
    ```bash
    cargo fmt --check
    cargo clippy --locked --all-targets -- -D warnings
    cargo test --locked --all-targets
-   pytest -q tests/hermes_plugin_test.py tests/bridge_test.py
+   python3 -m pytest -q tests/hermes_plugin_test.py tests/bridge_test.py
    cargo build --locked --release
    ```
 
-   Run these commands with the Rust version declared in `Cargo.toml` and from
-   a clean checkout. Do not release on a failed, skipped, or waived check.
+   Run these with the Rust version declared in `Cargo.toml`
+   from a clean checkout. Do not release on a failed,
+   skipped, or waived check.
 
 ## Publish
 
-1. Commit the version, changelog, and documentation updates.
+1. Commit the version, changelog, and documentation
+   updates.
 2. Create a signed annotated tag for that exact commit:
 
    ```bash
@@ -62,38 +96,38 @@ in [CHANGELOG.md](CHANGELOG.md).
    git push origin vX.Y.Z
    ```
 
-4. Create the GitHub release from `vX.Y.Z` and use that version's changelog
-   section as its notes. Mark it as the latest release only when it is the
-   highest supported non-prerelease.
-5. Verify the published tag resolves to the reviewed release commit and that a
-   fresh Hermes or standalone installation can build and report the intended
-   version. The project does not publish to crates.io.
+4. The `release` workflow (`.github/workflows/release.yml`)
+   does the rest — note that CI does *not* run for tags, so
+   this workflow is the tag's only gate. It verifies the tag
+   matches `Cargo.toml` (a mismatch fails the run — that's
+   the point), runs the gates, builds `--release --locked`,
+   packages `caduceus-<tag>-x86_64-unknown-linux-gnu.tar.gz`
+   plus `SHA256SUMS`, slices the matching `## [X.Y.Z]`
+   section out of `CHANGELOG.md`, and publishes the GitHub
+   release with those notes and artifacts. Mark it as the
+   latest release only when it is the highest supported
+   non-prerelease.
+5. **Verify.** The published tag resolves to the reviewed
+   release commit; the release notes match the changelog
+   section; the tarball and checksum are attached. Download,
+   unpack, `./caduceus --version` — it should print the
+   released version. The project does not publish to
+   crates.io.
 
-## After Release
+If a step fails before publishing: fix, merge to `main`,
+delete the tag (`git push origin :refs/tags/vX.Y.Z`), retag
+from the new tip. Tags are cheap until they are published.
 
-- Confirm the GitHub release, tag, changelog, and installed version agree.
+## After release
+
+- Confirm the GitHub release, tag, changelog, and installed
+  version agree.
 - Watch issue reports and security mail for regressions.
-- Keep the next user-visible change under `Unreleased`.
+- Keep the next user-visible change under `[Unreleased]`.
 
-If a release is defective, do not retag or force-push. Publish a follow-up
-patch as soon as it is safe, document the impact in the changelog, and update
-the GitHub release notes with an operator-facing warning when appropriate.
-Handle vulnerabilities through [SECURITY.md](SECURITY.md), not public issues.
-
-## Release Readiness Checklist
-
-Invoke this checklist at the moment of the operator's release decision,
-not on every commit. Each row links a release-readiness requirement to a
-verification command or artifact the operator can confirm.
-
-| AC ID | Verification command or artifact | Expected result |
-|---|---|---|
-| 7.6-AC-01 | Run the plan validator; review the acceptance-evidence table in the release handoff | Plan validator reports the published task and phase count; every AC row in the handoff has a green status and a concrete evidence pointer. |
-| 7.6-AC-02 | Run the required CI jobs on the release branch; run the pre-merge four-cargo gate locally | All CI jobs pass; the local gate (`cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings`, `cargo test --locked --all-targets -- --test-threads=1`, `python3 -m pytest -q tests/hermes_plugin_test.py tests/bridge_test.py`) passes. |
-| 7.6-AC-03 | Compare the package manifest's version string to the CHANGELOG entry | The manifest and CHANGELOG agree; the CHANGELOG entry is labelled "Internal version bump" and includes the verbatim note that no public release artifacts have been published. |
-| 7.6-AC-04 | Compute the SHA-256 of the archived initial-release tree and compare it to the manifest's recorded digest | Both hashes match; the archived tree is byte-for-byte unchanged. |
-| 7.6-AC-05 | Review the "Maintainer decision" block in the release handoff | The decision is recorded as `approved` or `blocked`, with the operator's name and the date. |
-| 7.6-AC-06 | Review the "Installed path" and "Blocked or unsupported host capabilities" sections of the release handoff | End-to-end-ready claims are forbidden unless a fresh install passes the plugin's setup step on the supported host; blocked or unsupported host capabilities are labelled honestly. |
-| 7.6-AC-07 | Run the forbidden-marker greps documented in the release handoff (production-code grep, sentinel-token grep, freshness pre-flight) | All greps return zero hits in the production code, docs, plugin assets, and operator skills (excluding tests, fixtures, and the project TODO list). |
-
-A release is **blocked** if any row reports a red status, any grep returns a hit, the archived initial-release tree has drifted, or the maintainer decision is `blocked`. The release is **ready** when every row is green and the maintainer decision is `approved`.
+If a release is defective, do not retag or force-push.
+Publish a follow-up patch as soon as it is safe, document
+the impact in the changelog, and update the GitHub release
+notes with an operator-facing warning when appropriate.
+Handle vulnerabilities through `SECURITY.md`, not public
+issues.
