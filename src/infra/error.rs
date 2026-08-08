@@ -746,7 +746,7 @@ fn advance_to_end_of_value(s: &str, start: usize) -> usize {
 // Tests live in `tests/state/error_test.rs`.
 #[cfg(test)]
 mod inline_tests {
-    use super::*;
+    use super::scrub;
 
     #[test]
     fn scrub_redacts_token_in_value() {

@@ -520,7 +520,11 @@ fn approx_json_array_len<T: Serialize + Clone>(key: &str, items: &[T]) -> Caduce
 
 #[cfg(test)]
 mod inline_tests {
-    use super::*;
+    use super::{
+        build_context, decode_context, encode_context, truncate_body, BuildInputs, Config,
+        IssueDetail, IssueKey, Utc, CONTEXT_SCHEMA_VERSION, MAX_COMMENT_BODY_BYTES,
+        TRUNCATION_MARKER,
+    };
     use crate::github::issue::{IssueComment, IssueEvent};
     use regex::Regex;
 
