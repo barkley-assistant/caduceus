@@ -742,21 +742,3 @@ fn advance_to_end_of_value(s: &str, start: usize) -> usize {
     }
     i
 }
-
-// Tests live in `tests/state/error_test.rs`.
-#[cfg(test)]
-mod inline_tests {
-    use super::scrub;
-
-    #[test]
-    fn scrub_redacts_token_in_value() {
-        let out = scrub("GITHUB_TOKEN=ghp_xyz");
-        assert!(out.contains("<redacted>"));
-        assert!(!out.contains("ghp_xyz"));
-    }
-
-    #[test]
-    fn scrub_leaves_unrelated_strings_intact() {
-        assert_eq!(scrub("hello world"), "hello world");
-    }
-}

@@ -15,7 +15,6 @@
 pub mod gc;
 pub mod git_runner;
 pub mod repository;
-pub mod testing;
 pub mod worktree;
 
 pub use gc::*;
