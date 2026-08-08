@@ -4,27 +4,19 @@ All notable changes to Caduceus are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
 
-## [1.0.0] - Unreleased
+## [Unreleased]
 
-Ongoing development toward the first full release. Not yet tagged or
-published. The version bump in the manifest reflects how far the daemon
-has come since the initial public release — it is not a ship date.
-
-Caduceus has grown from a single-host worker into a multi-component
-daemon with structured crash recovery, bounded concurrency, daemon-owned
-repository storage, an OCI executor, and a broad test suite. The CLI
-surface, state format, and worker process model are deliberately stable
-across this period. (OCI isolation end-to-end pending #88.)
+## [1.0.0] - 2026-08-08
 
 ### Added
 
 - **Scheduler leadership.** A single leader is elected per host with
   TTL-based leases. Followers defer to the leader's tick, eliminating
-  the dual-tick race that v0.1.0 silently tolerated. Part of #97.
+  the dual-tick race that v0.1.0 silently tolerated.
 - **Bounded concurrency.** Up to N workers run in flight at once per
   cron tick (bounded-across-the-tick), and a single repository never
   runs two workers concurrently. Replaces the host-wide tick lock.
-  Closes #107. Closes #109. Part of #97.
+  Closes #107. Closes #109.
 - **Circuit breakers.** Per-destination breakers trip after consecutive
   failures and cool down on a configured schedule, bounding the blast
   radius of an upstream outage.
@@ -44,18 +36,16 @@ across this period. (OCI isolation end-to-end pending #88.)
   side effects that didn't land.
 - **SQLite state backend switch.** migrate-state --to-sqlite imports
   the JSON queue into the SQLite store and flips state_backend to
-  sqlite in the operator's config. Closes #110. Part of #97.
+  sqlite in the operator's config. Closes #110.
 - **Human-review lifecycle.** Pull requests can be placed in a
   human-review-required state that pauses auto-merge and records the
   operator's review decision.
 - **OCI executor.** A trait-shaped executor seam with an OCI-backed
   implementation handling mount configuration, secrets, network policy,
   and lifecycle. Replaces the v0.1.0 in-process command runner.
-  (end-to-end isolation pending #88; argv-placement fix landed in #111)
 - **Isolation policy enforcement.** The executor enforces a read-only
   root filesystem, an explicit secret allowlist, a deny-by-default
-  network policy, and a baseline image. (end-to-end isolation pending
-  #88; argv-placement fix landed in #111)
+  network policy, and a baseline image.
 - **Production configuration bootstrap.** `caduceus setup` generates a
   non-secret configuration with a deterministic token resolution chain.
 - **Transactional Hermes scheduling.** The cron-side dispatcher uses a
@@ -106,22 +96,21 @@ across this period. (OCI isolation end-to-end pending #88.)
   the daemon re-opened the same path with `truncate(true)` to capture
   supervisor diagnostics, silently clobbering worker bytes written
   before its open. Supervisor stderr now inherits to the daemon's
-  stderr. Closes #134. Part of #94.
+  stderr. Closes #134.
 - **Supervisor stdout capture.** The supervisor now pipes worker stdout
   into the bounded transcript alongside stderr (byte-interleaved, one
   shared writer) instead of discarding it. Previously worker stdout was
-  sent to `/dev/null` and only stderr was captured. Closes #126. Part
-  of #94.
+  sent to `/dev/null` and only stderr was captured. Closes #126.
 - **Supervisor cancel/DONE race.** The daemon-side protocol loop drains
   the worker's `DONE` frame before firing the cleanup cancel, so a
   worker that exits 0 cleanly is no longer reported as cancelled. The
   cancel path still wins when fired while the worker is alive and no
-  DONE is pending. Closes #130. Part of #94.
+  DONE is pending. Closes #130.
 - **Supervisor hidden-command dispatch.** The hidden
   `__worker-supervisor` token is now matched only as the first argument
   after the binary name, not anywhere in `argv`, so a copy-pasted
   debugging recipe can no longer accidentally drop a normal CLI
-  invocation into supervisor mode. Closes #129. Part of #94.
+  invocation into supervisor mode. Closes #129.
 - **Status exit codes.** Every status call now exits with the documented
   code instead of always returning 0.
 - **GitHub auth token resolution.** The daemon now resolves the GitHub
@@ -153,40 +142,39 @@ across this period. (OCI isolation end-to-end pending #88.)
   Closes #119.
 - **Supervisor ACK gate.** The supervisor spawns the worker only after
   the daemon ACKs the `READY(pgid)` frame, so no worker process exists
-  before the PGID is confirmed. Closes #125. Part of #94.
+  before the PGID is confirmed. Closes #125.
 - **Supervisor frame length validation and partial-header reads.** The
   supervisor's stdin readers now validate the frame length against
   `MAX_FRAME_BYTES` before allocating, and use `read_exact` for the
   4-byte header so a partial read can no longer be parsed as a length
   prefix. A malformed `0xFFFFFFFF` header or a truncated header from a
   crashed/hostile worker is rejected without a multi-GB allocation.
-  Closes #127. Closes #128. Part of #94.
+  Closes #127. Closes #128.
 
 ### Security
 
 - **Adversarial isolation tests.** Escape, leak, network, and
   cancellation tests verify the executor cannot reach the host
-  filesystem, leak secrets into the worker environment, or escape the
+  system, leak secrets into the worker environment, or escape the
   network policy.
+- **OCI isolation end-to-end.** The executor enforces the isolation
+  policy at the container boundary: a positional-engine rule requires
+  every engine flag to appear before the image, and the adversarial
+  suite runs against the real executor, not a mock.
 - **Network policy.** Outbound traffic from the executor is
   allowlist-only by default.
 - **Mount and secret allowlist.** The executor refuses to mount
   non-allowlisted paths or load secrets outside the explicit allowlist.
-  The isolation policy and adversarial tests above cover the policy
-  layer only; end-to-end OCI isolation is pending #88.
 
 ### Known Limitations
 
-- **Pre-existing test fragility.** A handful of integration tests fail
-  in environments where the `caduceus` binary isn't on the default PATH
-  or where `caduceus doctor` returns a non-zero exit code. These
-  reproduce on v0.1.0 and are tracked as environment-dependence, not
-  regressions.
-- **Linux-only.** The worker supervisor's process-group semantics
-  (`prctl`, `/proc`, `setsid`) are not yet portable to macOS. A
-  follow-up ticket will address this.
-- **No public release artifacts.** The v1.0.0 label is an internal
-  version bump; no GitHub release is cut from this version.
+- **Environment-dependent integration tests.** A handful of tests
+  expect the `caduceus` binary on the default `PATH` and a healthy
+  `doctor` run. CI runs them in a controlled environment; on a bare
+  host, put the binary on `PATH` first. These are environment
+  dependence, not regressions.
+- **Linux is tier-1.** macOS builds and runs, but is not exercised in
+  CI before a release. Windows is not supported.
 
 ## [0.1.0] - 2026-07-15
 
@@ -201,7 +189,8 @@ authentication, JSON state, dry runs, investigation tickets, and Hermes Agent.
   recovery with `caduceus recover-state`.
 - Worker supervision, claim and heartbeat handling, and a nonblocking
   whole-tick lock.
-- An operator migration guide in [MIGRATION.md](MIGRATION.md).
+- An operator migration guide, later superseded by the wiki's
+  State-Recovery page.
 
 ### Known Limitations
 
@@ -219,5 +208,6 @@ authentication, JSON state, dry runs, investigation tickets, and Hermes Agent.
 
 - Did not publish a security contact or disclosure policy.
 
-[next]: https://github.com/barkley-assistant/caduceus/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/barkley-assistant/caduceus/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/barkley-assistant/caduceus/releases/tag/v1.0.0
 [0.1.0]: https://github.com/barkley-assistant/caduceus/releases/tag/v0.1.0
