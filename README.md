@@ -2,6 +2,15 @@
 
 # Caduceus
 
+<p align="center"><em>Your agent does the thinking. Caduceus does the paperwork.</em></p>
+
+<p align="center">
+  <a href="https://github.com/barkley-assistant/caduceus/releases"><img alt="Version" src="https://img.shields.io/badge/version-1.0.0-7C3AED"></a>
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue"></a>
+  <a href="https://github.com/barkley-assistant/caduceus/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/barkley-assistant/caduceus/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/barkley-assistant/caduceus/wiki"><img alt="Docs" src="https://img.shields.io/badge/docs-wiki-2ea44f"></a>
+</p>
+
 > A Hermes plugin that turns a labeled GitHub issue into a pull
 > request, without making you babysit it.
 
@@ -195,8 +204,8 @@ short version with the opinions attached.
   want; do not set it to zero and expect a polite daemon.
 - `ticket_label_code` — the GitHub label that triggers a
   code-fixing run (default `🤖 auto-fix`). The investigation
-  label is `ticket_label_investigate` (default
-  `🤖 auto-fix-investigate`). The two labels are created in
+  label is `ticket_label_investigation` (default
+  `🤖 auto-fix-investigation`). The two labels are created in
   step 3 of the 60-second orientation above.
 
 Everything else lives in
@@ -225,21 +234,6 @@ front door; the manual is in the
 - [state-recovery](https://github.com/barkley-assistant/caduceus/wiki/State-Recovery) —
   corrupt state, stuck issues, the `migrate-state`
   command, backup retention.
-- [public-voice](https://github.com/barkley-assistant/caduceus/wiki/Home) — the
-  forbidden-strings rule, why it exists, how to
-  override, what happens when a comment fails the
-  check.
-- [architecture](https://github.com/barkley-assistant/caduceus/wiki/Home) —
-  internal design, the worker supervisor, the lock
-  discipline, why we shell out to Git instead of using
-  libgit2.
-- [plugin-lifecycle](https://github.com/barkley-assistant/caduceus/wiki/Home) —
-  what the Hermes plugin host actually loads, what the
-  manifest fields do, what we don't put in the manifest
-  and why.
-- [hermes-integration](https://github.com/barkley-assistant/caduceus/wiki/Home) —
-  cron delivery, the gateway dependency, the chat
-  status surface.
 - [troubleshooting](https://github.com/barkley-assistant/caduceus/wiki/Troubleshooting) —
   the common failure modes with the actual error text
   and the actual fix.
