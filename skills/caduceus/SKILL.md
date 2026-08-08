@@ -98,10 +98,10 @@ work on tick exit; the cap only stops claiming new entries.
 
 ## State Recovery Procedure
 
-Both `queue.json` and `state_meta.json` use temp-file + `fsync` +
+Both `state.json` and `state_meta.json` use temp-file + `fsync` +
 atomic rename and are never silently truncated:
 
-- **Corrupt `queue.json`** → daemon exits 1, file preserved. Inspect
+- **Corrupt `state.json`** → daemon exits 1, file preserved. Inspect
   and repair manually or use `caduceus migrate-state --from <path>
   [--dry-run]`.
 - **Corrupt `state_meta.json`** → same behavior. Exit 1, file preserved.
