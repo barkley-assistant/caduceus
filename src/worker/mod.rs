@@ -20,3 +20,7 @@ pub use crate::worker::worker_contract::{
     WorkerResult, WorkerStatus, DEFAULT_ALLOWLIST_EXACT, DEFAULT_ALLOWLIST_PREFIXES, MAX_ARTIFACTS,
     MAX_ARTIFACT_KEY_LEN, MAX_RESULT_FILE_BYTES, MAX_SUMMARY_BYTES, MAX_TITLE_BYTES,
 };
+
+// Test seam: re-export the body-truncation helper so integration
+// tests can assert the truncation contract without owning a runtime.
+pub use self::context::truncate_body_for_tests;

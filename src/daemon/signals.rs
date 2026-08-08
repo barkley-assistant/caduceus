@@ -178,24 +178,3 @@ pub async fn listen(pool: Arc<Pool>, cancellation: CancellationToken) -> std::io
 pub fn outcome_from_signal(kind: SignalKind) -> SignalOutcome {
     SignalOutcome::First(kind)
 }
-
-#[cfg(test)]
-mod inline_tests {
-    use super::{Duration, SignalKind, ESCALATE_GRACE};
-
-    #[test]
-    fn signal_kind_labels_match_libc_names() {
-        assert_eq!(SignalKind::Interrupt.label(), "SIGINT");
-        assert_eq!(SignalKind::Terminate.label(), "SIGTERM");
-    }
-
-    #[test]
-    fn escalate_grace_matches_supervisor_window() {
-        // The supervisor's TERM-to-KILL grace is 2 seconds
-        // (worker_supervisor::run_supervisor's protocol_task
-        // cancellation branch). The listener's grace window
-        // intentionally matches so the two timeouts line up
-        // under a single operator press.
-        assert_eq!(ESCALATE_GRACE, Duration::from_secs(2));
-    }
-}

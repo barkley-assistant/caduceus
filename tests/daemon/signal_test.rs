@@ -432,3 +432,14 @@ fn signal_kind_labels_are_stable() {
     assert_eq!(caduceus::signals::SignalKind::Interrupt.label(), "SIGINT");
     assert_eq!(caduceus::signals::SignalKind::Terminate.label(), "SIGTERM");
 }
+
+#[test]
+fn escalate_grace_matches_supervisor_window() {
+    // The supervisor's TERM-to-KILL grace is 2 seconds
+    // (worker_supervisor::run_supervisor's protocol_task
+    // cancellation branch). The listener's grace window
+    // intentionally matches so the two timeouts line up
+    // under a single operator press.
+    use std::time::Duration;
+    assert_eq!(caduceus::signals::ESCALATE_GRACE, Duration::from_secs(2));
+}

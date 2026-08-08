@@ -589,4 +589,7 @@ use self::awaiting_review::*;
 use self::per_claim::*;
 use self::resume::*;
 
-pub use self::awaiting_review::exit_code_for_tests;
+pub use self::awaiting_review::{
+    exit_code_for_tests, extract_http_status_for_tests, map_phase_to_outcome_for_tests,
+    outcome_for_class_for_tests,
+};

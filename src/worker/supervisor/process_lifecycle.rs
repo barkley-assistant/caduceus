@@ -100,6 +100,15 @@ pub(crate) fn parse_starttime_from_stat(stat: &str) -> Option<u64> {
     starttime.parse::<u64>().ok()
 }
 
+/// Test seam: re-export the synthetic-stat parser so integration
+/// tests can assert the field-22 contract without owning a runtime.
+/// Identical to the private [`parse_starttime_from_stat`].
+#[cfg(target_os = "linux")]
+#[doc(hidden)]
+pub fn parse_starttime_from_stat_for_tests(stat: &str) -> Option<u64> {
+    parse_starttime_from_stat(stat)
+}
+
 /// Read process starttime in clock ticks from `/proc/<pid>/stat`,
 /// field 22.  Returns `None` if the process no longer exists or the
 /// stat file cannot be read.
