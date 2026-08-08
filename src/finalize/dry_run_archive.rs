@@ -1,19 +1,11 @@
-#![allow(dead_code, unused_imports)]
 use super::*;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::github::Client;
-
 use crate::github::issue::IssueKey;
-use crate::infra::config::Config;
-use crate::infra::error::{CaduceusError, CaduceusResult, VoiceError};
+use crate::infra::error::{CaduceusError, CaduceusResult};
 use crate::worker::WorkerResult;
-use crate::worktree::GitRunner;
-
-use sha2::{Digest, Sha256};
 
 /// Atomic report written under `<state_dir>/runs/<run_id>.preview.json`
 /// when the daemon runs a dry-run. The report is the

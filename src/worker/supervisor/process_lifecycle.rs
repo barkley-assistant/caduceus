@@ -1,16 +1,5 @@
-#![allow(dead_code, unused_imports)]
-use super::*;
-use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
-use std::time::Duration;
-
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::process::{Child, Command as TokioCommand};
 
 use crate::github::issue::IssueKey;
 use crate::infra::error::{CaduceusError, CaduceusResult};
@@ -35,19 +24,6 @@ pub const PROTOCOL_VERSION: u32 = 1;
 /// envelope.
 pub const MAX_FRAME_BYTES: usize = 64 * 1024;
 // Subreaper + setsid + signal helpers (safe wrappers via nix)
-
-#[cfg(target_os = "linux")]
-fn try_set_subreaper() -> CaduceusResult<()> {
-    nix::sys::prctl::set_child_subreaper(true).map_err(|err| CaduceusError::Worker {
-        context: "supervisor:subreaper",
-        stderr: format!("prctl(PR_SET_CHILD_SUBREAPER) failed: {err}"),
-    })
-}
-
-#[cfg(not(target_os = "linux"))]
-fn try_set_subreaper() -> CaduceusResult<()> {
-    Ok(())
-}
 
 /// `setsid` the calling process into a new session.
 ///

@@ -34,8 +34,6 @@
 //! observation with an older one. The check is by
 //! `reset_at` timestamp.
 
-#![allow(dead_code)]
-
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
@@ -675,10 +673,6 @@ fn quarantine_corrupt(meta_path: &Path, reason: &str) -> CaduceusResult<()> {
 
 fn take_meta_tx_conn() -> Option<Connection> {
     META_TX_CONN.with(|cell| cell.borrow_mut().take())
-}
-
-fn is_in_meta_tx() -> bool {
-    META_TX_CONN.with(|cell| cell.borrow().is_some())
 }
 
 fn load_sqlite(conn: &Connection, state_dir: &Path) -> CaduceusResult<StateMeta> {

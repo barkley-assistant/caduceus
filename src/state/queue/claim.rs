@@ -1,16 +1,11 @@
-#![allow(dead_code, unused_imports)]
 use super::*;
-use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use chrono::{DateTime, Utc};
-use fs2::FileExt;
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::github::issue::IssueKey;
 use crate::infra::error::{CaduceusError, CaduceusResult};
 
 pub(crate) fn acquire_next_locked(
@@ -179,39 +174,6 @@ pub(crate) fn claim_mismatch(claim: &ClaimToken) -> CaduceusError {
 
 pub(crate) fn into_lock_error(err: std::io::Error) -> CaduceusError {
     CaduceusError::Io(err)
-}
-
-pub(crate) fn scrub(value: &str) -> String {
-    // Local scrub — duplicated here so the queue module doesn't
-    // pull in the error module's redaction helper purely for a
-    // single debug log.
-    if value.is_empty() {
-        return value.to_string();
-    }
-    let mut scrubbed = value.to_string();
-    for needle in ["GITHUB_TOKEN", "CADUCEUS_GITHUB_TOKEN", "GH_TOKEN"] {
-        if let Some(pos) = scrubbed.find(needle) {
-            let abs = pos + needle.len();
-            let value_end = advance_to_end_of_value(&scrubbed, abs);
-            scrubbed.replace_range(abs..value_end, "<redacted>");
-        }
-    }
-    scrubbed
-}
-
-pub(crate) fn advance_to_end_of_value(s: &str, start: usize) -> usize {
-    let bytes = s.as_bytes();
-    if start >= bytes.len() {
-        return start;
-    }
-    let mut i = start;
-    while i < bytes.len() {
-        match bytes[i] {
-            b' ' | b'\t' | b'\n' | b'\r' | b',' | b';' | b'}' | b']' => break,
-            _ => i += 1,
-        }
-    }
-    i
 }
 
 /// SHA-256 hex digest of the lowercase display key. This is the

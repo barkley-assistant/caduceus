@@ -1,20 +1,13 @@
-#![allow(dead_code, unused_imports)]
-use super::*;
 use std::ffi::OsStr;
-use std::fs::{self, OpenOptions};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
-use fs2::FileExt;
 use nix::unistd::pipe;
 use tokio::process::Command as TokioCommand;
-use url::Url;
 
-use crate::github::issue::IssueKey;
 use crate::infra::config::Config;
 use crate::infra::error::{scrub, CaduceusError, CaduceusResult};
 
@@ -109,7 +102,6 @@ pub struct GitRunner {
 struct GitRunnerInner {
     timeout: Duration,
     env_allowlist: Vec<String>,
-    api_base: String,
     /// Anonymous pipe read-fd for the GIT_ASKPASS credential
     /// helper. When set, `build_command` sets `GIT_ASKPASS` and
     /// `GIT_ASKPASS_FD` so the helper reads the PAT from this
@@ -158,7 +150,6 @@ impl GitRunner {
             inner: Arc::new(GitRunnerInner {
                 timeout: Duration::from_secs(timeout_seconds),
                 env_allowlist: extras,
-                api_base: cfg.api_base.clone(),
                 #[cfg(unix)]
                 credential_helper_fd,
                 cancelled: Arc::new(AtomicBool::new(false)),

@@ -21,8 +21,6 @@
 //! drive [`preflight`] directly with a controlled PATH and
 //! temp directories; the daemon's main loop wraps the same call.
 
-#![allow(dead_code)]
-
 use std::path::{Path, PathBuf};
 
 use crate::infra::config::Config;
