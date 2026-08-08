@@ -11,7 +11,7 @@ use crate::infra::error::{CaduceusError, CaduceusResult};
 // Path / interpolation helpers
 
 /// Expand a single leading ``~`` to the user's home directory. No
-/// other shell expansion is performed (CONTRACTS.md "Configuration").
+/// other shell expansion is performed.
 pub fn expand_leading_tilde(path: PathBuf) -> PathBuf {
     if let Ok(rest) = path.strip_prefix("~") {
         if let Some(home) = home_dir() {
@@ -195,7 +195,7 @@ pub fn is_valid_repo_slug(repo: &str) -> bool {
 
 /// Positive allowlist validator for the `api_base` configuration value.
 ///
-/// Per `CONTRACTS.md` GH-001, `api_base` MUST be either the literal
+/// Per the GH-001 contract (api_base rules below), `api_base` MUST be either the literal
 /// `https://api.github.com` or an `https://` URL whose path is
 /// `/api/v3` (or `/api/v3/...`). Anything else — `http://`,
 /// `bitbucket.example.com`, custom path-prefixed proxies, malformed

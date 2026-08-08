@@ -27,8 +27,8 @@
 //! the bridge is launched.
 //!
 //! The file write is atomic: same-directory temp file,
-//! `fsync`, atomic rename — the contract pin in `CONTRACTS.md`
-//! "Finalization contract".
+//! `fsync`, atomic rename — the contract pin in
+//! `src/finalize/mod.rs` (the finalization contract).
 
 #![allow(dead_code)]
 

@@ -32,11 +32,11 @@ const DEFAULT_GIT_TIMEOUT_SECONDS: u64 = 300;
 
 /// Variables the runner scrubs from the inherited environment
 /// before launching any git subprocess. These are the three
-/// canonical GitHub-credential names from CONTRACTS.md "Worker
-/// environment and result". The daemon never injects these into
-/// the child; the daemon also actively removes them from the
-/// inherited environment so a misconfigured credential helper
-/// can't surface them via `git credential fill`.
+/// canonical GitHub-credential names from the worker-result
+/// contract in `src/worker/worker_contract.rs`. The daemon never
+/// injects these into the child; the daemon also actively removes
+/// them from the inherited environment so a misconfigured
+/// credential helper can't surface them via `git credential fill`.
 pub const DENIED_INHERITED_VARS: &[&str] = &["GITHUB_TOKEN", "CADUCEUS_GITHUB_TOKEN", "GH_TOKEN"];
 
 /// Default variables preserved across `env_clear()` when the

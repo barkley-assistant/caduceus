@@ -1,6 +1,6 @@
 # Canonical CI matrix for the Caduceus v1.0 plan.
 #
-# Implements CONTRACTS.md CI-001 and CI-002. Runs on every pull
+# Implements the CI contract (CI-001, CI-002). Runs on every pull
 # request and every push to main. The matrix runs on stable Rust
 # with --locked. The MSRV is documented in Cargo.toml
 # (rust-version = "1.97") and enforced at compile time — no
@@ -35,7 +35,6 @@ on:
       - 'SECURITY.md'
       - 'LICENSE'
       - '.github/ISSUE_TEMPLATE/**'
-      - 'MIGRATION.md'
   # Option C: a weekly schedule trigger keeps the cargo and
   # target caches warm so the next human push does not pay the
   # cold-cache build cost (5-10 minutes on ubuntu-24.04 with a

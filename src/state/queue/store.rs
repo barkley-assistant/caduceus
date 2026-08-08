@@ -309,7 +309,7 @@ impl StateStore {
     /// Terminal transition for a successful dry-run preview. The
     /// entry moves to `Previewed`; on the next non-dry tick the
     /// polling loop will atomically promote it to `Queued` (see
-    /// [`StateStore::enqueue`] and CONTRACTS.md "Dry-run").
+    /// [`StateStore::enqueue`]).
     pub fn complete_preview(&self, claim: ClaimToken) -> CaduceusResult<()> {
         self.complete_with(claim, Phase::Previewed)
     }
@@ -411,7 +411,7 @@ impl StateStore {
     /// allowed attempts the convention is: attempts 1..budget-1
     /// return to ``Queued`` with ``next_attempt_at = now +
     /// retry_backoff_seconds``; attempt ``budget`` transitions to
-    /// ``Failed``. See CONTRACTS.md "Retry semantics".
+    /// ``Failed``.
     ///
     /// Returns the new phase so callers can log without re-reading
     /// state.

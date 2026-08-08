@@ -23,7 +23,7 @@ use crate::infra::error::{CaduceusError, CaduceusResult, VoiceError};
 
 /// HTTP header name for the GitHub API version pin.
 pub const GITHUB_API_VERSION_HEADER: &str = "X-GitHub-Api-Version";
-/// Value of the API version pin per `CONTRACTS.md` "Polling contract".
+/// Value of the API version pin per the polling contract in `src/github/poll.rs`.
 pub const GITHUB_API_VERSION_VALUE: &str = "2022-11-28";
 /// Accept header for the GitHub JSON API.
 pub const ACCEPT_VALUE: &str = "application/vnd.github+json";

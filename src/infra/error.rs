@@ -2,8 +2,7 @@
 //!
 //! [`CaduceusError`] is the canonical cross-cutting error type. It is
 //! re-exported from `lib.rs` and used by every module. The variant
-//! set and the field semantics are pinned by `CONTRACTS.md`
-//! "Error contract".
+//! set and the field semantics are pinned by the error contract.
 //!
 //! [`VoiceError`] is a separate type used by the public-voice
 //! validator. It is intentionally separate from
@@ -602,7 +601,7 @@ impl CaduceusError {
     }
 
     /// Map a daemon error to the process exit code announced in
-    /// `CONTRACTS.md` "CLI contract".
+    /// the CLI contract in `src/cli/mod.rs`.
     ///
     /// `run` returns 0 for processed/idle/concurrent/cadence/
     /// rate-limit/cancelled outcomes and 1 for configuration,
