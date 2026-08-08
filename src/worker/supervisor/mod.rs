@@ -51,23 +51,6 @@
 //! so the inherited-FD contract is satisfied without explicit
 //! `unsafe`.
 
-#![allow(dead_code, unused_imports)]
-
-use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::time::Duration;
-
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::process::{Child, Command as TokioCommand};
-
-use crate::github::issue::IssueKey;
-use crate::infra::error::{CaduceusError, CaduceusResult};
-
 // Submodule declarations and re-exports. These preserve the historical
 // `crate::worker::supervisor` public surface.
 

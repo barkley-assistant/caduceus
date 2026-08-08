@@ -1,20 +1,11 @@
-#![allow(dead_code, unused_imports)]
-use super::*;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use tokio::sync::Mutex;
-use tracing::{info, warn};
 
-use crate::github::issue::IssueKey;
 use crate::github::Client;
 use crate::infra::config::Config;
-use crate::infra::error::{CaduceusError, CaduceusResult};
 use crate::scheduler::Pool;
-use crate::state::queue::{ClaimToken, Phase, QueueEntry, StateStore};
-use crate::worker::supervisor::SupervisorOutcome;
-use crate::worktree::{GitRunner, Worktree};
+use crate::worktree::GitRunner;
 
 // Services — the dependency-injection surface the orchestrator uses
 

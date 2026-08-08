@@ -1,36 +1,15 @@
-#![allow(dead_code, unused_imports)]
 use super::*;
-use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use tokio_util::sync::CancellationToken;
 use tracing::info;
-use ulid::Ulid;
 
-use crate::daemon::orchestration::{
-    classify_error, ActiveRunGuard, FailureClass, Services, SystemClock,
-};
-use crate::finalize::{
-    archive_worker_result, commit_code_and_finalize, dry_run_finalize,
-    find_or_create_pr_and_finalize, post_completion_only, post_investigation_comment_and_finalize,
-    push_and_finalize, FinalizeContext, FinalizeOutput, FinalizeRequest,
-};
-use crate::github::poll::{discover_watched_repos, merge_outcomes, poll_code, poll_investigation};
+use crate::daemon::orchestration::{ActiveRunGuard, FailureClass};
+use crate::github::poll::{merge_outcomes, poll_code, poll_investigation};
 use crate::github::{Client, RateLimitInfo};
 use crate::infra::config::Config;
 use crate::infra::error::{CaduceusError, CaduceusResult};
-use crate::logging;
-use crate::scheduler::circuit::{AdmissionResult, CircuitConfig, CircuitStore};
-use crate::scheduler::{DrainConfig, LeaderToken, Pool};
-use crate::signals;
-use crate::state::checkpoints::{last_checkpoint_for_run, persist_checkpoint};
-use crate::state::meta::{CadenceDecision, CadenceGate, MetaStore, TickOutcome};
-use crate::state::queue::{ClaimedEntry, Phase, QueueEntry, StateStore, TicketType};
-use crate::state::store;
-use crate::worker::context::{build_context, encode_context, BuildInputs};
-use crate::worker::prompt::{build_prompt, write_prompt};
-use crate::worker::WorkerResult;
-use crate::worktree::{create as create_worktree, find_main_clone, GitRunner};
+use crate::state::meta::{CadenceGate, MetaStore, TickOutcome};
+use crate::state::queue::{Phase, QueueEntry, StateStore};
 
 // Awaiting-review poller — checks PR merge status for entries in
 // AwaitingReview phase and applies transitions.

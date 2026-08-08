@@ -1,19 +1,11 @@
-#![allow(dead_code, unused_imports)]
 use super::*;
-use std::path::PathBuf;
-use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::github::Client;
-
-use crate::github::issue::IssueKey;
 use crate::infra::config::Config;
-use crate::infra::error::{CaduceusError, CaduceusResult, VoiceError};
+use crate::infra::error::{CaduceusError, CaduceusResult};
 use crate::worker::WorkerResult;
 use crate::worktree::GitRunner;
-
-use sha2::{Digest, Sha256};
 
 // Code result finalization: inspect, validate, commit
 
@@ -211,13 +203,6 @@ fn drive_block_on<F: std::future::Future>(f: F) -> F::Output {
 /// we only carry the fields the daemon needs.
 #[derive(Clone, Debug)]
 struct GitStatusEntry {
-    /// 1-character kind: `M` (modified in index), ` `
-    /// (modified in worktree), `?` (untracked), `!`
-    /// (ignored), `s` (sparse). For untracked entries the
-    /// v2 header is `? <path>` and the worktree did not
-    /// include the symlink test in v2; we synthesise
-    /// `kind = "untracked"` for those.
-    kind: String,
     /// Path relative to the worktree root.
     path: String,
 }
@@ -279,8 +264,7 @@ fn git_status_v2(
                     });
                 }
                 let path = fields[8].to_string();
-                let xy = fields[1].chars().next().unwrap_or(' ').to_string();
-                entries.push(GitStatusEntry { kind: xy, path });
+                entries.push(GitStatusEntry { path });
                 i += 1;
             }
             Some('2') => {
@@ -292,18 +276,14 @@ fn git_status_v2(
                     });
                 }
                 let path = fields[9].to_string();
-                let xy = fields[1].chars().next().unwrap_or(' ').to_string();
-                entries.push(GitStatusEntry { kind: xy, path });
+                entries.push(GitStatusEntry { path });
                 // The renamed entry's orig path is the
                 // next NUL record; skip it.
                 i += 2;
             }
             Some('?') => {
                 let path = header_str[2..].to_string();
-                entries.push(GitStatusEntry {
-                    kind: "untracked".to_string(),
-                    path,
-                });
+                entries.push(GitStatusEntry { path });
                 i += 1;
             }
             Some('!') => {

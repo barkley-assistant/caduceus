@@ -25,8 +25,6 @@
 //! the lock short-circuit just as they do for every other
 //! state-mutating command.
 
-#![allow(dead_code)]
-
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};

@@ -1,23 +1,14 @@
-#![allow(dead_code, unused_imports)]
 use super::*;
 use std::collections::HashSet;
 use std::ffi::OsStr;
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
-use chrono::{DateTime, Utc};
-use fs2::FileExt;
-use nix::unistd::pipe;
-use tokio::process::Command as TokioCommand;
 use url::Url;
 
 use crate::github::issue::IssueKey;
 use crate::infra::config::Config;
-use crate::infra::error::{scrub, CaduceusError, CaduceusResult};
+use crate::infra::error::{CaduceusError, CaduceusResult};
 
 /// Outcome of [`find_main_clone`]: the resolved on-disk clone
 /// plus the metadata the daemon needs to create worktrees off

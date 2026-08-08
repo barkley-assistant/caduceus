@@ -34,19 +34,13 @@
 //! the caller but does not roll back the durable phase change — the
 //! reaper cleans up orphaned claims idempotently.
 
-#![allow(dead_code)]
-#![allow(unused_imports)]
-
 use std::collections::BTreeMap;
-use std::fs::{self, File, OpenOptions};
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::fs;
+use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
-use fs2::FileExt;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::github::issue::IssueKey;
 use crate::infra::error::{CaduceusError, CaduceusResult};
@@ -428,9 +422,7 @@ pub mod store;
 use self::claim::*;
 use self::daemon_lock::*;
 use self::reaper::*;
-use self::store::*;
 
 pub use claim::*;
 pub use daemon_lock::*;
 pub use reaper::*;
-pub use store::*;

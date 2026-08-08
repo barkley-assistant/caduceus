@@ -7,8 +7,6 @@
 //! entry point for the public-voice rule; nothing else in the
 //! crate bypasses it.
 
-#![allow(dead_code)]
-
 // Submodule declarations and re-exports.
 
 pub mod cache;

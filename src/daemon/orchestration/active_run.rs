@@ -1,4 +1,3 @@
-#![allow(dead_code, unused_imports)]
 use super::*;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -8,13 +7,15 @@ use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 use crate::github::issue::IssueKey;
-use crate::github::Client;
-use crate::infra::config::Config;
-use crate::infra::error::{CaduceusError, CaduceusResult};
-use crate::scheduler::Pool;
-use crate::state::queue::{ClaimToken, Phase, QueueEntry, StateStore};
+use crate::infra::error::CaduceusResult;
+use crate::state::queue::{ClaimToken, Phase, StateStore};
 use crate::worker::supervisor::SupervisorOutcome;
-use crate::worktree::{GitRunner, Worktree};
+use crate::worktree::Worktree;
+
+// test-only: used by the inline test module in this file; remove when
+// inline tests move to tests/ (see #144)
+#[allow(unused_imports)]
+use crate::infra::error::CaduceusError;
 
 // ActiveRunGuard — async cleanup primitive
 
@@ -349,31 +350,6 @@ impl Drop for ActiveRunGuard {
                 run_id = %run_id,
                 "ActiveRunGuard dropped while finish_* lock was contended"
             );
-        }
-    }
-}
-
-/// Read-only view of an entry the orchestrator might want to
-/// surface to structured logs before transitioning it. Wraps a
-/// [`QueueEntry`] reference so the caller does not need to
-/// import the queue module directly.
-#[derive(Clone, Debug)]
-pub struct EntrySnapshot {
-    pub key: IssueKey,
-    pub phase: Phase,
-    pub attempts: u32,
-    pub last_error: Option<String>,
-    pub last_run_id: Option<String>,
-}
-
-impl From<&QueueEntry> for EntrySnapshot {
-    fn from(entry: &QueueEntry) -> Self {
-        Self {
-            key: entry.key.clone(),
-            phase: entry.phase,
-            attempts: entry.attempts,
-            last_error: entry.last_error.clone(),
-            last_run_id: entry.last_run_id.clone(),
         }
     }
 }
