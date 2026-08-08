@@ -1,4 +1,4 @@
-"""Caduceus v0.1 — Hermes plugin adapter (stdlib-only).
+"""Caduceus v1.0.0 — Hermes plugin adapter (stdlib-only).
 
 This module is the Hermes-facing surface for Caduceus. It exposes a single
 ``register(ctx)`` entry point. Importing this module is intentionally
@@ -12,7 +12,7 @@ and enable it before any Rust binary has been built. The reference bridge
 template lives under ``plugin-assets/`` and is *not* imported here.
 
 Three registrations are wired up at ``register`` time, per the Hermes
-plugin compatibility contract in ``planning/caduceus-v0.1/CONTRACTS.md``:
+plugin compatibility contract:
 
 1. ``ctx.register_skill("caduceus", <root>/skills/caduceus/SKILL.md, ...)``,
    resolvable as ``caduceus:caduceus``.
@@ -265,7 +265,7 @@ def register(ctx: Any) -> None:
     )
     ctx.register_cli_command(
         name=PLUGIN_NAME,
-        help="Caduceus v0.1 lifecycle (setup, doctor, status, cron).",
+        help="Caduceus v1.0.0 lifecycle (setup, doctor, status, cron).",
         setup_fn=_register_caduceus_cli,
         handler_fn=_caduceus_cli_command,
         description=(
