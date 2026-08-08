@@ -16,7 +16,7 @@ use caduceus::issue::IssueKey;
 use caduceus::queue::StateStore;
 use caduceus::DaemonLock;
 
-/// Caduceus v0.1: poll GitHub, queue one unit of work per tick, finalise
+/// Caduceus v1.0.0: poll GitHub, queue one unit of work per tick, finalise
 /// code or investigation results.
 #[derive(Debug, Parser)]
 #[command(
