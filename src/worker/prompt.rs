@@ -400,7 +400,7 @@ fn ticket_type_label(t: TicketType) -> &'static str {
 
 #[cfg(test)]
 mod inline_tests {
-    use super::*;
+    use super::{build_prompt, write_prompt, IssueDetail, TicketType, MAX_PROMPT_BYTES};
     use crate::github::issue::IssueKey;
     use crate::github::issue::{IssueComment, IssueEvent};
     use chrono::{TimeZone, Utc};

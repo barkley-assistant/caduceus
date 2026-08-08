@@ -346,7 +346,7 @@ pub fn open_in(state_dir: &Path) -> CaduceusResult<Connection> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{open, open_in, params, Connection, PathBuf, DB_FILENAME, SCHEMA_VERSION};
     use std::fs;
 
     fn db_path() -> PathBuf {

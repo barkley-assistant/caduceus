@@ -228,7 +228,10 @@ pub fn delete_checkpoint(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        checkpoint_for_run, last_checkpoint_for_run, persist_checkpoint, CheckpointRow,
+        FinalizationStage,
+    };
     use crate::state::store;
 
     #[test]

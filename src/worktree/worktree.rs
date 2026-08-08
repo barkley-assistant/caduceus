@@ -1,4 +1,5 @@
-use super::*;
+use super::{runner_inner_cfg, GitOutput, GitRunner, RepositoryInfo};
+
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 

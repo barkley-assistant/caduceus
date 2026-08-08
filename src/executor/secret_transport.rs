@@ -100,7 +100,7 @@ impl Drop for SecretHandle {
 
 #[cfg(test)]
 mod inline_tests {
-    use super::*;
+    use super::EphemeralSecretFile;
     use std::panic;
 
     #[test]

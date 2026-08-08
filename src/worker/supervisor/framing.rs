@@ -1,4 +1,4 @@
-use super::*;
+use super::{MAX_FRAME_BYTES, PROTOCOL_VERSION};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 

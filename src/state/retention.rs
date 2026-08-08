@@ -77,7 +77,7 @@ pub fn prune_backups(state_dir: &Path, retention_days: u64) -> CaduceusResult<u6
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{prune_backups, PathBuf};
     use std::fs;
 
     fn dir() -> PathBuf {

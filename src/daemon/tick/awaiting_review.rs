@@ -1,4 +1,4 @@
-use super::*;
+use super::Outcome304;
 
 use chrono::{DateTime, Utc};
 use tracing::info;
@@ -295,7 +295,10 @@ pub fn exit_code_for_tests(outcome: &TickOutcome) -> u8 {
 
 #[cfg(test)]
 mod inline_tests {
-    use super::*;
+    use super::{
+        exit_code_for, extract_http_status, map_phase_to_outcome, outcome_for_class, CaduceusError,
+        FailureClass, Phase, TickOutcome,
+    };
 
     #[test]
     pub(crate) fn exit_code_for_outcome_table() {

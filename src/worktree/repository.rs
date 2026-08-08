@@ -1,4 +1,5 @@
-use super::*;
+use super::GitRunner;
+
 use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::fs;

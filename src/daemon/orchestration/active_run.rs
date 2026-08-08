@@ -1,4 +1,5 @@
-use super::*;
+use super::Clock;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -438,7 +439,8 @@ impl Clock for FakeClock {
 
 #[cfg(test)]
 mod inline_tests {
-    use super::*;
+    use super::super::{classify_error, Clock, FailureClass, SystemClock};
+    use super::{Arc, CaduceusError, DateTime, FakeClock, IssueKey, PathBuf, Utc};
     use crate::infra::config::Config;
     use crate::state::queue::{ClaimFileBody, ClaimToken, CLAIM_FILE_VERSION};
 

@@ -181,7 +181,7 @@ pub fn outcome_from_signal(kind: SignalKind) -> SignalOutcome {
 
 #[cfg(test)]
 mod inline_tests {
-    use super::*;
+    use super::{Duration, SignalKind, ESCALATE_GRACE};
 
     #[test]
     fn signal_kind_labels_match_libc_names() {

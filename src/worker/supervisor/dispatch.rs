@@ -1,4 +1,9 @@
-use super::*;
+use super::{
+    build_supervisor_command, clear_heartbeat, read_frame_async, read_proc_starttime,
+    verify_identity, write_frame_async, write_heartbeat_record, ControlFrame, Heartbeat,
+    SupervisorOutcome, WorkerRunPaths, HEARTBEAT_FILE_VERSION, MAX_FRAME_BYTES,
+};
+
 use std::path::Path;
 use std::time::Duration;
 
@@ -408,7 +413,12 @@ impl IntoOutcome for CaduceusError {
 
 #[cfg(test)]
 mod inline_tests {
-    use super::*;
+    use super::super::{
+        clear_heartbeat, decode_frame, encode_frame, open_transcript, parse_starttime_from_stat,
+        read_heartbeat, read_proc_starttime, truncate_transcript, verify_identity, write_heartbeat,
+        BoundedTranscriptWriter, ControlFrame, WorkerRunPaths, MAX_FRAME_BYTES,
+    };
+    use super::{PermissionsExt, Write};
 
     #[test]
     fn frame_round_trip() {

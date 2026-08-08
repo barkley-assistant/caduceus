@@ -492,7 +492,9 @@ impl CircuitStore {
 
 #[cfg(test)]
 mod inline_tests {
-    use super::*;
+    use super::{
+        AdmissionResult, CircuitConfig, CircuitScope, CircuitState, CircuitStore, Connection,
+    };
     use crate::daemon::orchestration::FakeClock;
 
     fn circuit_store() -> (CircuitStore, FakeClock) {
