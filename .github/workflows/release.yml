@@ -1,0 +1,86 @@
+name: release
+
+# Cut a GitHub release from a version tag. This workflow is the
+# release's only gate: the main CI workflow is branch-scoped, so a
+# tag push runs nothing else. Keep the gates here in sync with
+# ci.yml (fmt, clippy -D warnings, cargo test).
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify tag matches Cargo.toml
+        run: |
+          cargo_version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [ "$cargo_version" != "$tag_version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $cargo_version"
+            exit 1
+          fi
+          echo "version $cargo_version verified"
+
+      - name: Gate — formatting
+        run: cargo fmt --check
+
+      - name: Gate — clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Gate — tests
+        run: cargo test --locked --all-targets
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          tar -czf "dist/caduceus-${GITHUB_REF_NAME}-x86_64-unknown-linux-gnu.tar.gz" \
+            -C target/release caduceus
+          (cd dist && sha256sum *.tar.gz > SHA256SUMS)
+          ls -la dist
+
+      - name: Extract changelog section for this version
+        run: |
+          python3 - "$GITHUB_REF_NAME" > release-notes.md <<'EOF'
+          import re
+          import sys
+
+          tag = sys.argv[1].lstrip("v")
+          text = open("CHANGELOG.md").read()
+          # Match "## [X.Y.Z] - <date>" through the next "## [" header
+          # (or end of file). The [Unreleased] section above it is
+          # deliberately not captured.
+          match = re.search(
+              rf"^## \[{re.escape(tag)}\] - .*?(?=^## \[|\Z)", text, re.M | re.S
+          )
+          if not match:
+              print(
+                  f"::error::no changelog section for version {tag} "
+                  f"(expected '## [{tag}] - <date>')",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+          sys.stdout.write(match.group(0).rstrip() + "\n")
+          EOF
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: release-notes.md
+          files: dist/*
