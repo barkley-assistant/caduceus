@@ -50,3 +50,6 @@ config.local.*
 # Rooted for the same reason as the runtime artefacts above.
 prompts/
 /prompts/
+
+# Hermes release-plan files; never commit them.
+/.hermes/

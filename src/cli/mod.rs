@@ -477,8 +477,9 @@ fn resolve_config_path_for_write() -> Option<std::path::PathBuf> {
 /// under `<state_dir>/state.json`. The import path is
 /// idempotent: a second invocation with the same input
 /// against an unchanged live state is a no-op. See
-/// "The migrate-state Subcommand" in `docs/state-recovery.md` for the
-/// rollout, rollback, and recovery procedures.
+/// "The migrate-state Subcommand" in
+/// https://github.com/barkley-assistant/caduceus/wiki/State-Recovery for
+/// the rollout, rollback, and recovery procedures.
 fn run_migrate_state(from: &std::path::Path, dry_run: bool) -> CaduceusResult<()> {
     let config = match std::env::var_os("CADUCEUS_CONFIG") {
         Some(path) => Config::load_from(std::path::Path::new(&path))?,

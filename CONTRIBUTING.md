@@ -51,7 +51,8 @@ to the actual change; the example is not a prescribed value.
 - Use `rustfmt` and Ruff defaults. Keep Markdown links relative, tag fenced
   code blocks, and soft-wrap prose at 80 characters.
 - Do not edit daemon state, claim files, or transcripts directly. Use the
-  recovery procedures in [docs/state-recovery.md](docs/state-recovery.md).
+  recovery procedures in
+  [State-Recovery](https://github.com/barkley-assistant/caduceus/wiki/State-Recovery).
 
 ## License
 

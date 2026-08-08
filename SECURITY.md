@@ -27,8 +27,8 @@ respective maintainers.
 
 Treat Caduceus state, claims, transcripts, configuration, and credentials as
 sensitive operational data. Follow the recovery procedures in
-[docs/state-recovery.md](docs/state-recovery.md); do not edit daemon-owned state
-files directly.
+[State-Recovery](https://github.com/barkley-assistant/caduceus/wiki/State-Recovery);
+do not edit daemon-owned state files directly.
 
 The public-comment filter is a security-relevant control. Report any bypass
 that exposes internal tools, credentials, or other sensitive information through

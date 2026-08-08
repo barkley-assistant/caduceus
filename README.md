@@ -1,4 +1,4 @@
-![Caduceus logo](https://github.com/barkley-assistant/caduceus/blob/main/docs/caduceus-logo.webp)
+![Caduceus logo](caduceus-logo.webp)
 
 # Caduceus
 
@@ -129,7 +129,7 @@ cargo build --release --locked
 install -m 0755 target/release/caduceus ~/.local/bin/caduceus
 
 # config at ~/.config/caduceus/config.yaml under `caduceus:`
-# see docs/configuration.md for the full schema
+# see https://github.com/barkley-assistant/caduceus/wiki/Configuration for the full schema
 ```
 
 A standalone install **requires** you set `worker_command`
@@ -167,9 +167,9 @@ out loud.
 ## The four keys you need to know about
 
 You will not get far without these. The full schema lives
-in [`docs/configuration.md`](docs/configuration.md) and the
-wiring lives in
-[`docs/architecture.md`](docs/architecture.md); this is the
+in [configuration](https://github.com/barkley-assistant/caduceus/wiki/Configuration)
+and the wiring lives in
+[Home](https://github.com/barkley-assistant/caduceus/wiki/Home); this is the
 short version with the opinions attached.
 
 - `watched_repos` — the list of `owner/repo` pairs the daemon
@@ -200,49 +200,50 @@ short version with the opinions attached.
   step 3 of the 60-second orientation above.
 
 Everything else lives in
-[`docs/configuration.md`](docs/configuration.md). If a config
-key is not named there, it is not part of the public contract
+[configuration](https://github.com/barkley-assistant/caduceus/wiki/Configuration).
+If a config key is not named there, it is not part of the public contract
 surface; the daemon ignores it, which is the honest answer to
 "why does my custom key do nothing?"
 
 ## The Operator's Manual
 
 Moved out of the README on purpose. The README is the
-front door; the manual is in `docs/`:
+front door; the manual is in the
+[wiki](https://github.com/barkley-assistant/caduceus/wiki/Home):
 
-- [`docs/installation.md`](docs/installation.md) —
+- [installation](https://github.com/barkley-assistant/caduceus/wiki/Installation) —
   Hermes vs standalone, prerequisites, Hermes plugin
   lifecycle (install / update / remove), the cron
   contract, and the supported-host tier table.
-- [`docs/configuration.md`](docs/configuration.md) —
+- [configuration](https://github.com/barkley-assistant/caduceus/wiki/Configuration) —
   every config field, defaults, resolution order,
   environment variables.
-- [`docs/the-bridge.md`](docs/the-bridge.md) — the
+- [the-bridge](https://github.com/barkley-assistant/caduceus/wiki/The-Bridge) — the
   `worker-bridge.py` contract, the `CADUCEUS_*` env
   vars, the `worker-result.json` schema, how to plug
   in a different harness.
-- [`docs/state-recovery.md`](docs/state-recovery.md) —
+- [state-recovery](https://github.com/barkley-assistant/caduceus/wiki/State-Recovery) —
   corrupt state, stuck issues, the `migrate-state`
   command, backup retention.
-- [`docs/public-voice.md`](docs/public-voice.md) — the
+- [public-voice](https://github.com/barkley-assistant/caduceus/wiki/Home) — the
   forbidden-strings rule, why it exists, how to
   override, what happens when a comment fails the
   check.
-- [`docs/architecture.md`](docs/architecture.md) —
+- [architecture](https://github.com/barkley-assistant/caduceus/wiki/Home) —
   internal design, the worker supervisor, the lock
   discipline, why we shell out to Git instead of using
   libgit2.
-- [`docs/plugin-lifecycle.md`](docs/plugin-lifecycle.md) —
+- [plugin-lifecycle](https://github.com/barkley-assistant/caduceus/wiki/Home) —
   what the Hermes plugin host actually loads, what the
   manifest fields do, what we don't put in the manifest
   and why.
-- [`docs/hermes-integration.md`](docs/hermes-integration.md) —
+- [hermes-integration](https://github.com/barkley-assistant/caduceus/wiki/Home) —
   cron delivery, the gateway dependency, the chat
   status surface.
-- [`docs/troubleshooting.md`](docs/troubleshooting.md) —
+- [troubleshooting](https://github.com/barkley-assistant/caduceus/wiki/Troubleshooting) —
   the common failure modes with the actual error text
   and the actual fix.
-- [`docs/faq.md`](docs/faq.md) — short.
+- [faq](https://github.com/barkley-assistant/caduceus/wiki/FAQ) — short.
 
 ### Transcripts
 
@@ -252,8 +253,8 @@ both the worker's stdout and stderr into it,
 byte-interleaved without stream markers, up to
 `transcript_max_bytes`; output past the cap is dropped
 behind a truncation marker line. See
-[`docs/configuration.md`](docs/configuration.md) for the
-limit and retention knobs.
+[configuration](https://github.com/barkley-assistant/caduceus/wiki/Configuration)
+for the limit and retention knobs.
 
 ## Replacing a prior install
 
@@ -367,7 +368,7 @@ detects malformed state, it preserves the rejected bytes
 as a timestamped `state.json.corrupt-*` archive and
 refuses to proceed. Do not edit that archive or the live
 state in place. Follow the supported recovery process in
-[state recovery](docs/state-recovery.md).
+[state recovery](https://github.com/barkley-assistant/caduceus/wiki/State-Recovery).
 
 ### Retrying failed work
 
@@ -435,7 +436,8 @@ Read this before you install it. We mean it.
   OpenCode because that's what we use internally. Swap
   the bridge for pi, codex, claude-code, or your own
   script, and the daemon will not notice or care. See
-  `docs/the-bridge.md` for the contract.
+  [the-bridge](https://github.com/barkley-assistant/caduceus/wiki/The-Bridge)
+  for the contract.
 - **Not a replacement for code review.** Every PR that
   Caduceus opens is opened for a human to review and
   merge. There is no auto-merge today. Policy-gated

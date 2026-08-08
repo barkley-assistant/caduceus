@@ -6,14 +6,16 @@
 //! consumers and integration tests can reach them without depending on the
 //! internal module layout.
 //!
-//! The crate is organised into the subdirectories `docs/architecture.md`
-//! describes: `github/`, `worker/`, `state/`, `daemon/`, `worktree/`,
-//! `finalize/`, `cli/`, `infra/`. Only a tightly bounded set of types is
-//! re-exported here so downstream consumers and integration tests can reach
-//! them without depending on the internal module layout.
+//! The crate is organised into the subdirectories described in
+//! https://github.com/barkley-assistant/caduceus/wiki/Home: `github/`,
+//! `worker/`, `state/`, `daemon/`, `worktree/`, `finalize/`, `cli/`,
+//! `infra/`. Only a tightly bounded set of types is re-exported here so
+//! downstream consumers and integration tests can reach them without
+//! depending on the internal module layout.
 //!
-//! See `docs/architecture.md` and the module docstrings for the normative
-//! scope of every module in this crate.
+//! See https://github.com/barkley-assistant/caduceus/wiki/Home and the
+//! module docstrings for the normative scope of every module in this
+//! crate.
 
 #![forbid(unsafe_code)]
 #![warn(missing_debug_implementations)]
