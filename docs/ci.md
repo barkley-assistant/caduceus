@@ -50,7 +50,7 @@ Both workflows use `paths-ignore` so docs-only pushes do not
 pay the full Rust+Python build cost. A push that touches only
 `docs/`, `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`,
 `AGENTS.md`, `RELEASING.md`, `SECURITY.md`, `LICENSE`,
-`.github/ISSUE_TEMPLATE/**`, or `MIGRATION.md` skips the build
+`.github/ISSUE_TEMPLATE/**` skips the build
 entirely.
 
 A change to anything else — Rust source, Python tests,

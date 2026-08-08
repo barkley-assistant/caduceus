@@ -1,13 +1,12 @@
 //! `caduceus` binary entry point.
 //!
-//! The CLI parses the canonical subcommands listed in `CONTRACTS.md` under
-//! "CLI contract": `run`, `status`, `worktree-gc`, `queue reset`, and
+//! The CLI parses the canonical subcommands listed in the CLI contract in
+//! `src/cli/mod.rs`: `run`, `status`, `worktree-gc`, `queue reset`, and
 //! `migrate-state`. A no-argument invocation is equivalent to `caduceus run`
 //! — that rewriting happens inside the CLI parser, before Clap dispatches,
 //! so a bare cron tick never prints help or version output.
 //!
-//! `run` is silent on success (per the Cron model in `CONTRACTS.md`); all
-//! diagnostics go to stderr.
+//! `run` is silent on success; all diagnostics go to stderr.
 //!
 //! The hidden `__worker-supervisor` mode is dispatched before public
 //! command parsing — the token is matched only as the first argument
@@ -47,8 +46,9 @@ fn main() -> ExitCode {
 
     // The CLI router inspects `args_os` and inserts `run` when the user
     // invoked `caduceus` with no arguments, before Clap parsing. This is
-    // the contractually documented behaviour (CONTRACTS.md, "Implement
-    // no-argument behavior by inspecting `args_os`...").
+    // the contractually documented behaviour (the CLI contract in
+    // `src/cli/mod.rs`: "Implement no-argument behavior by inspecting
+    // `args_os`...").
     match cli::run() {
         Ok(()) => ExitCode::from(0),
         Err(err) => {

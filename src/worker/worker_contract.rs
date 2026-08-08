@@ -48,8 +48,7 @@ use serde::{Deserialize, Serialize};
 use crate::github::issue::IssueKey;
 use crate::infra::error::{CaduceusError, CaduceusResult};
 
-/// Hard cap on the worker-result file size per `CONTRACTS.md`
-/// "Worker environment and result".
+/// Hard cap on the worker-result file size.
 pub const MAX_RESULT_FILE_BYTES: u64 = 1 << 20; // 1 MiB
 
 /// Maximum size of the `summary` field.
@@ -64,8 +63,8 @@ pub const MAX_ARTIFACT_KEY_LEN: usize = 128;
 /// Maximum number of artifact entries.
 pub const MAX_ARTIFACTS: usize = 100;
 
-/// Default allowlist entries preserved from the parent environment
-/// (CONTRACTS.md "Worker environment and result"). Each entry is
+/// Default allowlist entries preserved from the parent environment.
+/// Each entry is
 /// an exact portable variable name; the daemon never expands
 /// partial matches here — the matching allowlist below carries
 /// the documented prefix patterns.
@@ -82,7 +81,6 @@ pub const DEFAULT_ALLOWLIST_PREFIXES: &[&str] =
 
 /// Hard-deny list: exact variable names that never reach the
 /// worker even when an operator adds them to the allowlist.
-/// Source: CONTRACTS.md "Worker environment and result".
 const DENIED_EXACT_VARS: &[&str] = &[
     "GITHUB_TOKEN",
     "GH_TOKEN",
@@ -98,8 +96,7 @@ const INTERNAL_SECRET_MARKERS: &[&str] = &["SECRET", "TOKEN"];
 
 /// Result the bridge writes to `<worktree>/worker-result.json`.
 ///
-/// Field semantics and size limits are pinned in `CONTRACTS.md`
-/// under "Worker environment and result".
+/// Field semantics and size limits are pinned.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkerResult {

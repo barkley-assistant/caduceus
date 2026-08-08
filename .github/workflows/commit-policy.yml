@@ -1,4 +1,4 @@
-# Conventional Commits subject check (CONTRACTS.md CI-003).
+# Conventional Commits subject check (CI-003).
 #
 # Validates that every commit on the PR (or the squash title,
 # when the repo enforces squash merge) follows the
@@ -28,7 +28,6 @@ on:
       - 'SECURITY.md'
       - 'LICENSE'
       - '.github/ISSUE_TEMPLATE/**'
-      - 'MIGRATION.md'
 
 concurrency:
   group: commit-policy-${{ github.ref }}

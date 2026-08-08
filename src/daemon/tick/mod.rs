@@ -1,7 +1,7 @@
 //! The single canonical tick.
 //!
 //! [`run`], [`run_with_config`], and [`tick`] together implement
-//! the per-tick controller described in `CONTRACTS.md`. The
+//! the per-tick controller. The
 //! controller is the only entry point the daemon's CLI exposes:
 //! a no-argument `caduceus` invocation, the explicit `caduceus run`,
 //! and the cron tick all funnel through [`run`].

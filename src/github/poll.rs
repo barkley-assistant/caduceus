@@ -55,9 +55,8 @@ pub struct IssueSummary {
 /// why.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IssuePollDiagnostic {
-    /// The issue matched both trigger labels. Per
-    /// `CONTRACTS.md` "Polling contract" it is not enqueued
-    /// until a human removes one.
+    /// The issue matched both trigger labels. Per the polling
+    /// contract it is not enqueued until a human removes one.
     Ambiguous {
         key: IssueKey,
         title: String,
@@ -121,7 +120,7 @@ pub async fn discover_watched_repos(client: &Client, cfg: &Config) -> CaduceusRe
 }
 
 fn validated_configured_repos(configured: &[String]) -> Vec<String> {
-    // Per CONTRACTS.md "Issue identity and queue schema":
+    // Per the queue schema in `src/state/queue/mod.rs`:
     // configured repositories deduplicate case-insensitively.
     let mut seen: BTreeSet<String> = BTreeSet::new();
     let mut out: Vec<String> = Vec::new();

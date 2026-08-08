@@ -1,7 +1,6 @@
 //! Queue state, claim token, and the crash-safe [`StateStore`]. The
 //! `IssueKey` type lives in [`crate::issue`] but its parsing and the
-//! queue's versioned envelope are owned by this module per
-//! `CONTRACTS.md` "Issue identity and queue schema".
+//! queue's versioned envelope are owned by this module.
 //!
 //! Serialization is schema-stable:
 //!
@@ -64,15 +63,15 @@ pub const STATE_FILENAME: &str = "state.json";
 pub const CLAIMS_DIRNAME: &str = "claims";
 
 /// Name of the `flock` used to serialise mutating [`StateStore`]
-/// operations. Distinct from the daemon-wide `daemon.lock` declared
-/// in CONTRACTS.md invariant #1, which covers a whole tick.
+/// operations. Distinct from the daemon-wide `daemon.lock`, which
+/// covers a whole tick.
 pub const STATE_LOCK_FILENAME: &str = "state.lock";
 
 /// Name of the claim file's on-disk format. Bumping it is a breaking
 /// change — older files are quarantined by the reaper.
 pub const CLAIM_FILE_VERSION: u32 = 1;
 
-/// Phase of one issue in the queue. See `CONTRACTS.md`.
+/// Phase of one issue in the queue.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[serde(deny_unknown_fields)]
@@ -104,7 +103,7 @@ pub enum TicketType {
 }
 
 /// Finalization stage. Persisted atomically after every idempotent side
-/// effect (see `CONTRACTS.md` "Finalization contract").
+/// effect (see the FINAL-001 contract in `src/state/checkpoints.rs`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[serde(deny_unknown_fields)]

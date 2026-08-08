@@ -1,5 +1,5 @@
 //! Configuration: typed loader for the YAML configuration file and the
-//! env-variable overrides listed in `CONTRACTS.md` under "Configuration".
+//! env-variable overrides.
 //!
 //! The public [`Config`] is the daemon's canonical view. It is built
 //! from a private [`RawConfig`] deserialisation layer that keeps
@@ -12,10 +12,10 @@
 //!
 //! Tests must use [`Config::test_defaults`] rooted at a temp dir; the
 //! daemon never relies on a host-dependent `Config::defaults()`
-//! constructor (CONTRACTS.md "Configuration").
+//! constructor.
 //!
-//! Public field list, semantics, and defaults are pinned by
-//! `CONTRACTS.md` — every field documented there must be present.
+//! Public field list, semantics, and defaults are pinned here —
+//! every field documented must be present.
 
 #![allow(unused_imports)]
 
@@ -29,7 +29,7 @@ use crate::infra::error::{CaduceusError, CaduceusResult};
 
 /// GitHub credential variable names that must never appear in the
 /// worker environment allowlist, even if the operator explicitly adds
-/// them. Source: CONTRACTS.md "Worker environment and result".
+/// them. Source: the worker-result contract in `src/worker/worker_contract.rs`.
 pub const DENIED_ENV_VARS: &[&str] = &["GITHUB_TOKEN", "CADUCEUS_GITHUB_TOKEN", "GH_TOKEN"];
 
 /// Worker command tokens that are always rejected as interpolation.
@@ -39,7 +39,7 @@ const FORBIDDEN_INTERPOLATION_TOKENS: &[&str] = &["$HOME", "${HOME}", "~", "$USE
 pub const PLUGIN_ROOT_TOKEN: &str = "${plugin_root}";
 
 /// Default values the daemon falls back to when an operator omits a
-/// field. Defaults match the block-quoted values in CONTRACTS.md "Configuration".
+/// field.
 pub const DEFAULT_POLL_INTERVAL_SECONDS: u64 = 120;
 pub const DEFAULT_WORKER_TIMEOUT_SECONDS: u64 = 3600;
 pub const DEFAULT_HTTP_TIMEOUT_SECONDS: u64 = 60;
@@ -87,7 +87,7 @@ pub const DEFAULT_OCI_STOP_TIMEOUT_SECONDS: u64 = 30;
 pub const DEFAULT_OCI_KILL_TIMEOUT_SECONDS: u64 = 10;
 pub const DEFAULT_OCI_RECONCILE_TIMEOUT_SECONDS: u64 = 60;
 
-/// Caduceus configuration. Field semantics are pinned in `CONTRACTS.md`.
+/// Caduceus configuration. Field semantics are pinned here.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -847,7 +847,7 @@ impl Config {
 
     /// Deterministic root-anchored defaults for tests. Avoids any
     /// host-dependent `Config::defaults()` constructor that would make
-    /// tests flake (CONTRACTS.md "Configuration").
+    /// tests flake.
     pub fn test_defaults(root: &Path) -> Self {
         let state_dir = root.join("state");
         let log_path = state_dir.join("processor.log");
@@ -1094,7 +1094,7 @@ impl Config {
 
     /// Resolve the GitHub authentication token for this configuration.
     ///
-    /// Hierarchy per `CONTRACTS.md` "Configuration":
+    /// Hierarchy:
     ///
     /// 1. Explicit `github_token` field, when non-empty.
     /// 2. `$CADUCEUS_GITHUB_TOKEN` environment variable, when non-empty.

@@ -12,8 +12,8 @@
 //! re-exported here so downstream consumers and integration tests can reach
 //! them without depending on the internal module layout.
 //!
-//! See [`CONTRACTS.md`] for the normative scope of every module in this
-//! crate.
+//! See `docs/architecture.md` and the module docstrings for the normative
+//! scope of every module in this crate.
 
 #![forbid(unsafe_code)]
 #![warn(missing_debug_implementations)]
@@ -79,7 +79,7 @@ pub use crate::daemon::signals;
 pub use crate::daemon::status;
 pub use crate::daemon::tick;
 
-// Bounded symbol re-exports per CONTRACTS.md.
+// Bounded symbol re-exports.
 
 pub use crate::daemon::orchestration::{
     ActiveRunGuard, Clock, FailureClass, FakeClock, FinishOutcome, Git, GithubClient, Services,

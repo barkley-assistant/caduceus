@@ -2,8 +2,7 @@
 //!
 //! This module owns the in-process supervisor that the daemon
 //! uses to spawn and tear down the bridge. The contract is
-//! pinned by `CONTRACTS.md` "Worker environment and result" and
-//! "Hermes plugin compatibility contract".
+//! pinned by the worker-result contract in `src/worker/worker_contract.rs`.
 //!
 //! * The public daemon never spawns the bridge directly. It
 //!   re-execs the same `caduceus` binary in a hidden

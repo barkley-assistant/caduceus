@@ -131,7 +131,7 @@ pub(crate) fn write_and_sync_claim(file: &File, body: &[u8]) -> CaduceusResult<(
     let mut writer = file;
     writer.write_all(body)?;
     writer.sync_all()?;
-    // CONTRACTS.md "Filesystem permissions": claim files are
+    // Claim files are
     // written with mode 0600. OpenOptions + create_new respects
     // the process umask, which on some distros lets group-read
     // through (mode 0o640 or 0o660). Force 0600 here so the
@@ -274,7 +274,7 @@ pub fn unlink_claim_best_effort(claims_dir: &Path, claim: &ClaimToken) {
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
         Err(err) => {
-            // Per CONTRACTS.md: a claim-unlink failure is reported
+            // A claim-unlink failure is reported
             // without rolling back the durable phase and is repaired
             // idempotently by the reaper. We log and continue; the
             // reaper will pick it up.

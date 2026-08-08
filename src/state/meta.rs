@@ -69,8 +69,8 @@ pub const META_FILENAME: &str = "state_meta.json";
 /// Marker filename written when corruption is detected.
 pub const CORRUPT_MARKER_FILENAME: &str = "state_meta.corrupt";
 
-/// Persisted tick metadata. Field semantics are pinned by
-/// `CONTRACTS.md` under "State metadata and status".
+/// Persisted tick metadata. Field semantics are pinned by the
+/// StateMeta contract.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StateMeta {
@@ -164,8 +164,8 @@ impl RateLimitObservation {
     }
 }
 
-/// One diagnostic entry. Field semantics are pinned by
-/// `CONTRACTS.md`.
+/// One diagnostic entry. Field semantics are pinned by the
+/// StateMeta contract.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DaemonDiagnostic {
     pub timestamp: DateTime<Utc>,
