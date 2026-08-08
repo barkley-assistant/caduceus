@@ -1,4 +1,4 @@
-//! Caduceus v0.1
+//! Caduceus v1.0.0
 //!
 //! Unix single-host, one-shot Rust daemon. This crate ships the `caduceus`
 //! binary plus its library surface. Modules expose their canonical paths;

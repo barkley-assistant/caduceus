@@ -1,4 +1,4 @@
-# Caduceus v0.1 — Hermes plugin manifest
+# Caduceus v1.0 — Hermes plugin manifest
 #
 # Field set is restricted to the ones the Hermes Agent v0.18.2
 # directory-plugin loader actually consumes (see
@@ -19,7 +19,7 @@
 # tests/fixtures/negative_plugin.yaml locks this rule.
 manifest_version: 1
 name: caduceus
-version: 0.1.0
+version: 1.0.0
 description: >-
   Hermes-managed Unix daemon that polls GitHub for labeled issues, runs a
   user-configured AI harness in isolated worktrees under a hard timeout,
