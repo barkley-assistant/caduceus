@@ -291,78 +291,23 @@ pub fn exit_code_for_tests(outcome: &TickOutcome) -> u8 {
     exit_code_for(outcome)
 }
 
-// Inline tests
+/// Test seam: re-export the failure-class→outcome mapping so
+/// integration tests can assert the mapping without owning a
+/// runtime. Identical to the private [`outcome_for_class`].
+pub fn outcome_for_class_for_tests(class: FailureClass) -> TickOutcome {
+    outcome_for_class(class)
+}
 
-#[cfg(test)]
-mod inline_tests {
-    use super::{
-        exit_code_for, extract_http_status, map_phase_to_outcome, outcome_for_class, CaduceusError,
-        FailureClass, Phase, TickOutcome,
-    };
+/// Test seam: re-export the phase→outcome mapping so integration
+/// tests can assert the mapping without owning a runtime.
+/// Identical to the private [`map_phase_to_outcome`].
+pub fn map_phase_to_outcome_for_tests(phase: Phase) -> TickOutcome {
+    map_phase_to_outcome(phase)
+}
 
-    #[test]
-    pub(crate) fn exit_code_for_outcome_table() {
-        assert_eq!(exit_code_for(&TickOutcome::Processed), 0);
-        assert_eq!(exit_code_for(&TickOutcome::Idle304), 0);
-        assert_eq!(exit_code_for(&TickOutcome::IdleEmpty), 0);
-        assert_eq!(exit_code_for(&TickOutcome::SkippedConcurrent), 0);
-        assert_eq!(exit_code_for(&TickOutcome::SkippedCadence), 0);
-        assert_eq!(exit_code_for(&TickOutcome::RateLimited), 0);
-        assert_eq!(exit_code_for(&TickOutcome::Cancelled), 0);
-        assert_eq!(exit_code_for(&TickOutcome::Failed), 1);
-    }
-
-    #[test]
-    pub(crate) fn outcome_for_class_maps_each_failure_class() {
-        assert!(matches!(
-            outcome_for_class(FailureClass::RateLimit { reset_at: 0 }),
-            TickOutcome::RateLimited
-        ));
-        assert!(matches!(
-            outcome_for_class(FailureClass::Cancellation),
-            TickOutcome::Cancelled
-        ));
-        assert!(matches!(
-            outcome_for_class(FailureClass::Worker),
-            TickOutcome::Failed
-        ));
-        assert!(matches!(
-            outcome_for_class(FailureClass::Infrastructure),
-            TickOutcome::Failed
-        ));
-    }
-
-    #[test]
-    pub(crate) fn map_phase_to_outcome_agrees_with_phase_taxonomy() {
-        assert!(matches!(
-            map_phase_to_outcome(Phase::Queued),
-            TickOutcome::Processed
-        ));
-        assert!(matches!(
-            map_phase_to_outcome(Phase::Failed),
-            TickOutcome::Failed
-        ));
-        assert!(matches!(
-            map_phase_to_outcome(Phase::Done),
-            TickOutcome::Processed
-        ));
-        assert!(matches!(
-            map_phase_to_outcome(Phase::Skipped),
-            TickOutcome::Processed
-        ));
-    }
-
-    #[test]
-    pub(crate) fn extract_http_status_only_matches_github_api_variant() {
-        let err = CaduceusError::GitHubApi {
-            status: 422,
-            message: "x".to_string(),
-        };
-        assert_eq!(extract_http_status(&err), Some(422));
-        let err = CaduceusError::Worker {
-            context: "result",
-            stderr: "x".to_string(),
-        };
-        assert_eq!(extract_http_status(&err), None);
-    }
+/// Test seam: re-export the HTTP-status extraction so integration
+/// tests can assert the mapping without owning a runtime.
+/// Identical to the private [`extract_http_status`].
+pub fn extract_http_status_for_tests(err: &CaduceusError) -> Option<u16> {
+    extract_http_status(err)
 }

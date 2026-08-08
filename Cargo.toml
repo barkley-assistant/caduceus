@@ -431,8 +431,20 @@ name = "supervisor_transcript_ownership_test"
 path = "tests/worker/supervisor_transcript_ownership_test.rs"
 
 [[test]]
+name = "supervisor_dispatch_inline_test"
+path = "tests/worker/supervisor_dispatch_inline_test.rs"
+
+[[test]]
 name = "worker_transcript_test"
 path = "tests/worker/worker_transcript_test.rs"
+
+[[test]]
+name = "prompt_inline_test"
+path = "tests/worker/prompt_inline_test.rs"
+
+[[test]]
+name = "context_inline_test"
+path = "tests/worker/context_inline_test.rs"
 
 [[test]]
 name = "commit_test"
@@ -545,6 +557,10 @@ path = "tests/architecture/fixtures_self_test.rs"
 [[test]]
 name = "awaiting_review_test"
 path = "tests/daemon/awaiting_review_test.rs"
+
+[[test]]
+name = "orchestration_active_run_inline_test"
+path = "tests/daemon/orchestration_active_run_inline_test.rs"
 
 [[test]]
 name = "idle304_integration_test"
