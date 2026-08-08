@@ -19,7 +19,6 @@ on:
     # commit-policy check. The ci workflow's planning job still
     # validates the v1.0 catalog on those pushes.
     paths-ignore:
-      - 'docs/**'
       - 'README.md'
       - 'CHANGELOG.md'
       - 'CONTRIBUTING.md'

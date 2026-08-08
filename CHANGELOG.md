@@ -81,7 +81,7 @@ across this period. (OCI isolation end-to-end pending #88.)
   release artifact, not just the debug build.
 - **Operator documentation.** Architecture, configuration, installation,
   plugin lifecycle, CI, public-voice, and Hermes-integration guides
-  published under `docs/`.
+  published in the GitHub wiki.
 - **Per-tick claim cap.** `max_issues_per_tick` bounds how many queue
   entries a single tick will claim before returning, so wall-clock per
   tick is predictable. Default `worker_parallelism * 4`; `0` opts into

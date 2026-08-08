@@ -26,7 +26,6 @@ on:
     # The build only fires when Rust, Python, or
     # the workflow files themselves change.
     paths-ignore:
-      - 'docs/**'
       - 'README.md'
       - 'CHANGELOG.md'
       - 'CONTRIBUTING.md'

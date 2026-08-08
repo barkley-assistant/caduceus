@@ -8,14 +8,15 @@ These requirements apply to human and automated contributors.
 - Keep Python in `plugin-assets/worker-bridge.py` and `tests/`.
 - Keep the Hermes plugin in `plugin.yaml`, `__init__.py`, and
   `skills/caduceus/`. Hermes Agent v0.18.2 is the minimum host version.
-- Do not add top-level directories outside `.github/`, `docs/`,
+- Do not add top-level directories outside `.github/`,
   `plugin-assets/`, `skills/`, `src/`, and `tests/` without approval.
 - Do not commit generated files.
 
 ## Safety
 
 - Never edit daemon state, claim files, or transcripts directly. Use the
-  commands in `docs/state-recovery.md`.
+  commands in the [State-Recovery wiki
+  page](https://github.com/barkley-assistant/caduceus/wiki/State-Recovery).
 - Never commit operator-generated prompt files or directories.
 - Do not add `todo!()`, `unimplemented!()`, or new `unsafe` production code.
 - All Caduceus-created pull requests require human review and merge.
