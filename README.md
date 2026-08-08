@@ -65,7 +65,7 @@ you either.
    [GitHub]◀───▶│       Caduceus daemon       │◀─── `caduceus run`
    (outbound    │  (Rust · single binary)     │     every 2 min,
     only)       │  · ETag-aware 304 polling   │      cron-driven
-                │  · whole-tick flock         │
+                │  · scheduler leadership     │
                 │  · per-issue claim files    │
                 │  · isolated git worktrees   │
                 │  · hard worker timeout      │
@@ -83,7 +83,8 @@ you either.
 ```
 
 The daemon polls, picks one or more issues per tick, claims each
-under a host-wide flock, provisions a worktree, spawns
+under a per-issue lease (bounded by `worker_parallelism`),
+provisions a worktree, spawns
 the bridge as a child of a Rust worker supervisor (not
 systemd, not a shell), waits for exit, then finalizes:
 commit, push, find-or-create the PR, post the completion
@@ -256,12 +257,17 @@ limit and retention knobs.
 
 ## Replacing a prior install
 
-If your state directory contains a JSON state file instead
-of the current SQLite format, use the `migrate-state`
+JSON is the default state backend; SQLite is opt-in. If
+your state directory contains a JSON state file and you
+want the SQLite backend (optional), use the `migrate-state`
 command to import existing entries:
 
 ```text
 caduceus migrate-state --from <path-to-legacy.json> [--dry-run]
+```
+
+```text
+caduceus migrate-state --to-sqlite [--dry-run]
 ```
 
 **Do not edit daemon state, metadata, claim files, or
@@ -286,6 +292,7 @@ input, and install changes atomically.
 
 ### Import
 
+The flow in this section is the `--from` JSON importer.
 Run a dry run first:
 
 ```text
@@ -312,6 +319,12 @@ timestamped backup in the state directory.
 Running the same import again is idempotent: already-present
 entries are reported as skipped and are not duplicated.
 
+To switch to the SQLite backend instead, run
+`caduceus migrate-state --to-sqlite`. It imports the JSON
+queue into the SQLite store and flips `state_backend` to
+`sqlite` in the operator's config; validate it the same way
+afterwards.
+
 ### Validate
 
 1. Run `caduceus status` and review the reported state.
@@ -335,8 +348,8 @@ healthy installation.
 ### Rollback
 
 If validation fails, stop scheduling before changing
-state. The import command preserves prior content as
-`<state_dir>/state.json.bak-<timestamp>`. A typical
+state. The `--from` import command preserves prior content
+as `<state_dir>/state.json.bak-<timestamp>`. A typical
 rollback:
 
 ```text
@@ -344,6 +357,10 @@ rollback:
 cp <state_dir>/state.json.bak-<timestamp> <state_dir>/state.json
 # Restart the known-good installation.
 ```
+
+Rollback after `--to-sqlite` is config-side: set
+`state_backend` back to `json` and restart; the JSON file
+is preserved alongside the SQLite store.
 
 Use this only while the daemon is stopped. When Caduceus
 detects malformed state, it preserves the rejected bytes
