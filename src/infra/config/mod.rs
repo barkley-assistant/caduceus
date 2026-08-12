@@ -96,6 +96,9 @@ pub struct Config {
     pub workdir_base: PathBuf,
     pub watched_repos: Vec<String>,
     pub worker_command: Vec<String>,
+    /// Optional operator instruction injected into the worker prompt.
+    /// Empty string means no section is rendered.
+    pub worker_instruction: String,
     pub worker_timeout_seconds: u64,
     pub http_timeout_seconds: u64,
     pub git_timeout_seconds: u64,
@@ -220,6 +223,8 @@ pub struct RawConfig {
     /// Optional in the raw layer so a missing field can be filled with
     /// the user-owned bridge default once the load context is known.
     pub worker_command: Option<Vec<String>>,
+    /// Optional operator instruction injected into the worker prompt.
+    pub worker_instruction: Option<String>,
     pub worker_timeout_seconds: Option<u64>,
     pub http_timeout_seconds: Option<u64>,
     pub git_timeout_seconds: Option<u64>,
@@ -743,6 +748,7 @@ impl Config {
             workdir_base,
             watched_repos,
             worker_command,
+            worker_instruction: raw.worker_instruction.unwrap_or_default(),
             worker_timeout_seconds,
             http_timeout_seconds,
             git_timeout_seconds,
@@ -858,6 +864,7 @@ impl Config {
             workdir_base,
             watched_repos: Vec::new(),
             worker_command: vec!["python3".to_string(), "bridge.py".to_string()],
+            worker_instruction: String::new(),
             worker_timeout_seconds: DEFAULT_WORKER_TIMEOUT_SECONDS,
             http_timeout_seconds: DEFAULT_HTTP_TIMEOUT_SECONDS,
             git_timeout_seconds: DEFAULT_GIT_TIMEOUT_SECONDS,
