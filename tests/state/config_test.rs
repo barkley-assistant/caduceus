@@ -47,6 +47,7 @@ fn test_defaults_match_contract() {
         cfg.ticket_label_investigation,
         DEFAULT_TICKET_LABEL_INVESTIGATION
     );
+    assert!(cfg.remove_label_on_completion);
     assert_eq!(cfg.api_base, DEFAULT_API_BASE);
     assert_eq!(cfg.state_dir, root.join("state"));
     assert_eq!(cfg.log_path, root.join("state").join("processor.log"));
@@ -75,6 +76,7 @@ fn raw_default_parses_minimal_plugin_derived_config() {
         cfg.ticket_label_investigation,
         DEFAULT_TICKET_LABEL_INVESTIGATION
     );
+    assert!(cfg.remove_label_on_completion);
 }
 
 #[test]

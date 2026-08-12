@@ -1,7 +1,7 @@
 use super::Outcome304;
 
 use chrono::{DateTime, Utc};
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::daemon::orchestration::{ActiveRunGuard, FailureClass};
 use crate::github::poll::{merge_outcomes, poll_code, poll_investigation};
@@ -26,6 +26,7 @@ use crate::state::queue::{Phase, QueueEntry, StateStore};
 pub(crate) async fn poll_awaiting_review_entries(
     store: &StateStore,
     client: &Client,
+    config: &Config,
 ) -> CaduceusResult<()> {
     let snap = store.snapshot()?;
     let awaiting: Vec<QueueEntry> = snap
@@ -60,11 +61,35 @@ pub(crate) async fn poll_awaiting_review_entries(
                 "PR merged; transitioning to Done"
                 );
                 if let Err(err) = store.resolve_awaiting_review_as_done(key) {
-                    tracing::warn!(
+                    warn!(
                     error = %err,
                     issue = %key.display_key(),
                     "failed to mark merged PR as Done"
                     );
+                    continue;
+                }
+                if config.remove_label_on_completion {
+                    match client
+                        .remove_issue_label(
+                            key.owner.as_str(),
+                            key.repo.as_str(),
+                            key.number,
+                            &config.ticket_label_code,
+                        )
+                        .await
+                    {
+                        Ok(_) => info!(
+                            issue = %key.display_key(),
+                            label = %config.ticket_label_code,
+                            "removed trigger label"
+                        ),
+                        Err(err) => warn!(
+                            issue = %key.display_key(),
+                            label = %config.ticket_label_code,
+                            error = %err,
+                            "trigger label removal failed; continuing"
+                        ),
+                    }
                 }
             }
             Ok(crate::github::merge_detect::MergeStatus::ClosedWithoutMerge) => {
@@ -212,6 +237,17 @@ pub async fn handle_infra_or_retry_for_tests(
     class: FailureClass,
 ) -> CaduceusResult<TickOutcome> {
     handle_infra_or_retry(cfg, guard, err, class).await
+}
+
+/// Test seam for [`poll_awaiting_review_entries`]. Mirrors the private
+/// function exactly so integration tests can drive the awaiting-review
+/// poller directly.
+pub async fn poll_awaiting_review_entries_for_tests(
+    store: &StateStore,
+    client: &Client,
+    config: &Config,
+) -> CaduceusResult<()> {
+    poll_awaiting_review_entries(store, client, config).await
 }
 
 pub(crate) fn outcome_for_class(class: FailureClass) -> TickOutcome {

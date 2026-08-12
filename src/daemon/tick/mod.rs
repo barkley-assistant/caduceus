@@ -254,7 +254,8 @@ pub async fn tick(
 
     // 3.5. Poll awaiting-review entries for PR merge status.
     let poll_client: Arc<Client> = Arc::clone(services.github.inner());
-    if let Err(err) = poll_awaiting_review_entries(store.as_ref(), poll_client.as_ref()).await {
+    if let Err(err) = poll_awaiting_review_entries(store.as_ref(), poll_client.as_ref(), &cfg).await
+    {
         tracing::warn!(error = %err, "awaiting-review poll failed (best-effort)");
     }
 

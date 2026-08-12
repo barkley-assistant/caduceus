@@ -527,6 +527,10 @@ name = "voice_rule_test"
 path = "tests/github/voice_rule_test.rs"
 
 [[test]]
+name = "remove_label_test"
+path = "tests/github/remove_label_test.rs"
+
+[[test]]
 name = "integration_scenarios"
 path = "tests/integration/integration_scenarios.rs"
 
