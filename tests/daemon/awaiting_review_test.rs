@@ -57,13 +57,22 @@ use caduceus::config::Config;
 use caduceus::daemon::tick::awaiting_review::{
     exit_code_for_tests, extract_http_status_for_tests, handle_infra_or_retry_for_tests,
     map_phase_to_outcome_for_tests, outcome_for_class_for_tests,
+    poll_awaiting_review_entries_for_tests,
 };
+use caduceus::github::Client;
 use caduceus::issue::IssueKey;
 use caduceus::orchestration::{classify_error, ActiveRunGuard, FailureClass};
 use caduceus::queue::Phase;
 use caduceus::state::meta::TickOutcome;
+use caduceus::state::queue::{FinalizationCheckpoint, FinalizationStage};
 use caduceus::{queue::TicketType, CaduceusError};
+use serde_json::json;
 use std::sync::Arc;
+
+#[path = "../fixtures/mod.rs"]
+mod fixtures;
+
+use fixtures::MockGitHub;
 
 #[test]
 fn exit_code_for_outcome_table() {
@@ -306,4 +315,155 @@ async fn needs_attention_maps_to_failed() {
         entry.blocked_source.as_deref(),
         Some("queue/claim_mismatch")
     );
+}
+
+// ---------------------------------------------------------------------------
+// Trigger-label removal on terminal-success transitions (issue #168)
+// ---------------------------------------------------------------------------
+
+async fn seed_awaiting_review(
+    state_dir: &std::path::Path,
+    pr_number: u64,
+) -> (Arc<caduceus::queue::StateStore>, IssueKey) {
+    let (store, key, mut guard) = seed_guard(state_dir);
+    let claim = guard.claim();
+    let run_id = guard.run_id().to_string();
+    store
+        .save_finalization(
+            &claim,
+            FinalizationCheckpoint {
+                run_id,
+                branch_name: "automation/issue-1-run-x".to_string(),
+                result_path: state_dir.join("result.json"),
+                stage: FinalizationStage::PrCreated,
+                commit_oid: None,
+                pr_number: Some(pr_number),
+                pr_url: None,
+            },
+        )
+        .expect("save finalization checkpoint");
+    guard
+        .finish_awaiting_review()
+        .await
+        .expect("transition to AwaitingReview");
+    (store, key)
+}
+
+#[tokio::test]
+async fn merged_to_done_removes_label_once() {
+    let state_dir = tempdir("merged-remove");
+    let (store, key) = seed_awaiting_review(&state_dir, 42).await;
+    let mut cfg = cfg(&state_dir);
+
+    let gh = MockGitHub::start().await;
+    cfg.api_base = gh.uri();
+    gh.mount(
+        "GET",
+        "/repos/owner/repo/pulls/42",
+        json!({ "merged": true, "state": "closed", "merge_commit_sha": "abc123" }),
+    )
+    .await;
+    gh.mount_status(
+        "DELETE",
+        "/repos/owner/repo/issues/1/labels/%F0%9F%A4%96%20auto-fix",
+        204,
+        json!({}),
+    )
+    .await;
+
+    let client = Client::new(cfg.api_base.as_str());
+    poll_awaiting_review_entries_for_tests(&store, &client, &cfg)
+        .await
+        .expect("poll succeeds");
+
+    let entry = store
+        .snapshot()
+        .expect("snapshot")
+        .entry(&key)
+        .expect("entry")
+        .clone();
+    assert_eq!(entry.phase, Phase::Done);
+    assert_eq!(gh.counts().delete, 1, "expected exactly one DELETE");
+}
+
+#[tokio::test]
+async fn closed_without_merge_keeps_label_and_routes_to_needs_attention() {
+    let state_dir = tempdir("closed-no-merge");
+    let (store, key) = seed_awaiting_review(&state_dir, 42).await;
+    let mut cfg = cfg(&state_dir);
+
+    let gh = MockGitHub::start().await;
+    cfg.api_base = gh.uri();
+    gh.mount(
+        "GET",
+        "/repos/owner/repo/pulls/42",
+        json!({ "merged": false, "state": "closed" }),
+    )
+    .await;
+
+    let client = Client::new(cfg.api_base.as_str());
+    poll_awaiting_review_entries_for_tests(&store, &client, &cfg)
+        .await
+        .expect("poll succeeds");
+
+    let entry = store
+        .snapshot()
+        .expect("snapshot")
+        .entry(&key)
+        .expect("entry")
+        .clone();
+    assert_eq!(entry.phase, Phase::NeedsAttention);
+    assert_eq!(gh.counts().delete, 0, "no DELETE on ClosedWithoutMerge");
+}
+
+#[tokio::test]
+async fn finish_needs_attention_emits_no_delete() {
+    let state_dir = tempdir("finish-needs-attention");
+    let _cfg = cfg(&state_dir);
+    let (store, key, mut guard) = seed_guard(&state_dir);
+
+    guard
+        .finish_needs_attention("boom", "test/source", "hint")
+        .await
+        .expect("needs attention");
+
+    let entry = store
+        .snapshot()
+        .expect("snapshot")
+        .entry(&key)
+        .expect("entry")
+        .clone();
+    assert_eq!(entry.phase, Phase::NeedsAttention);
+    assert!(entry.last_error.as_deref().unwrap().contains("boom"));
+}
+
+#[tokio::test]
+async fn config_off_merged_to_done_skips_delete() {
+    let state_dir = tempdir("config-off-merged");
+    let (store, key) = seed_awaiting_review(&state_dir, 42).await;
+    let mut cfg = cfg(&state_dir);
+    cfg.remove_label_on_completion = false;
+
+    let gh = MockGitHub::start().await;
+    cfg.api_base = gh.uri();
+    gh.mount(
+        "GET",
+        "/repos/owner/repo/pulls/42",
+        json!({ "merged": true, "state": "closed", "merge_commit_sha": "abc123" }),
+    )
+    .await;
+
+    let client = Client::new(cfg.api_base.as_str());
+    poll_awaiting_review_entries_for_tests(&store, &client, &cfg)
+        .await
+        .expect("poll succeeds");
+
+    let entry = store
+        .snapshot()
+        .expect("snapshot")
+        .entry(&key)
+        .expect("entry")
+        .clone();
+    assert_eq!(entry.phase, Phase::Done);
+    assert_eq!(gh.counts().delete, 0, "no DELETE when config flag is false");
 }

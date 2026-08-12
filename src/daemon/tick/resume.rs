@@ -3,6 +3,7 @@ use super::handle_infra_or_retry;
 use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
+use tracing::{info, warn};
 
 use crate::daemon::orchestration::{classify_error, ActiveRunGuard, Services};
 use crate::finalize::{
@@ -642,6 +643,33 @@ pub(crate) async fn run_code_finalize(
         FinalizationStage::Commented,
         comment_out.comment_id.map(|n| n.to_string()).as_deref(),
     )?;
+
+    // Best-effort removal of the trigger label. The entry must still
+    // reach AwaitingReview even if GitHub returns 404 or any other
+    // failure.
+    if ctx.config.remove_label_on_completion {
+        match client
+            .remove_issue_label(
+                ctx.issue.key.owner.as_str(),
+                ctx.issue.key.repo.as_str(),
+                ctx.issue.key.number,
+                &ctx.config.ticket_label_code,
+            )
+            .await
+        {
+            Ok(_) => info!(
+                issue = %ctx.issue.key.display_key(),
+                label = %ctx.config.ticket_label_code,
+                "removed trigger label"
+            ),
+            Err(err) => warn!(
+                issue = %ctx.issue.key.display_key(),
+                label = %ctx.config.ticket_label_code,
+                error = %err,
+                "trigger label removal failed; continuing"
+            ),
+        }
+    }
 
     // Transition queue entry to AwaitingReview so the polling
     // loop can track the PR merge status.
