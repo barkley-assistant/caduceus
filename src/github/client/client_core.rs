@@ -12,7 +12,7 @@ use crate::infra::error::{CaduceusError, CaduceusResult};
 
 use super::cache::{cache_key, inert_cache, is_valid_etag, CacheEntry, HttpCache};
 use super::http_helpers::{
-    header_value, join_path, map_status, read_bounded_body, same_origin, split_query,
+    header_value, join_path, map_status, read_bounded_body, same_origin, split_query, ACCEPT_VALUE,
     BODY_TOO_LARGE_SENTINEL, CONNECT_TIMEOUT_SECONDS, GITHUB_API_VERSION_VALUE, MAX_BODY_BYTES,
     MAX_REDIRECTS, USER_AGENT_PREFIX,
 };
@@ -512,6 +512,23 @@ impl Client {
             url.set_query(Some(query));
         }
         self.delete_url(&url, accept).await
+    }
+
+    /// Remove a label from an issue. Builds the encoded
+    /// `DELETE /repos/{owner}/{repo}/issues/{number}/labels/{label}`
+    /// path and delegates to [`Client::delete`]. Callers own the
+    /// best-effort policy (204 succeeds; 404 and other failures are
+    /// returned as `Err`).
+    pub async fn remove_issue_label(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+        label: &str,
+    ) -> CaduceusResult<Response> {
+        let encoded = crate::github::poll::url_encode_label(label);
+        let path = format!("/repos/{owner}/{repo}/issues/{number}/labels/{encoded}");
+        self.delete(&path, ACCEPT_VALUE).await
     }
 
     /// Same as [`Client::delete`] but with a fully-qualified URL.

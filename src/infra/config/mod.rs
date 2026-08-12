@@ -109,6 +109,10 @@ pub struct Config {
     pub retry_backoff_seconds: u64,
     pub ticket_label_code: String,
     pub ticket_label_investigation: String,
+    /// Whether to remove the trigger label from an issue once the
+    /// run reaches a terminal-success state. Default `true`; set to
+    /// `false` to keep the label for manual visibility.
+    pub remove_label_on_completion: bool,
     pub feedback_author_allowlist: Vec<String>,
     pub comment_ignore_patterns: Vec<String>,
     pub comment_forbidden_strings: Vec<String>,
@@ -235,6 +239,7 @@ pub struct RawConfig {
     pub retry_backoff_seconds: Option<u64>,
     pub ticket_label_code: Option<String>,
     pub ticket_label_investigation: Option<String>,
+    pub remove_label_on_completion: Option<bool>,
     pub feedback_author_allowlist: Option<Vec<String>>,
     pub comment_ignore_patterns: Option<Vec<String>>,
     pub comment_forbidden_strings: Option<Vec<String>>,
@@ -612,11 +617,13 @@ impl Config {
         }
         if ticket_label_code == ticket_label_investigation {
             errors.push(format!(
-                "ticket_label_code and ticket_label_investigation must differ (got {ticket_label_code:?})"
-            ));
+            "ticket_label_code and ticket_label_investigation must differ (got {ticket_label_code:?})"
+        ));
         }
+        let remove_label_on_completion = raw.remove_label_on_completion.unwrap_or(true);
 
         let feedback_author_allowlist = raw.feedback_author_allowlist.unwrap_or_default();
+
         let comment_ignore_patterns = raw.comment_ignore_patterns.unwrap_or_default();
         let comment_forbidden_strings = raw.comment_forbidden_strings.unwrap_or_default();
         let worker_env_allowlist = raw.worker_env_allowlist.unwrap_or_default();
@@ -759,6 +766,7 @@ impl Config {
             retry_backoff_seconds,
             ticket_label_code,
             ticket_label_investigation,
+            remove_label_on_completion,
             feedback_author_allowlist,
             comment_ignore_patterns,
             comment_forbidden_strings,
@@ -875,6 +883,7 @@ impl Config {
             retry_backoff_seconds: DEFAULT_RETRY_BACKOFF_SECONDS,
             ticket_label_code: DEFAULT_TICKET_LABEL_CODE.to_string(),
             ticket_label_investigation: DEFAULT_TICKET_LABEL_INVESTIGATION.to_string(),
+            remove_label_on_completion: true,
             feedback_author_allowlist: Vec::new(),
             comment_ignore_patterns: Vec::new(),
             comment_forbidden_strings: Vec::new(),
