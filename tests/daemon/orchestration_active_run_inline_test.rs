@@ -16,7 +16,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use tempfile::TempDir;
-use tracing_subscriber::prelude::*;
 
 fn cfg() -> Config {
     Config::test_defaults(std::path::Path::new("/tmp"))
@@ -676,6 +675,7 @@ async fn finish_retry_transitions_to_failed_when_budget_exhausted() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[serial_test::serial]
 async fn finish_needs_attention_routes_to_blocked_state_and_releases_claim() {
     let budget = 3;
     let (_temp, store, key, mut guard, worktree_path) =
@@ -716,40 +716,41 @@ async fn finish_needs_attention_routes_to_blocked_state_and_releases_claim() {
     assert!(entry.next_attempt_at.is_none());
 }
 
-#[derive(Clone)]
-struct CaptureWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
-
-impl std::io::Write for CaptureWriter {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(buf);
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CaptureWriter {
-    type Writer = Self;
-    fn make_writer(&'a self) -> Self::Writer {
-        self.clone()
-    }
-}
-
 #[test]
+#[serial_test::serial]
 fn finish_needs_attention_emits_stable_terminal_block_event() {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("runtime");
-    let capture = CaptureWriter(std::sync::Arc::new(std::sync::Mutex::new(Vec::new())));
-    let layer = tracing_subscriber::fmt::layer()
-        .json()
-        .with_writer(capture.clone());
-    let subscriber = tracing_subscriber::registry().with(layer);
+    // Capture via `tracing_appender::non_blocking` + a real temp file,
+    // the same pattern `logging_test.rs` proves reliable. The serial
+    // attribute matches that file's convention for tracing-capture
+    // tests. Both tests that exercise `finish_needs_attention` (this
+    // one and `finish_needs_attention_routes_to_blocked_state_and_releases_claim`)
+    // are serial because `tracing_core` caches callsite interest: if
+    // the sibling runs first without a subscriber installed, the
+    // `caduceus.terminal_block` callsite is cached as never-enabled and
+    // this test's event is silently dropped before reaching its capture
+    // subscriber (empty capture under `--test-threads>=2`).
+    let root = std::env::temp_dir().join(format!(
+        "caduceus-167-capture-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).expect("create tempdir");
+    let log_path = root.join("capture.json");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .expect("open capture file");
+    let (writer, guard) = tracing_appender::non_blocking(file);
+    let subscriber = caduceus::logging::build_test_subscriber(writer);
 
     tracing::subscriber::with_default(subscriber, || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
         rt.block_on(async {
             let budget = 3;
             let (_temp, store, key, mut guard, _worktree_path) =
@@ -773,8 +774,9 @@ fn finish_needs_attention_emits_stable_terminal_block_event() {
             assert_eq!(entry.phase, Phase::NeedsAttention);
         });
     });
+    drop(guard); // flush pending events + shut down the writer thread
 
-    let body = String::from_utf8(capture.0.lock().unwrap().clone()).expect("utf-8");
+    let body = std::fs::read_to_string(&log_path).expect("read capture");
     assert!(
         body.contains("\"event\":\"caduceus.terminal_block\""),
         "stable event missing: {body}"
