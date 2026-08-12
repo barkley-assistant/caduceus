@@ -42,6 +42,8 @@ fn sample_entry() -> QueueEntry {
         finalization: None,
         queued_at: Utc.with_ymd_and_hms(2026, 7, 13, 14, 0, 0).unwrap(),
         updated_at: Utc.with_ymd_and_hms(2026, 7, 13, 14, 0, 0).unwrap(),
+        blocked_source: None,
+        blocked_recovery_hint: None,
         generation: 1,
     }
 }

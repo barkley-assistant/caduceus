@@ -423,6 +423,10 @@ async fn find_main_clone_rejects_dirty_main_checkout() {
         .unwrap_err();
     let text = format!("{err:?}");
     assert!(text.contains("dirty"), "got: {text}");
+    assert!(
+        text.contains("caduceus queue reset --force-finalization-reset octocat/hello-world#1"),
+        "recovery command missing: {text}"
+    );
 }
 
 #[tokio::test]
@@ -477,6 +481,10 @@ async fn find_main_clone_rejects_lock_when_a_worktree_subdir_is_registered() {
         .unwrap_err();
     let text = format!("{err:?}");
     assert!(text.contains("dirty"), "got: {text}");
+    assert!(
+        text.contains("caduceus queue reset --force-finalization-reset octocat/hello-world#1"),
+        "recovery command missing: {text}"
+    );
 }
 
 #[tokio::test]
@@ -500,6 +508,10 @@ async fn find_main_clone_rejects_nonempty_lock() {
         .unwrap_err();
     let text = format!("{err:?}");
     assert!(text.contains("dirty"), "got: {text}");
+    assert!(
+        text.contains("caduceus queue reset --force-finalization-reset octocat/hello-world#1"),
+        "recovery command missing: {text}"
+    );
 }
 
 #[tokio::test]

@@ -499,6 +499,10 @@ async fn create_returns_collision_when_path_owned_by_foreign_run_id() {
         "got: {text}"
     );
     assert!(
+        text.contains("caduceus worktree-gc"),
+        "recovery command missing: {text}"
+    );
+    assert!(
         !dest.join(".worktrees").join(".lock").exists(),
         ".worktrees/.lock must be removed after path collision error"
     );

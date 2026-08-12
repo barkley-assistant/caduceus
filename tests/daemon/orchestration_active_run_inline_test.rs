@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use tempfile::TempDir;
+use tracing_subscriber::prelude::*;
 
 fn cfg() -> Config {
     Config::test_defaults(std::path::Path::new("/tmp"))
@@ -668,4 +669,126 @@ async fn finish_retry_transitions_to_failed_when_budget_exhausted() {
     assert_eq!(entry.phase, Phase::Failed);
     assert_eq!(entry.attempts, budget);
     assert!(entry.next_attempt_at.is_none());
+}
+
+// ---------------------------------------------------------------------------
+// finish_needs_attention terminal-block tests (issue #167)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn finish_needs_attention_routes_to_blocked_state_and_releases_claim() {
+    let budget = 3;
+    let (_temp, store, key, mut guard, worktree_path) =
+        seed_in_progress_with_worktree(0, budget).await;
+
+    let digest = guard.claim().digest().to_string();
+    let claim_path = store.claims_dir().join(format!("{digest}.claim"));
+    assert!(claim_path.is_file(), "claim file must exist before finish");
+
+    guard
+        .finish_needs_attention(
+            "main checkout is dirty",
+            "worktree/dirty_main",
+            "caduceus queue reset --force-finalization-reset owner/repo#7",
+        )
+        .await
+        .expect("finish needs attention");
+
+    // The attached worktree is torn down and the claim is released
+    // after the transition so a later reset is not blocked.
+    assert!(!worktree_path.exists(), "worktree path should be removed");
+    assert!(!claim_path.exists(), "claim file should be removed");
+
+    let entry = store
+        .snapshot()
+        .expect("snapshot")
+        .entry(&key)
+        .expect("entry")
+        .clone();
+    assert_eq!(entry.phase, Phase::NeedsAttention);
+    assert_eq!(entry.last_error.as_deref(), Some("main checkout is dirty"));
+    assert_eq!(entry.blocked_source.as_deref(), Some("worktree/dirty_main"));
+    assert_eq!(
+        entry.blocked_recovery_hint.as_deref(),
+        Some("caduceus queue reset --force-finalization-reset owner/repo#7")
+    );
+    assert!(entry.last_run_id.is_none());
+    assert!(entry.next_attempt_at.is_none());
+}
+
+#[derive(Clone)]
+struct CaptureWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for CaptureWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CaptureWriter {
+    type Writer = Self;
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+#[test]
+fn finish_needs_attention_emits_stable_terminal_block_event() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let capture = CaptureWriter(std::sync::Arc::new(std::sync::Mutex::new(Vec::new())));
+    let layer = tracing_subscriber::fmt::layer()
+        .json()
+        .with_writer(capture.clone());
+    let subscriber = tracing_subscriber::registry().with(layer);
+
+    tracing::subscriber::with_default(subscriber, || {
+        rt.block_on(async {
+            let budget = 3;
+            let (_temp, store, key, mut guard, _worktree_path) =
+                seed_in_progress_with_worktree(0, budget).await;
+
+            guard
+                .finish_needs_attention(
+                    "main checkout is dirty",
+                    "worktree/dirty_main",
+                    "caduceus queue reset --force-finalization-reset octocat/hello-world#7",
+                )
+                .await
+                .expect("finish needs attention");
+
+            let entry = store
+                .snapshot()
+                .expect("snapshot")
+                .entry(&key)
+                .expect("entry")
+                .clone();
+            assert_eq!(entry.phase, Phase::NeedsAttention);
+        });
+    });
+
+    let body = String::from_utf8(capture.0.lock().unwrap().clone()).expect("utf-8");
+    assert!(
+        body.contains("\"event\":\"caduceus.terminal_block\""),
+        "stable event missing: {body}"
+    );
+    assert!(
+        body.contains("\"issue_key\":\"octocat/hello-world#7\""),
+        "got: {body}"
+    );
+    assert!(
+        body.contains("\"source\":\"worktree/dirty_main\""),
+        "got: {body}"
+    );
+    assert!(
+        body.contains("caduceus queue reset --force-finalization-reset"),
+        "got: {body}"
+    );
 }

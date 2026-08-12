@@ -66,6 +66,8 @@ fn seed_failed(store: &StateStore, k: &IssueKey, attempts: u32) {
         finalization: None,
         queued_at: Utc::now(),
         updated_at: Utc::now(),
+        blocked_source: None,
+        blocked_recovery_hint: None,
         generation: 1,
     };
     e.last_run_id = Some("SEED".to_string());
@@ -197,6 +199,8 @@ fn failure_four_is_terminal_failed() {
         finalization: None,
         queued_at: Utc::now(),
         updated_at: Utc::now(),
+        blocked_source: None,
+        blocked_recovery_hint: None,
         generation: 1,
     };
     e.last_run_id = Some("R-OLD".to_string());

@@ -37,7 +37,7 @@ use caduceus::error::CaduceusError;
 use caduceus::issue::IssueKey;
 use caduceus::migrate::{run as migrate_run, MigrationOutcome};
 use caduceus::queue::{
-    parse_queue_state, serialize_queue_state, DaemonLock, Phase, QueueState, StateStore,
+    parse_queue_state, serialize_queue_state, DaemonLock, Phase, QueueEntry, QueueState, StateStore,
 };
 use chrono::{TimeZone, Utc};
 use tempfile::TempDir;
@@ -283,6 +283,8 @@ fn already_current_state_is_idempotent_no_op() {
             queued_at: Utc.with_ymd_and_hms(2026, 7, 1, 0, 0, 0).unwrap(),
             updated_at: Utc.with_ymd_and_hms(2026, 7, 1, 0, 0, 0).unwrap(),
             generation: 1,
+            blocked_source: None,
+            blocked_recovery_hint: None,
         },
     );
     fs::write(
@@ -360,6 +362,8 @@ fn recovery_validates_supplied_file_under_daemon_lock_and_clears_marker() {
             queued_at: Utc.with_ymd_and_hms(2026, 7, 14, 0, 0, 0).unwrap(),
             updated_at: Utc.with_ymd_and_hms(2026, 7, 14, 0, 0, 0).unwrap(),
             generation: 1,
+            blocked_source: None,
+            blocked_recovery_hint: None,
         },
     );
     fs::write(&repaired, serialize_queue_state(&state).unwrap()).unwrap();
@@ -450,6 +454,8 @@ fn recovery_refuses_when_corrupt_original_cannot_be_archived() {
             queued_at: Utc.with_ymd_and_hms(2026, 7, 14, 0, 0, 0).unwrap(),
             updated_at: Utc.with_ymd_and_hms(2026, 7, 14, 0, 0, 0).unwrap(),
             generation: 1,
+            blocked_source: None,
+            blocked_recovery_hint: None,
         },
     );
     fs::write(&repaired, serialize_queue_state(&state).unwrap()).unwrap();
@@ -497,4 +503,63 @@ impl Drop for ReadonlyRestore {
             let _ = fs::set_permissions(&self.path, perms);
         }
     }
+}
+
+// Backwards compatibility for additive queue fields.
+
+#[test]
+fn old_queue_entry_json_deserializes_block_fields_to_none() {
+    // A raw v1 JSON payload that predates the terminal-block fields.
+    // `#[serde(deny_unknown_fields)]` on `QueueEntry` means unknown
+    // fields would still fail; the new fields are additive and default.
+    let json = r#"{
+        "key": {"owner": "owner", "repo": "repo", "number": 1},
+        "phase": "queued",
+        "ticket_type": "code",
+        "attempts": 0,
+        "last_error": null,
+        "last_run_id": null,
+        "next_attempt_at": null,
+        "finalization": null,
+        "queued_at": "2026-07-01T00:00:00Z",
+        "updated_at": "2026-07-01T00:00:00Z",
+        "generation": 1
+    }"#;
+
+    let entry: QueueEntry = serde_json::from_str(json).expect("deserialize old JSON");
+    assert!(entry.blocked_source.is_none());
+    assert!(entry.blocked_recovery_hint.is_none());
+    assert_eq!(entry.phase, Phase::Queued);
+}
+
+#[test]
+fn queue_entry_round_trip_preserves_block_fields() {
+    let key = IssueKey::parse("owner/repo#7").unwrap();
+    let mut entry = caduceus::queue::QueueEntry {
+        key: key.clone(),
+        phase: Phase::NeedsAttention,
+        ticket_type: caduceus::queue::TicketType::Code,
+        attempts: 0,
+        last_error: Some("blocked".to_string()),
+        last_run_id: None,
+        next_attempt_at: None,
+        finalization: None,
+        queued_at: Utc.with_ymd_and_hms(2026, 7, 1, 0, 0, 0).unwrap(),
+        updated_at: Utc.with_ymd_and_hms(2026, 7, 1, 0, 0, 0).unwrap(),
+        generation: 1,
+        blocked_source: Some("worktree/dirty_main".to_string()),
+        blocked_recovery_hint: Some("caduceus queue reset owner/repo#7".to_string()),
+    };
+
+    let serialized = serde_json::to_string(&entry).expect("serialize");
+    let deserialized: QueueEntry = serde_json::from_str(&serialized).expect("deserialize");
+    assert_eq!(deserialized, entry);
+
+    // Resetting the block fields is the recovery path.
+    entry.blocked_source = None;
+    entry.blocked_recovery_hint = None;
+    let serialized = serde_json::to_string(&entry).expect("serialize");
+    let deserialized: QueueEntry = serde_json::from_str(&serialized).expect("deserialize");
+    assert!(deserialized.blocked_source.is_none());
+    assert!(deserialized.blocked_recovery_hint.is_none());
 }

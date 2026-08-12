@@ -383,6 +383,45 @@ fn build_report_from_state_handles_synthetic_snapshot() {
 }
 
 #[test]
+fn report_surfaces_blocked_metadata_for_needs_attention() {
+    let dir = tempdir().expect("tempdir");
+    let cfg = empty_config(dir.path());
+    let now = Utc::now();
+    let mut state = QueueState::empty();
+    let mut blocked = entry(now, Phase::NeedsAttention, None);
+    blocked.last_error = Some("main checkout is dirty".to_string());
+    blocked.blocked_source = Some("worktree/dirty_main".to_string());
+    blocked.blocked_recovery_hint =
+        Some("caduceus queue reset --force-finalization-reset owner/repo#1".to_string());
+    state.entries.insert("owner/repo#1".to_string(), blocked);
+    let meta = StateMeta {
+        version: caduceus::meta::META_VERSION,
+        last_tick_started: None,
+        last_tick_finished: None,
+        last_outcome: None,
+        last_http_status: None,
+        next_allowed_poll_at: None,
+        last_reap_at: None,
+        last_reaped_count: 0,
+        rate_limit: None,
+        last_error: None,
+        recent_diagnostics: Vec::new(),
+    };
+    let report = build_report_from_state(&cfg.state_dir, &meta, &state);
+    let out = render_human(&report, None);
+    assert!(
+        out.contains("blocked: source = worktree/dirty_main"),
+        "human output missing blocked source: {out}"
+    );
+    assert!(
+        out.contains(
+            "blocked: recovery = caduceus queue reset --force-finalization-reset owner/repo#1"
+        ),
+        "human output missing recovery hint: {out}"
+    );
+}
+
+#[test]
 fn render_human_includes_transcript_for_live_workers() {
     let dir = tempdir().expect("tempdir");
     let cfg = empty_config(dir.path());
@@ -418,6 +457,8 @@ fn entry(_now: DateTime<Utc>, phase: Phase, next_attempt_at: Option<DateTime<Utc
         last_run_id: None,
         next_attempt_at,
         finalization: None,
+        blocked_source: None,
+        blocked_recovery_hint: None,
         queued_at: _now,
         updated_at: _now,
         generation: 1,
