@@ -250,6 +250,8 @@ impl IsolatedState {
             finalization: None,
             queued_at: Utc::now(),
             updated_at: Utc::now(),
+            blocked_source: None,
+            blocked_recovery_hint: None,
             generation: 1,
         };
         entries.insert(k.clone(), entry);

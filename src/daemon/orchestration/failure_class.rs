@@ -28,8 +28,14 @@ use crate::infra::error::CaduceusError;
 pub enum FailureClass {
     Worker,
     Infrastructure,
-    RateLimit { reset_at: u64 },
+    RateLimit {
+        reset_at: u64,
+    },
     Cancellation,
+    /// Refuse-to-operate conditions that will not resolve by retry.
+    /// The daemon routes these to `NeedsAttention` with a recovery
+    /// hint instead of requeuing.
+    Terminal,
 }
 
 impl FailureClass {
@@ -49,7 +55,7 @@ impl FailureClass {
         match self {
             FailureClass::RateLimit { .. } => Some(crate::state::meta::TickOutcome::RateLimited),
             FailureClass::Cancellation => Some(crate::state::meta::TickOutcome::Cancelled),
-            FailureClass::Worker | FailureClass::Infrastructure => None,
+            FailureClass::Worker | FailureClass::Infrastructure | FailureClass::Terminal => None,
         }
     }
 
@@ -63,6 +69,12 @@ impl FailureClass {
     /// timeout-driven).
     pub fn is_cancellation(&self) -> bool {
         matches!(self, FailureClass::Cancellation)
+    }
+
+    /// True when the failure is a terminal refuse-to-operate
+    /// condition that requires operator action.
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, FailureClass::Terminal)
     }
 }
 
@@ -129,7 +141,15 @@ pub fn classify_error(err: &CaduceusError) -> FailureClass {
         CaduceusError::Git { .. } => FailureClass::Infrastructure,
         CaduceusError::Push { .. } => FailureClass::Infrastructure,
         CaduceusError::PushCollision { .. } => FailureClass::Infrastructure,
+        CaduceusError::Worktree { context, .. }
+            if *context == "discover-dirty-main" || *context == "create-path-collision" =>
+        {
+            FailureClass::Terminal
+        }
         CaduceusError::Worktree { .. } => FailureClass::Infrastructure,
+        CaduceusError::Queue { context, .. } if *context == "claim-terminal-mismatch" => {
+            FailureClass::Terminal
+        }
         CaduceusError::Queue { .. } => FailureClass::Infrastructure,
         CaduceusError::StateCorrupt { .. } => FailureClass::Infrastructure,
         CaduceusError::ReconciliationFailed { .. } => FailureClass::Infrastructure,

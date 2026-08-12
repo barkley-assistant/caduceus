@@ -145,12 +145,49 @@ pub fn enqueue_summaries(
     Ok(earliest)
 }
 
+/// Extract a stable source tag and the embedded recovery command from
+/// a terminal-class error. Returns `None` when the error cannot be
+/// recognised as one of the three reserved refuse-to-operate tags.
+fn terminal_error_details(err: &CaduceusError) -> Option<(&'static str, &str)> {
+    match err {
+        CaduceusError::Worktree {
+            context: "discover-dirty-main",
+            stderr,
+        } => Some(("worktree/dirty_main", stderr.as_str())),
+        CaduceusError::Worktree {
+            context: "create-path-collision",
+            stderr,
+        } => Some(("worktree/path_collision", stderr.as_str())),
+        CaduceusError::Queue {
+            context: "claim-terminal-mismatch",
+            stderr,
+        } => Some(("queue/claim_mismatch", stderr.as_str())),
+        _ => None,
+    }
+}
+
 pub(crate) async fn handle_infra_or_retry(
     cfg: Config,
     guard: &mut ActiveRunGuard,
     err: &CaduceusError,
     class: FailureClass,
 ) -> CaduceusResult<TickOutcome> {
+    if class.is_terminal() {
+        let error_text = err.to_string();
+        match terminal_error_details(err) {
+            Some((source, recovery_hint)) => {
+                guard
+                    .finish_needs_attention(&error_text, source, recovery_hint)
+                    .await?;
+            }
+            None => {
+                guard
+                    .finish_needs_attention(&error_text, "terminal/unknown", &error_text)
+                    .await?;
+            }
+        }
+        return Ok(TickOutcome::Failed);
+    }
     if class.counts_against_retry_budget() {
         let new_phase = guard
             .finish_retry(&err.to_string(), cfg.max_retries_per_issue)
@@ -163,6 +200,18 @@ pub(crate) async fn handle_infra_or_retry(
         .finish_infrastructure(&err.to_string(), not_before)
         .await;
     Ok(outcome_for_class(class))
+}
+
+/// Test seam for [`handle_infra_or_retry`]. The public surface stays
+/// the orchestrator; this wrapper exists only to let integration tests
+/// prove the Terminal/Infrastructure/Retry dispatch boundaries.
+pub async fn handle_infra_or_retry_for_tests(
+    cfg: Config,
+    guard: &mut ActiveRunGuard,
+    err: &CaduceusError,
+    class: FailureClass,
+) -> CaduceusResult<TickOutcome> {
+    handle_infra_or_retry(cfg, guard, err, class).await
 }
 
 pub(crate) fn outcome_for_class(class: FailureClass) -> TickOutcome {

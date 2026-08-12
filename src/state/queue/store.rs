@@ -179,6 +179,8 @@ impl StateStore {
                         queued_at: now,
                         updated_at: now,
                         generation: 1,
+                        blocked_source: None,
+                        blocked_recovery_hint: None,
                     };
                     state.entries.insert(key.display_key(), entry);
                     EnqueueOutcome::Inserted
@@ -374,6 +376,40 @@ impl StateStore {
             }
             entry.phase = Phase::NeedsAttention;
             entry.last_error = Some(reason.to_string());
+            entry.updated_at = Utc::now();
+            store.persist(&state)?;
+            Ok(())
+        })
+    }
+
+    /// Crate-private, phase-gate-free transition to `NeedsAttention`
+    /// for terminal refuse-to-operate blocks. The caller (the
+    /// Terminal dispatch in `handle_infra_or_retry`) is responsible
+    /// for ensuring the entry is genuinely stuck.
+    pub(crate) fn route_to_needs_attention_unchecked(
+        &self,
+        key: &IssueKey,
+        reason: &str,
+        recovery_hint: &str,
+        source: &str,
+    ) -> CaduceusResult<()> {
+        self.with_exclusive(|store| {
+            let mut state = store.load_validated()?;
+            let target = key.display_key();
+            let entry = state
+                .entries
+                .values_mut()
+                .find(|e| e.key.display_key() == target)
+                .ok_or_else(|| CaduceusError::Queue {
+                    context: "route_to_needs_attention_unchecked",
+                    stderr: format!("no entry for {target}"),
+                })?;
+            entry.phase = Phase::NeedsAttention;
+            entry.last_error = Some(reason.to_string());
+            entry.blocked_source = Some(source.to_string());
+            entry.blocked_recovery_hint = Some(recovery_hint.to_string());
+            entry.next_attempt_at = None;
+            entry.last_run_id = None;
             entry.updated_at = Utc::now();
             store.persist(&state)?;
             Ok(())
@@ -586,6 +622,8 @@ impl StateStore {
             entry.last_error = None;
             entry.last_run_id = None;
             entry.next_attempt_at = None;
+            entry.blocked_source = None;
+            entry.blocked_recovery_hint = None;
             entry.updated_at = Utc::now();
             store.persist(&state)?;
             Ok(ResetOutcome {
@@ -636,6 +674,8 @@ impl StateStore {
             entry.last_error = None;
             entry.last_run_id = None;
             entry.next_attempt_at = None;
+            entry.blocked_source = None;
+            entry.blocked_recovery_hint = None;
             entry.generation = entry.generation.saturating_add(1);
             entry.updated_at = Utc::now();
             store.persist(&state)?;
@@ -805,7 +845,8 @@ fn load_validated_sqlite(conn: &Connection, state_dir: &Path) -> CaduceusResult<
     let mut stmt = conn
         .prepare(
             "SELECT issue_key, phase, ticket_type, attempts, last_error, last_run_id,
-                    next_attempt_at, finalization, queued_at, updated_at, generation
+                    next_attempt_at, finalization, queued_at, updated_at, generation,
+                    blocked_source, blocked_recovery_hint
              FROM queue_entries",
         )
         .map_err(|e| CaduceusError::StateCorrupt {
@@ -844,6 +885,8 @@ fn row_to_entry(row: &rusqlite::Row) -> rusqlite::Result<QueueEntry> {
     let queued_at: String = row.get(8)?;
     let updated_at: String = row.get(9)?;
     let generation: i64 = row.get(10)?;
+    let blocked_source: Option<String> = row.get(11)?;
+    let blocked_recovery_hint: Option<String> = row.get(12)?;
 
     let key = IssueKey::parse(&issue_key).map_err(|err| {
         rusqlite::Error::FromSqlConversionFailure(
@@ -912,6 +955,8 @@ fn row_to_entry(row: &rusqlite::Row) -> rusqlite::Result<QueueEntry> {
                 )
             })?,
         generation: generation.max(0) as u32,
+        blocked_source,
+        blocked_recovery_hint,
     })
 }
 
@@ -957,8 +1002,9 @@ fn persist_sqlite(conn: &Connection, state: &QueueState) -> CaduceusResult<()> {
             conn.execute(
                 "INSERT OR REPLACE INTO queue_entries
                  (issue_key, phase, ticket_type, attempts, last_error, last_run_id,
-                  next_attempt_at, finalization, queued_at, updated_at, generation)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                  next_attempt_at, finalization, queued_at, updated_at, generation,
+                  blocked_source, blocked_recovery_hint)
+                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 params![
                     key,
                     phase,
@@ -974,6 +1020,8 @@ fn persist_sqlite(conn: &Connection, state: &QueueState) -> CaduceusResult<()> {
                     entry.queued_at.to_rfc3339(),
                     entry.updated_at.to_rfc3339(),
                     entry.generation as i64,
+                    entry.blocked_source,
+                    entry.blocked_recovery_hint,
                 ],
             )
             .map_err(|e| CaduceusError::StateCorrupt {

@@ -68,6 +68,8 @@ fn seed_failed(state_dir: &Path, k: &IssueKey, attempts: u32) {
         finalization: None,
         queued_at: Utc::now(),
         updated_at: Utc::now(),
+        blocked_source: None,
+        blocked_recovery_hint: None,
         generation: 1,
     };
     entries.insert(k.display_key(), e);
@@ -93,6 +95,8 @@ fn seed_skipped(state_dir: &Path, k: &IssueKey) {
         finalization: None,
         queued_at: Utc::now(),
         updated_at: Utc::now(),
+        blocked_source: None,
+        blocked_recovery_hint: None,
         generation: 1,
     };
     entries.insert(k.display_key(), e);
@@ -118,6 +122,8 @@ fn seed_queued(state_dir: &Path, k: &IssueKey) {
         finalization: None,
         queued_at: Utc::now(),
         updated_at: Utc::now(),
+        blocked_source: None,
+        blocked_recovery_hint: None,
         generation: 1,
     };
     entries.insert(k.display_key(), e);
@@ -152,6 +158,8 @@ fn seed_failed_with_checkpoint(state_dir: &Path, k: &IssueKey) -> FinalizationCh
         finalization: Some(checkpoint.clone()),
         queued_at: Utc::now(),
         updated_at: Utc::now(),
+        blocked_source: None,
+        blocked_recovery_hint: None,
         generation: 1,
     };
     entries.insert(k.display_key(), e);
@@ -284,6 +292,8 @@ fn reset_done_entry_is_rejected() {
         finalization: None,
         queued_at: Utc::now(),
         updated_at: Utc::now(),
+        blocked_source: None,
+        blocked_recovery_hint: None,
         generation: 1,
     };
     entries.insert(k.display_key(), e);

@@ -64,6 +64,26 @@ fn entry(owner: &str, repo: &str, number: u64) -> QueueEntry {
         queued_at: Utc::now(),
         updated_at: Utc::now(),
         generation: 1,
+        blocked_source: None,
+        blocked_recovery_hint: None,
+    }
+}
+
+fn entry_blocked(owner: &str, repo: &str, number: u64) -> QueueEntry {
+    QueueEntry {
+        key: key(owner, repo, number),
+        phase: Phase::NeedsAttention,
+        ticket_type: TicketType::Code,
+        attempts: 0,
+        last_error: Some("blocked".to_string()),
+        last_run_id: Some("old-run".to_string()),
+        next_attempt_at: Some(Utc::now()),
+        finalization: None,
+        queued_at: Utc::now(),
+        updated_at: Utc::now(),
+        generation: 1,
+        blocked_source: Some("worktree/dirty_main".to_string()),
+        blocked_recovery_hint: Some("caduceus queue reset ...".to_string()),
     }
 }
 
@@ -291,6 +311,8 @@ fn acquire_next_picks_fifo_by_queued_at() {
         queued_at: queued,
         updated_at: queued,
         generation: 1,
+        blocked_source: None,
+        blocked_recovery_hint: None,
     };
     // Order enqueued: 3 first, then 1, then 2.
     entries.insert(
@@ -351,6 +373,8 @@ fn acquire_next_skips_entries_with_future_next_attempt_at() {
         queued_at: now,
         updated_at: now,
         generation: 1,
+        blocked_source: None,
+        blocked_recovery_hint: None,
     };
     entries.insert(k1.display_key(), make(&k1, Some(future)));
     entries.insert(k2.display_key(), make(&k2, None));
@@ -828,4 +852,40 @@ fn parse_then_snapshot_agrees() {
     let snap = store.snapshot().unwrap();
     let parsed = parse_queue_state(&serialize_queue_state(&snap).unwrap()).unwrap();
     assert_eq!(parsed, snap);
+}
+
+// Terminal block metadata
+
+#[test]
+fn reset_entry_clears_block_metadata() {
+    let root = tempdir("reset-block-meta");
+    let state_dir = root.join("state");
+    fs::create_dir_all(&state_dir).unwrap();
+
+    let mut entries = BTreeMap::new();
+    let e = entry_blocked("owner", "repo", 1);
+    entries.insert(e.key.display_key(), e);
+    let state = QueueState {
+        version: QUEUE_FILE_VERSION,
+        entries,
+    };
+    write_state(&state_dir.join("state.json"), &state);
+
+    let store = StateStore::open(&state_dir).expect("open");
+    let outcome = store
+        .reset_entry(&key("owner", "repo", 1), false)
+        .expect("reset");
+    assert!(!outcome.cleared_finalization);
+
+    let snap = store.snapshot().expect("snapshot");
+    let e = snap.entry(&key("owner", "repo", 1)).expect("entry");
+    assert_eq!(e.phase, Phase::Queued);
+    assert!(e.blocked_source.is_none(), "blocked_source must be cleared");
+    assert!(
+        e.blocked_recovery_hint.is_none(),
+        "blocked_recovery_hint must be cleared"
+    );
+    assert!(e.last_error.is_none());
+    assert!(e.last_run_id.is_none());
+    assert!(e.next_attempt_at.is_none());
 }
