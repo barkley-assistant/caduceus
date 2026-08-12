@@ -2,13 +2,20 @@
 //! (`src/daemon/orchestration/active_run.rs`). Moved out of the
 //! inline `#[cfg(test)]` module per AGENTS.md.
 
-use caduceus::infra::config::Config;
-use caduceus::orchestration::{classify_error, Clock, FailureClass, FakeClock, SystemClock};
-use caduceus::queue::{ClaimFileBody, ClaimToken, CLAIM_FILE_VERSION};
+use caduceus::config::Config;
+use caduceus::orchestration::{
+    classify_error, ActiveRunGuard, Clock, FailureClass, FakeClock, SystemClock,
+};
+use caduceus::queue::{
+    ClaimFileBody, ClaimToken, Phase, StateStore, TicketType, CLAIM_FILE_VERSION,
+};
+use caduceus::worktree::{create as create_worktree, GitRunner, RepositoryInfo};
 use caduceus::{CaduceusError, IssueKey};
-use chrono::{DateTime, Utc};
-use std::path::PathBuf;
+use chrono::{DateTime, Duration as ChronoDuration, Utc};
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
+use tempfile::TempDir;
 
 fn cfg() -> Config {
     Config::test_defaults(std::path::Path::new("/tmp"))
@@ -368,4 +375,297 @@ fn fake_clock_clones_share_time() {
 fn fake_clock_now_returns_correct_datetime() {
     let fc = FakeClock::at(946684800); // 2000-01-01T00:00:00Z
     assert_eq!(fc.now().timestamp(), 946684800);
+}
+
+// ---------------------------------------------------------------------------
+// Helpers for real-git worktree fixtures used by the finish_retry teardown
+// integration tests. All fixtures are local (`file://` bare remote clones)
+// and create one-commit repositories so `git worktree add` / `git worktree
+// remove` exercise the exact production path.
+// ---------------------------------------------------------------------------
+
+const RUN_ID: &str = "01H9Z3Y4G8W2J7N5K1QXV0F8P3";
+const OWNER: &str = "octocat";
+const REPO: &str = "Hello-World";
+const ISSUE_NUMBER: u64 = 7;
+
+fn run_command(cmd: &mut Command) {
+    let output = cmd.output().expect("spawn command");
+    if !output.status.success() {
+        panic!(
+            "command {:?} failed: status={:?}\nstdout={}\nstderr={}",
+            cmd,
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+/// Initialise a bare repository at *path* with a `main` branch containing
+/// one empty commit, matching the fixture style in `worktree_create_test.rs`.
+fn init_bare_repo(path: &Path) -> String {
+    run_command(Command::new("git").arg("init").arg("--bare").arg(path));
+    run_command(Command::new("git").current_dir(path).args([
+        "symbolic-ref",
+        "HEAD",
+        "refs/heads/main",
+    ]));
+    let output = Command::new("git")
+        .current_dir(path)
+        .args(["hash-object", "-w", "-t", "tree", "/dev/null"])
+        .output()
+        .expect("hash-object");
+    assert!(output.status.success(), "hash-object failed");
+    let tree = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let output = Command::new("git")
+        .current_dir(path)
+        .args(["commit-tree", &tree, "-m", "initial"])
+        .output()
+        .expect("commit-tree");
+    assert!(output.status.success(), "commit-tree failed");
+    let commit = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    run_command(Command::new("git").current_dir(path).args([
+        "update-ref",
+        "refs/heads/main",
+        &commit,
+    ]));
+    commit
+}
+
+fn clone_into(remote: &Path, dest: &Path) -> String {
+    let remote_uri = format!("file://{}", remote.display());
+    run_command(
+        Command::new("git")
+            .arg("clone")
+            .arg("-b")
+            .arg("main")
+            .arg(&remote_uri)
+            .arg(dest),
+    );
+    run_command(
+        Command::new("git")
+            .current_dir(dest)
+            .args(["remote", "set-head", "origin", "main"]),
+    );
+    let output = Command::new("git")
+        .current_dir(dest)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .expect("rev-parse");
+    assert!(output.status.success(), "rev-parse HEAD failed");
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+fn config_for(root: &Path) -> Config {
+    let mut cfg = Config::test_defaults(root);
+    cfg.git_timeout_seconds = 30;
+    cfg
+}
+
+fn issue_key() -> IssueKey {
+    IssueKey {
+        owner: OWNER.to_string(),
+        repo: REPO.to_string(),
+        number: ISSUE_NUMBER,
+    }
+}
+
+fn info_for(checkout: &Path) -> RepositoryInfo {
+    RepositoryInfo {
+        path: checkout.to_path_buf(),
+        base_branch: "main".to_string(),
+        remote_url: "file://localhost/tmp".to_string(),
+    }
+}
+
+/// Increase the entry's `attempts` by calling `finish_retry` *count* times
+/// without an attached worktree. Each call operates on a freshly acquired
+/// claim and returns to `Queued`, so a subsequent `acquire_next` can reclaim
+/// the same run id. `now` is advanced past `next_attempt_at` because
+/// `retry_or_fail` sets it to `now + 300s`.
+async fn bump_attempts(store: &Arc<StateStore>, key: &IssueKey, budget: u32, count: u32) {
+    for _ in 0..count {
+        let eligible = store
+            .acquire_next(
+                RUN_ID,
+                std::process::id(),
+                Utc::now() + ChronoDuration::seconds(301),
+            )
+            .expect("acquire seed")
+            .expect("eligible queued entry");
+        let claim = eligible.claim;
+        let mut guard = ActiveRunGuard::new(
+            claim,
+            store.clone(),
+            PathBuf::from("/dev/null"),
+            key.clone(),
+        );
+        guard
+            .finish_retry("seed attempt", budget)
+            .await
+            .expect("seed retry");
+    }
+}
+
+/// Build a real registered git worktree, attach it to an `ActiveRunGuard`,
+/// and return everything needed to drive `finish_retry` assertions. The
+/// entry starts in `Phase::InProgress` with `attempts` equal to *attempts*
+/// and the same `run_id`/`issue_key` used for every claim.
+async fn seed_in_progress_with_worktree(
+    attempts: u32,
+    budget: u32,
+) -> (TempDir, Arc<StateStore>, IssueKey, ActiveRunGuard, PathBuf) {
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path();
+
+    let bare = root.join("remote.git");
+    init_bare_repo(&bare);
+
+    let workdirs = root.join("workdirs");
+    std::fs::create_dir_all(&workdirs).expect("create workdirs");
+    let checkout = workdirs.join(OWNER).join(REPO);
+    std::fs::create_dir_all(checkout.parent().unwrap()).expect("create checkout parent");
+    clone_into(&bare, &checkout);
+
+    let cfg = config_for(root);
+    let runner = GitRunner::new(&cfg);
+    let info = info_for(&checkout);
+    let key = issue_key();
+
+    let state_dir = root.join("state");
+    let store = Arc::new(StateStore::open(&state_dir).expect("open store"));
+    store
+        .enqueue(&key, TicketType::Code, false)
+        .expect("enqueue");
+
+    if attempts > 0 {
+        bump_attempts(&store, &key, budget, attempts).await;
+    }
+
+    let eligible = store
+        .acquire_next(
+            RUN_ID,
+            std::process::id(),
+            Utc::now() + ChronoDuration::seconds(301),
+        )
+        .expect("acquire target")
+        .expect("eligible target entry");
+    let claim = eligible.claim;
+    let guard = ActiveRunGuard::new(
+        claim,
+        store.clone(),
+        PathBuf::from("/dev/null"),
+        key.clone(),
+    );
+
+    let worktree = create_worktree(&cfg, &runner, &info, &key, RUN_ID)
+        .await
+        .expect("create worktree");
+    let worktree_path = worktree.path.clone();
+    guard
+        .attach_worktree(worktree)
+        .await
+        .expect("attach worktree");
+
+    (temp, store, key, guard, worktree_path)
+}
+
+// ---------------------------------------------------------------------------
+// finish_retry teardown integration tests (issue #163)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn finish_retry_removes_attached_worktree_on_failure() {
+    let budget = 3;
+    let (_temp, store, key, mut guard, worktree_path) =
+        seed_in_progress_with_worktree(0, budget).await;
+
+    let phase = guard
+        .finish_retry("worker exit 2", budget)
+        .await
+        .expect("finish_retry");
+
+    assert_eq!(phase, Phase::Queued);
+    assert!(
+        !worktree_path.exists(),
+        "worktree path should be removed on retry"
+    );
+
+    let entry = store
+        .snapshot()
+        .expect("snapshot")
+        .entry(&key)
+        .expect("entry")
+        .clone();
+    assert_eq!(entry.phase, Phase::Queued);
+    assert_eq!(entry.attempts, 1);
+}
+
+#[tokio::test]
+async fn finish_retry_requeues_with_300s_backoff() {
+    let budget = 5;
+    let k = 2;
+    let start = Utc::now();
+    let (_temp, store, key, mut guard, worktree_path) =
+        seed_in_progress_with_worktree(k, budget).await;
+
+    let phase = guard
+        .finish_retry("worker exit 2", budget)
+        .await
+        .expect("finish_retry");
+    let end = Utc::now();
+
+    assert_eq!(phase, Phase::Queued);
+    assert!(
+        !worktree_path.exists(),
+        "worktree path should be removed on retry"
+    );
+
+    let entry = store
+        .snapshot()
+        .expect("snapshot")
+        .entry(&key)
+        .expect("entry")
+        .clone();
+    assert_eq!(entry.phase, Phase::Queued);
+    assert_eq!(entry.attempts, k + 1);
+
+    let next_attempt_at = entry.next_attempt_at.expect("next_attempt_at set");
+    assert!(
+        next_attempt_at >= start + ChronoDuration::seconds(300),
+        "next_attempt_at should be at least invocation start + 300s"
+    );
+    assert!(
+        next_attempt_at <= end + ChronoDuration::seconds(300),
+        "next_attempt_at should be at most invocation end + 300s"
+    );
+}
+
+#[tokio::test]
+async fn finish_retry_transitions_to_failed_when_budget_exhausted() {
+    let budget = 4;
+    let (_temp, store, key, mut guard, worktree_path) =
+        seed_in_progress_with_worktree(budget - 1, budget).await;
+
+    let phase = guard
+        .finish_retry("worker exit 2", budget)
+        .await
+        .expect("finish_retry");
+
+    assert_eq!(phase, Phase::Failed);
+    assert!(
+        !worktree_path.exists(),
+        "worktree path should be removed even when budget is exhausted"
+    );
+
+    let entry = store
+        .snapshot()
+        .expect("snapshot")
+        .entry(&key)
+        .expect("entry")
+        .clone();
+    assert_eq!(entry.phase, Phase::Failed);
+    assert_eq!(entry.attempts, budget);
+    assert!(entry.next_attempt_at.is_none());
 }

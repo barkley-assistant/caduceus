@@ -224,6 +224,7 @@ impl ActiveRunGuard {
     /// returned so the orchestrator can log without re-reading
     /// state.
     pub async fn finish_retry(&mut self, error: &str, budget: u32) -> CaduceusResult<Phase> {
+        self.teardown_worktree_if_attached().await;
         let claim = self.take_claim();
         let new_phase = self.store.retry_or_fail(claim, error, budget)?;
         self.mark_finished().await;
