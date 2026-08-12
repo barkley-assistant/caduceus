@@ -57,11 +57,15 @@ pub const PROMPT_FILENAME: &str = "worker-prompt.md";
 ///   directly.
 /// * `branch_name` — the daemon-owned branch the worker is
 ///   expected to leave in place.
+/// * `worker_instruction` — optional operator-supplied text
+///   inserted after daemon-authoritative sections. Empty means
+///   no section is rendered.
 pub fn build_prompt(
     issue: &IssueDetail,
     ticket_type: TicketType,
     context_json: &str,
     branch_name: &str,
+    worker_instruction: &str,
 ) -> CaduceusResult<String> {
     if branch_name.is_empty() {
         return Err(CaduceusError::Worker {
@@ -78,6 +82,7 @@ pub fn build_prompt(
     push_github_access(&mut out);
     push_behavior(&mut out, ticket_type);
     push_output_schema(&mut out);
+    push_worker_instruction(&mut out, worker_instruction);
     push_issue_section(&mut out, issue, context_json);
     push_footer(&mut out);
 
@@ -387,6 +392,23 @@ fn sanitise_fences(s: &str) -> String {
         }
     }
     out
+}
+
+/// Append one optional operator-supplied instruction section.
+/// Empty input writes nothing, keeping the default output
+/// byte-identical to the pre-change prompt. Non-empty input is
+/// fence-escaped the same way as issue body and context JSON so
+/// stray triple-backticks cannot close structural sections.
+fn push_worker_instruction(out: &mut String, worker_instruction: &str) {
+    if worker_instruction.is_empty() {
+        return;
+    }
+    let _ = writeln!(out, "## Worker instruction (operator-supplied)\n");
+    let _ = writeln!(out, "```text");
+    let safe = sanitise_fences(worker_instruction);
+    let _ = writeln!(out, "{safe}");
+    let _ = writeln!(out, "```");
+    let _ = writeln!(out);
 }
 
 fn ticket_type_label(t: TicketType) -> &'static str {
