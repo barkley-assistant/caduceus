@@ -151,10 +151,12 @@ pub async fn find_main_clone(
 
     if !porcelain.trim().is_empty() {
         return Err(CaduceusError::Worktree {
-            context: "discover",
+            context: "discover-dirty-main",
             stderr: format!(
-                "main checkout is dirty at {}; refusing to operate",
-                path.display()
+                "main checkout is dirty at {}; refusing to operate. Run `git -C {} status` to see what's dirty, clean it, then run `caduceus queue reset --force-finalization-reset {}` to retry.",
+                path.display(),
+                path.display(),
+                key.display_key()
             ),
         });
     }

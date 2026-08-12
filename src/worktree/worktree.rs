@@ -216,9 +216,10 @@ async fn create_locked(
     // prior run to leak paths.
     if let Some(foreign) = pre.foreign_worktree_dir {
         return Err(CaduceusError::Worktree {
-            context: "create",
+            context: "create-path-collision",
             stderr: format!(
-                "path collision: {} already exists under the worker's home (foreign run id)",
+                "path collision: {} already exists under the worker's home (foreign run id). Run `caduceus worktree-gc --dry-run` to inspect, then `caduceus worktree-gc`. If that does not help: `rm -rf {} && git worktree prune`.",
+                foreign.display(),
                 foreign.display()
             ),
         });
