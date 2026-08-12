@@ -57,6 +57,13 @@ pub struct StatusReport {
     pub next_head: Option<String>,
     pub next_head_earliest_eligibility: Option<DateTime<Utc>>,
     pub recent_errors: Vec<String>,
+    /// Dedicated surface for queue entries stuck in
+    /// `NeedsAttention` because of a refuse-to-operate
+    /// condition. Each entry carries the stable block
+    /// source tag and the human-readable recovery command
+    /// so the operator can see at a glance what is wedged
+    /// and how to unstick it, without parsing error text.
+    pub blocked_issues: Vec<BlockedEntry>,
     pub rate_limit: Option<crate::state::meta::RateLimitObservation>,
     pub live_workers: Vec<LiveWorker>,
     pub diagnostics: Vec<String>,
@@ -68,6 +75,30 @@ pub struct StatusReport {
     pub readiness: Option<BTreeMap<String, String>>,
     /// Pool state: "idle", "active(n)", "saturated", or "draining".
     pub pool_state: Option<String>,
+}
+
+/// One blocked (refuse-to-operate) entry surfaced by
+/// the status reporter. Built from queue entries in
+/// `NeedsAttention` phase that carry both
+/// `blocked_source` and `blocked_recovery_hint` — the
+/// `recent_errors` list still surfaces blocked info for
+/// backwards compatibility, but this struct is the
+/// authoritative contract for the dedicated `blocked
+/// issues` section and the JSON `blocked_issues` field.
+#[derive(Clone, Debug, Serialize)]
+pub struct BlockedEntry {
+    /// Display key, e.g. `owner/repo#42`.
+    pub issue_key: String,
+    /// Stable source tag (`worktree/dirty_main`,
+    /// `worktree/path_collision`, `queue/claim_mismatch`).
+    pub blocked_source: String,
+    /// Canonical recovery command the operator should
+    /// run to unstick the entry.
+    pub blocked_recovery_hint: String,
+    /// Last error text recorded when the entry was
+    /// routed to `NeedsAttention`. Empty string when
+    /// the entry has no recorded reason.
+    pub last_error: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -86,7 +117,15 @@ pub struct LiveWorker {
 
 /// Schema version. Bumped when a new field is added so
 /// the `--json` consumer can detect the version.
-pub const STATUS_SCHEMA_VERSION: &str = "7.5.0";
+///
+/// 7.6.0 — added `blocked_issues` field on
+/// `StatusReport` carrying dedicated `BlockedEntry`
+/// records for queue entries stuck in `NeedsAttention`
+/// because of a refuse-to-operate condition. The field
+/// is additive: the section is omitted from the human
+/// output when empty, and the JSON array is always
+/// present (empty array on a healthy state).
+pub const STATUS_SCHEMA_VERSION: &str = "7.6.0";
 
 /// Maximum number of recent errors surfaced by
 /// `StatusReport::recent_errors`.
@@ -189,6 +228,13 @@ pub fn build_report(state_dir: &Path) -> CaduceusResult<(StatusReport, Option<St
     //    diagnostics, capped at 10.
     let recent_errors = collect_recent_errors(&queue, &meta.snapshot());
 
+    // 5b. Dedicated blocked-issues surface — only queue
+    //     entries in `NeedsAttention` with typed block
+    //     metadata contribute. The section is omitted from
+    //     the human render when empty; the JSON field is
+    //     always present (additive over 7.5.0).
+    let blocked_issues = collect_blocked_issues(&queue);
+
     // 6. Live workers from heartbeats. The reporter
     //    filters for `*.heartbeat` regular files whose
     //    mtime is within the staleness window. The
@@ -231,6 +277,7 @@ pub fn build_report(state_dir: &Path) -> CaduceusResult<(StatusReport, Option<St
         next_head,
         next_head_earliest_eligibility: next_head_earliest,
         recent_errors,
+        blocked_issues,
         rate_limit: meta.snapshot().rate_limit,
         live_workers,
         diagnostics: Vec::new(),
@@ -282,6 +329,7 @@ fn empty_report(state_dir: &Path) -> StatusReport {
         next_head: None,
         next_head_earliest_eligibility: None,
         recent_errors: Vec::new(),
+        blocked_issues: Vec::new(),
         rate_limit: None,
         live_workers: Vec::new(),
         diagnostics: Vec::new(),
@@ -382,6 +430,43 @@ fn collect_recent_errors(queue: &QueueState, meta: &StateMeta) -> Vec<String> {
     }
     errors.truncate(MAX_RECENT_ERRORS);
     errors
+}
+
+/// Build the dedicated `blocked_issues` surface from
+/// queue entries in `NeedsAttention` phase that carry
+/// the typed block metadata. Entries without both
+/// `blocked_source` and `blocked_recovery_hint` are
+/// skipped — those fields are set only by the
+/// terminal-block dispatch path, so a `NeedsAttention`
+/// entry without them is a legacy state that the
+/// reporter cannot present coherently here (the
+/// `recent_errors` list still surfaces it for context).
+fn collect_blocked_issues(queue: &QueueState) -> Vec<BlockedEntry> {
+    let mut out: Vec<BlockedEntry> = Vec::new();
+    for entry in queue.entries.values() {
+        if entry.phase != Phase::NeedsAttention {
+            continue;
+        }
+        let (Some(source), Some(hint)) = (
+            entry.blocked_source.as_ref(),
+            entry.blocked_recovery_hint.as_ref(),
+        ) else {
+            continue;
+        };
+        out.push(BlockedEntry {
+            issue_key: entry.key.display_key(),
+            blocked_source: source.clone(),
+            blocked_recovery_hint: hint.clone(),
+            last_error: entry.last_error.clone().unwrap_or_default(),
+        });
+    }
+    // Deterministic ordering — the report is rendered
+    // for humans, and grep-ability across runs depends
+    // on a stable iteration order. BTreeMap iterates in
+    // lexical display-key order, which matches the
+    // queue's FIFO convention.
+    out.sort_by(|a, b| a.issue_key.cmp(&b.issue_key));
+    out
 }
 
 fn collect_live_workers(state_dir: &Path) -> Vec<LiveWorker> {
@@ -531,6 +616,28 @@ pub fn render_human(report: &StatusReport, diagnostic: Option<&StatusDiagnostic>
             ));
         }
     }
+    if !report.blocked_issues.is_empty() {
+        out.push_str("  blocked issues:\n");
+        for entry in &report.blocked_issues {
+            out.push_str(&format!("    - {}\n", entry.issue_key));
+            out.push_str(&format!("      source: {}\n", entry.blocked_source));
+            // The reason line is informational; an entry
+            // can legitimately lack `last_error` if the
+            // daemon routed it via a context-only path,
+            // so we fall back to `-` to keep the section
+            // shape stable.
+            let reason = if entry.last_error.is_empty() {
+                "-".to_string()
+            } else {
+                entry.last_error.clone()
+            };
+            out.push_str(&format!("      reason: {reason}\n"));
+            out.push_str(&format!(
+                "      recovery: {}\n",
+                entry.blocked_recovery_hint
+            ));
+        }
+    }
     if !report.recent_errors.is_empty() {
         out.push_str("  recent errors:\n");
         for err in &report.recent_errors {
@@ -607,6 +714,7 @@ pub fn build_report_from_state(
     }
     let (next_head, next_head_earliest) = compute_next_head(queue, Utc::now());
     let recent_errors = collect_recent_errors(queue, meta);
+    let blocked_issues = collect_blocked_issues(queue);
     StatusReport {
         version: STATUS_SCHEMA_VERSION.to_string(),
         state_dir: state_dir.to_path_buf(),
@@ -619,6 +727,7 @@ pub fn build_report_from_state(
         next_head,
         next_head_earliest_eligibility: next_head_earliest,
         recent_errors,
+        blocked_issues,
         rate_limit: meta.rate_limit.clone(),
         live_workers: Vec::new(),
         diagnostics: Vec::new(),
