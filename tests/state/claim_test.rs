@@ -59,6 +59,8 @@ fn seed_entry(owner: &str, repo: &str, number: u64) -> QueueEntry {
         last_run_id: None,
         next_attempt_at: None,
         finalization: None,
+        blocked_source: None,
+        blocked_recovery_hint: None,
         queued_at: Utc::now(),
         updated_at: Utc::now(),
         generation: 1,
@@ -423,6 +425,35 @@ fn fifo_dispatch_across_multiple_acquires() {
     assert_eq!(c1.entry.key, key("Owner", "Repo", 1));
     assert_eq!(c2.entry.key, key("Owner", "Repo", 2));
     assert_eq!(c3.entry.key, key("Owner", "Repo", 3));
+}
+
+// Recovery-hint contract for stale claim tokens
+
+#[test]
+fn claim_mismatch_includes_recovery_command() {
+    let root = tempdir("claim-mismatch-recovery");
+    let store = Arc::new(StateStore::open(&root).expect("open"));
+    enqueue(&store, &key("Owner", "Repo", 1));
+    let now = Utc::now();
+    let claimed = store
+        .acquire_next("RUN-1", 1, now)
+        .expect("acquire")
+        .expect("claimed");
+    let bad = ClaimToken::for_test(
+        store.claims_dir(),
+        "0000000000000000000000000000000000000000000000000000000000000000",
+        "RUN-BOGUS",
+    );
+    let err = store
+        .set_worktree(&bad, PathBuf::from("/tmp/bogus").as_path())
+        .expect_err("stale token must be rejected");
+    let text = format!("{err:?}");
+    assert!(
+        text.contains("caduceus queue reprocess <issue>"),
+        "recovery command missing: {text}"
+    );
+    // The matched claim is unaffected by the rejected operation.
+    assert_eq!(claimed.entry.key, key("Owner", "Repo", 1));
 }
 
 // Sanity: tick + claim interleaving

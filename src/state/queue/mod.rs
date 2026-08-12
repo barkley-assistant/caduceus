@@ -173,6 +173,14 @@ pub struct QueueEntry {
     pub queued_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub generation: u32,
+    /// Stable source tag for a terminal block (e.g. `worktree/dirty_main`).
+    /// Set only when the daemon moves an entry to `NeedsAttention`
+    /// because of a refuse-to-operate condition.
+    #[serde(default)]
+    pub blocked_source: Option<String>,
+    /// Human-readable recovery command/hint for a terminal block.
+    #[serde(default)]
+    pub blocked_recovery_hint: Option<String>,
 }
 
 /// Versioned queue file.

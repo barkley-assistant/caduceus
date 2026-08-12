@@ -157,6 +157,8 @@ fn build_entry(finalization: Option<FinalizationCheckpoint>) -> QueueEntry {
         finalization,
         queued_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
+        blocked_source: None,
+        blocked_recovery_hint: None,
         generation: 1,
     }
 }

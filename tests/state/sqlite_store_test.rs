@@ -268,3 +268,89 @@ fn migrate_v3_to_v4_adds_circuit_state_and_drops_circuit_breakers() {
     conn.close().expect("close");
     let _ = fs::remove_file(&path);
 }
+
+#[test]
+fn migrates_v5_to_v6_adds_block_columns() {
+    let path = db_path();
+    {
+        let conn = Connection::open(&path).expect("open raw");
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL, migrated_at TEXT NOT NULL);
+             INSERT INTO schema_version (version, migrated_at) VALUES (5, '2026-01-01T00:00:00Z');",
+        )
+        .expect("init v5 schema");
+        // v5 queue_entries lacks blocked_source/blocked_recovery_hint.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS queue_entries (issue_key TEXT PRIMARY KEY, phase TEXT NOT NULL, ticket_type TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, last_run_id TEXT, next_attempt_at TEXT, finalization TEXT, queued_at TEXT NOT NULL, updated_at TEXT NOT NULL, generation INTEGER NOT NULL DEFAULT 1);
+             CREATE TABLE IF NOT EXISTS state_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS claims (claim_id TEXT PRIMARY KEY, issue_key TEXT NOT NULL, worker_pid INTEGER, token TEXT NOT NULL, claimed_at TEXT NOT NULL, expires_at TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS checkpoints (run_id TEXT NOT NULL, stage TEXT NOT NULL, checkpoint_data TEXT, created_at TEXT NOT NULL, operation_id TEXT, remote_marker TEXT, PRIMARY KEY (run_id, stage));
+             CREATE TABLE IF NOT EXISTS circuit_state (scope TEXT NOT NULL, scope_id TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'closed', consecutive_failures INTEGER NOT NULL DEFAULT 0, last_failure_at INTEGER, opened_at INTEGER, last_probe_at INTEGER, PRIMARY KEY (scope, scope_id));
+             CREATE TABLE IF NOT EXISTS leases (issue_key TEXT PRIMARY KEY, owner_id TEXT NOT NULL, fencing_token INTEGER NOT NULL, expires_at INTEGER NOT NULL, state TEXT NOT NULL CHECK(state IN ('held', 'released', 'expired')));
+             CREATE TABLE IF NOT EXISTS oci_runs (run_id TEXT PRIMARY KEY, container_id TEXT, state TEXT NOT NULL, engine TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, daemon_id TEXT NOT NULL, issue_id TEXT NOT NULL, worker_command_sha256 TEXT NOT NULL);",
+        )
+        .expect("create v5 tables");
+        // Seed one v5 row to prove old rows get NULL defaults.
+        conn.execute(
+            "INSERT INTO queue_entries (issue_key, phase, ticket_type, attempts, queued_at, updated_at)
+             VALUES (?1, ?2, ?3, 0, ?4, ?4)",
+            params![
+                "owner/repo#1",
+                "queued",
+                "code",
+                chrono::Utc::now().to_rfc3339()
+            ],
+        )
+        .expect("seed v5 row");
+        conn.close().expect("close");
+    }
+
+    let conn = open(&path).expect("open v6");
+    let version: i64 = conn
+        .query_row("SELECT MAX(version) FROM schema_version", [], |row| {
+            row.get(0)
+        })
+        .expect("read version");
+    assert_eq!(version, 6, "schema version must be v6 after migration");
+
+    let cols: Vec<String> = conn
+        .prepare("SELECT name FROM pragma_table_info('queue_entries') ORDER BY name")
+        .expect("prepare")
+        .query_map([], |row| row.get(0))
+        .expect("query")
+        .filter_map(|r| r.ok())
+        .collect();
+    assert!(cols.contains(&"blocked_source".to_string()));
+    assert!(cols.contains(&"blocked_recovery_hint".to_string()));
+
+    // Old row still loads with NULL block fields.
+    let (source, hint): (Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT blocked_source, blocked_recovery_hint FROM queue_entries WHERE issue_key = ?1",
+            params!["owner/repo#1"],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("read old row");
+    assert!(source.is_none());
+    assert!(hint.is_none());
+
+    // A new row can carry block metadata.
+    conn.execute(
+        "INSERT OR REPLACE INTO queue_entries
+         (issue_key, phase, ticket_type, attempts, queued_at, updated_at, generation,
+          blocked_source, blocked_recovery_hint)
+         VALUES (?1, ?2, ?3, 0, ?4, ?4, 1, ?5, ?6)",
+        params![
+            "owner/repo#2",
+            "needs_attention",
+            "code",
+            chrono::Utc::now().to_rfc3339(),
+            "worktree/dirty_main",
+            "caduceus queue reset --force-finalization-reset owner/repo#2"
+        ],
+    )
+    .expect("insert blocked row");
+
+    conn.close().expect("close");
+    let _ = fs::remove_file(&path);
+}

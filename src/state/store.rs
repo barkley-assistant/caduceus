@@ -47,7 +47,13 @@ use crate::infra::error::{CaduceusError, CaduceusResult};
 /// - `oci_runs` table for per-container lifecycle state tracking.
 ///   Keyed by `run_id` with indices on `container_id`, `daemon_id`,
 ///   and `state`.
-pub const SCHEMA_VERSION: i64 = 5;
+///
+/// ## v6
+///
+/// - `queue_entries` gains `blocked_source TEXT` and
+///   `blocked_recovery_hint TEXT` columns for terminal refuse-to-
+///   operate metadata. Existing rows get NULL defaults.
+pub const SCHEMA_VERSION: i64 = 6;
 
 /// Name of the SQLite database file inside the state directory.
 pub const DB_FILENAME: &str = "state.db";
@@ -71,7 +77,9 @@ CREATE TABLE IF NOT EXISTS queue_entries (
     finalization  TEXT,
     queued_at     TEXT NOT NULL,
     updated_at    TEXT NOT NULL,
-    generation    INTEGER NOT NULL DEFAULT 1
+    generation    INTEGER NOT NULL DEFAULT 1,
+    blocked_source TEXT,
+    blocked_recovery_hint TEXT
 );
 
 CREATE TABLE IF NOT EXISTS state_meta (
@@ -203,6 +211,7 @@ pub fn open(path: &Path) -> CaduceusResult<Connection> {
             migrate_v2_to_v3(&conn, &db_path, existing_version)?;
             migrate_v3_to_v4(&conn, &db_path, existing_version)?;
             migrate_v4_to_v5(&conn, &db_path, existing_version)?;
+            migrate_v5_to_v6(&conn, &db_path, existing_version)?;
             apply_schema(&conn, &db_path)?;
             record_version(&conn, &db_path)?;
         }
@@ -332,6 +341,24 @@ fn migrate_v4_to_v5(conn: &Connection, db_path: &Path, from_version: i64) -> Cad
     // No ALTER TABLE statements are needed for v4→v5.
     let _ = conn;
     let _ = db_path;
+    Ok(())
+}
+
+/// Migrate from schema v5 to v6 by adding `blocked_source` and
+/// `blocked_recovery_hint` columns to `queue_entries`. Both columns
+/// are nullable so existing rows get NULL defaults.
+fn migrate_v5_to_v6(conn: &Connection, db_path: &Path, from_version: i64) -> CaduceusResult<()> {
+    if from_version >= 6 {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "ALTER TABLE queue_entries ADD COLUMN blocked_source TEXT;
+         ALTER TABLE queue_entries ADD COLUMN blocked_recovery_hint TEXT;",
+    )
+    .map_err(|e| CaduceusError::StateCorrupt {
+        path: db_path.to_path_buf(),
+        message: format!("v5→v6 migration failed: {e}"),
+    })?;
     Ok(())
 }
 

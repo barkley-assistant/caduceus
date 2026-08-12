@@ -260,10 +260,43 @@ impl ActiveRunGuard {
         Ok(())
     }
 
+    /// Terminal transition for a refuse-to-operate block. The
+    /// attached worktree is torn down, the entry is moved to
+    /// `NeedsAttention` with block metadata, a stable tracing event
+    /// is emitted, and the claim is released. The claim must be
+    /// released *after* the route so a later `reset_entry` is not
+    /// blocked by a stale claim file.
+    pub async fn finish_needs_attention(
+        &mut self,
+        error: &str,
+        source: &str,
+        recovery_hint: &str,
+    ) -> CaduceusResult<()> {
+        self.teardown_worktree_if_attached().await;
+        self.store.route_to_needs_attention_unchecked(
+            &self.issue_key,
+            error,
+            recovery_hint,
+            source,
+        )?;
+        tracing::warn!(
+            event = "caduceus.terminal_block",
+            issue_key = %self.issue_key.display_key(),
+            source,
+            recovery_hint,
+            error = %error,
+            "terminal block: entry moved to NeedsAttention"
+        );
+        let claim = self.take_claim();
+        crate::state::queue::unlink_claim_best_effort(&self.store.claims_dir(), &claim);
+        self.mark_finished().await;
+        Ok(())
+    }
+
     /// Cancellation transition. Operator SIGINT/SIGTERM or a
     /// timeout-driven drain lands here. The worktree is torn
-    /// down; the entry is requeued with `not_before = now` so
-    /// the next tick is immediately eligible.
+    /// down; the entry is requeued with `not_before = now` so the
+    /// next tick is immediately eligible.
     pub async fn finish_cancelled(&mut self) -> CaduceusResult<()> {
         self.teardown_worktree_if_attached().await;
         let now = Utc::now();

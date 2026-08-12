@@ -367,6 +367,8 @@ fn seed_queued(state_dir: &Path) -> String {
         finalization: None,
         queued_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
+        blocked_source: None,
+        blocked_recovery_hint: None,
         generation: 1,
     };
     entries.insert(key.clone(), entry);

@@ -54,7 +54,9 @@ fn empty_config(state_dir: &Path) -> Config {
 
 #[test]
 fn schema_version_is_pinned() {
-    assert_eq!(STATUS_SCHEMA_VERSION, "7.5.0");
+    // The 7.6.0 bump lands the `blocked_issues` field on
+    // `StatusReport` — see `src/daemon/status.rs`.
+    assert_eq!(STATUS_SCHEMA_VERSION, "7.6.0");
 }
 
 #[test]
@@ -383,6 +385,317 @@ fn build_report_from_state_handles_synthetic_snapshot() {
 }
 
 #[test]
+fn report_surfaces_blocked_metadata_for_needs_attention() {
+    let dir = tempdir().expect("tempdir");
+    let cfg = empty_config(dir.path());
+    let now = Utc::now();
+    let mut state = QueueState::empty();
+    let mut blocked = entry(now, Phase::NeedsAttention, None);
+    blocked.last_error = Some("main checkout is dirty".to_string());
+    blocked.blocked_source = Some("worktree/dirty_main".to_string());
+    blocked.blocked_recovery_hint =
+        Some("caduceus queue reset --force-finalization-reset owner/repo#1".to_string());
+    state.entries.insert("owner/repo#1".to_string(), blocked);
+    let meta = StateMeta {
+        version: caduceus::meta::META_VERSION,
+        last_tick_started: None,
+        last_tick_finished: None,
+        last_outcome: None,
+        last_http_status: None,
+        next_allowed_poll_at: None,
+        last_reap_at: None,
+        last_reaped_count: 0,
+        rate_limit: None,
+        last_error: None,
+        recent_diagnostics: Vec::new(),
+    };
+    let report = build_report_from_state(&cfg.state_dir, &meta, &state);
+    let out = render_human(&report, None);
+    assert!(
+        out.contains("blocked: source = worktree/dirty_main"),
+        "human output missing blocked source: {out}"
+    );
+    assert!(
+        out.contains(
+            "blocked: recovery = caduceus queue reset --force-finalization-reset owner/repo#1"
+        ),
+        "human output missing recovery hint: {out}"
+    );
+}
+
+#[test]
+fn human_renders_blocked_issues_section_for_needs_attention() {
+    // The dedicated `blocked issues:` section is the
+    // AC5 deliverable: a separate surface from
+    // `recent errors:` carrying the issue key, stable
+    // source tag, reason, and recovery command. This
+    // test pins the exact bytes of that section.
+    let dir = tempdir().expect("tempdir");
+    let cfg = empty_config(dir.path());
+    let now = Utc::now();
+    let mut state = QueueState::empty();
+    let mut blocked = entry(now, Phase::NeedsAttention, None);
+    blocked.last_error = Some("main checkout is dirty".to_string());
+    blocked.blocked_source = Some("worktree/dirty_main".to_string());
+    blocked.blocked_recovery_hint =
+        Some("caduceus queue reset --force-finalization-reset owner/repo#1".to_string());
+    state.entries.insert("owner/repo#1".to_string(), blocked);
+    let meta = StateMeta {
+        version: caduceus::meta::META_VERSION,
+        last_tick_started: None,
+        last_tick_finished: None,
+        last_outcome: None,
+        last_http_status: None,
+        next_allowed_poll_at: None,
+        last_reap_at: None,
+        last_reaped_count: 0,
+        rate_limit: None,
+        last_error: None,
+        recent_diagnostics: Vec::new(),
+    };
+    let report = build_report_from_state(&cfg.state_dir, &meta, &state);
+    let out = render_human(&report, None);
+    // Pin the exact bytes of the dedicated section —
+    // header line plus four per-entry attribute lines.
+    // The order is key, source, reason, recovery.
+    let expected_section = "  blocked issues:\n    - owner/repo#1\n      source: worktree/dirty_main\n      reason: main checkout is dirty\n      recovery: caduceus queue reset --force-finalization-reset owner/repo#1\n";
+    assert!(
+        out.contains(expected_section),
+        "human output missing blocked issues section; full output:\n{out}"
+    );
+    // The dedicated section sits between `live workers`
+    // and `recent errors:` per the design ordering — pin
+    // that placement too so a future reorder is caught.
+    let live_idx = out
+        .find("live workers:")
+        .expect("live workers section in human output");
+    let blocked_idx = out
+        .find("blocked issues:")
+        .expect("blocked issues section in human output");
+    let recent_idx = out
+        .find("recent errors:")
+        .expect("recent errors section in human output");
+    assert!(
+        live_idx < blocked_idx && blocked_idx < recent_idx,
+        "blocked issues section must render between live workers and recent errors; live={live_idx} blocked={blocked_idx} recent={recent_idx}"
+    );
+}
+
+#[test]
+fn human_omits_blocked_issues_section_when_empty() {
+    // An empty `blocked_issues` list must not render
+    // the section header — operators should not see a
+    // stub heading on healthy state.
+    let dir = tempdir().expect("tempdir");
+    let cfg = empty_config(dir.path());
+    let state = QueueState::empty();
+    let meta = StateMeta {
+        version: caduceus::meta::META_VERSION,
+        last_tick_started: None,
+        last_tick_finished: None,
+        last_outcome: None,
+        last_http_status: None,
+        next_allowed_poll_at: None,
+        last_reap_at: None,
+        last_reaped_count: 0,
+        rate_limit: None,
+        last_error: None,
+        recent_diagnostics: Vec::new(),
+    };
+    let report = build_report_from_state(&cfg.state_dir, &meta, &state);
+    let out = render_human(&report, None);
+    assert!(
+        !out.contains("blocked issues"),
+        "human output should not include blocked issues section when empty; full output:\n{out}"
+    );
+}
+
+#[test]
+fn human_omits_needs_attention_without_block_metadata_from_section() {
+    // A `NeedsAttention` entry without typed block
+    // metadata (legacy state, or an entry routed via a
+    // non-terminal path) must not appear in the
+    // dedicated section — `collect_blocked_issues`
+    // filters those out because the source/hint
+    // contract cannot be honoured.
+    let dir = tempdir().expect("tempdir");
+    let cfg = empty_config(dir.path());
+    let now = Utc::now();
+    let mut state = QueueState::empty();
+    let mut legacy = entry(now, Phase::NeedsAttention, None);
+    legacy.last_error = Some("needs operator review".to_string());
+    // Intentionally leave blocked_source and
+    // blocked_recovery_hint as None.
+    state.entries.insert("owner/repo#2".to_string(), legacy);
+    let meta = StateMeta {
+        version: caduceus::meta::META_VERSION,
+        last_tick_started: None,
+        last_tick_finished: None,
+        last_outcome: None,
+        last_http_status: None,
+        next_allowed_poll_at: None,
+        last_reap_at: None,
+        last_reaped_count: 0,
+        rate_limit: None,
+        last_error: None,
+        recent_diagnostics: Vec::new(),
+    };
+    let report = build_report_from_state(&cfg.state_dir, &meta, &state);
+    let out = render_human(&report, None);
+    assert!(
+        !out.contains("blocked issues"),
+        "human output should not include blocked issues section when entry lacks metadata; full output:\n{out}"
+    );
+}
+
+#[test]
+fn json_carries_blocked_issues_array_with_entries() {
+    // The 7.6.0 schema adds a `blocked_issues` array on
+    // the JSON contract. Each element carries
+    // `issue_key`, `blocked_source`,
+    // `blocked_recovery_hint`, and `last_error`.
+    let dir = tempdir().expect("tempdir");
+    let cfg = empty_config(dir.path());
+    let now = Utc::now();
+    let mut state = QueueState::empty();
+    let mut blocked = entry(now, Phase::NeedsAttention, None);
+    blocked.last_error = Some("main checkout is dirty".to_string());
+    blocked.blocked_source = Some("worktree/dirty_main".to_string());
+    blocked.blocked_recovery_hint =
+        Some("caduceus queue reset --force-finalization-reset owner/repo#1".to_string());
+    state.entries.insert("owner/repo#1".to_string(), blocked);
+    let meta = StateMeta {
+        version: caduceus::meta::META_VERSION,
+        last_tick_started: None,
+        last_tick_finished: None,
+        last_outcome: None,
+        last_http_status: None,
+        next_allowed_poll_at: None,
+        last_reap_at: None,
+        last_reaped_count: 0,
+        rate_limit: None,
+        last_error: None,
+        recent_diagnostics: Vec::new(),
+    };
+    let report = build_report_from_state(&cfg.state_dir, &meta, &state);
+    let json = render_json(&report).expect("json");
+    let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+    let arr = parsed["blocked_issues"]
+        .as_array()
+        .expect("blocked_issues is array");
+    assert_eq!(arr.len(), 1, "expected one blocked entry, got: {json}");
+    let blocked = &arr[0];
+    assert_eq!(blocked["issue_key"].as_str(), Some("owner/repo#1"));
+    assert_eq!(
+        blocked["blocked_source"].as_str(),
+        Some("worktree/dirty_main")
+    );
+    assert_eq!(
+        blocked["blocked_recovery_hint"].as_str(),
+        Some("caduceus queue reset --force-finalization-reset owner/repo#1")
+    );
+    assert_eq!(
+        blocked["last_error"].as_str(),
+        Some("main checkout is dirty")
+    );
+    // Schema version reflects the bump.
+    assert_eq!(
+        parsed["version"].as_str(),
+        Some(STATUS_SCHEMA_VERSION),
+        "schema version must reflect the 7.6.0 bump"
+    );
+}
+
+#[test]
+fn json_carries_empty_blocked_issues_array_when_no_entries() {
+    // Empty blocked_issues must serialise as an empty
+    // array (not be omitted) — the field is additive on
+    // the JSON contract and consumers should always be
+    // able to read it.
+    let dir = tempdir().expect("tempdir");
+    let cfg = empty_config(dir.path());
+    let state = QueueState::empty();
+    let meta = StateMeta {
+        version: caduceus::meta::META_VERSION,
+        last_tick_started: None,
+        last_tick_finished: None,
+        last_outcome: None,
+        last_http_status: None,
+        next_allowed_poll_at: None,
+        last_reap_at: None,
+        last_reaped_count: 0,
+        rate_limit: None,
+        last_error: None,
+        recent_diagnostics: Vec::new(),
+    };
+    let report = build_report_from_state(&cfg.state_dir, &meta, &state);
+    let json = render_json(&report).expect("json");
+    let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+    let arr = parsed["blocked_issues"]
+        .as_array()
+        .expect("blocked_issues is array");
+    assert!(
+        arr.is_empty(),
+        "expected empty blocked_issues array; got: {json}"
+    );
+}
+
+#[test]
+fn json_blocked_issues_orders_entries_by_issue_key() {
+    // The `collect_blocked_issues` helper sorts by
+    // `issue_key` for deterministic output. Insert two
+    // entries out of order and assert the JSON array
+    // surfaces them in lexical display-key order.
+    let dir = tempdir().expect("tempdir");
+    let cfg = empty_config(dir.path());
+    let now = Utc::now();
+    let mut state = QueueState::empty();
+
+    let mut zeta = entry(now, Phase::NeedsAttention, None);
+    zeta.key = IssueKey {
+        owner: "owner".to_string(),
+        repo: "repo".to_string(),
+        number: 9,
+    };
+    zeta.last_error = Some("zeta".to_string());
+    zeta.blocked_source = Some("worktree/dirty_main".to_string());
+    zeta.blocked_recovery_hint = Some("recovery zeta".to_string());
+    state.entries.insert("owner/repo#9".to_string(), zeta);
+
+    let mut alpha = entry(now, Phase::NeedsAttention, None);
+    alpha.key = IssueKey {
+        owner: "owner".to_string(),
+        repo: "repo".to_string(),
+        number: 1,
+    };
+    alpha.last_error = Some("alpha".to_string());
+    alpha.blocked_source = Some("worktree/path_collision".to_string());
+    alpha.blocked_recovery_hint = Some("recovery alpha".to_string());
+    state.entries.insert("owner/repo#1".to_string(), alpha);
+
+    let meta = StateMeta {
+        version: caduceus::meta::META_VERSION,
+        last_tick_started: None,
+        last_tick_finished: None,
+        last_outcome: None,
+        last_http_status: None,
+        next_allowed_poll_at: None,
+        last_reap_at: None,
+        last_reaped_count: 0,
+        rate_limit: None,
+        last_error: None,
+        recent_diagnostics: Vec::new(),
+    };
+    let report = build_report_from_state(&cfg.state_dir, &meta, &state);
+    let json = render_json(&report).expect("json");
+    let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+    let arr = parsed["blocked_issues"].as_array().expect("array");
+    assert_eq!(arr.len(), 2);
+    assert_eq!(arr[0]["issue_key"].as_str(), Some("owner/repo#1"));
+    assert_eq!(arr[1]["issue_key"].as_str(), Some("owner/repo#9"));
+}
+
+#[test]
 fn render_human_includes_transcript_for_live_workers() {
     let dir = tempdir().expect("tempdir");
     let cfg = empty_config(dir.path());
@@ -418,6 +731,8 @@ fn entry(_now: DateTime<Utc>, phase: Phase, next_attempt_at: Option<DateTime<Utc
         last_run_id: None,
         next_attempt_at,
         finalization: None,
+        blocked_source: None,
+        blocked_recovery_hint: None,
         queued_at: _now,
         updated_at: _now,
         generation: 1,

@@ -168,9 +168,9 @@ pub(crate) fn matches_token(entry: &QueueEntry, claim: &ClaimToken) -> bool {
 
 pub(crate) fn claim_mismatch(claim: &ClaimToken) -> CaduceusError {
     CaduceusError::Queue {
-        context: "claim",
+        context: "claim-terminal-mismatch",
         stderr: format!(
-            "claim token run_id {:?} digest {} does not match any in-progress entry",
+            "claim token run_id {:?} digest {} does not match any in-progress entry. Run `caduceus queue reprocess <issue>` to clear the stale claim and retry.",
             claim.run_id, claim.digest
         ),
     }
