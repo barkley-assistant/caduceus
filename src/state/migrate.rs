@@ -247,6 +247,8 @@ pub fn run(from: &Path, state_dir: &Path, dry_run: bool) -> CaduceusResult<Migra
                 queued_at: updated_at,
                 updated_at,
                 generation: 1,
+                blocked_source: None,
+                blocked_recovery_hint: None,
             };
             target.entries.insert(key.display_key(), entry);
             migrated += 1;

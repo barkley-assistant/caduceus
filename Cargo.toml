@@ -391,6 +391,10 @@ name = "install_test"
 path = "tests/infra/install_test.rs"
 
 [[test]]
+name = "error_classify_test"
+path = "tests/infra/error_classify_test.rs"
+
+[[test]]
 name = "worker_archive_test"
 path = "tests/worker/worker_archive_test.rs"
 

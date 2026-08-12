@@ -184,8 +184,9 @@ pub fn migrate_to_sqlite(
         tx.execute(
             "INSERT OR REPLACE INTO queue_entries
              (issue_key, phase, ticket_type, attempts, last_error, last_run_id,
-              next_attempt_at, finalization, queued_at, updated_at, generation)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+              next_attempt_at, finalization, queued_at, updated_at, generation,
+              blocked_source, blocked_recovery_hint)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 key,
                 phase,
@@ -198,6 +199,8 @@ pub fn migrate_to_sqlite(
                 queued_at,
                 updated_at,
                 1_i64,
+                None::<Option<String>>,
+                None::<Option<String>>,
             ],
         )
         .map_err(|e| CaduceusError::StateCorrupt {

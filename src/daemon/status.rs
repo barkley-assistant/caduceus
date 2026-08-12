@@ -187,7 +187,7 @@ pub fn build_report(state_dir: &Path) -> CaduceusResult<(StatusReport, Option<St
     // 5. Recent errors. The queue entries' `last_error` plus
     //    the metadata's `last_error` plus the metadata
     //    diagnostics, capped at 10.
-    let recent_errors = collect_recent_errors(&queue, &meta);
+    let recent_errors = collect_recent_errors(&queue, &meta.snapshot());
 
     // 6. Live workers from heartbeats. The reporter
     //    filters for `*.heartbeat` regular files whose
@@ -332,12 +332,12 @@ fn compute_next_head_inner(
     (head, earliest_future)
 }
 
-fn collect_recent_errors(queue: &QueueState, meta: &MetaStore) -> Vec<String> {
+fn collect_recent_errors(queue: &QueueState, meta: &StateMeta) -> Vec<String> {
     let mut errors: Vec<String> = Vec::new();
-    if let Some(last) = meta.snapshot().last_error {
+    if let Some(last) = &meta.last_error {
         errors.push(format!("daemon: {last}"));
     }
-    for diag in meta.snapshot().recent_diagnostics.iter().rev() {
+    for diag in meta.recent_diagnostics.iter().rev() {
         errors.push(format!(
             "diagnostic [{}]: {}",
             diag.code,
@@ -349,7 +349,10 @@ fn collect_recent_errors(queue: &QueueState, meta: &MetaStore) -> Vec<String> {
     }
     // Pull the most recent `last_error` from each
     // non-terminal entry. Terminal phases are excluded
-    // because they aren't actionable.
+    // because they aren't actionable. NeedsAttention entries
+    // additionally surface the stable source tag and the
+    // recovery hint so operators don't have to parse error
+    // text at the console.
     for entry in queue.entries.values() {
         if entry.phase == Phase::Done
             || entry.phase == Phase::Skipped
@@ -359,6 +362,22 @@ fn collect_recent_errors(queue: &QueueState, meta: &MetaStore) -> Vec<String> {
         }
         if let Some(err) = &entry.last_error {
             errors.push(format!("{}: {}", entry.key.display_key(), err));
+        }
+        if entry.phase == Phase::NeedsAttention {
+            if let Some(source) = &entry.blocked_source {
+                errors.push(format!(
+                    "{}: blocked: source = {}",
+                    entry.key.display_key(),
+                    source
+                ));
+            }
+            if let Some(hint) = &entry.blocked_recovery_hint {
+                errors.push(format!(
+                    "{}: blocked: recovery = {}",
+                    entry.key.display_key(),
+                    hint
+                ));
+            }
         }
     }
     errors.truncate(MAX_RECENT_ERRORS);
@@ -587,6 +606,7 @@ pub fn build_report_from_state(
         *phases.entry(key).or_insert(0) += 1;
     }
     let (next_head, next_head_earliest) = compute_next_head(queue, Utc::now());
+    let recent_errors = collect_recent_errors(queue, meta);
     StatusReport {
         version: STATUS_SCHEMA_VERSION.to_string(),
         state_dir: state_dir.to_path_buf(),
@@ -598,7 +618,7 @@ pub fn build_report_from_state(
         phases,
         next_head,
         next_head_earliest_eligibility: next_head_earliest,
-        recent_errors: Vec::new(),
+        recent_errors,
         rate_limit: meta.rate_limit.clone(),
         live_workers: Vec::new(),
         diagnostics: Vec::new(),
