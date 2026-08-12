@@ -220,6 +220,7 @@ pub(crate) async fn run_claim(
         claimed.entry.ticket_type,
         &context_json,
         &worktree.branch_name,
+        cfg.worker_instruction.as_str(),
     ) {
         Ok(p) => p,
         Err(err) => {
