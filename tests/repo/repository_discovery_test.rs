@@ -430,7 +430,10 @@ async fn find_main_clone_rejects_dirty_main_checkout() {
 }
 
 #[tokio::test]
-async fn find_main_clone_tolerates_empty_lock_with_no_registered_worktrees() {
+async fn find_main_clone_rejects_empty_lock_dir_as_dirty() {
+    // With worktrees relocated under the daemon state directory,
+    // a `.worktrees/` directory inside the main checkout is genuine
+    // dirt, even if it only contains an empty `.lock` file.
     let root = tempdir("lock-empty-no-worktrees");
     let workdir = root.join("workdirs");
     fs::create_dir_all(&workdir).unwrap();
@@ -445,10 +448,11 @@ async fn find_main_clone_tolerates_empty_lock_with_no_registered_worktrees() {
 
     let cfg = config_for(&root, "https://api.github.com");
     let runner = GitRunner::new(&cfg);
-    let info = find_main_clone(&cfg, &runner, &key("octocat", "Hello-World", 1))
+    let err = find_main_clone(&cfg, &runner, &key("octocat", "Hello-World", 1))
         .await
-        .expect("discovery should tolerate empty .worktrees/.lock");
-    assert_eq!(info.path, dest);
+        .expect_err("discovery should reject .worktrees/.lock as dirty");
+    let text = format!("{err:?}");
+    assert!(text.contains("dirty"), "got: {text}");
 }
 
 #[tokio::test]

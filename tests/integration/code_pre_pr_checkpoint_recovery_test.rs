@@ -193,7 +193,7 @@ fn make_context(
         client: inert_client(),
         config: cfg.clone(),
         repository: RepositoryInfo {
-            path: wt.path.parent().unwrap().parent().unwrap().to_path_buf(),
+            path: wt.main_path.clone(),
             base_branch: "main".to_string(),
             remote_url: remote_url.to_string(),
         },

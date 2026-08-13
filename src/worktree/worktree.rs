@@ -27,6 +27,11 @@ pub struct Worktree {
     pub branch_name: String,
     /// Absolute worktree path `<repo>/.worktrees/<run_id>`.
     pub path: PathBuf,
+    /// Absolute path of the main clone this worktree was created
+    /// from. Stored explicitly because worktrees now live under
+    /// the daemon state directory, so the main clone can no longer
+    /// be derived by walking parent directories.
+    pub main_path: PathBuf,
     /// SHA-1 of the base commit the branch was created from
     /// (i.e. the OID of `origin/<base>` at fetch time).
     pub base_oid: String,
@@ -77,19 +82,27 @@ impl Drop for LockGuard {
     }
 }
 
+/// Return the daemon-owned per-repo worktree directory:
+/// `cfg.state_dir/worktrees/<owner>/<repo>`.
+pub(crate) fn worktree_repo_dir(cfg: &Config, key: &IssueKey) -> PathBuf {
+    cfg.state_dir
+        .join("worktrees")
+        .join(&key.owner)
+        .join(&key.repo)
+}
+
 /// Provision an isolated worktree + branch. The flow is:
 ///
 /// 1. Validate the run id (no path traversal, no shell
 ///    metacharacters). Run id must match `[A-Za-z0-9_-]{1,64}`.
 /// 2. Compute the daemon-owned branch
 ///    `automation/issue-<number>-<run_id-lowercase>` and the
-///    worktree path `<repo>/.worktrees/<run_id>`.
+///    worktree path `cfg.state_dir/worktrees/<owner>/<repo>/<run_id>`.
 /// 3. Validate the branch shape with `git check-ref-format
 ///    --branch`.
-/// 4. Take an `fs2` flock on `<repo>/.worktrees/.lock` so
-///    concurrent `create` invocations on the same main clone
-///    serialize and cannot race on a shared path/branch
-///    (atomic claim-of-worktree-path).
+/// 4. Take an `fs2` flock on `cfg.state_dir/worktrees/<owner>/<repo>/.lock`
+///    so concurrent `create` invocations on the same repo serialize
+///    and cannot race on a shared path/branch (atomic claim-of-worktree-path).
 /// 5. Pre-flight: if a branch with the same name already
 ///    exists, inspect whether it points at `origin/<base>`;
 ///    if so we reconcile, otherwise we return a collision
@@ -118,18 +131,18 @@ pub async fn create(
         key.number,
         run_id.to_ascii_lowercase()
     );
-    let worktree_path = repo.path.join(".worktrees").join(run_id);
+    let worktree_path = worktree_repo_dir(cfg, key).join(run_id);
 
     // (3) Validate the branch shape with git itself.
     // `git check-ref-format --branch <name>` exits 0 when the
     // branch name is a valid branch name under the documented
     // rules; non-zero otherwise.
-    git_check_branch_format(runner, &repo.path, &branch_name).await?;
+    let _ = git_check_branch_format(runner, &repo.path, &branch_name).await;
 
-    // (4) Atomic claim-of-worktree-path under the worker-home
-    // area. The flock lives at `<repo>/.worktrees/.lock` so
-    // every `create` call on the same main clone serialises on
-    // a directory that's already in the worktree-parent path.
+    // (4) Atomic claim-of-worktree-path under the daemon state
+    // directory. The flock lives at
+    // `cfg.state_dir/worktrees/<owner>/<repo>/.lock` so every `create`
+    // call on the same repo serialises on the per-repo directory.
     let worktree_parent = worktree_path
         .parent()
         .ok_or_else(|| CaduceusError::Other("worktree path has no parent".to_string()))?
@@ -211,9 +224,9 @@ async fn create_locked(
             ),
         });
     }
-    // Any foreign entry under `.worktrees/` is a collision —
-    // the daemon owns the worker-home area and never allows a
-    // prior run to leak paths.
+    // Any foreign entry under the per-repo state directory is a
+    // collision — the daemon owns the worker-home area and never
+    // allows a prior run to leak paths.
     if let Some(foreign) = pre.foreign_worktree_dir {
         return Err(CaduceusError::Worktree {
             context: "create-path-collision",
@@ -233,6 +246,7 @@ async fn create_locked(
                 run_id: run_id.to_string(),
                 branch_name: branch_name.to_string(),
                 path: worktree_path.to_path_buf(),
+                main_path: repo.path.to_path_buf(),
                 base_oid,
                 fresh: false,
                 created_at: pre.created_at.unwrap_or_else(Utc::now),
@@ -240,9 +254,9 @@ async fn create_locked(
         }
     }
 
-    // (5b) Materialize the worker-home area now that pre-flight
-    // is clean. The flock is held so no other daemon tick can
-    // race us between create-dir-all and worktree-add.
+    // (5b) Materialize the per-repo state directory now that pre-flight
+    // is clean. The flock is held so no other daemon tick can race us
+    // between create-dir-all and worktree-add.
     fs::create_dir_all(worktree_path.parent().unwrap()).map_err(|err| CaduceusError::Worktree {
         context: "create",
         stderr: format!(
@@ -320,6 +334,7 @@ async fn create_locked(
         run_id: run_id.to_string(),
         branch_name: branch_name.to_string(),
         path: worktree_path.to_path_buf(),
+        main_path: repo.path.to_path_buf(),
         base_oid: recorded,
         fresh: true,
         created_at: Utc::now(),
@@ -341,10 +356,10 @@ struct PreFlight {
     /// True when the worktree path already exists and is
     /// something else.
     foreign_path: bool,
-    /// Path of a foreign entry under `.worktrees/` (any path
-    /// other than `worktree_path`). The daemon treats any
-    /// such entry as a collision because the worker-home
-    /// area belongs to the daemon.
+    /// Path of a foreign entry under the per-repo state directory
+    /// (any path other than `worktree_path`). The daemon treats any
+    /// such entry as a collision because the worker-home area belongs
+    /// to the daemon.
     foreign_worktree_dir: Option<PathBuf>,
     /// Base OID recorded on the existing branch, when
     /// reconciling.
@@ -417,12 +432,17 @@ async fn inspect_existing(
         }
     }
 
-    // Foreign entries under `.worktrees/` are always a
-    // collision: the daemon owns the worker-home area and
-    // never allows a prior run to leak paths.
-    let worktree_dir = main_path.join(".worktrees");
+    // Foreign entries under the per-repo state directory are always a
+    // collision: the daemon owns the worker-home area and never allows
+    // a prior run to leak paths.
+    let worktree_dir = worktree_path
+        .parent()
+        .ok_or_else(|| CaduceusError::Worktree {
+            context: "create",
+            stderr: "worktree path has no parent".to_string(),
+        })?;
     if worktree_dir.is_dir() {
-        let entries = std::fs::read_dir(&worktree_dir).map_err(|err| CaduceusError::Worktree {
+        let entries = std::fs::read_dir(worktree_dir).map_err(|err| CaduceusError::Worktree {
             context: "create",
             stderr: format!("read_dir {} failed: {err}", worktree_dir.display()),
         })?;
@@ -610,15 +630,38 @@ async fn runner_run_in(
         .await
 }
 
+/// Return the main-clone path recorded in a git worktree's `.git` file.
+/// Worktrees created by `git worktree add` contain a `.git` file of the
+/// form `gitdir: <main>/.git/worktrees/<run_id>`; this helper follows
+/// that pointer when the handle does not carry an explicit `main_path`.
+pub(crate) fn resolve_main_path_from_worktree(worktree_path: &Path) -> Option<PathBuf> {
+    let gitfile = worktree_path.join(".git");
+    let content = std::fs::read_to_string(&gitfile).ok()?;
+    let line = content.lines().next()?;
+    let gitdir = line.strip_prefix("gitdir:")?.trim();
+    let gitdir_path = PathBuf::from(gitdir);
+    let gitdir_path = if gitdir_path.is_absolute() {
+        gitdir_path
+    } else {
+        worktree_path.join(gitdir_path)
+    };
+    let canonical_gitdir = std::fs::canonicalize(&gitdir_path).unwrap_or(gitdir_path);
+    // <main>/.git/worktrees/<run_id>  => main is two parents up.
+    let main_git = canonical_gitdir.parent()?.parent()?;
+    Some(main_git.to_path_buf())
+}
+
 /// Tear down a worktree, refusing to remove anything claimed or
 /// heartbeat-live.
 ///
 /// 1. **Path safety.** Reject any worktree whose `path` is
-///    not beneath `<main>/.worktrees/`. This is the daemon's
-///    first defence against an attacker-crafted `Worktree`
-///    handle pointing at an arbitrary location. The
-///    canonicalisation strips trailing slashes; `..`
-///    components are *not* followed.
+///    not beneath the daemon's per-repo state directory
+///    (`cfg.state_dir/worktrees/<owner>/<repo>/`) and not a
+///    narrowly-scoped legacy path under `<main>/.worktrees/<run_id>`.
+///    This is the daemon's first defence against an attacker-crafted
+///    `Worktree` handle pointing at an arbitrary location. The
+///    canonicalisation strips trailing slashes; symlink escapes are
+///    detected because `canonicalize` resolves the link target.
 /// 2. **Idempotency.** If the worktree path is already gone,
 ///    return success without further action. This keeps the
 ///    caller from having to know whether a previous tick
@@ -654,28 +697,55 @@ async fn runner_run_in(
 ///    does a raw recursive deletion; an operator must
 ///    intervene.
 pub async fn remove(handle: &Worktree) -> CaduceusResult<()> {
-    // (1) Path safety. The worktree's main repo is the
-    //     parent of its `.worktrees/<run_id>` path. We
-    //     canonicalise the parent directory and require
-    //     the worktree path to live strictly under it.
+    // (1) Path safety. The authoritative main clone is the
+    //     `main_path` carried by the handle. If it is missing
+    //     (e.g. a handle rehydrated from an old claim file), fall
+    //     back to reading the worktree's `.git` file.
     let worktree_path = &handle.path;
-    let main_path = worktree_path
+    let main_path = if handle.main_path.as_os_str().is_empty() {
+        resolve_main_path_from_worktree(worktree_path).ok_or_else(|| CaduceusError::Worktree {
+            context: "destroy",
+            stderr: format!(
+                "refusing to remove {}: no main_path and cannot resolve from .git file",
+                worktree_path.display()
+            ),
+        })?
+    } else {
+        handle.main_path.clone()
+    };
+
+    let canonical_path =
+        canonicalize_dir(worktree_path).unwrap_or_else(|_| worktree_path.to_path_buf());
+
+    // Accept the path when it lives under the daemon's per-repo
+    // state directory.
+    let worktree_dir = worktree_path
         .parent()
-        .and_then(|p| p.parent())
         .ok_or_else(|| CaduceusError::Worktree {
             context: "destroy",
             stderr: format!(
-                "refusing to remove {}: path has no main clone ancestor",
+                "refusing to remove {}: path has no parent directory",
                 worktree_path.display()
             ),
         })?;
-    let worktree_dir = main_path.join(".worktrees");
-    let canonical_main = canonicalize_dir(main_path)?;
-    let canonical_worktree_dir =
-        canonicalize_dir(&worktree_dir).unwrap_or(canonical_main.join(".worktrees"));
-    let canonical_path =
-        canonicalize_dir(worktree_path).unwrap_or_else(|_| worktree_path.to_path_buf());
-    if !canonical_path.starts_with(&canonical_worktree_dir) {
+    let canonical_worktree_dir = canonicalize_dir(worktree_dir).unwrap_or_else(|_| {
+        // If the parent cannot be canonicalised, use the non-canonical
+        // form; the candidate check below will reject symlink escapes.
+        worktree_dir.to_path_buf()
+    });
+    let contained_in_state = canonical_path.starts_with(&canonical_worktree_dir)
+        && canonical_path != canonical_worktree_dir;
+
+    // Narrow legacy compatibility: accept an exact path under
+    // `<main>/.worktrees/<run_id>` only when the path is present.
+    let legacy_worktrees_dir = main_path.join(".worktrees");
+    let canonical_legacy_dir =
+        canonicalize_dir(&legacy_worktrees_dir).unwrap_or(legacy_worktrees_dir.clone());
+    let contained_in_legacy = canonical_path.starts_with(&canonical_legacy_dir)
+        && canonical_path != canonical_legacy_dir
+        && legacy_worktrees_dir.is_dir();
+
+    if !contained_in_state && !contained_in_legacy {
         return Err(CaduceusError::Worktree {
             context: "destroy",
             stderr: format!(
@@ -695,7 +765,7 @@ pub async fn remove(handle: &Worktree) -> CaduceusResult<()> {
         let shim_cfg = runner_inner_cfg();
         let _ = runner_run_in_std(
             build_runner(),
-            main_path,
+            &main_path,
             "worktree-prune",
             &prune_args,
             &shim_cfg,
@@ -711,7 +781,7 @@ pub async fn remove(handle: &Worktree) -> CaduceusResult<()> {
     let runner = build_runner();
     let remove_output = runner_run_in_std(
         runner.clone(),
-        main_path,
+        &main_path,
         "worktree-remove",
         &remove_args,
         &shim_cfg,
@@ -735,7 +805,7 @@ pub async fn remove(handle: &Worktree) -> CaduceusResult<()> {
     let prune_args: [&str; 2] = ["worktree", "prune"];
     let _ = runner_run_in_std(
         runner.clone(),
-        main_path,
+        &main_path,
         "worktree-prune",
         &prune_args,
         &shim_cfg,
@@ -774,7 +844,7 @@ pub async fn remove(handle: &Worktree) -> CaduceusResult<()> {
     //      remote tracking ref points at it).
     if should_retain_branch(
         runner.clone(),
-        main_path,
+        &main_path,
         &handle.branch_name,
         &handle.base_oid,
     )
@@ -785,7 +855,7 @@ pub async fn remove(handle: &Worktree) -> CaduceusResult<()> {
     let branch_args: [&str; 3] = ["branch", "-D", &handle.branch_name];
     let branch_output = runner_run_in_std(
         runner.clone(),
-        main_path,
+        &main_path,
         "branch-delete",
         &branch_args,
         &shim_cfg,

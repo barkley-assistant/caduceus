@@ -310,14 +310,14 @@ fn gc_rejects_symlink_orphan() {
     init_clone(&bare, &clone);
 
     let cfg = gc_test_config(base.path(), vec!["owner/r".to_string()]);
-    // Build a symlink in .worktrees/ that points to an
-    // existing, old directory.
-    let worktrees_dir = clone.join(".worktrees");
-    fs::create_dir_all(&worktrees_dir).expect("worktrees");
+    // Build a symlink under the per-repo state directory that
+    // points to an existing, old directory.
+    let repo_dir = cfg.state_dir.join("worktrees").join("owner").join("r");
+    fs::create_dir_all(&repo_dir).expect("repo dir");
     let target = base.path().join("target");
     fs::create_dir_all(&target).expect("target");
     backdate_to_older_than(&target, 30);
-    let link = worktrees_dir.join("evil-link");
+    let link = repo_dir.join("evil-link");
     std::os::unix::fs::symlink(&target, &link).expect("symlink");
     let removed = drive(gc(&cfg, 7, false)).expect("gc");
     assert_eq!(removed, 0, "symlinks must not be removed");
@@ -335,10 +335,12 @@ fn gc_removes_unregistered_orphan_directory() {
     init_clone(&bare, &clone);
 
     let cfg = gc_test_config(base.path(), vec!["owner/r".to_string()]);
-    // Create an unregistered, old orphan under .worktrees/.
-    let worktrees_dir = clone.join(".worktrees");
-    fs::create_dir_all(&worktrees_dir).expect("worktrees");
-    let orphan = worktrees_dir.join("unregistered");
+    // Create an unregistered, old orphan under the per-repo state
+    // directory (not a git-registered worktree, so it is removed
+    // directly rather than via `git worktree remove`).
+    let repo_dir = cfg.state_dir.join("worktrees").join("owner").join("r");
+    fs::create_dir_all(&repo_dir).expect("repo dir");
+    let orphan = repo_dir.join("unregistered");
     fs::create_dir_all(&orphan).expect("orphan");
     backdate_to_older_than(&orphan, 30);
     let removed = drive(gc(&cfg, 7, false)).expect("gc");

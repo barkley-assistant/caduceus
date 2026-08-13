@@ -33,6 +33,7 @@
 //!    finalization; teardown always runs.
 //! 10. Persist `last_tick_finished` and the final outcome.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
@@ -179,6 +180,15 @@ pub async fn tick(
     //     with_worktree_umask temporarily switches to 0o022 for
     //     worktree mutations and restores 0o077.
     let _ = nix::sys::stat::umask(nix::sys::stat::Mode::from_bits_truncate(0o077));
+
+    // 0.6. One-time bounded legacy worktree registration sweep.
+    //     This runs non-fatally once per process and prunes stale
+    //     `.git/worktrees/` registrations from before the move to
+    //     the state directory.
+    static LEGACY_SWEEP_RAN: AtomicBool = AtomicBool::new(false);
+    if !LEGACY_SWEEP_RAN.swap(true, Ordering::SeqCst) {
+        crate::worktree::gc::prune_legacy_registrations(&cfg).await;
+    }
 
     // 1. Check scheduler leadership. If another tick holds the
     //    scheduler lock, skip (concurrent). Unlike the old

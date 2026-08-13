@@ -252,10 +252,16 @@ async fn create_succeeds_for_clean_repo_with_explicit_base() {
             .await
             .expect("create worktree");
 
-    // Path lives under `<repo>/.worktrees/<run_id>`.
-    let expected_path = dest.join(".worktrees").join(HAPPY_RUN_ID);
+    // Path lives under `cfg.state_dir/worktrees/<owner>/<repo>/<run_id>`.
+    let expected_path = cfg
+        .state_dir
+        .join("worktrees")
+        .join(owner)
+        .join(repo)
+        .join(HAPPY_RUN_ID);
     assert_eq!(handle.path, expected_path);
     assert!(handle.path.is_dir());
+    assert_eq!(handle.main_path, dest);
 
     // Branch has the documented shape.
     assert_eq!(
@@ -432,18 +438,16 @@ async fn create_surfaces_precise_error_on_fetch_failure() {
         "got: {text}"
     );
 
-    // The daemon's flock creates `<repo>/.worktrees/` before the
-    // fetch step so a concurrent tick can't race the
+    // The daemon's flock creates the per-repo state directory
+    // before the fetch step so a concurrent tick can't race the
     // pre-flight + worktree-add sequence. The fetch-failure
     // assertion therefore checks that NO worktree directory
     // was actually created and NO branch was created — the
     // daemon must NOT have committed to a worktree before
     // fetching failed.
-    assert!(
-        dest.join(".worktrees").exists(),
-        "flock parent dir should exist"
-    );
-    let ours = dest.join(".worktrees").join(HAPPY_RUN_ID);
+    let per_repo_dir = cfg.state_dir.join("worktrees").join(owner).join(repo);
+    assert!(per_repo_dir.exists(), "flock parent dir should exist");
+    let ours = per_repo_dir.join(HAPPY_RUN_ID);
     assert!(
         !ours.exists(),
         "create must NOT have produced a worktree at {ours:?} on fetch failure"
@@ -463,8 +467,8 @@ async fn create_surfaces_precise_error_on_fetch_failure() {
         "create must NOT have created {branch_ref}"
     );
     assert!(
-        !dest.join(".worktrees").join(".lock").exists(),
-        ".worktrees/.lock must be removed on fetch failure"
+        !per_repo_dir.join(".lock").exists(),
+        "per-repo .lock must be removed on fetch failure"
     );
 }
 
@@ -483,11 +487,18 @@ async fn create_returns_collision_when_path_owned_by_foreign_run_id() {
     fs::create_dir_all(dest.parent().unwrap()).unwrap();
     clone_into(&bare, &dest);
 
+    let cfg = config_for(&root, "https://api.github.com");
+
     // Pre-create the worktree directory under a different run
     // id to simulate a leftover from a prior run.
-    fs::create_dir_all(dest.join(".worktrees").join("foreign-run-id")).unwrap();
-
-    let cfg = config_for(&root, "https://api.github.com");
+    fs::create_dir_all(
+        cfg.state_dir
+            .join("worktrees")
+            .join(owner)
+            .join(repo)
+            .join("foreign-run-id"),
+    )
+    .unwrap();
     let runner = GitRunner::new(&cfg);
     let info = info_for(&dest, "main");
     let err = create_worktree(&cfg, &runner, &info, &key(owner, repo, 42), HAPPY_RUN_ID)
@@ -503,8 +514,13 @@ async fn create_returns_collision_when_path_owned_by_foreign_run_id() {
         "recovery command missing: {text}"
     );
     assert!(
-        !dest.join(".worktrees").join(".lock").exists(),
-        ".worktrees/.lock must be removed after path collision error"
+        !cfg.state_dir
+            .join("worktrees")
+            .join(owner)
+            .join(repo)
+            .join(".lock")
+            .exists(),
+        "per-repo .lock must be removed after path collision error"
     );
 }
 
@@ -674,27 +690,25 @@ async fn create_leaves_parent_main_checkout_unchanged() {
     let head_after = run_git(&runner, &dest, &["rev-parse", "HEAD"]).await;
     assert_eq!(head_after.stdout.trim(), head_before_oid);
 
-    // Sanity: the parent's working tree must still be clean
-    // apart from the daemon-managed `.worktrees/` directory
-    // and its `.lock` file. `git worktree add` creates a
-    // sibling worktree that appears as "untracked" from the
-    // parent checkout's perspective by design — the spec's
-    // "parent checkout unchanged" promise is about HEAD +
-    // tracked files, not untracked dirs.
+    // Sanity: with worktrees under the daemon state directory,
+    // the parent's working tree must be completely clean.
     let porcelain = run_git(&runner, &dest, &["status", "--porcelain"]).await;
-    let mut offending: Vec<&str> = porcelain
-        .stdout
-        .lines()
-        .filter(|l| !l.starts_with("?? .worktrees/") && !l.is_empty())
-        .collect();
-    offending.sort();
+    let offending: Vec<&str> = porcelain.stdout.lines().filter(|l| !l.is_empty()).collect();
     assert!(
         offending.is_empty(),
         "parent checkout had unexpected changes after create: {offending:?}"
     );
+    // The per-repo lock lives under the daemon state directory,
+    // not inside the main checkout.
+    let lock_path = cfg
+        .state_dir
+        .join("worktrees")
+        .join(owner)
+        .join(repo)
+        .join(".lock");
     assert!(
-        !dest.join(".worktrees").join(".lock").exists(),
-        ".worktrees/.lock must be removed after successful create"
+        !lock_path.exists(),
+        "per-repo .lock must be removed after successful create"
     );
 }
 
@@ -715,6 +729,13 @@ fn leftover_lock_is_removed_on_normal_exit() {
     let cfg = config_for(&root, "https://api.github.com");
     let runner = GitRunner::new(&cfg);
     let info = info_for(&dest, "main");
+    let lock_path = cfg
+        .state_dir
+        .join("worktrees")
+        .join(owner)
+        .join(repo)
+        .join(".lock");
+
     let rt = Runtime::new().unwrap();
     rt.block_on(async {
         create_worktree(&cfg, &runner, &info, &key(owner, repo, 99), HAPPY_RUN_ID)
@@ -723,8 +744,8 @@ fn leftover_lock_is_removed_on_normal_exit() {
     });
 
     assert!(
-        !dest.join(".worktrees").join(".lock").exists(),
-        ".worktrees/.lock must be removed on normal exit"
+        !lock_path.exists(),
+        "per-repo .lock must be removed on normal exit"
     );
 }
 
@@ -746,7 +767,12 @@ fn leftover_lock_is_removed_on_panic() {
     let runner = GitRunner::new(&cfg);
     let info = info_for(&dest, "main");
     let issue_key = key(owner, repo, 99);
-    let lock_path = dest.join(".worktrees").join(".lock");
+    let lock_path = cfg
+        .state_dir
+        .join("worktrees")
+        .join(owner)
+        .join(repo)
+        .join(".lock");
 
     let rt = Runtime::new().unwrap();
     let outcome = std::panic::catch_unwind(AssertUnwindSafe(move || {
@@ -761,7 +787,7 @@ fn leftover_lock_is_removed_on_panic() {
     assert!(outcome.is_err(), "expected a panic during create_worktree");
     assert!(
         !lock_path.exists(),
-        ".worktrees/.lock must be removed after panic"
+        "per-repo .lock must be removed after panic"
     );
 }
 
