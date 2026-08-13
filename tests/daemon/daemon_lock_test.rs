@@ -210,18 +210,35 @@ fn helper_holds_then_releases() {
         .arg("hold-and-release")
         .arg(&lock_path)
         .arg("250")
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn");
-    // Give the helper a moment to take the lock.
-    thread::sleep(Duration::from_millis(50));
-    let start = Instant::now();
+    // Synchronize on the helper's HELD handshake instead of a blind
+    // sleep: under CI CPU contention the helper's process-spawn +
+    // lock-acquire can outlast a fixed window, racing the "held"
+    // assertion below against the helper's startup.
+    let stdout = child.stdout.take().expect("piped stdout");
+    let (tx, rx) = std::sync::mpsc::channel();
+    let reader = thread::spawn(move || {
+        use std::io::BufRead;
+        for line in std::io::BufReader::new(stdout)
+            .lines()
+            .map_while(Result::ok)
+        {
+            if line.contains("HELD") {
+                tx.send(()).ok();
+                break;
+            }
+        }
+    });
+    rx.recv_timeout(Duration::from_secs(10))
+        .expect("helper did not report holding the lock within 10s");
+    let _ = reader.join();
     // While the helper holds the lock, the test's try_acquire
     // must return None immediately.
     let held = DaemonLock::try_acquire(lock_path.parent().unwrap()).expect("while-held");
     assert!(held.is_none(), "lock is held by helper");
-    let _ = start.elapsed();
     // After the helper exits, the lock is released.
     let status = child.wait().expect("wait");
     assert!(status.success(), "helper exit: {status:?}");
