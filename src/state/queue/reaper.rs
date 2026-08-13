@@ -296,11 +296,41 @@ pub(crate) async fn reap_one_stale_claim(
     //    rules all live there.
     if let Some(wt_path) = &body.worktree_path {
         if wt_path.is_dir() {
+            // Determine the authoritative main clone from the
+            // worktree's `.git` file so the removal path has an
+            // explicit `main_path` regardless of where the checkout
+            // lives (state-dir or legacy in-repo).
+            let main_path =
+                crate::worktree::resolve_main_path_from_worktree(wt_path).ok_or_else(|| {
+                    CaduceusError::Worktree {
+                        context: "reap",
+                        stderr: format!(
+                            "cannot resolve main clone for worktree {}",
+                            wt_path.display()
+                        ),
+                    }
+                });
+            let main_path = match main_path {
+                Ok(p) => p,
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        path = %wt_path.display(),
+                        "reaper: cannot resolve main clone; skipping worktree teardown"
+                    );
+                    // Continue to unlink the stale claim below.
+                    // We still fall through to the queue update
+                    // and claim removal even if teardown is skipped.
+                    let _ = fs::remove_file(claim_path);
+                    return Ok(());
+                }
+            };
             let wt = crate::worktree::Worktree {
                 issue: body.key.clone(),
                 run_id: body.run_id.clone(),
                 branch_name: String::new(), // not used by remove; remove inspects ref state
                 path: wt_path.clone(),
+                main_path,
                 base_oid: String::new(),
                 fresh: false,
                 created_at: body.started_at,
