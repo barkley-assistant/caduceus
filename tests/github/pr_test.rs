@@ -101,6 +101,7 @@ fn make_context(
         run_id: run_id.to_string(),
         branch_name: "automation/issue-1-run-x".to_string(),
         path: Path::new("/tmp/wt").to_path_buf(),
+        main_path: Path::new("/tmp/repo").to_path_buf(),
         base_oid: "deadbeef".to_string(),
         fresh: false,
         created_at: Utc::now(),

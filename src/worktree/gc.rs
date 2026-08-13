@@ -1,9 +1,10 @@
-use super::{build_runner, remove, runner_inner_cfg, runner_run_in_std, Worktree};
+use super::{build_runner, clone_path, remove, runner_inner_cfg, runner_run_in_std, Worktree};
 
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 
+use crate::github::issue::IssueKey;
 use crate::infra::config::Config;
 use crate::infra::error::{CaduceusError, CaduceusResult};
 
@@ -11,9 +12,9 @@ use crate::infra::error::{CaduceusError, CaduceusResult};
 /// `caduceus worktree-gc` — sweep stale worktrees across the
 /// configured repositories.
 ///
-/// For each repository in `config.watched_repos`, this
-/// enumerates registered worktrees via `git worktree list
-/// --porcelain` and removes the ones that:
+/// For each repository in `config.watched_repos`, this sweeps
+/// `cfg.state_dir/worktrees/<owner>/<repo>/` and removes the
+/// entries that:
 ///
 /// * are older than `older_than_days` (measured against the
 ///   worktree directory's mtime);
@@ -21,12 +22,12 @@ use crate::infra::error::{CaduceusError, CaduceusResult};
 ///   `<state_dir>/claims/`;
 /// * are **not** referenced by a fresh heartbeat file in
 ///   `<state_dir>/runs/`;
-/// * live strictly under `<main>/.worktrees/`.
+/// * live strictly under `cfg.state_dir/worktrees/<owner>/<repo>/`.
 ///
-/// It also walks `<main>/.worktrees/` for unregistered
-/// orphans and removes the ones that pass the same tests,
-/// with the additional safety check that the path is not a
-/// symlink. Symlinks are reported and left alone.
+/// It also walks the per-repo state directory for unregistered
+/// orphans and removes the ones that pass the same tests, with the
+/// additional safety check that the path is not a symlink. Symlinks
+/// are reported and left alone.
 ///
 /// `dry_run = true` reports what would be removed without
 /// mutating any state.
@@ -43,7 +44,7 @@ pub async fn gc(config: &Config, older_than_days: u64, dry_run: bool) -> Caduceu
     // file references it, or if any heartbeat file is
     // recent. We read the directory and build an in-memory
     // set; this is O(n) where n = total claims + heartbeats.
-    let in_use = collect_in_use_worktree_paths(state_dir).await?;
+    let in_use = collect_in_use_worktree_paths(state_dir, config).await?;
 
     // Step 2: for each repository, run `git worktree list
     // --porcelain` and act on each entry. We compute the
@@ -56,39 +57,63 @@ pub async fn gc(config: &Config, older_than_days: u64, dry_run: bool) -> Caduceu
             context: "gc",
             stderr: format!("invalid watched_repos entry: {repo:?}"),
         })?;
-        let main_path = config.workdir_base.join(&owner).join(&name);
+        let main_path = clone_path(
+            config,
+            &IssueKey {
+                owner: owner.clone(),
+                repo: name.clone(),
+                number: 0,
+            },
+        );
         if !main_path.is_dir() {
             // Repository not cloned locally — nothing to GC.
             continue;
         }
+        let repo_dir = state_dir.join("worktrees").join(&owner).join(&name);
+        let canonical_repo_dir =
+            std::fs::canonicalize(&repo_dir).unwrap_or_else(|_| repo_dir.clone());
+
         let entries = list_worktrees_porcelain(&main_path).await?;
+
+        // Pre-compute the set of registered canonical paths so the
+        // orphan sweep can skip them.
+        let mut registered_paths: std::collections::HashSet<PathBuf> =
+            std::collections::HashSet::new();
+        for entry in &entries {
+            if let Ok(c) = std::fs::canonicalize(&entry.path) {
+                registered_paths.insert(c);
+            } else {
+                registered_paths.insert(entry.path.clone());
+            }
+        }
+
         for entry in &entries {
             // Skip the main clone itself (porcelain includes
             // it as the first entry).
             if entry.path == main_path {
                 continue;
             }
-            // Path safety: must live under
-            // `<main_path>/.worktrees/`.
-            let worktrees_dir = main_path.join(".worktrees");
+
+            // Path safety: must live under the daemon's per-repo
+            // state directory.
             let canonical_wt = match std::fs::canonicalize(&entry.path) {
                 Ok(p) => p,
                 Err(_) => entry.path.clone(),
             };
-            let canonical_wtdir =
-                std::fs::canonicalize(&worktrees_dir).unwrap_or_else(|_| worktrees_dir.clone());
-            if !canonical_wt.starts_with(&canonical_wtdir) {
+            if !canonical_wt.starts_with(&canonical_repo_dir) {
                 eprintln!(
                     "caduceus worktree-gc: refusing to remove {}: path escapes {}",
                     entry.path.display(),
-                    canonical_wtdir.display()
+                    canonical_repo_dir.display()
                 );
                 continue;
             }
+
             // Active?
             if in_use.contains(&canonical_wt) {
                 continue;
             }
+
             // Old enough?
             let mtime = match mtime_of(&entry.path) {
                 Some(t) => t,
@@ -97,6 +122,7 @@ pub async fn gc(config: &Config, older_than_days: u64, dry_run: bool) -> Caduceu
             if mtime > age_cutoff {
                 continue;
             }
+
             if dry_run {
                 println!(
                     "would remove {} (branch {}, age {} days)",
@@ -106,11 +132,12 @@ pub async fn gc(config: &Config, older_than_days: u64, dry_run: bool) -> Caduceu
                 );
                 continue;
             }
+
             // Build a Worktree handle and call remove(). The
             // branch_name in the handle is advisory only;
             // remove() inspects ref state.
             let wt = Worktree {
-                issue: crate::github::issue::IssueKey {
+                issue: IssueKey {
                     owner: owner.clone(),
                     repo: name.clone(),
                     number: 0,
@@ -118,6 +145,7 @@ pub async fn gc(config: &Config, older_than_days: u64, dry_run: bool) -> Caduceu
                 run_id: entry.branch.clone(),
                 branch_name: entry.branch.clone(),
                 path: entry.path.clone(),
+                main_path: main_path.clone(),
                 base_oid: String::new(),
                 fresh: false,
                 created_at: mtime,
@@ -140,15 +168,14 @@ pub async fn gc(config: &Config, older_than_days: u64, dry_run: bool) -> Caduceu
             }
         }
 
-        // Step 3: orphan directories under .worktrees/ that
-        // git no longer tracks. We only act on canonical
-        // children that are not symlinks, are not in the
+        // Step 3: orphan directories under the per-repo state
+        // directory that git no longer tracks. We only act on
+        // canonical children that are not symlinks, are not in the
         // registered list, are old, and are not in use.
-        // Unlike registered worktrees, orphans are removed
-        // with a direct `fs::remove_dir_all` because
-        // `git worktree remove --force` refuses on a path
-        // that git does not know about.
-        let orphans = collect_orphan_worktrees(&main_path, &entries, &in_use, age_cutoff);
+        // Unlike registered worktrees, orphans are removed with a
+        // direct `fs::remove_dir_all` because `git worktree remove
+        // --force` refuses on a path that git does not know about.
+        let orphans = collect_orphan_worktrees(&repo_dir, &registered_paths, &in_use, age_cutoff);
         for orphan in orphans {
             if dry_run {
                 println!("would remove orphan {}", orphan.display());
@@ -244,6 +271,7 @@ pub(crate) async fn list_worktrees_porcelain(
 /// last hour (twice the documented heartbeat interval).
 async fn collect_in_use_worktree_paths(
     state_dir: &Path,
+    config: &Config,
 ) -> CaduceusResult<std::collections::HashSet<PathBuf>> {
     let mut paths: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     // Claims.
@@ -283,9 +311,9 @@ async fn collect_in_use_worktree_paths(
     // interval is 30 minutes, so a one-hour cutoff tolerates
     // a single missed tick. The run_id is the basename
     // without the `.heartbeat` extension; the worktree
-    // path is `<workdir_base>/<owner>/<repo>/.worktrees/<run_id>`.
-    // We resolve to a concrete path on disk if it exists so
-    // the GC's path-canonicalisation check works.
+    // path is reconstructed from the config state directory
+    // and the watched repos (both the new state-dir layout
+    // and the legacy in-repo layout).
     let runs = state_dir.join("runs");
     if runs.is_dir() {
         let heartbeat_fresh_cutoff = Utc::now() - chrono::Duration::hours(1);
@@ -307,20 +335,44 @@ async fn collect_in_use_worktree_paths(
                 continue;
             }
             // The run_id is the basename minus the
-            // `.heartbeat` extension. We add *all* matching
-            // worktree paths under any watched repo so the
-            // GC's path-canonicalisation check works. The
-            // path is the only known mapping for a heartbeat
-            // because the heartbeat file itself is just a
-            // timestamp.
+            // `.heartbeat` extension. We add matching
+            // candidates under every watched repo so the
+            // GC's path-canonicalisation check works.
             let run_id = name.trim_end_matches(".heartbeat");
-            for repo in watched_repo_paths() {
-                let candidate = repo.join(".worktrees").join(run_id);
-                if candidate.is_dir() {
-                    if let Ok(c) = std::fs::canonicalize(&candidate) {
+            for repo in &config.watched_repos {
+                let (owner, name) = match parse_watched_repo(repo) {
+                    Some(p) => p,
+                    None => continue,
+                };
+                // New state-dir layout.
+                let state_candidate = state_dir
+                    .join("worktrees")
+                    .join(&owner)
+                    .join(&name)
+                    .join(run_id);
+                if state_candidate.is_dir() {
+                    if let Ok(c) = std::fs::canonicalize(&state_candidate) {
                         paths.insert(c);
                     } else {
-                        paths.insert(candidate);
+                        paths.insert(state_candidate);
+                    }
+                }
+                // Legacy in-repo layout.
+                let legacy_candidate = clone_path(
+                    config,
+                    &IssueKey {
+                        owner: owner.clone(),
+                        repo: name.clone(),
+                        number: 0,
+                    },
+                )
+                .join(".worktrees")
+                .join(run_id);
+                if legacy_candidate.is_dir() {
+                    if let Ok(c) = std::fs::canonicalize(&legacy_candidate) {
+                        paths.insert(c);
+                    } else {
+                        paths.insert(legacy_candidate);
                     }
                 }
             }
@@ -329,60 +381,21 @@ async fn collect_in_use_worktree_paths(
     Ok(paths)
 }
 
-/// The list of `<workdir_base>/<owner>/<repo>` paths we
-/// know about, computed from the daemon's `workdir_base` +
-/// `watched_repos`. We read the config from the active
-/// process — the GC runs under `DaemonLock`, so the daemon
-/// is the only process active. If the config cannot be
-/// loaded (e.g. on a fresh state dir with no daemon config
-/// yet), we fall back to walking the daemon's documented
-/// state path. The function is a best-effort aid for the
-/// in-use set; the authoritative heartbeat-to-worktree
-/// mapping lives in the queue state and is consulted via
-/// the claim scan above.
-fn watched_repo_paths() -> Vec<PathBuf> {
-    let cfg = match crate::infra::config::Config::load() {
-        Ok(c) => c,
-        Err(_) => match std::env::var_os("CADUCEUS_CONFIG") {
-            Some(p) => match crate::infra::config::Config::load_from(std::path::Path::new(&p)) {
-                Ok(c) => c,
-                Err(_) => return Vec::new(),
-            },
-            None => return Vec::new(),
-        },
-    };
-    cfg.watched_repos
-        .iter()
-        .filter_map(|s| s.split_once('/'))
-        .map(|(owner, repo)| cfg.workdir_base.join(owner).join(repo))
-        .collect()
-}
-
-/// Find unregistered directories under
-/// `<main>/.worktrees/` that the GC may consider for
-/// removal. Each path is a regular directory (not a
-/// symlink), not in the registered set, not in the
-/// in-use set, and old enough.
+/// Find unregistered directories under *repo_dir* that the GC may
+/// consider for removal. Each path is a regular directory (not a
+/// symlink), not in the registered set, not in the in-use set, and
+/// old enough.
 fn collect_orphan_worktrees(
-    main_path: &Path,
-    registered: &[WorktreeListEntry],
+    repo_dir: &Path,
+    registered_paths: &std::collections::HashSet<PathBuf>,
     in_use: &std::collections::HashSet<PathBuf>,
     age_cutoff: DateTime<Utc>,
 ) -> Vec<PathBuf> {
-    let worktrees_dir = main_path.join(".worktrees");
-    if !worktrees_dir.is_dir() {
+    if !repo_dir.is_dir() {
         return Vec::new();
     }
-    let mut registered_paths: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
-    for entry in registered {
-        if let Ok(c) = std::fs::canonicalize(&entry.path) {
-            registered_paths.insert(c);
-        } else {
-            registered_paths.insert(entry.path.clone());
-        }
-    }
     let mut orphans = Vec::new();
-    let entries = match std::fs::read_dir(&worktrees_dir) {
+    let entries = match std::fs::read_dir(repo_dir) {
         Ok(rd) => rd,
         Err(_) => return orphans,
     };
@@ -403,7 +416,7 @@ fn collect_orphan_worktrees(
         if !meta.is_dir() {
             continue;
         }
-        // Skip `.lock` and other dotfiles that git uses.
+        // Skip `.lock` and other dotfiles that the daemon uses.
         if entry.file_name().to_string_lossy().starts_with('.') {
             continue;
         }
@@ -424,6 +437,146 @@ fn collect_orphan_worktrees(
         orphans.push(path);
     }
     orphans
+}
+
+/// Bounded startup legacy sweep. Prunes stale/missing/foreign
+/// `.git/worktrees/` registrations from adopted repos on daemon
+/// startup. Skips in-use claims, live heartbeats, and
+/// registered-present worktrees. Logs prunes at info and failures
+/// at warn; never aborts startup.
+pub async fn prune_legacy_registrations(config: &Config) {
+    let state_dir = &config.state_dir;
+    let in_use = match collect_in_use_worktree_paths(state_dir, config).await {
+        Ok(set) => set,
+        Err(err) => {
+            tracing::warn!(error = %err, "legacy worktree sweep: failed to collect in-use paths");
+            return;
+        }
+    };
+
+    for repo in &config.watched_repos {
+        let (owner, name) = match parse_watched_repo(repo) {
+            Some(p) => p,
+            None => {
+                tracing::warn!(entry = %repo, "legacy worktree sweep: invalid watched_repos entry");
+                continue;
+            }
+        };
+        let main_key = IssueKey {
+            owner: owner.clone(),
+            repo: name.clone(),
+            number: 0,
+        };
+        let main_path = clone_path(config, &main_key);
+        if !main_path.is_dir() {
+            continue;
+        }
+        let state_repo_dir = state_dir.join("worktrees").join(&owner).join(&name);
+        let legacy_worktrees_dir = main_path.join(".worktrees");
+
+        let entries = match list_worktrees_porcelain(&main_path).await {
+            Ok(e) => e,
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    repo = %repo,
+                    "legacy worktree sweep: cannot list worktrees"
+                );
+                continue;
+            }
+        };
+
+        let mut pruned_any = false;
+        for entry in &entries {
+            // The main clone itself is never pruned.
+            if entry.path == main_path {
+                continue;
+            }
+            let canonical =
+                std::fs::canonicalize(&entry.path).unwrap_or_else(|_| entry.path.clone());
+
+            // New-layout worktrees are owned by the regular GC.
+            if canonical.starts_with(&state_repo_dir) {
+                continue;
+            }
+
+            // Foreign registrations outside the known legacy area
+            // are unexpected; leave them for an operator.
+            if !canonical.starts_with(&legacy_worktrees_dir) {
+                tracing::warn!(
+                    path = %entry.path.display(),
+                    repo = %repo,
+                    "legacy worktree sweep: refusing to prune foreign worktree registration"
+                );
+                continue;
+            }
+
+            // Live claims/heartbeats protect the registration.
+            if in_use.contains(&canonical) {
+                continue;
+            }
+
+            // A registered-present worktree in the legacy area is
+            // left for natural teardown.
+            if entry.path.is_dir() {
+                continue;
+            }
+
+            // The worktree directory is gone or the registration
+            // points at a missing path: prune it.
+            let shim_cfg = runner_inner_cfg();
+            let runner = build_runner();
+            let path_str = entry.path.to_string_lossy().into_owned();
+            match runner_run_in_std(
+                runner.clone(),
+                &main_path,
+                "worktree-remove",
+                &["worktree", "remove", "--force", &path_str],
+                &shim_cfg,
+            )
+            .await
+            {
+                Ok(out) if out.status == Some(0) || out.status == Some(128) => {
+                    tracing::info!(
+                        path = %entry.path.display(),
+                        repo = %repo,
+                        "legacy worktree sweep: pruned stale registration"
+                    );
+                    pruned_any = true;
+                }
+                Ok(out) => {
+                    tracing::warn!(
+                        path = %entry.path.display(),
+                        repo = %repo,
+                        status = ?out.status,
+                        stderr = %out.stderr,
+                        "legacy worktree sweep: git worktree remove failed"
+                    );
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        path = %entry.path.display(),
+                        repo = %repo,
+                        "legacy worktree sweep: git worktree remove failed"
+                    );
+                }
+            }
+        }
+
+        if pruned_any {
+            // Clean up any leftover registrations whose directories
+            // are already gone.
+            let _ = runner_run_in_std(
+                build_runner(),
+                &main_path,
+                "worktree-prune",
+                &["worktree", "prune"],
+                &runner_inner_cfg(),
+            )
+            .await;
+        }
+    }
 }
 
 /// mtime as a `DateTime<Utc>`, or `None` if it cannot be

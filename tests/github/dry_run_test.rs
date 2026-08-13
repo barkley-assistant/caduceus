@@ -92,6 +92,7 @@ fn sample_context(cfg: &Config) -> FinalizeContext {
         run_id: "run-dry".to_string(),
         branch_name: "issue-42".to_string(),
         path: std::path::PathBuf::from("/tmp/wt"),
+        main_path: std::path::PathBuf::from("/tmp/repo"),
         base_oid: "deadbeef".to_string(),
         fresh: false,
         created_at: Utc::now(),

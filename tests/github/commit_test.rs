@@ -501,7 +501,7 @@ fn commit_path_with_newline_is_preserved() {
 fn commit_does_not_touch_parent_main_checkout() {
     let base = tempfile::tempdir().expect("base");
     let (cfg, wt, issue) = setup_worktree(base.path());
-    let main_clone = wt.path.parent().unwrap().parent().unwrap();
+    let main_clone = &wt.main_path;
     let parent_head_before = sh(main_clone, "git", &["rev-parse", "HEAD"]);
     fs::write(wt.path.join("README.md"), "modified\n").expect("write");
     let ctx = make_context(&cfg, &wt, &issue, "run-parent");
