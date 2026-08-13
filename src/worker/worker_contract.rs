@@ -54,8 +54,8 @@ pub const MAX_RESULT_FILE_BYTES: u64 = 1 << 20; // 1 MiB
 /// Maximum size of the `summary` field.
 pub const MAX_SUMMARY_BYTES: usize = 64 * 1024;
 
-/// Maximum size of `commit_message` and `pull_request_title`.
-pub const MAX_TITLE_BYTES: usize = 256;
+/// Maximum character count of `pull_request_title`.
+pub const MAX_PULL_REQUEST_TITLE_CHARS: usize = 256;
 
 /// Maximum length of an artifact key.
 pub const MAX_ARTIFACT_KEY_LEN: usize = 128;
@@ -430,11 +430,12 @@ pub fn parse_result_file(path: &Path, issue: &IssueKey) -> CaduceusResult<Worker
             context: "read",
             stderr: format!("{}: {err}", path.display()),
         })?;
-    let result: WorkerResult =
+    let mut result: WorkerResult =
         serde_json::from_slice(&bytes).map_err(|err| CaduceusError::Worker {
             context: "parse",
             stderr: format!("{}: {err}", path.display()),
         })?;
+    result.pull_request_title = truncate_pull_request_title(&result.pull_request_title);
     validate_worker_result(&result, issue).map_err(|err| CaduceusError::Worker {
         context: "validate",
         stderr: format!("{}: {err}", path.display()),
@@ -447,38 +448,24 @@ pub fn parse_result_file(path: &Path, issue: &IssueKey) -> CaduceusResult<Worker
 /// separately so tests can drive the validator without a file.
 pub fn validate_worker_result(result: &WorkerResult, _issue: &IssueKey) -> CaduceusResult<()> {
     validate_required_string("summary", &result.summary, MAX_SUMMARY_BYTES)?;
-    validate_required_string("commit_message", &result.commit_message, MAX_TITLE_BYTES)?;
-    validate_required_string(
-        "pull_request_title",
-        &result.pull_request_title,
-        MAX_TITLE_BYTES,
-    )?;
-    if contains_control_other_than_newline(&result.commit_message) {
-        return Err(CaduceusError::Config(
-            "commit_message contains control characters".to_string(),
-        ));
-    }
-    if contains_control(&result.pull_request_title) {
-        return Err(CaduceusError::Config(
-            "pull_request_title contains control characters".to_string(),
-        ));
-    }
-    if result.pull_request_title.contains('\n') {
-        return Err(CaduceusError::Config(
-            "pull_request_title must be a single line".to_string(),
-        ));
-    }
+    validate_commit_message(&result.commit_message)?;
+    validate_pull_request_title(&result.pull_request_title)?;
     validate_artifacts(&result.artifacts)?;
     Ok(())
 }
 
-fn validate_required_string(field: &str, value: &str, max: usize) -> CaduceusResult<()> {
+fn validate_required_no_length(field: &str, value: &str) -> CaduceusResult<()> {
     if value.contains('\0') {
         return Err(CaduceusError::Config(format!("{field} contains NUL")));
     }
     if value.trim().is_empty() {
         return Err(CaduceusError::Config(format!("{field} is empty")));
     }
+    Ok(())
+}
+
+fn validate_required_string(field: &str, value: &str, max: usize) -> CaduceusResult<()> {
+    validate_required_no_length(field, value)?;
     if value.len() > max {
         return Err(CaduceusError::Config(format!(
             "{field} exceeds limit of {max} bytes (got {})",
@@ -486,6 +473,48 @@ fn validate_required_string(field: &str, value: &str, max: usize) -> CaduceusRes
         )));
     }
     Ok(())
+}
+
+fn validate_commit_message(value: &str) -> CaduceusResult<()> {
+    validate_required_no_length("commit_message", value)?;
+    if contains_control_other_than_newline(value) {
+        return Err(CaduceusError::Config(
+            "commit_message contains control characters".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_pull_request_title(value: &str) -> CaduceusResult<()> {
+    validate_required_no_length("pull_request_title", value)?;
+    if value.contains('\n') {
+        return Err(CaduceusError::Config(
+            "pull_request_title must be a single line".to_string(),
+        ));
+    }
+    if contains_control(value) {
+        return Err(CaduceusError::Config(
+            "pull_request_title contains control characters".to_string(),
+        ));
+    }
+    if value.chars().count() > MAX_PULL_REQUEST_TITLE_CHARS {
+        return Err(CaduceusError::Config(format!(
+            "pull_request_title exceeds limit of {MAX_PULL_REQUEST_TITLE_CHARS} characters (got {})",
+            value.chars().count()
+        )));
+    }
+    Ok(())
+}
+
+pub fn truncate_pull_request_title(title: &str) -> String {
+    if title.chars().count() <= MAX_PULL_REQUEST_TITLE_CHARS {
+        return title.to_string();
+    }
+    title
+        .chars()
+        .take(MAX_PULL_REQUEST_TITLE_CHARS - 1)
+        .collect::<String>()
+        + "…"
 }
 
 fn contains_control(value: &str) -> bool {

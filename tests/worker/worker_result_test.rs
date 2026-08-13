@@ -13,8 +13,9 @@ use std::path::PathBuf;
 use caduceus::error::CaduceusError;
 use caduceus::issue::IssueKey;
 use caduceus::worker::{
-    parse_result_file, validate_worker_result, WorkerResult, WorkerStatus, MAX_ARTIFACTS,
-    MAX_ARTIFACT_KEY_LEN, MAX_RESULT_FILE_BYTES, MAX_SUMMARY_BYTES, MAX_TITLE_BYTES,
+    parse_result_file, truncate_pull_request_title, validate_worker_result, WorkerResult,
+    WorkerStatus, MAX_ARTIFACTS, MAX_ARTIFACT_KEY_LEN, MAX_PULL_REQUEST_TITLE_CHARS,
+    MAX_RESULT_FILE_BYTES, MAX_SUMMARY_BYTES,
 };
 
 fn sample_issue() -> IssueKey {
@@ -269,13 +270,89 @@ fn validate_rejects_nul_in_string() {
 }
 
 #[test]
-fn validate_rejects_oversized_commit_message() {
+fn validate_accepts_long_commit_message() {
     let mut result = minimal_result();
-    result.commit_message = "a".repeat(MAX_TITLE_BYTES + 1);
+    result.commit_message = "fix: thing\n\n".to_string() + &"word ".repeat(2100);
+    assert!(
+        result.commit_message.len() >= 10 * 1024,
+        "message should be ~10 KiB (got {})",
+        result.commit_message.len()
+    );
+    validate_worker_result(&result, &sample_issue()).expect("long commit message is OK");
+}
+
+#[test]
+fn validate_accepts_exactly_256_ascii_title_chars() {
+    let mut result = minimal_result();
+    result.pull_request_title = "a".repeat(MAX_PULL_REQUEST_TITLE_CHARS);
+    assert_eq!(
+        result.pull_request_title.chars().count(),
+        MAX_PULL_REQUEST_TITLE_CHARS
+    );
+    validate_worker_result(&result, &sample_issue()).expect("256 ASCII chars accepted");
+}
+
+#[test]
+fn validate_rejects_257_title_chars_by_direct_validation() {
+    let mut result = minimal_result();
+    result.pull_request_title = "a".repeat(MAX_PULL_REQUEST_TITLE_CHARS + 1);
     let err = validate_worker_result(&result, &sample_issue()).expect_err("too long");
     let msg = format!("{err:?}");
     assert!(msg.contains("exceeds limit"), "got: {msg}");
     assert!(msg.contains("256"), "got: {msg}");
+    assert!(msg.contains("characters"), "got: {msg}");
+}
+
+#[test]
+fn parse_truncates_257_char_json_title_to_256_chars_with_ellipsis() {
+    let root = tempdir("title-truncate");
+    let path = root.join("worker-result.json");
+    let long = "a".repeat(257);
+    let body = format!(
+        r#"{{"status":"success","summary":"ok","commit_message":"fix: thing","pull_request_title":"{}","artifacts":{{}}}}"#,
+        long
+    );
+    write_file(&path, body.as_bytes());
+
+    let result = parse_result_file(&path, &sample_issue()).expect("parses");
+    assert_eq!(
+        result.pull_request_title.chars().count(),
+        MAX_PULL_REQUEST_TITLE_CHARS
+    );
+    assert!(
+        result.pull_request_title.ends_with('…'),
+        "got: {}",
+        result.pull_request_title
+    );
+    assert_eq!(&result.pull_request_title[..255], "a".repeat(255));
+    assert_eq!(result.pull_request_title, "a".repeat(255) + "…");
+}
+
+#[test]
+fn validate_accepts_256_emoji_title_chars_despite_bytes() {
+    let mut result = minimal_result();
+    result.pull_request_title = "🚀".repeat(MAX_PULL_REQUEST_TITLE_CHARS);
+    assert_eq!(
+        result.pull_request_title.chars().count(),
+        MAX_PULL_REQUEST_TITLE_CHARS
+    );
+    assert!(result.pull_request_title.len() > MAX_PULL_REQUEST_TITLE_CHARS);
+    validate_worker_result(&result, &sample_issue()).expect("256 emoji chars accepted");
+}
+
+#[test]
+fn truncate_pull_request_title_leaves_short_title_unchanged() {
+    let short = "fix: short title";
+    assert_eq!(truncate_pull_request_title(short), short);
+}
+
+#[test]
+fn truncate_pull_request_title_produces_char_safe_ellipsis_for_overlong_emoji() {
+    let long = "🚀".repeat(400);
+    let truncated = truncate_pull_request_title(&long);
+    assert_eq!(truncated.chars().count(), MAX_PULL_REQUEST_TITLE_CHARS);
+    assert!(truncated.ends_with('…'));
+    assert!(truncated.chars().all(|c| c != '\u{FFFD}'));
 }
 
 // Artifact rules

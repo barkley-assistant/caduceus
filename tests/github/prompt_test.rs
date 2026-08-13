@@ -11,8 +11,10 @@
 //! * empty body still produces a valid prompt
 //! * Unicode (incl. emoji) survives the round-trip
 //! * 2 MiB cap; oversized input is rejected
-//! * `commit_message` is constrained to 256 chars in the
-//!   output schema (per contract)
+//! * `commit_message` has no byte/char cap in the output
+//!   schema (multi-line + Conventional Commits <= 80 chars)
+//! * `pull_request_title` is constrained to <= 256 chars,
+//!   single line, no control chars in the output schema
 
 use chrono::{TimeZone, Utc};
 use std::os::unix::fs::PermissionsExt;
@@ -194,7 +196,25 @@ fn prompt_commit_message_constraint_documented_in_schema() {
     )
     .expect("build");
     assert!(p.contains("commit_message"));
-    assert!(p.contains("<= 256"));
+    let commit_schema = p[p
+        .find("commit_message")
+        .expect("commit_message appears in schema")..]
+        .lines()
+        .next()
+        .expect("line");
+    // No byte/char cap on commit_message; structural guidance only.
+    assert!(
+        !commit_schema.contains("<= 256"),
+        "commit_message should not have a length cap, got: {commit_schema}"
+    );
+    assert!(
+        commit_schema.contains("multi-line allowed"),
+        "got: {commit_schema}"
+    );
+    assert!(
+        commit_schema.contains("Conventional Commits subject <= 80 chars"),
+        "got: {commit_schema}"
+    );
 }
 
 #[test]
@@ -208,7 +228,18 @@ fn prompt_pull_request_title_constraint_documented_in_schema() {
     )
     .expect("build");
     assert!(p.contains("pull_request_title"));
-    assert!(p.contains("one line"));
+    let title_schema = p[p
+        .find("pull_request_title")
+        .expect("pull_request_title appears in schema")..]
+        .lines()
+        .next()
+        .expect("line");
+    assert!(title_schema.contains("<= 256 chars"), "got: {title_schema}");
+    assert!(title_schema.contains("single line"), "got: {title_schema}");
+    assert!(
+        title_schema.contains("no control characters"),
+        "got: {title_schema}"
+    );
 }
 
 #[test]

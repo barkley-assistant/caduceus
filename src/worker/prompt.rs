@@ -279,7 +279,7 @@ shape (the daemon parses it as JSON and validates every field):
 {{
   "status": "success" | "failure",
   "summary": "<= 64 KiB Markdown summary>",
-  "commit_message": "<= 256 chars; one-line subject preferred; multi-line allowed; no control characters other than newline>",
+  "commit_message": "<multi-line allowed; Conventional Commits subject <= 80 chars; no control characters other than newline>",
   "pull_request_title": "<= 256 chars; single line; no control characters>",
   "artifacts": {{
     "<= 128-char key>": <any JSON value>
@@ -294,9 +294,11 @@ Notes:
   next tick (until the retry budget is exhausted).
 - `summary` is rendered verbatim into the PR / investigation
   comment; **no tool names leak**. Treat it as public voice.
-- `commit_message` may contain newlines but no other control
-  characters.
-- `pull_request_title` is one line with no control characters.
+- `commit_message` has no byte or character length cap; it may
+  contain newlines but no other control characters. The PR title
+  limit is 256 characters.
+- `pull_request_title` must be <= 256 characters, single line,
+  and contain no control characters.
 - `artifacts` is a map with at most 100 keys, each key ≤ 128 chars.
 - `investigation`: set `true` only if you have a strong reason to
   override the daemon's classification; usually the daemon's
