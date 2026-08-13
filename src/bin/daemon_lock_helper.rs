@@ -93,6 +93,11 @@ fn hold_and_release(state_dir: &std::path::Path, millis: u64) -> ExitCode {
             return ExitCode::from(1);
         }
     };
+    // Handshake: print a stable marker the moment the lock is
+    // acquired so the parent test can synchronize on it instead
+    // of blind-sleeping (which races the helper's process-spawn
+    // latency under CI CPU contention).
+    println!("HELD");
     thread::sleep(Duration::from_millis(millis));
     drop(lock);
     ExitCode::from(0)

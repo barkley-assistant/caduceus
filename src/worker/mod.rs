@@ -16,9 +16,10 @@ pub mod worker_contract;
 // so callers that reach for `WorkerResult`, `parse_result_file`,
 // `sanitized_env`, etc. resolve the same way.
 pub use crate::worker::worker_contract::{
-    parse_result_file, sanitized_env, spawn, validate_worker_result, SanitizedEnvInputs,
-    WorkerResult, WorkerStatus, DEFAULT_ALLOWLIST_EXACT, DEFAULT_ALLOWLIST_PREFIXES, MAX_ARTIFACTS,
-    MAX_ARTIFACT_KEY_LEN, MAX_RESULT_FILE_BYTES, MAX_SUMMARY_BYTES, MAX_TITLE_BYTES,
+    parse_result_file, sanitized_env, spawn, truncate_pull_request_title, validate_worker_result,
+    SanitizedEnvInputs, WorkerResult, WorkerStatus, DEFAULT_ALLOWLIST_EXACT,
+    DEFAULT_ALLOWLIST_PREFIXES, MAX_ARTIFACTS, MAX_ARTIFACT_KEY_LEN, MAX_PULL_REQUEST_TITLE_CHARS,
+    MAX_RESULT_FILE_BYTES, MAX_SUMMARY_BYTES,
 };
 
 // Test seam: re-export the body-truncation helper so integration
