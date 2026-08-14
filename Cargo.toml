@@ -295,6 +295,10 @@ name = "config_test"
 path = "tests/state/config_test.rs"
 
 [[test]]
+name = "infra_config_test"
+path = "tests/infra/config_test.rs"
+
+[[test]]
 name = "credentials_audit_test"
 path = "tests/state/credentials_audit_test.rs"
 

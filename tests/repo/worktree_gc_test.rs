@@ -482,6 +482,103 @@ fn gc_uses_remove_for_safe_unregistration() {
     assert!(!post.contains(wt.path.to_str().unwrap()));
 }
 
+fn set_mtime_offset(path: &Path, days: i64, seconds_offset: i64) {
+    let target =
+        Utc::now() - chrono::Duration::days(days) + chrono::Duration::seconds(seconds_offset);
+    let ft =
+        filetime::FileTime::from_unix_time(target.timestamp(), target.timestamp_subsec_nanos());
+    filetime::set_file_mtime(path, ft).expect("set mtime");
+}
+
+#[test]
+fn gc_removes_worktree_exactly_at_threshold() {
+    let base = tempfile::tempdir().expect("base");
+    let bare = base.path().join("owner.git");
+    let clone = base.path().join("owner").join("r");
+    fs::create_dir_all(&clone).expect("clone dir");
+
+    init_bare(&bare);
+    init_clone(&bare, &clone);
+
+    let key = IssueKey {
+        owner: "owner".to_string(),
+        repo: "r".to_string(),
+        number: 13,
+    };
+    let cfg = gc_test_config(base.path(), vec!["owner/r".to_string()]);
+    let wt = make_worktree(&cfg, key.clone(), "run-cutoff");
+    backdate_to_older_than(&wt.path, 7);
+    let removed = drive(gc(&cfg, 7, false)).expect("gc");
+    assert_eq!(removed, 1, "worktree at cutoff should be removed");
+    assert!(!wt.path.exists());
+}
+
+#[test]
+fn gc_retains_worktree_one_second_newer_than_threshold() {
+    let base = tempfile::tempdir().expect("base");
+    let bare = base.path().join("owner.git");
+    let clone = base.path().join("owner").join("r");
+    fs::create_dir_all(&clone).expect("clone dir");
+
+    init_bare(&bare);
+    init_clone(&bare, &clone);
+
+    let key = IssueKey {
+        owner: "owner".to_string(),
+        repo: "r".to_string(),
+        number: 14,
+    };
+    let cfg = gc_test_config(base.path(), vec!["owner/r".to_string()]);
+    let wt = make_worktree(&cfg, key.clone(), "run-newer");
+    set_mtime_offset(&wt.path, 7, 1);
+    let removed = drive(gc(&cfg, 7, false)).expect("gc");
+    assert_eq!(
+        removed, 0,
+        "worktree one second newer than cutoff should survive"
+    );
+    assert!(wt.path.exists());
+}
+
+#[test]
+fn gc_config_defaults_to_one_day_and_enabled() {
+    let base = tempfile::tempdir().expect("base");
+    let cfg = gc_test_config(base.path(), vec!["owner/r".to_string()]);
+    assert_eq!(cfg.worktree_gc_older_than_days, 1);
+    assert!(!cfg.worktree_gc_disabled);
+}
+
+#[test]
+fn gc_config_explicit_values_resolve() {
+    use caduceus::config::{Config, LoadContext, RawConfig};
+    let raw = RawConfig {
+        worktree_gc_older_than_days: Some(7),
+        worktree_gc_disabled: Some(true),
+        worker_command: Some(vec!["/bin/true".to_string()]),
+        reduced_containment_acknowledged: Some(true),
+        ..Default::default()
+    };
+    let cfg = Config::from_raw(raw, &LoadContext::default()).expect("config");
+    assert_eq!(cfg.worktree_gc_older_than_days, 7);
+    assert!(cfg.worktree_gc_disabled);
+}
+
+#[test]
+fn gc_config_rejects_zero_threshold() {
+    use caduceus::config::{Config, LoadContext, RawConfig};
+    let raw = RawConfig {
+        worktree_gc_older_than_days: Some(0),
+        worker_command: Some(vec!["/bin/true".to_string()]),
+        reduced_containment_acknowledged: Some(true),
+        ..Default::default()
+    };
+    let err = Config::from_raw(raw, &LoadContext::default()).expect_err("zero must fail");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("worktree_gc_older_than_days must be > 0"),
+        "unexpected error: {msg}"
+    );
+}
+
 fn hex(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut s = String::with_capacity(bytes.len() * 2);
