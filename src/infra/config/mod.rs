@@ -45,6 +45,8 @@ pub const DEFAULT_GIT_TIMEOUT_SECONDS: u64 = 300;
 pub const DEFAULT_TRANSCRIPT_MAX_BYTES: u64 = 10 * 1024 * 1024;
 pub const DEFAULT_RUN_RETENTION_DAYS: u64 = 30;
 pub const DEFAULT_STALE_RUN_HOURS: u64 = 1;
+pub const DEFAULT_WORKTREE_GC_OLDER_THAN_DAYS: u64 = 1;
+pub const DEFAULT_WORKTREE_GC_DISABLED: bool = false;
 pub const DEFAULT_MAX_RETRIES_PER_ISSUE: u32 = 3;
 pub const DEFAULT_RETRY_BACKOFF_SECONDS: u64 = 300;
 pub const DEFAULT_TICKET_LABEL_CODE: &str = "🤖 auto-fix";
@@ -105,6 +107,13 @@ pub struct Config {
     pub transcript_max_bytes: u64,
     pub run_retention_days: u64,
     pub stale_run_hours: u64,
+    /// Days of inactivity before a worktree is eligible for
+    /// automatic GC. Default 1; set to a higher value to keep
+    /// stale worktrees around longer.
+    pub worktree_gc_older_than_days: u64,
+    /// Disables the daemon's automatic worktree GC step entirely.
+    /// Default `false`.
+    pub worktree_gc_disabled: bool,
     pub max_retries_per_issue: u32,
     pub retry_backoff_seconds: u64,
     pub ticket_label_code: String,
@@ -235,6 +244,8 @@ pub struct RawConfig {
     pub transcript_max_bytes: Option<u64>,
     pub run_retention_days: Option<u64>,
     pub stale_run_hours: Option<u64>,
+    pub worktree_gc_older_than_days: Option<u64>,
+    pub worktree_gc_disabled: Option<bool>,
     pub max_retries_per_issue: Option<u32>,
     pub retry_backoff_seconds: Option<u64>,
     pub ticket_label_code: Option<String>,
@@ -589,6 +600,15 @@ impl Config {
         if stale_run_hours == 0 {
             errors.push("stale_run_hours must be > 0".to_string());
         }
+        let worktree_gc_older_than_days = raw
+            .worktree_gc_older_than_days
+            .unwrap_or(DEFAULT_WORKTREE_GC_OLDER_THAN_DAYS);
+        if worktree_gc_older_than_days == 0 {
+            errors.push("worktree_gc_older_than_days must be > 0".to_string());
+        }
+        let worktree_gc_disabled = raw
+            .worktree_gc_disabled
+            .unwrap_or(DEFAULT_WORKTREE_GC_DISABLED);
 
         let max_retries_per_issue = raw
             .max_retries_per_issue
@@ -762,6 +782,8 @@ impl Config {
             transcript_max_bytes,
             run_retention_days,
             stale_run_hours,
+            worktree_gc_older_than_days,
+            worktree_gc_disabled,
             max_retries_per_issue,
             retry_backoff_seconds,
             ticket_label_code,
@@ -879,6 +901,8 @@ impl Config {
             transcript_max_bytes: DEFAULT_TRANSCRIPT_MAX_BYTES,
             run_retention_days: DEFAULT_RUN_RETENTION_DAYS,
             stale_run_hours: DEFAULT_STALE_RUN_HOURS,
+            worktree_gc_older_than_days: DEFAULT_WORKTREE_GC_OLDER_THAN_DAYS,
+            worktree_gc_disabled: DEFAULT_WORKTREE_GC_DISABLED,
             max_retries_per_issue: DEFAULT_MAX_RETRIES_PER_ISSUE,
             retry_backoff_seconds: DEFAULT_RETRY_BACKOFF_SECONDS,
             ticket_label_code: DEFAULT_TICKET_LABEL_CODE.to_string(),
