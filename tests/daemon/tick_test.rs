@@ -265,3 +265,320 @@ fn tick_outcome_variants_serialise_snake_case() {
         "\"failed\""
     );
 }
+
+// ---------------------------------------------------------------------------
+// Auto worktree GC integration tests
+// ---------------------------------------------------------------------------
+
+use std::path::Path;
+use std::process::Command;
+use std::sync::Arc;
+use std::time::Duration;
+
+use caduceus::github::{Client, HttpCache};
+use caduceus::issue::IssueKey;
+use caduceus::orchestration::SystemClock;
+use caduceus::queue::DaemonLock;
+use caduceus::scheduler::{DrainConfig, Pool};
+use caduceus::worktree::{create as create_worktree, GitRunner, RepositoryInfo, Worktree};
+use chrono::Utc;
+use tokio_util::sync::CancellationToken;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
+
+fn tick_config(
+    base: &Path,
+    watched: Vec<String>,
+    gc_disabled: Option<bool>,
+    gc_days: Option<u64>,
+) -> Config {
+    let state_dir = base.join("state");
+    let raw = RawConfig {
+        worker_command: Some(vec!["/bin/true".to_string()]),
+        state_dir: Some(state_dir),
+        workdir_base: Some(base.to_path_buf()),
+        watched_repos: Some(watched),
+        reduced_containment_acknowledged: Some(true),
+        worktree_gc_disabled: gc_disabled,
+        worktree_gc_older_than_days: gc_days,
+        ..Default::default()
+    };
+    let ctx = LoadContext {
+        plugin_root: Some(base.to_path_buf()),
+        ..Default::default()
+    };
+    Config::from_raw(raw, &ctx).expect("config")
+}
+
+fn info_for(path: &Path) -> RepositoryInfo {
+    RepositoryInfo {
+        path: path.to_path_buf(),
+        base_branch: "main".to_string(),
+        remote_url: "file://localhost/tmp".to_string(),
+    }
+}
+
+fn init_bare(dir: &Path) {
+    std::fs::create_dir_all(dir).expect("mkdir");
+    let _ = Command::new("git")
+        .args(["init", "--bare", "--initial-branch=main"])
+        .arg(dir)
+        .output()
+        .expect("git init");
+}
+
+fn init_clone(bare: &Path, clone: &Path) {
+    std::fs::create_dir_all(clone).expect("mkdir");
+    let out = Command::new("git")
+        .args(["clone", "--quiet"])
+        .arg(bare)
+        .arg(clone)
+        .output()
+        .expect("git clone");
+    assert!(out.status.success(), "clone failed");
+    let _ = Command::new("git")
+        .args(["config", "user.email", "test@example.com"])
+        .current_dir(clone)
+        .output();
+    let _ = Command::new("git")
+        .args(["config", "user.name", "Tester"])
+        .current_dir(clone)
+        .output();
+    let _ = Command::new("git")
+        .args(["config", "commit.gpgsign", "false"])
+        .current_dir(clone)
+        .output();
+    let _ = Command::new("git")
+        .args(["checkout", "-q", "-b", "main"])
+        .current_dir(clone)
+        .output();
+    std::fs::write(clone.join("README.md"), "base\n").expect("write");
+    let _ = Command::new("git")
+        .args(["add", "."])
+        .current_dir(clone)
+        .output();
+    let _ = Command::new("git")
+        .args(["-c", "commit.gpgsign=false", "commit", "-m", "init"])
+        .current_dir(clone)
+        .output();
+    let _ = Command::new("git")
+        .args(["push", "-u", "origin", "main"])
+        .current_dir(clone)
+        .output();
+}
+
+async fn make_worktree(cfg: &Config, key: IssueKey, run_id: &str) -> Worktree {
+    let info = info_for(&cfg.workdir_base.join(&key.owner).join(&key.repo));
+    let runner = Arc::new(GitRunner::new(cfg));
+    create_worktree(cfg, &runner, &info, &key, run_id)
+        .await
+        .expect("create worktree")
+}
+
+fn backdate_to_older_than(path: &Path, days: i64) {
+    let past = Utc::now() - chrono::Duration::days(days);
+    let stamp = past.format("%Y%m%d%H%M.%S").to_string();
+    let out = Command::new("touch")
+        .args(["-t", &stamp])
+        .arg(path)
+        .output()
+        .expect("touch");
+    assert!(
+        out.status.success(),
+        "touch -t failed: stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+async fn mount_empty_issue_list(server: &MockServer) {
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/r/issues"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+        .mount(server)
+        .await;
+}
+
+async fn run_tick(
+    cfg: Config,
+    server: &MockServer,
+) -> caduceus::error::CaduceusResult<TickOutcome> {
+    mount_empty_issue_list(server).await;
+    let mut cfg = cfg;
+    cfg.api_base = server.uri();
+    let cache = HttpCache::open(&cfg.state_dir).expect("cache opens");
+    let client = Client::with_cache(&cfg, cache).expect("client builds");
+    let clock: Arc<dyn caduceus::orchestration::Clock> = Arc::new(SystemClock);
+    let git = GitRunner::new(&cfg);
+    let pool = Arc::new(
+        Pool::new(
+            cfg.worker_parallelism,
+            DrainConfig::from_seconds_and_ms(cfg.drain_timeout_seconds, cfg.backpressure_budget_ms),
+        )
+        .with_lease_store_dir(
+            cfg.state_dir.clone(),
+            Duration::from_secs(cfg.worker_lease_ttl_seconds),
+        ),
+    );
+    let services = caduceus::orchestration::Services::production(
+        &cfg,
+        clock,
+        Arc::new(client),
+        git,
+        Arc::clone(&pool),
+    );
+    caduceus::tick::tick(cfg, services, pool, CancellationToken::new()).await
+}
+
+#[tokio::test]
+async fn auto_gc_removes_stale_worktree_on_tick() {
+    let base = tempfile::Builder::new()
+        .prefix("caduceus-tick-test-")
+        .tempdir_in(std::env::current_dir().unwrap())
+        .expect("base");
+    let bare = base.path().join("owner.git");
+    let clone = base.path().join("owner").join("r");
+    init_bare(&bare);
+    init_clone(&bare, &clone);
+
+    let cfg = tick_config(base.path(), vec!["owner/r".to_string()], None, None);
+    let server = MockServer::start().await;
+
+    let key = IssueKey {
+        owner: "owner".to_string(),
+        repo: "r".to_string(),
+        number: 1,
+    };
+    let wt = make_worktree(&cfg, key, "run-stale").await;
+    backdate_to_older_than(&wt.path, 2);
+    assert!(wt.path.exists(), "stale worktree should exist before tick");
+
+    let outcome = run_tick(cfg.clone(), &server).await.expect("tick");
+    assert_eq!(outcome, TickOutcome::IdleEmpty);
+    assert!(!wt.path.exists(), "stale worktree should be removed");
+    assert!(
+        DaemonLock::try_acquire(&cfg.state_dir).unwrap().is_some(),
+        "daemon lock must be released after GC"
+    );
+}
+
+#[tokio::test]
+async fn auto_gc_disabled_leaves_stale_worktree_intact() {
+    let base = tempfile::Builder::new()
+        .prefix("caduceus-tick-test-")
+        .tempdir_in(std::env::current_dir().unwrap())
+        .expect("base");
+    let bare = base.path().join("owner.git");
+    let clone = base.path().join("owner").join("r");
+    init_bare(&bare);
+    init_clone(&bare, &clone);
+
+    let cfg = tick_config(base.path(), vec!["owner/r".to_string()], Some(true), None);
+    let server = MockServer::start().await;
+
+    let key = IssueKey {
+        owner: "owner".to_string(),
+        repo: "r".to_string(),
+        number: 2,
+    };
+    let wt = make_worktree(&cfg, key, "run-disabled").await;
+    backdate_to_older_than(&wt.path, 2);
+
+    let outcome = run_tick(cfg, &server).await.expect("tick");
+    assert_eq!(outcome, TickOutcome::IdleEmpty);
+    assert!(wt.path.exists(), "disabled GC must not remove worktree");
+}
+
+#[tokio::test]
+async fn auto_gc_skips_when_daemon_lock_is_contended() {
+    let base = tempfile::Builder::new()
+        .prefix("caduceus-tick-test-")
+        .tempdir_in(std::env::current_dir().unwrap())
+        .expect("base");
+    let bare = base.path().join("owner.git");
+    let clone = base.path().join("owner").join("r");
+    init_bare(&bare);
+    init_clone(&bare, &clone);
+
+    let cfg = tick_config(base.path(), vec!["owner/r".to_string()], None, None);
+    let server = MockServer::start().await;
+
+    let key = IssueKey {
+        owner: "owner".to_string(),
+        repo: "r".to_string(),
+        number: 3,
+    };
+    let wt = make_worktree(&cfg, key, "run-contended").await;
+    backdate_to_older_than(&wt.path, 2);
+
+    let _lock = DaemonLock::try_acquire(&cfg.state_dir)
+        .expect("try_acquire")
+        .expect("lock is free");
+    let outcome = run_tick(cfg.clone(), &server).await.expect("tick");
+    assert_eq!(outcome, TickOutcome::IdleEmpty);
+    assert!(wt.path.exists(), "contended lock must skip GC");
+}
+
+#[tokio::test]
+async fn auto_gc_does_not_run_on_cadence_skipped_tick() {
+    let base = tempfile::Builder::new()
+        .prefix("caduceus-tick-test-")
+        .tempdir_in(std::env::current_dir().unwrap())
+        .expect("base");
+    let bare = base.path().join("owner.git");
+    let clone = base.path().join("owner").join("r");
+    init_bare(&bare);
+    init_clone(&bare, &clone);
+
+    let cfg = tick_config(base.path(), vec!["owner/r".to_string()], None, None);
+    let server = MockServer::start().await;
+
+    // First tick succeeds and records last_tick_finished.
+    let outcome = run_tick(cfg.clone(), &server).await.expect("first tick");
+    assert_eq!(outcome, TickOutcome::IdleEmpty);
+
+    // Create a stale worktree between ticks.
+    let key = IssueKey {
+        owner: "owner".to_string(),
+        repo: "r".to_string(),
+        number: 4,
+    };
+    let wt = make_worktree(&cfg, key, "run-cadence").await;
+    backdate_to_older_than(&wt.path, 2);
+
+    // Second tick should be skipped by the cadence gate before GC runs.
+    let outcome = run_tick(cfg, &server).await.expect("second tick");
+    assert_eq!(outcome, TickOutcome::SkippedCadence);
+    assert!(wt.path.exists(), "cadence skip must leave worktree intact");
+}
+
+#[tokio::test]
+async fn auto_gc_error_path_returns_normal_tick_outcome() {
+    let base = tempfile::Builder::new()
+        .prefix("caduceus-tick-test-")
+        .tempdir_in(std::env::current_dir().unwrap())
+        .expect("base");
+    let bare = base.path().join("owner.git");
+    let clone = base.path().join("owner").join("r");
+    init_bare(&bare);
+    init_clone(&bare, &clone);
+
+    let cfg = tick_config(base.path(), vec!["owner/r".to_string()], None, None);
+    let server = MockServer::start().await;
+
+    let key = IssueKey {
+        owner: "owner".to_string(),
+        repo: "r".to_string(),
+        number: 5,
+    };
+    let wt = make_worktree(&cfg, key, "run-error").await;
+    backdate_to_older_than(&wt.path, 2);
+
+    // Remove the main clone's .git directory so the GC's git
+    // worktree list fails, forcing the error path.
+    let dot_git = cfg.workdir_base.join("owner").join("r").join(".git");
+    std::fs::remove_dir_all(&dot_git).expect("remove .git");
+
+    let outcome = run_tick(cfg, &server).await.expect("tick");
+    assert_eq!(outcome, TickOutcome::IdleEmpty);
+    assert!(wt.path.exists(), "GC error must not remove worktree");
+}

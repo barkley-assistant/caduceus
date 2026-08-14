@@ -50,7 +50,7 @@ use crate::scheduler::circuit::{AdmissionResult, CircuitConfig, CircuitStore};
 use crate::scheduler::{DrainConfig, LeaderToken, Pool};
 use crate::signals;
 use crate::state::meta::{CadenceDecision, CadenceGate, MetaStore, TickOutcome};
-use crate::state::queue::StateStore;
+use crate::state::queue::{DaemonLock, StateStore};
 use crate::worktree::GitRunner;
 
 use tokio::task::JoinSet;
@@ -258,11 +258,29 @@ pub async fn tick(
     )
     .await;
 
+    // 3.5. Reclaim stale, unclaimed worktrees (best-effort).
+    if !cfg.worktree_gc_disabled {
+        match DaemonLock::try_acquire(&state_dir) {
+            Ok(Some(_gc_lock)) => {
+                match crate::worktree::gc::gc(&cfg, cfg.worktree_gc_older_than_days, false).await {
+                    Ok(removed) => info!(removed, "auto worktree gc completed"),
+                    Err(err) => {
+                        tracing::warn!(error = %err, "auto worktree gc failed; continuing tick")
+                    }
+                }
+            }
+            Ok(None) => info!("auto worktree gc skipped; daemon lock is contended"),
+            Err(err) => {
+                tracing::warn!(error = %err, "auto worktree gc lock failed; continuing tick")
+            }
+        }
+    }
+
     // 3.6. Open the SQLite state store for circuit breaker access.
     let sqlite_conn = crate::state::store::open_in(&state_dir)?;
     let circuit_store = CircuitStore::new(sqlite_conn, CircuitConfig::from_config(&cfg));
 
-    // 3.5. Poll awaiting-review entries for PR merge status.
+    // 3.7. Poll awaiting-review entries for PR merge status.
     let poll_client: Arc<Client> = Arc::clone(services.github.inner());
     if let Err(err) = poll_awaiting_review_entries(store.as_ref(), poll_client.as_ref(), &cfg).await
     {
