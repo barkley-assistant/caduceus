@@ -58,3 +58,40 @@ fn worktree_gc_explicit_defaults_match_test_defaults() {
     );
     assert_eq!(from_raw.worktree_gc_disabled, defaults.worktree_gc_disabled);
 }
+
+#[test]
+fn attic_defaults_are_off_with_thirty_day_retention() {
+    let defaults = Config::test_defaults(PathBuf::from("/tmp/caduceus-test").as_path());
+    assert!(!defaults.archive_on_retry);
+    assert_eq!(defaults.attic_retention_days, 30);
+}
+
+#[test]
+fn attic_explicit_values_resolve() {
+    let raw = RawConfig {
+        archive_on_retry: Some(true),
+        attic_retention_days: Some(7),
+        worker_command: Some(vec!["/bin/true".to_string()]),
+        reduced_containment_acknowledged: Some(true),
+        ..Default::default()
+    };
+    let cfg = Config::from_raw(raw, &LoadContext::default()).expect("config");
+    assert!(cfg.archive_on_retry);
+    assert_eq!(cfg.attic_retention_days, 7);
+}
+
+#[test]
+fn attic_zero_retention_is_rejected() {
+    let raw = RawConfig {
+        attic_retention_days: Some(0),
+        worker_command: Some(vec!["/bin/true".to_string()]),
+        reduced_containment_acknowledged: Some(true),
+        ..Default::default()
+    };
+    let err = Config::from_raw(raw, &LoadContext::default()).expect_err("zero must fail");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("attic_retention_days must be > 0"),
+        "unexpected error: {msg}"
+    );
+}
