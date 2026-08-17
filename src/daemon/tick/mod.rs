@@ -276,6 +276,16 @@ pub async fn tick(
         }
     }
 
+    // 3.5a. Prune archived worktrees older than the retention cap.
+    match crate::worktree::attic::sweep(&cfg).await {
+        Ok(removed) => {
+            if removed > 0 {
+                info!(removed, "auto attic sweep completed")
+            }
+        }
+        Err(err) => tracing::warn!(error = %err, "auto attic sweep failed; continuing tick"),
+    }
+
     // 3.6. Open the SQLite state store for circuit breaker access.
     let sqlite_conn = crate::state::store::open_in(&state_dir)?;
     let circuit_store = CircuitStore::new(sqlite_conn, CircuitConfig::from_config(&cfg));

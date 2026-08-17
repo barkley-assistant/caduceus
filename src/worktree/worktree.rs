@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use fs2::FileExt;
+use tracing::info;
 
 use crate::github::issue::IssueKey;
 use crate::infra::config::Config;
@@ -196,8 +197,6 @@ async fn create_locked(
     branch_name: &str,
     worktree_path: &Path,
 ) -> CaduceusResult<Worktree> {
-    let _ = cfg;
-
     // Test-only hook to exercise panic-path cleanup in integration
     // tests without adding a public surface to the daemon.
     if std::env::var_os("_CADUCEUS_TEST_PANIC_IN_CREATE_LOCKED").is_some() {
@@ -205,22 +204,13 @@ async fn create_locked(
     }
 
     // (5) Pre-flight: branch / path already exist? Resolve
-    // each case to "ours" (reconcile) or "theirs" (collision).
-    let pre = inspect_existing(runner, &repo.path, branch_name, worktree_path).await?;
+    // each case to "ours" (retry/re-create) or "theirs" (collision).
+    let pre = inspect_existing(runner, &repo.path, key, branch_name, worktree_path).await?;
     if pre.foreign_branch {
         return Err(CaduceusError::Worktree {
             context: "create",
             stderr: format!(
                 "branch collision: {branch_name} already exists with a different run id"
-            ),
-        });
-    }
-    if pre.foreign_path {
-        return Err(CaduceusError::Worktree {
-            context: "create",
-            stderr: format!(
-                "path collision: {} already exists with a different run id",
-                worktree_path.display()
             ),
         });
     }
@@ -237,10 +227,31 @@ async fn create_locked(
             ),
         });
     }
-    if pre.owned {
-        if let Some(base_oid) = pre.base_oid {
-            // Idempotent re-entry into the same run id: return
-            // the existing handle so callers can resume.
+    if let Some(prior) = pre.same_issue_prior_attempt {
+        // A prior attempt at the *same* path means the daemon is
+        // re-entering with the same `run_id` (checkpoint resume after
+        // a crash, or a redundant tick). The worktree and branch are
+        // already correct; do not archive/remove/recreate.
+        if prior.path == worktree_path {
+            info!(
+                path = %worktree_path.display(),
+                branch = %branch_name,
+                issue = key.number,
+                run_id = %run_id,
+                "existing worktree belongs to this run; resuming without recreation"
+            );
+            let base_oid = match pre.base_oid {
+                Some(oid) => oid,
+                None => {
+                    git_rev(
+                        runner,
+                        &repo.path,
+                        "rev-parse",
+                        &[&format!("refs/remotes/origin/{}", repo.base_branch)],
+                    )
+                    .await?
+                }
+            };
             return Ok(Worktree {
                 issue: key.clone(),
                 run_id: run_id.to_string(),
@@ -249,7 +260,53 @@ async fn create_locked(
                 main_path: repo.path.to_path_buf(),
                 base_oid,
                 fresh: false,
-                created_at: pre.created_at.unwrap_or_else(Utc::now),
+                created_at: Utc::now(),
+            });
+        }
+
+        info!(
+            path = %prior.path.display(),
+            branch = %prior.branch,
+            issue = key.number,
+            run_id = %run_id,
+            "retrying over prior attempt worktree"
+        );
+        if cfg.archive_on_retry {
+            match crate::worktree::attic::archive(
+                cfg,
+                &key.owner,
+                &key.repo,
+                key.number,
+                run_id,
+                &prior.path,
+            )
+            .await
+            {
+                Ok(archive_path) => {
+                    info!(path = %archive_path.display(), "archived prior attempt worktree")
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        remove_worktree_for_retry(runner, &repo.path, &prior.path).await?;
+        if prior.path.exists() {
+            return Err(CaduceusError::Worktree {
+                context: "retry-worktree-remove",
+                stderr: format!(
+                    "git worktree remove --force {} reported success but the path is still present",
+                    prior.path.display()
+                ),
+            });
+        }
+        // If the prior attempt was at a different path, ensure the
+        // target path is also gone before recreating.
+        if prior.path != worktree_path && worktree_path.exists() {
+            return Err(CaduceusError::Worktree {
+                context: "retry-path-check",
+                stderr: format!(
+                    "target worktree path {} still present after removing prior attempt",
+                    worktree_path.display()
+                ),
             });
         }
     }
@@ -341,31 +398,36 @@ async fn create_locked(
     })
 }
 
+/// A worktree path + branch that belongs to a previous attempt of
+/// the same issue. Carrying the branch name lets the retry path
+/// delete the old branch registration without re-parsing `git worktree
+/// list`.
+struct PriorAttempt {
+    path: PathBuf,
+    branch: String,
+}
+
 /// Pre-flight result of [`create`]: whether the branch / path
 /// already exist and how they relate to the current run id.
 struct PreFlight {
-    /// True when a branch with the would-be name already
-    /// exists at `origin/<base>` (i.e. it's ours).
+    /// True when a branch with the would-be name already exists.
     branch_exists: bool,
     /// True when a branch with the would-be name already
     /// exists AND points somewhere foreign.
     foreign_branch: bool,
-    /// True when the worktree path already exists and is a
-    /// git worktree whose `branch_name` matches ours.
-    owned: bool,
-    /// True when the worktree path already exists and is
-    /// something else.
-    foreign_path: bool,
+    /// A prior attempt of the same issue, either at the target path
+    /// or as another directory under the per-repo worktree state dir.
+    /// On retry the daemon archives, removes, and re-creates the
+    /// worktree.
+    same_issue_prior_attempt: Option<PriorAttempt>,
     /// Path of a foreign entry under the per-repo state directory
-    /// (any path other than `worktree_path`). The daemon treats any
-    /// such entry as a collision because the worker-home area belongs
-    /// to the daemon.
+    /// (any path other than `worktree_path` that is not a prior
+    /// attempt of the same issue). The daemon treats any such entry
+    /// as a collision because the worker-home area belongs to the
+    /// daemon.
     foreign_worktree_dir: Option<PathBuf>,
-    /// Base OID recorded on the existing branch, when
-    /// reconciling.
+    /// Base OID recorded on the existing branch, when present.
     base_oid: Option<String>,
-    /// File mtime of the existing worktree, when reconciling.
-    created_at: Option<chrono::DateTime<Utc>>,
 }
 
 /// Inspect what is already on disk for *branch_name* /
@@ -381,17 +443,16 @@ struct PreFlight {
 async fn inspect_existing(
     runner: &GitRunner,
     main_path: &Path,
+    key: &IssueKey,
     branch_name: &str,
     worktree_path: &Path,
 ) -> CaduceusResult<PreFlight> {
     let mut pre = PreFlight {
         branch_exists: false,
         foreign_branch: false,
-        owned: false,
-        foreign_path: false,
+        same_issue_prior_attempt: None,
         foreign_worktree_dir: None,
         base_oid: None,
-        created_at: None,
     };
 
     // Does the branch already exist locally?
@@ -412,29 +473,34 @@ async fn inspect_existing(
         }
     }
 
-    // Does the worktree path already exist? Either as a
-    // legitimate worktree (ours) or as a stray directory/file.
+    let worktrees = git_worktree_list(runner, main_path).await?;
+    let expected_prefix = format!("automation/issue-{}-", key.number);
+
+    // Does the worktree path already exist? If it is a linked
+    // worktree and its branch belongs to the same issue, treat it as
+    // a prior attempt to be archived/removed/recreated. Otherwise it
+    // is a genuine collision.
     if worktree_path.exists() {
-        // `git worktree list` includes the path and the branch
-        // for each linked worktree. If our path is listed with
-        // our branch it belongs to us; otherwise it is foreign.
-        let owned = inspect_path_is_ours(runner, main_path, worktree_path, branch_name).await?;
-        if owned {
-            pre.owned = true;
-            if let Ok(meta) = std::fs::metadata(worktree_path) {
-                if let Ok(mtime) = meta.modified() {
-                    let dt: chrono::DateTime<Utc> = mtime.into();
-                    pre.created_at = Some(dt);
-                }
+        if let Some(branch) = worktrees.get(worktree_path).cloned() {
+            if branch.starts_with(&expected_prefix) {
+                pre.same_issue_prior_attempt = Some(PriorAttempt {
+                    path: worktree_path.to_path_buf(),
+                    branch,
+                });
+            } else {
+                pre.foreign_worktree_dir = Some(worktree_path.to_path_buf());
             }
         } else {
-            pre.foreign_path = true;
+            // A stray non-worktree directory at the target path.
+            // This is a collision because the daemon never creates
+            // directories through non-git means.
+            pre.foreign_worktree_dir = Some(worktree_path.to_path_buf());
         }
     }
 
-    // Foreign entries under the per-repo state directory are always a
-    // collision: the daemon owns the worker-home area and never allows
-    // a prior run to leak paths.
+    // Sibling directories under the per-repo state dir. A directory
+    // belonging to the same issue is a prior attempt to clean up;
+    // anything else is a foreign collision.
     let worktree_dir = worktree_path
         .parent()
         .ok_or_else(|| CaduceusError::Worktree {
@@ -456,6 +522,14 @@ async fn inspect_existing(
             if p == worktree_path {
                 continue;
             }
+            if let Some(branch) = worktrees.get(&p).cloned() {
+                if branch.starts_with(&expected_prefix) {
+                    if pre.same_issue_prior_attempt.is_none() {
+                        pre.same_issue_prior_attempt = Some(PriorAttempt { path: p, branch });
+                    }
+                    continue;
+                }
+            }
             pre.foreign_worktree_dir = Some(p);
             break;
         }
@@ -464,16 +538,13 @@ async fn inspect_existing(
     Ok(pre)
 }
 
-/// Return true when the worktree at *worktree_path* is registered
-/// to *branch_name* in `git worktree list`. Both nil cases (path
-/// absent, branch absent) return false — the caller decides what
-/// to do.
-async fn inspect_path_is_ours(
+/// Parse `git worktree list --porcelain` into a map of
+/// worktree path → short branch name (with `refs/heads/` stripped).
+/// Paths that have no `branch` line are omitted.
+async fn git_worktree_list(
     runner: &GitRunner,
     main_path: &Path,
-    worktree_path: &Path,
-    branch_name: &str,
-) -> CaduceusResult<bool> {
+) -> CaduceusResult<std::collections::HashMap<PathBuf, String>> {
     let output = runner_run_in(
         runner,
         main_path,
@@ -481,9 +552,10 @@ async fn inspect_path_is_ours(
         &["worktree", "list", "--porcelain"],
     )
     .await?;
-    if !output.status.eq(&Some(0)) {
-        return Ok(false);
+    if output.status != Some(0) {
+        return Ok(std::collections::HashMap::new());
     }
+    let mut map = std::collections::HashMap::new();
     let mut current_path: Option<String> = None;
     let mut current_branch: Option<String> = None;
     for line in output.stdout.lines() {
@@ -493,21 +565,48 @@ async fn inspect_path_is_ours(
         } else if let Some(rest) = line.strip_prefix("branch ") {
             current_branch = Some(rest.trim().trim_start_matches("refs/heads/").to_string());
         } else if line.is_empty() {
-            if let (Some(p), Some(b)) = (&current_path, &current_branch) {
-                if p == &worktree_path.to_string_lossy() && b == branch_name {
-                    return Ok(true);
-                }
+            if let (Some(p), Some(b)) = (current_path.take(), current_branch.take()) {
+                map.insert(PathBuf::from(p), b);
             }
-            current_path = None;
-            current_branch = None;
         }
     }
-    if let (Some(p), Some(b)) = (&current_path, &current_branch) {
-        if p == &worktree_path.to_string_lossy() && b == branch_name {
-            return Ok(true);
-        }
+    if let (Some(p), Some(b)) = (current_path.take(), current_branch.take()) {
+        map.insert(PathBuf::from(p), b);
     }
-    Ok(false)
+    Ok(map)
+}
+
+/// Remove a prior-attempt worktree so a retry can recreate from a
+/// clean slate. Uses `git worktree remove --force` and `git worktree
+/// prune`. The branch ref is intentionally preserved in the shared
+/// object store (AC #2).
+async fn remove_worktree_for_retry(
+    runner: &GitRunner,
+    main_path: &Path,
+    path: &Path,
+) -> CaduceusResult<()> {
+    let path_str = path.to_string_lossy().into_owned();
+    let remove_args: [&str; 4] = ["worktree", "remove", "--force", &path_str];
+    let remove_output =
+        runner_run_in(runner, main_path, "retry-worktree-remove", &remove_args).await?;
+    if remove_output.cancelled {
+        return Err(CaduceusError::Cancelled);
+    }
+    if remove_output.timed_out || remove_output.status != Some(0) {
+        return Err(CaduceusError::Worktree {
+            context: "retry-worktree-remove",
+            stderr: format!(
+                "git worktree remove --force {} failed: {}",
+                path.display(),
+                remove_output.stderr
+            ),
+        });
+    }
+
+    let prune_args: [&str; 2] = ["worktree", "prune"];
+    let _ = runner_run_in(runner, main_path, "retry-worktree-prune", &prune_args).await;
+
+    Ok(())
 }
 
 /// Validate *run_id*: only ASCII letters, digits, underscores,

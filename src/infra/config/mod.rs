@@ -47,6 +47,8 @@ pub const DEFAULT_RUN_RETENTION_DAYS: u64 = 30;
 pub const DEFAULT_STALE_RUN_HOURS: u64 = 1;
 pub const DEFAULT_WORKTREE_GC_OLDER_THAN_DAYS: u64 = 1;
 pub const DEFAULT_WORKTREE_GC_DISABLED: bool = false;
+pub const DEFAULT_ARCHIVE_ON_RETRY: bool = false;
+pub const DEFAULT_ATTIC_RETENTION_DAYS: u64 = 30;
 pub const DEFAULT_MAX_RETRIES_PER_ISSUE: u32 = 3;
 pub const DEFAULT_RETRY_BACKOFF_SECONDS: u64 = 300;
 pub const DEFAULT_TICKET_LABEL_CODE: &str = "🤖 auto-fix";
@@ -114,6 +116,12 @@ pub struct Config {
     /// Disables the daemon's automatic worktree GC step entirely.
     /// Default `false`.
     pub worktree_gc_disabled: bool,
+    /// Whether to archive a failed run's working tree to the attic
+    /// before removing it on retry. Default `false`.
+    pub archive_on_retry: bool,
+    /// Maximum age of archived working trees in the daemon's attic
+    /// before they are eligible for automatic pruning. Default 30.
+    pub attic_retention_days: u64,
     pub max_retries_per_issue: u32,
     pub retry_backoff_seconds: u64,
     pub ticket_label_code: String,
@@ -246,6 +254,8 @@ pub struct RawConfig {
     pub stale_run_hours: Option<u64>,
     pub worktree_gc_older_than_days: Option<u64>,
     pub worktree_gc_disabled: Option<bool>,
+    pub archive_on_retry: Option<bool>,
+    pub attic_retention_days: Option<u64>,
     pub max_retries_per_issue: Option<u32>,
     pub retry_backoff_seconds: Option<u64>,
     pub ticket_label_code: Option<String>,
@@ -609,6 +619,13 @@ impl Config {
         let worktree_gc_disabled = raw
             .worktree_gc_disabled
             .unwrap_or(DEFAULT_WORKTREE_GC_DISABLED);
+        let archive_on_retry = raw.archive_on_retry.unwrap_or(DEFAULT_ARCHIVE_ON_RETRY);
+        let attic_retention_days = raw
+            .attic_retention_days
+            .unwrap_or(DEFAULT_ATTIC_RETENTION_DAYS);
+        if attic_retention_days == 0 {
+            errors.push("attic_retention_days must be > 0".to_string());
+        }
 
         let max_retries_per_issue = raw
             .max_retries_per_issue
@@ -784,6 +801,8 @@ impl Config {
             stale_run_hours,
             worktree_gc_older_than_days,
             worktree_gc_disabled,
+            archive_on_retry,
+            attic_retention_days,
             max_retries_per_issue,
             retry_backoff_seconds,
             ticket_label_code,
@@ -903,6 +922,8 @@ impl Config {
             stale_run_hours: DEFAULT_STALE_RUN_HOURS,
             worktree_gc_older_than_days: DEFAULT_WORKTREE_GC_OLDER_THAN_DAYS,
             worktree_gc_disabled: DEFAULT_WORKTREE_GC_DISABLED,
+            archive_on_retry: DEFAULT_ARCHIVE_ON_RETRY,
+            attic_retention_days: DEFAULT_ATTIC_RETENTION_DAYS,
             max_retries_per_issue: DEFAULT_MAX_RETRIES_PER_ISSUE,
             retry_backoff_seconds: DEFAULT_RETRY_BACKOFF_SECONDS,
             ticket_label_code: DEFAULT_TICKET_LABEL_CODE.to_string(),
