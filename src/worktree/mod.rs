@@ -12,11 +12,13 @@
 // Submodule declarations and re-exports. These preserve the historical
 // `crate::worktree` public surface used by `lib.rs` and sibling modules.
 
+pub mod attic;
 pub mod gc;
 pub mod git_runner;
 pub mod repository;
 pub mod worktree;
 
+pub use attic::*;
 pub use gc::*;
 pub use git_runner::*;
 pub use repository::*;
