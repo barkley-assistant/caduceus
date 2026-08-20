@@ -57,5 +57,12 @@ prompts/
 openspec/
 /openspec/
 
+# Internal planning scratch; never commit it. Specops-auto and other agents
+# may leave per-change planning trees here during a run. The repo's tracked
+# docs live under `docs/`; this directory is purely transient operator
+# scratch.
+planning/
+/planning/
+
 # Hermes release-plan files; never commit them.
 /.hermes/
