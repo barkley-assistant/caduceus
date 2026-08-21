@@ -393,3 +393,38 @@ fn _claim_token_is_compatible(token: &ClaimToken) {
     // future test wants to construct one.
     let _ = token.digest();
 }
+
+#[cfg(target_os = "macos")]
+mod macos_tests {
+    use super::*;
+    use caduceus::worker::supervisor::process_lifecycle::IDENTITY;
+
+    #[test]
+    fn macos_is_alive_self_pid_is_true() {
+        assert!(IDENTITY.is_alive(std::process::id() as i32));
+    }
+
+    #[test]
+    fn macos_is_alive_nonexistent_pid_is_false() {
+        assert!(!IDENTITY.is_alive(0x7fff_ffff));
+    }
+
+    #[test]
+    fn macos_start_ticks_self_pid_is_some() {
+        assert!(IDENTITY.start_ticks(std::process::id() as i32).is_some());
+    }
+
+    #[test]
+    fn macos_verify_match_is_true() {
+        let self_pid = std::process::id() as i32;
+        let start_ticks = IDENTITY.start_ticks(self_pid).unwrap();
+        assert!(IDENTITY.verify(self_pid, start_ticks));
+    }
+
+    #[test]
+    fn macos_verify_mismatch_is_false() {
+        let self_pid = std::process::id() as i32;
+        let start_ticks = IDENTITY.start_ticks(self_pid).unwrap();
+        assert!(!IDENTITY.verify(self_pid, start_ticks + 1));
+    }
+}
