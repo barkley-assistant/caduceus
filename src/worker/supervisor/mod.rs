@@ -38,8 +38,9 @@
 //!
 //! # Safety note
 //!
-//! The crate's `#![forbid(unsafe_code)]` policy forbids `unsafe`
-//! blocks anywhere in the source tree. The supervisor needs to
+//! The crate's `#![deny(unsafe_code)]` policy forbids `unsafe`
+//! blocks outside the narrowly scoped macOS boot-time FFI
+//! helper. The supervisor needs to
 //! hand FDs across exec and to call `pipe2` / `setsid` /
 //! `killpg`. Where the safe `nix` crate provides a wrapper
 //! (`setsid`, `killpg`, `kill`, `pipe2`, `set_child_subreaper`),

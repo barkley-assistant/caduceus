@@ -17,7 +17,7 @@
 //! module docstrings for the normative scope of every module in this
 //! crate.
 
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 #![warn(missing_debug_implementations)]
 
 pub mod daemon;
