@@ -10,6 +10,7 @@ use chrono::{DateTime, Utc};
 use fs2::FileExt;
 
 use crate::infra::error::{CaduceusError, CaduceusResult};
+use crate::worker::supervisor::process_lifecycle::IDENTITY;
 
 /// Directory under `<state_dir>/claims` where malformed/future-stamped
 /// claim files are quarantined. The reaper never silently deletes
@@ -200,7 +201,7 @@ pub async fn reap_stale_claims(
         }
         // Old claim: only stale if the recorded process is
         // dead OR the start identity has changed (pid reuse).
-        let recorded_pid_alive = is_pid_alive(body.pid);
+        let recorded_pid_alive = IDENTITY.is_alive(body.pid as i32);
         let recorded_start_matches =
             process_start_identity(body.pid) == body.process_start_identity;
         if recorded_pid_alive && recorded_start_matches {
@@ -384,24 +385,6 @@ pub(crate) async fn reap_one_stale_claim(
     //    reaper warning, not a fatal error.
     let _ = fs::remove_file(claim_path);
     Ok(())
-}
-
-/// `true` if a process with PID `pid` exists. The check is
-/// best-effort and Linux-specific; on non-Linux platforms it
-/// always returns `false` so the reaper treats those claims as
-/// stale (matching the contract's "process identity is
-/// absent").
-fn is_pid_alive(pid: u32) -> bool {
-    if pid == 0 {
-        return false;
-    }
-    // /proc/<pid> exists → the process is alive (or a zombie
-    // awaiting reap; the starttime check distinguishes). This
-    // is sufficient for the reaper's purposes because the
-    // claim's recorded `process_start_identity` already
-    // records the start ticks, and a pid-reuse will be caught
-    // by the starttime comparison.
-    std::path::Path::new(&format!("/proc/{pid}")).exists()
 }
 
 impl StateStore {
