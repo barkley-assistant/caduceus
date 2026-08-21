@@ -1,7 +1,7 @@
 use super::{
-    build_supervisor_command, clear_heartbeat, read_frame_async, read_proc_starttime,
-    verify_identity, write_frame_async, write_heartbeat_record, ControlFrame, Heartbeat,
-    SupervisorOutcome, WorkerRunPaths, HEARTBEAT_FILE_VERSION, MAX_FRAME_BYTES,
+    build_supervisor_command, clear_heartbeat, read_frame_async, write_frame_async,
+    write_heartbeat_record, ControlFrame, Heartbeat, SupervisorOutcome, WorkerRunPaths,
+    HEARTBEAT_FILE_VERSION, MAX_FRAME_BYTES,
 };
 
 use std::path::Path;
@@ -12,6 +12,9 @@ use tokio::process::{Child, Command as TokioCommand};
 
 use crate::github::issue::IssueKey;
 use crate::infra::error::{CaduceusError, CaduceusResult};
+use crate::worker::supervisor::process_lifecycle::{
+    decide_deadline_kill, DeadlineKillDecision, IDENTITY,
+};
 
 // Public spawn orchestrator
 
@@ -191,7 +194,7 @@ pub(crate) async fn run_supervisor(
             // Track worker identity captured at READY for
             // PID-reuse checks before signalling.
             let mut worker_pgid: Option<i32> = None;
-            let mut worker_starttime: Option<u64> = None;
+            let mut worker_start_ticks: Option<u64> = None;
             loop {
                 tokio::select! {
                     biased;
@@ -210,26 +213,18 @@ pub(crate) async fn run_supervisor(
                         // Deadline reached. Verify worker identity
                         // before signalling to avoid killing an
                         // unrelated process whose PID was recycled.
-                        match (worker_pgid, worker_starttime) {
-                            (Some(pgid), Some(expected)) => {
-                                if !verify_identity(pgid, expected) {
-                                    // PID was reused — do NOT signal.
-                                    return SupervisorOutcome {
-                                        status: 0,
-                                        signaled: false,
-                                        timed_out: true,
-                                        cancelled: false,
-                                    };
-                                }
-                                // Send TERM (graceful shutdown).
-                                write_frame_async(
-                                    &mut stdin,
-                                    &ControlFrame::Terminate { force: false },
-                                ).await.ok();
+                        match decide_deadline_kill(IDENTITY, worker_pgid, worker_start_ticks) {
+                            DeadlineKillDecision::Suppress => {
+                                // PID was reused — do NOT signal.
+                                return SupervisorOutcome {
+                                    status: 0,
+                                    signaled: false,
+                                    timed_out: true,
+                                    cancelled: false,
+                                };
                             }
-                            _ => {
-                                // Never got READY — best-effort
-                                // shutdown without identity check.
+                            DeadlineKillDecision::Signal | DeadlineKillDecision::BestEffort => {
+                                // Send TERM (graceful shutdown).
                                 write_frame_async(
                                     &mut stdin,
                                     &ControlFrame::Terminate { force: false },
@@ -240,22 +235,16 @@ pub(crate) async fn run_supervisor(
                         // Wait 2 s grace period then re-verify and KILL.
                         tokio::time::sleep(Duration::from_secs(2)).await;
 
-                        match (worker_pgid, worker_starttime) {
-                            (Some(pgid), Some(expected)) => {
-                                if !verify_identity(pgid, expected) {
-                                    return SupervisorOutcome {
-                                        status: 0,
-                                        signaled: false,
-                                        timed_out: true,
-                                        cancelled: false,
-                                    };
-                                }
-                                write_frame_async(
-                                    &mut stdin,
-                                    &ControlFrame::Terminate { force: true },
-                                ).await.ok();
+                        match decide_deadline_kill(IDENTITY, worker_pgid, worker_start_ticks) {
+                            DeadlineKillDecision::Suppress => {
+                                return SupervisorOutcome {
+                                    status: 0,
+                                    signaled: false,
+                                    timed_out: true,
+                                    cancelled: false,
+                                };
                             }
-                            _ => {
+                            DeadlineKillDecision::Signal | DeadlineKillDecision::BestEffort => {
                                 write_frame_async(
                                     &mut stdin,
                                     &ControlFrame::Terminate { force: true },
@@ -291,7 +280,7 @@ pub(crate) async fn run_supervisor(
                                 // PID-reuse checks before
                                 // deadline signalling.
                                 worker_pgid = Some(pgid);
-                                worker_starttime = read_proc_starttime(pgid);
+                                worker_start_ticks = IDENTITY.start_ticks(pgid);
                             }
                             ControlFrame::Done { status, signaled } => {
                                 return SupervisorOutcome {

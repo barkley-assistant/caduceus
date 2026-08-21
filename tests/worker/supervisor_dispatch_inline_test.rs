@@ -3,13 +3,66 @@
 //! `#[cfg(test)]` module per AGENTS.md.
 
 use caduceus::worker_supervisor::{
-    clear_heartbeat, decode_frame, encode_frame, open_transcript,
+    clear_heartbeat, decide_deadline_kill, decode_frame, encode_frame, open_transcript,
     parse_starttime_from_stat_for_tests, read_heartbeat, read_proc_starttime, truncate_transcript,
-    verify_identity, write_heartbeat, BoundedTranscriptWriter, ControlFrame, WorkerRunPaths,
-    MAX_FRAME_BYTES,
+    verify_identity, write_heartbeat, BoundedTranscriptWriter, ControlFrame, DeadlineKillDecision,
+    ProcessIdentity, WorkerRunPaths, MAX_FRAME_BYTES,
 };
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
+
+#[derive(Default)]
+struct FakeIdentity {
+    verify_result: bool,
+}
+
+impl ProcessIdentity for FakeIdentity {
+    fn start_ticks(&self, _pid: i32) -> Option<u64> {
+        None
+    }
+
+    fn is_alive(&self, _pid: i32) -> bool {
+        false
+    }
+
+    fn verify(&self, _pid: i32, _expected_start_ticks: u64) -> bool {
+        self.verify_result
+    }
+}
+
+#[test]
+fn pgid_recycled_suppresses_signal() {
+    let identity = FakeIdentity {
+        verify_result: false,
+    };
+
+    assert_eq!(
+        decide_deadline_kill(&identity, Some(1234), Some(999)),
+        DeadlineKillDecision::Suppress
+    );
+}
+
+#[test]
+fn verify_true_signals_on_deadline() {
+    let identity = FakeIdentity {
+        verify_result: true,
+    };
+
+    assert_eq!(
+        decide_deadline_kill(&identity, Some(1234), Some(999)),
+        DeadlineKillDecision::Signal
+    );
+}
+
+#[test]
+fn best_effort_when_no_ready() {
+    let identity = FakeIdentity::default();
+
+    assert_eq!(
+        decide_deadline_kill(&identity, None, None),
+        DeadlineKillDecision::BestEffort
+    );
+}
 
 #[test]
 fn frame_round_trip() {

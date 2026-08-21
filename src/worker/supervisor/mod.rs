@@ -77,3 +77,6 @@ pub use process_lifecycle::*;
 // tests can assert the field-22 contract without owning a runtime.
 #[doc(hidden)]
 pub use self::process_lifecycle::parse_starttime_from_stat_for_tests;
+
+#[doc(hidden)]
+pub use self::process_lifecycle::{decide_deadline_kill, DeadlineKillDecision};
