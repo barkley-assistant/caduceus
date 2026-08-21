@@ -35,6 +35,31 @@ pub trait ProcessIdentity: Sync {
     fn verify(&self, pid: i32, expected_start_ticks: u64) -> bool;
 }
 
+/// Result of checking the worker identity before a deadline kill.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DeadlineKillDecision {
+    Signal,
+    Suppress,
+    BestEffort,
+}
+
+/// Decide whether a deadline-kill signal is safe to send.
+#[doc(hidden)]
+pub fn decide_deadline_kill(
+    identity: &dyn ProcessIdentity,
+    pgid: Option<i32>,
+    expected: Option<u64>,
+) -> DeadlineKillDecision {
+    match (pgid, expected) {
+        (Some(pgid), Some(expected)) if identity.verify(pgid, expected) => {
+            DeadlineKillDecision::Signal
+        }
+        (Some(_), Some(_)) => DeadlineKillDecision::Suppress,
+        _ => DeadlineKillDecision::BestEffort,
+    }
+}
+
 /// Process-tree operations used by the supervisor and reaper.
 pub trait ProcessTree: Sync {
     fn adopt_subtree(&self, root: i32) -> std::io::Result<()>;
@@ -135,14 +160,12 @@ impl ProcessIdentity for MacOsProcessIdentity {
     }
 
     fn start_ticks(&self, pid: i32) -> Option<u64> {
-        // These are microseconds since the Unix epoch. Units are never
-        // cross-compared: process_start_identity pairs each platform's ticks
-        // with its own boot epoch, and identity strings are only compared for
-        // equality on the same machine. `proc_bsdinfo` exposes no finer
-        // resolution, so the microsecond collision question remains a
-        // reviewer-visible trade-off rather than changing this identity unit.
-        self.read_proc_bsdinfo(pid)
-            .map(|info| info.pbi_start_tv_sec as u64 * 1_000_000 + info.pbi_start_tv_usec as u64)
+        // Encode the timeval as nanoseconds. The source timestamp is only
+        // microsecond-precise, so the lowest three digits are always zero.
+        // Same-stamp collisions are not tie-broken by PID in this change.
+        self.read_proc_bsdinfo(pid).map(|info| {
+            info.pbi_start_tv_sec as u64 * 1_000_000_000 + info.pbi_start_tv_usec as u64 * 1_000
+        })
     }
 
     fn verify(&self, pid: i32, expected_start_ticks: u64) -> bool {
