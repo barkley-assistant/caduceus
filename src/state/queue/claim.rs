@@ -67,7 +67,7 @@ pub(crate) fn acquire_next_locked(
             key: entry.key.clone(),
             run_id: run_id.to_string(),
             pid,
-            process_start_identity: process_start_identity(pid),
+            process_start_identity: process_start_identity(&store.state_dir(), pid),
             started_at: now,
             worktree_path: None,
         };

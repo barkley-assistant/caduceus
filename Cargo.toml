@@ -43,7 +43,7 @@ hex = "0.4"
 filetime = "0.2"
 walkdir = "2"
 libc = "0.2"
-nix = { version = "0.29", default-features = false, features = ["feature", "fs", "process", "signal"] }
+nix = { version = "0.29", default-features = false, features = ["feature", "fs", "process", "signal", "time"] }
 rusqlite = { version = "0.40", default-features = false, features = ["bundled"] }
 uuid = { version = "1", features = ["v4"] }
 tar = "0.4.46"
@@ -358,6 +358,10 @@ path = "tests/state/queue_reset_cli_test.rs"
 [[test]]
 name = "reaper_test"
 path = "tests/state/reaper_test.rs"
+
+[[test]]
+name = "identity_test"
+path = "tests/state/identity_test.rs"
 
 [[test]]
 name = "reconcile_side_effects_test"
