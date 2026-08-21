@@ -23,6 +23,104 @@ pub const PROTOCOL_VERSION: u32 = 1;
 /// on every Unix we support while leaving room for the
 /// envelope.
 pub const MAX_FRAME_BYTES: usize = 64 * 1024;
+
+/// Process identity operations used to distinguish a live process from a
+/// recycled PID.
+pub trait ProcessIdentity: Sync {
+    fn start_ticks(&self, pid: i32) -> Option<u64>;
+    fn is_alive(&self, pid: i32) -> bool;
+    fn verify(&self, pid: i32, expected_start_ticks: u64) -> bool;
+}
+
+/// Process-tree operations used by the supervisor and reaper.
+pub trait ProcessTree: Sync {
+    fn adopt_subtree(&self, root: i32) -> std::io::Result<()>;
+    fn list_children(&self, ppid: i32) -> Vec<i32>;
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+pub struct LinuxProcessIdentity;
+
+#[cfg(target_os = "linux")]
+impl ProcessIdentity for LinuxProcessIdentity {
+    fn start_ticks(&self, pid: i32) -> Option<u64> {
+        read_proc_starttime_impl(pid)
+    }
+
+    fn is_alive(&self, pid: i32) -> bool {
+        pid > 0 && Path::new(&format!("/proc/{pid}")).exists()
+    }
+
+    fn verify(&self, pid: i32, expected_start_ticks: u64) -> bool {
+        read_proc_starttime_impl(pid) == Some(expected_start_ticks)
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+pub struct LinuxProcessTree;
+
+#[cfg(target_os = "linux")]
+impl ProcessTree for LinuxProcessTree {
+    fn adopt_subtree(&self, _root: i32) -> std::io::Result<()> {
+        nix::sys::prctl::set_child_subreaper(true)
+            .map_err(|err| std::io::Error::other(err.to_string()))
+    }
+
+    fn list_children(&self, ppid: i32) -> Vec<i32> {
+        collect_descendants(ppid)
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+#[derive(Debug)]
+pub struct StubProcessIdentity;
+
+#[cfg(not(target_os = "linux"))]
+impl ProcessIdentity for StubProcessIdentity {
+    fn start_ticks(&self, _pid: i32) -> Option<u64> {
+        None
+    }
+
+    fn is_alive(&self, _pid: i32) -> bool {
+        false
+    }
+
+    fn verify(&self, _pid: i32, _expected_start_ticks: u64) -> bool {
+        false
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+#[derive(Debug)]
+pub struct StubProcessTree;
+
+#[cfg(not(target_os = "linux"))]
+impl ProcessTree for StubProcessTree {
+    fn adopt_subtree(&self, _root: i32) -> std::io::Result<()> {
+        static WARNED: std::sync::Once = std::sync::Once::new();
+        WARNED.call_once(|| tracing::warn!("child subreaper is unavailable on this platform"));
+        Ok(())
+    }
+
+    fn list_children(&self, _ppid: i32) -> Vec<i32> {
+        Vec::new()
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub static IDENTITY: &dyn ProcessIdentity = &LinuxProcessIdentity;
+
+#[cfg(not(target_os = "linux"))]
+pub static IDENTITY: &dyn ProcessIdentity = &StubProcessIdentity;
+
+#[cfg(target_os = "linux")]
+pub static TREE: &dyn ProcessTree = &LinuxProcessTree;
+
+#[cfg(not(target_os = "linux"))]
+pub static TREE: &dyn ProcessTree = &StubProcessTree;
+
 // Subreaper + setsid + signal helpers (safe wrappers via nix)
 
 /// `setsid` the calling process into a new session.
@@ -109,14 +207,18 @@ pub fn parse_starttime_from_stat_for_tests(stat: &str) -> Option<u64> {
     parse_starttime_from_stat(stat)
 }
 
+#[cfg(target_os = "linux")]
+fn read_proc_starttime_impl(pid: i32) -> Option<u64> {
+    let body = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    parse_starttime_from_stat(&body)
+}
+
 /// Read process starttime in clock ticks from `/proc/<pid>/stat`,
 /// field 22.  Returns `None` if the process no longer exists or the
 /// stat file cannot be read.
 #[cfg(target_os = "linux")]
 pub fn read_proc_starttime(pid: i32) -> Option<u64> {
-    use std::fs;
-    let body = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    parse_starttime_from_stat(&body)
+    IDENTITY.start_ticks(pid)
 }
 
 /// Return `true` only when *pid* still refers to the same process
@@ -125,7 +227,7 @@ pub fn read_proc_starttime(pid: i32) -> Option<u64> {
 /// differs (PID reuse).
 #[cfg(target_os = "linux")]
 pub fn verify_identity(pid: i32, expected_starttime: u64) -> bool {
-    read_proc_starttime(pid) == Some(expected_starttime)
+    IDENTITY.verify(pid, expected_starttime)
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -165,6 +267,17 @@ pub fn kill_pgid(pgid: i32, signal: i32) {
         return;
     };
     let _ = killpg(Pid::from_raw(pgid), sig);
+}
+
+/// Translate the signal names used by the supervisor control protocol to
+/// their portable Unix signal numbers.
+#[cfg(unix)]
+pub fn signal_number_from_str(s: &str) -> Option<i32> {
+    match s {
+        "TERM" | "SIGTERM" => Some(15),
+        "KILL" | "SIGKILL" => Some(9),
+        _ => None,
+    }
 }
 
 // Hidden command dispatch + env construction
