@@ -53,8 +53,8 @@ pub struct ReapReport {
 ///
 /// `stale_run_hours` is the age above which a claim with a
 /// dead/mismatched process is reaped. The process identity is
-/// `(pid, /proc/<pid>/stat starttime)`; if either the pid is
-/// dead or the starttime has changed (pid reuse), the claim is
+/// `(pid, daemon UUID, boot epoch, start ticks)`; if either the pid is
+/// dead or the identity has changed (including pid reuse), the claim is
 /// stale even before the age threshold.
 pub async fn reap_stale_claims(
     state_dir: &Path,
@@ -203,7 +203,7 @@ pub async fn reap_stale_claims(
         // dead OR the start identity has changed (pid reuse).
         let recorded_pid_alive = IDENTITY.is_alive(body.pid as i32);
         let recorded_start_matches =
-            process_start_identity(body.pid) == body.process_start_identity;
+            process_start_identity(state_dir, body.pid) == body.process_start_identity;
         if recorded_pid_alive && recorded_start_matches {
             // Live worker — the claim is valid even if it
             // has been running longer than the threshold.

@@ -33,9 +33,18 @@
 //! claim-unlink failure at the tail of a transition is reported to
 //! the caller but does not roll back the durable phase change — the
 //! reaper cleans up orphaned claims idempotently.
+//!
+//! ## Process identity and reboot recovery
+//!
+//! Claim identities use a persistent daemon UUID plus a platform boot epoch
+//! and per-process start ticks. Consequently, pre-reboot claims are now
+//! distinguishable by `(uuid-mismatch OR epoch-mismatch)`, the same shape as
+//! a daemon crash-loop. The reaper still reaps them by process liveness and
+//! age. See the [State-Recovery wiki page] for operator recovery guidance.
+//!
+//! [State-Recovery wiki page]: https://github.com/barkley-assistant/caduceus/wiki/State-Recovery
 
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
@@ -321,32 +330,6 @@ pub struct ClaimFileBody {
     pub worktree_path: Option<PathBuf>,
 }
 
-fn process_start_identity(pid: u32) -> String {
-    // Best-effort composite; on Linux combine boot id + /proc start
-    // ticks. The reaper re-validates identity before trusting a
-    // claim, so an empty/fallback value is acceptable here as long
-    // as we surface what we have.
-    let boot = read_boot_id().unwrap_or_else(|| "<unknown-boot>".to_string());
-    let start = read_proc_start_ticks(pid).unwrap_or(0u64);
-    format!("{boot}:{start}")
-}
-
-fn read_boot_id() -> Option<String> {
-    let body = fs::read_to_string("/proc/sys/kernel/random/boot_id").ok()?;
-    Some(body.trim().to_string())
-}
-
-fn read_proc_start_ticks(pid: u32) -> Option<u64> {
-    // Field 22 of /proc/<pid>/stat is starttime in clock ticks.
-    let body = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let after_paren = body.rsplit_once(')')?.1;
-    let fields: Vec<&str> = after_paren.split_whitespace().collect();
-    // (state) consumes fields 1-2; field index 21 (0-based after the
-    // closing paren) maps to starttime.
-    let starttime = fields.get(20).copied()?;
-    starttime.parse::<u64>().ok()
-}
-
 /// Parse + validate a queue file from text. The function is the
 /// canonical reader; production code that loads from disk calls
 /// this after reading the file. Tests drive it directly so they
@@ -421,6 +404,9 @@ pub struct StateStore {
 
 // Submodule declarations and re-exports. The public surface keeps
 // version constants, model types, and `StateStore` at `crate::state::queue::*`.
+
+mod identity;
+pub(crate) use identity::process_start_identity;
 
 pub mod claim;
 pub mod daemon_lock;
