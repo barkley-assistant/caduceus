@@ -590,3 +590,15 @@ path = "tests/daemon/orchestration_active_run_inline_test.rs"
 [[test]]
 name = "idle304_integration_test"
 path = "tests/daemon/idle304_integration_test.rs"
+
+[[test]]
+name = "process_identity_test"
+path = "tests/worker/process_identity_test.rs"
+
+[[test]]
+name = "process_tree_test"
+path = "tests/worker/process_tree_test.rs"
+
+[[test]]
+name = "kill_pid_kill_pgid_test"
+path = "tests/worker/kill_pid_kill_pgid_test.rs"

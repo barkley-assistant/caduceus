@@ -86,7 +86,8 @@ fn run_supervisor_mode() -> CaduceusResult<()> {
     use std::path::PathBuf;
 
     use caduceus::worker_supervisor::{
-        detach_session, encode_frame, BoundedTranscriptWriter, ControlFrame,
+        detach_session, encode_frame, kill_pgid, kill_pid, signal_number_from_str,
+        BoundedTranscriptWriter, ControlFrame, TREE,
     };
 
     let mut args = std::env::args_os().skip(1);
@@ -177,14 +178,10 @@ fn run_supervisor_mode() -> CaduceusResult<()> {
         });
     }
 
-    // Linux: enable the child subreaper so a grandchild that
-    // calls `setsid` is still reaped by us. Non-fatal on
-    // failure; the worker-session kill path still works.
-    #[cfg(target_os = "linux")]
-    {
-        if let Err(err) = nix::sys::prctl::set_child_subreaper(true) {
-            tracing::warn!(error = %err, "could not enable child subreaper");
-        }
+    // Enable the child subreaper where the platform supports it. Non-fatal
+    // on failure; the worker-session kill path still works.
+    if let Err(err) = TREE.adopt_subtree(std::process::id() as i32) {
+        tracing::warn!(error = %err, "could not enable child subreaper");
     }
     let _ = heartbeat_path;
 
@@ -354,12 +351,11 @@ fn run_supervisor_mode() -> CaduceusResult<()> {
         // PID directly in case the process group is empty (worker has
         // already exec'd or the group is otherwise unreachable).
         let send_signal = |signal: &str| {
-            let _ = std::process::Command::new("/bin/sh")
-                .arg("-c")
-                .arg(format!(
-                    "kill -{signal} -{pgid_for_kill} 2>/dev/null; kill -{signal} {child_id} 2>/dev/null"
-                ))
-                .output();
+            let Some(signal_number) = signal_number_from_str(signal) else {
+                return;
+            };
+            kill_pgid(pgid_for_kill, signal_number);
+            kill_pid(child_id as i32, signal_number);
         };
         loop {
             // `read_frame_sync` validates the length before allocating
