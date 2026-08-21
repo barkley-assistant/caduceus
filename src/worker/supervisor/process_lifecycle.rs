@@ -1,6 +1,9 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+#[cfg(target_os = "macos")]
+use libc::{c_int, c_uint, c_void};
+
 use crate::github::issue::IssueKey;
 use crate::infra::error::{CaduceusError, CaduceusResult};
 
@@ -38,6 +41,115 @@ pub trait ProcessTree: Sync {
     fn list_children(&self, ppid: i32) -> Vec<i32>;
 }
 
+#[cfg(target_os = "macos")]
+const PROC_PIDTBSDINFO: c_int = 3;
+
+#[cfg(target_os = "macos")]
+#[allow(non_camel_case_types, dead_code)]
+#[repr(C)]
+pub(crate) struct proc_bsdinfo {
+    pub(crate) pbi_flags: c_uint,
+    pub(crate) pbi_status: c_uint,
+    pub(crate) pbi_xstatus: c_uint,
+    pub(crate) pbi_pid: c_uint,
+    pub(crate) pbi_ppid: c_uint,
+    pub(crate) pbi_uid: c_uint,
+    pub(crate) pbi_gid: c_uint,
+    pub(crate) pbi_ruid: c_uint,
+    pub(crate) pbi_rgid: c_uint,
+    pub(crate) pbi_svuid: c_uint,
+    pub(crate) pbi_svgid: c_uint,
+    pub(crate) rfu_1: c_uint,
+    pub(crate) pbi_comm: [c_uint; 4],
+    pub(crate) pbi_name: [c_uint; 8],
+    pub(crate) pbi_nfiles: c_uint,
+    pub(crate) pbi_pgid: c_uint,
+    pub(crate) pbi_pjobc: c_uint,
+    pub(crate) e_tdev: c_uint,
+    pub(crate) e_tpgid: c_uint,
+    pub(crate) pbi_nice: c_int,
+    pub(crate) pbi_start_tv_sec: u64,
+    pub(crate) pbi_start_tv_usec: u64,
+}
+
+#[cfg(target_os = "macos")]
+const _: () = assert!(std::mem::size_of::<proc_bsdinfo>() == 136);
+
+#[cfg(target_os = "macos")]
+#[derive(Debug)]
+pub struct MacOsProcessIdentity;
+
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+impl MacOsProcessIdentity {
+    fn read_proc_bsdinfo(&self, pid: i32) -> Option<proc_bsdinfo> {
+        extern "C" {
+            fn proc_pidinfo(
+                pid: c_int,
+                flavor: c_int,
+                arg: u64,
+                buffer: *mut c_void,
+                buffersize: c_int,
+            ) -> c_int;
+        }
+
+        let expected_size = std::mem::size_of::<proc_bsdinfo>() as c_int;
+        let mut info = std::mem::MaybeUninit::<proc_bsdinfo>::uninit();
+        let returned = unsafe {
+            proc_pidinfo(
+                pid,
+                PROC_PIDTBSDINFO,
+                0,
+                info.as_mut_ptr().cast(),
+                expected_size,
+            )
+        };
+        if returned != expected_size {
+            tracing::debug!(
+                pid,
+                returned,
+                expected = expected_size,
+                "proc_pidinfo(PROC_PIDTBSDINFO) returned an unexpected size"
+            );
+            return None;
+        }
+        if pid <= 0 {
+            return None;
+        }
+
+        Some(unsafe { info.assume_init() })
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+impl ProcessIdentity for MacOsProcessIdentity {
+    /// `proc_pidinfo` succeeds for zombies, so the reaper treats them as live
+    /// because the supervisor has not yet reaped them. PID recycling is
+    /// disambiguated by the `start_ticks` check rather than by treating
+    /// zombies as dead. The `pbi_status` field is intentionally not inspected;
+    /// the supervisor owns the wait and the reaper's zombie stance is to leave
+    /// the claim alone until that wait completes.
+    fn is_alive(&self, pid: i32) -> bool {
+        self.read_proc_bsdinfo(pid).is_some()
+    }
+
+    fn start_ticks(&self, pid: i32) -> Option<u64> {
+        // These are microseconds since the Unix epoch. Units are never
+        // cross-compared: process_start_identity pairs each platform's ticks
+        // with its own boot epoch, and identity strings are only compared for
+        // equality on the same machine. `proc_bsdinfo` exposes no finer
+        // resolution, so the microsecond collision question remains a
+        // reviewer-visible trade-off rather than changing this identity unit.
+        self.read_proc_bsdinfo(pid)
+            .map(|info| info.pbi_start_tv_sec as u64 * 1_000_000 + info.pbi_start_tv_usec as u64)
+    }
+
+    fn verify(&self, pid: i32, expected_start_ticks: u64) -> bool {
+        self.is_alive(pid) && self.start_ticks(pid) == Some(expected_start_ticks)
+    }
+}
+
 #[cfg(target_os = "linux")]
 #[derive(Debug)]
 pub struct LinuxProcessIdentity;
@@ -73,11 +185,11 @@ impl ProcessTree for LinuxProcessTree {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 #[derive(Debug)]
 pub struct StubProcessIdentity;
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 impl ProcessIdentity for StubProcessIdentity {
     fn start_ticks(&self, _pid: i32) -> Option<u64> {
         None
@@ -112,7 +224,10 @@ impl ProcessTree for StubProcessTree {
 #[cfg(target_os = "linux")]
 pub static IDENTITY: &dyn ProcessIdentity = &LinuxProcessIdentity;
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
+pub static IDENTITY: &dyn ProcessIdentity = &MacOsProcessIdentity;
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub static IDENTITY: &dyn ProcessIdentity = &StubProcessIdentity;
 
 #[cfg(target_os = "linux")]
