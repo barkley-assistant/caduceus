@@ -310,30 +310,30 @@ exit 0
     }
 }
 
-// 3.3 — Identity check: verify_identity and read_proc_starttime
-//       (identity-reuse protection)
+// 3.3 — Identity check: PID-reuse protection via the identity seam
+//       (IDENTITY abstracts /proc on linux and proc_pidinfo on macos)
 
 #[test]
 fn test_identity_verify_helpers() {
     // A PID that definitely does not exist.
     assert!(
-        !worker_supervisor::verify_identity(999_999, 0),
+        !worker_supervisor::IDENTITY.verify(999_999, 0),
         "missing PID must fail verification"
     );
 
     // A PID that does exist (this test process).
     let my_pid = std::process::id() as i32;
-    let starttime = worker_supervisor::read_proc_starttime(my_pid);
+    let starttime = worker_supervisor::IDENTITY.start_ticks(my_pid);
     assert!(
         starttime.is_some(),
-        "read_proc_starttime for our own PID should be Some"
+        "start_ticks for our own PID should be Some"
     );
     let st = starttime.unwrap();
     assert!(st > 0, "starttime must be > 0");
 
     // Correct starttime → identity confirmed.
     assert!(
-        worker_supervisor::verify_identity(my_pid, st),
+        worker_supervisor::IDENTITY.verify(my_pid, st),
         "matching starttime must verify"
     );
 
