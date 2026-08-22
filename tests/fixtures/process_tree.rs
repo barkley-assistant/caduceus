@@ -21,12 +21,17 @@
 #![allow(dead_code)]
 
 use std::fs;
+#[cfg_attr(not(target_os = "linux"), allow(unused_imports))]
 use std::io::Write;
 use std::path::{Path, PathBuf};
+#[cfg_attr(not(target_os = "linux"), allow(unused_imports))]
 use std::process::{Command, Stdio};
+#[cfg_attr(not(target_os = "linux"), allow(unused_imports))]
 use std::time::{Duration, Instant};
 
+#[cfg_attr(not(target_os = "linux"), allow(unused_imports))]
 use nix::sys::signal::{kill, killpg, Signal};
+#[cfg_attr(not(target_os = "linux"), allow(unused_imports))]
 use nix::unistd::Pid;
 use tempfile::TempDir;
 
