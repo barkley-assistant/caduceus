@@ -13,7 +13,7 @@ use tokio::process::{Child, Command as TokioCommand};
 use crate::github::issue::IssueKey;
 use crate::infra::error::{CaduceusError, CaduceusResult};
 use crate::worker::supervisor::process_lifecycle::{
-    decide_deadline_kill, DeadlineKillDecision, IDENTITY,
+    decide_deadline_kill, kill_pid, signal_number_from_str, DeadlineKillDecision, IDENTITY, TREE,
 };
 
 // Public spawn orchestrator
@@ -232,6 +232,14 @@ pub(crate) async fn run_supervisor(
                             }
                         }
 
+                        // Reap descendants that setsid-ed out of the worker
+                        // group. Best-effort: kill_pid swallows errors.
+                        if let Some(worker_pgid) = worker_pgid {
+                            for pid in TREE.list_children(worker_pgid) {
+                                kill_pid(pid, signal_number_from_str("TERM").unwrap_or(15));
+                            }
+                        }
+
                         // Wait 2 s grace period then re-verify and KILL.
                         tokio::time::sleep(Duration::from_secs(2)).await;
 
@@ -249,6 +257,22 @@ pub(crate) async fn run_supervisor(
                                     &mut stdin,
                                     &ControlFrame::Terminate { force: true },
                                 ).await.ok();
+                            }
+                        }
+
+                        // Final reap: rediscover survivors and SIGKILL them.
+                        // Bounded so a runaway session cannot stall teardown.
+                        if let Some(worker_pgid) = worker_pgid {
+                            for _ in 0..3 {
+                                let remaining = TREE.list_children(worker_pgid);
+                                if remaining.is_empty() {
+                                    break;
+                                }
+                                let sig = signal_number_from_str("KILL").unwrap_or(9);
+                                for pid in remaining {
+                                    kill_pid(pid, sig);
+                                }
+                                tokio::time::sleep(Duration::from_millis(100)).await;
                             }
                         }
 

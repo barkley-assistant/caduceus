@@ -29,6 +29,15 @@
 //!   the original negative PGID plus every descendant, waits
 //!   two seconds, rediscovers, sends `SIGKILL`, and reaps
 //!   until no descendants remain.
+//!
+//! P5 records the wire-in-vs-delete decision: descendant reaping is wired into
+//! the production cleanup path on both Linux and macOS via `TREE.list_children`.
+//! On macOS the kernel has no subreaper analogue
+//! (`procctl(PROC_REAP_ACQUIRE)` is FreeBSD-only); POSIX process-group kill is
+//! the primary mechanism, and `proc_listchildpids`-based enumeration catches
+//! `setsid`-ed grandchildren as a best-effort safety net. Unsupported platforms
+//! fail at compile time rather than silently no-oping.
+//!
 //! * The supervisor only ever sees the cleared worker
 //!   environment — daemon credentials never appear in any
 //!   inherited descriptor or pipe frame.

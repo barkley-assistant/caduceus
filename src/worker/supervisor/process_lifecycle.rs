@@ -208,6 +208,55 @@ impl ProcessTree for LinuxProcessTree {
     }
 }
 
+#[cfg(target_os = "macos")]
+#[derive(Debug)]
+pub struct MacosProcessTree;
+
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+impl ProcessTree for MacosProcessTree {
+    fn adopt_subtree(&self, _root: i32) -> std::io::Result<()> {
+        static WARNED: std::sync::Once = std::sync::Once::new();
+        WARNED.call_once(|| tracing::warn!("child subreaper is unavailable on macOS"));
+        Ok(())
+    }
+
+    fn list_children(&self, ppid: i32) -> Vec<i32> {
+        extern "C" {
+            fn proc_listchildpids(
+                ppid: libc::pid_t,
+                buffer: *mut libc::c_int,
+                buffersize: libc::c_int,
+            ) -> libc::c_int;
+        }
+
+        if ppid <= 0 {
+            return Vec::new();
+        }
+
+        let mut cap: i32 = 64;
+        let max_cap: i32 = 16_384;
+        loop {
+            let mut buf: Vec<i32> = Vec::with_capacity(cap as usize);
+            let written = unsafe { proc_listchildpids(ppid, buf.as_mut_ptr().cast(), cap) };
+            if written < 0 {
+                return Vec::new();
+            }
+            if written < cap {
+                unsafe { buf.set_len(written as usize) };
+                return buf;
+            }
+            if cap >= max_cap {
+                // Cap reached — return what we have rather than loop unboundedly.
+                // Safety: the kernel wrote `written` ints into the uninitialised buffer.
+                unsafe { buf.set_len(written as usize) };
+                return buf;
+            }
+            cap = cap.saturating_mul(2).min(max_cap);
+        }
+    }
+}
+
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 #[derive(Debug)]
 pub struct StubProcessIdentity;
@@ -227,23 +276,6 @@ impl ProcessIdentity for StubProcessIdentity {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
-#[derive(Debug)]
-pub struct StubProcessTree;
-
-#[cfg(not(target_os = "linux"))]
-impl ProcessTree for StubProcessTree {
-    fn adopt_subtree(&self, _root: i32) -> std::io::Result<()> {
-        static WARNED: std::sync::Once = std::sync::Once::new();
-        WARNED.call_once(|| tracing::warn!("child subreaper is unavailable on this platform"));
-        Ok(())
-    }
-
-    fn list_children(&self, _ppid: i32) -> Vec<i32> {
-        Vec::new()
-    }
-}
-
 #[cfg(target_os = "linux")]
 pub static IDENTITY: &dyn ProcessIdentity = &LinuxProcessIdentity;
 
@@ -256,8 +288,8 @@ pub static IDENTITY: &dyn ProcessIdentity = &StubProcessIdentity;
 #[cfg(target_os = "linux")]
 pub static TREE: &dyn ProcessTree = &LinuxProcessTree;
 
-#[cfg(not(target_os = "linux"))]
-pub static TREE: &dyn ProcessTree = &StubProcessTree;
+#[cfg(target_os = "macos")]
+pub static TREE: &dyn ProcessTree = &MacosProcessTree;
 
 // Subreaper + setsid + signal helpers (safe wrappers via nix)
 
