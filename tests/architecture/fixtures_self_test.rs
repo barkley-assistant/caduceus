@@ -22,13 +22,15 @@ mod fixtures;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+#[cfg_attr(not(target_os = "linux"), allow(unused_imports))]
+use std::time::{Duration, Instant};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::json;
 
-use fixtures::{
-    CrashPoint, LocalOrigin, MockGitHub, ProcessTree, ReleaseBinary, RunSupervisorArgs,
-};
+#[cfg_attr(not(target_os = "linux"), allow(unused_imports))]
+use fixtures::{CrashPoint, ProcessTree};
+use fixtures::{LocalOrigin, MockGitHub, ReleaseBinary, RunSupervisorArgs};
 
 // -----------------------------------------------------------------------
 // AC-01: Require no network or production credentials
