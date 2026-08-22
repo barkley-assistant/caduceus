@@ -602,6 +602,39 @@ async fn create_reconciles_when_branch_and_path_belong_to_same_run_id() {
     assert_eq!(first.base_oid, second.base_oid);
 }
 
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn create_reconciles_on_macos_with_symlinked_temp_dir() {
+    // Regression: macOS resolves /var/folders/... -> /private/var/folders/...
+    // before printing in `git worktree list`. inspect_existing() must
+    // canonicalize both map keys and probes so same-run-id replay
+    // reconciles instead of tripping the foreign-collision guard.
+    // See: barkley-assistant/caduceus#60.
+    let owner = "octocat";
+    let repo = "Hello-World";
+    let root = tempdir("reconcile-symlinked-temp");
+    let bare = root.join("remote.git");
+    init_bare_repo(&bare);
+    let workdir = root.join("workdirs");
+    fs::create_dir_all(&workdir).unwrap();
+    let dest = workdir.join(owner).join(repo);
+    fs::create_dir_all(dest.parent().unwrap()).unwrap();
+    clone_into(&bare, &dest);
+
+    let cfg = config_for(&root, "https://api.github.com");
+    let runner = GitRunner::new(&cfg);
+    let info = info_for(&dest, "main");
+    let first = create_worktree(&cfg, &runner, &info, &key(owner, repo, 7), HAPPY_RUN_ID)
+        .await
+        .expect("first create");
+    let second = create_worktree(&cfg, &runner, &info, &key(owner, repo, 7), HAPPY_RUN_ID)
+        .await
+        .expect("second create must reconcile on macOS");
+    assert_eq!(first.path, second.path);
+    assert_eq!(first.branch_name, second.branch_name);
+    assert_eq!(first.base_oid, second.base_oid);
+}
+
 // Invalid run id
 
 #[tokio::test]
