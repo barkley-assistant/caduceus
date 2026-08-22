@@ -163,9 +163,8 @@ impl ProcessIdentity for MacOsProcessIdentity {
         // Encode the timeval as nanoseconds. The source timestamp is only
         // microsecond-precise, so the lowest three digits are always zero.
         // Same-stamp collisions are not tie-broken by PID in this change.
-        self.read_proc_bsdinfo(pid).map(|info| {
-            info.pbi_start_tv_sec as u64 * 1_000_000_000 + info.pbi_start_tv_usec as u64 * 1_000
-        })
+        self.read_proc_bsdinfo(pid)
+            .map(|info| info.pbi_start_tv_sec * 1_000_000_000 + info.pbi_start_tv_usec * 1_000)
     }
 
     fn verify(&self, pid: i32, expected_start_ticks: u64) -> bool {
@@ -342,6 +341,10 @@ pub fn collect_descendants(ppid: i32) -> Vec<i32> {
 }
 
 /// Best-effort parser for `/proc/<pid>/stat`.
+// Used by the linux `read_proc_starttime_impl` and `collect_descendants`
+// (also linux-gated); on macOS the parser is dead code but the symbol
+// stays for cfg-symmetry.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) fn parse_stat_parent(stat: &str) -> Option<i32> {
     let close = stat.rfind(')')?;
     let after = &stat[close + 1..];
