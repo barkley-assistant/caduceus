@@ -21,32 +21,39 @@ fn adopting_own_process_is_idempotent() {
 fn list_children_returns_direct_children() {
     use std::process::{Command, Stdio};
 
-    // `sleep 30 & sleep 30; wait` keeps two direct sleep children
-    // alive under the shell PID for the duration of the test.
-    let mut child = Command::new("sh")
-        .arg("-c")
-        .arg("sleep 30 & sleep 30; wait")
+    // Spawn two direct sleep children of this process. Keeping them as
+    // direct children (no intermediate shell) makes cleanup deterministic:
+    // kill+wait each and no orphan can reparent here to poison the
+    // own_process_has_no_children_at_test_start assertion.
+    let mut s1 = Command::new("sleep")
+        .arg("30")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .expect("spawn fixture shell");
-    let shell_pid = child.id() as i32;
+        .expect("spawn sleep child 1");
+    let mut s2 = Command::new("sleep")
+        .arg("30")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn sleep child 2");
+    let p1 = s1.id() as i32;
+    let p2 = s2.id() as i32;
 
-    // Let the shell exec the two sleeps so they appear as direct
-    // children. 50 ms is plenty for fork+exec on both platforms.
+    // Let both fully exec before enumerating.
     std::thread::sleep(std::time::Duration::from_millis(50));
 
-    let children = TREE.list_children(shell_pid);
-    assert_eq!(
-        children.len(),
-        2,
-        "expected two sleep children, got {children:?}"
+    let children = TREE.list_children(std::process::id() as i32);
+    assert!(
+        children.contains(&p1) && children.contains(&p2),
+        "expected both sleep children {p1},{p2}, got {children:?}"
     );
 
     // Ground-truth cross-check via pgrep where available.
     if let Ok(out) = Command::new("pgrep")
-        .args(["-P", &shell_pid.to_string()])
+        .args(["-P", &std::process::id().to_string()])
         .output()
     {
         if out.status.success() {
@@ -61,8 +68,10 @@ fn list_children_returns_direct_children() {
         }
     }
 
-    // Best-effort cleanup; ignore kill errors (the test may have
-    // raced a sleep exit).
-    let _ = child.kill();
-    let _ = child.wait();
+    // Deterministic cleanup: kill+wait each direct child. Nothing is
+    // orphaned, so no reparenting can race the sibling assertion.
+    let _ = s1.kill();
+    let _ = s1.wait();
+    let _ = s2.kill();
+    let _ = s2.wait();
 }
