@@ -241,9 +241,8 @@ fn supervisor_protocol_rejects_garbage_input() {
 #[test]
 fn supervisor_does_not_leak_worker_after_done() {
     // After the supervisor sends `Done`, no worker descendant
-    // from *this* test invocation should still be alive. We
-    // give every run a unique worker script path so the
-    // search is per-test, not per-suite.
+    // from *this* test invocation should still be alive. The
+    // subtree snapshot is scoped to this supervisor PID.
     let dir = tempdir("reap");
     let worktree = dir.join("wt");
     fs::create_dir_all(&worktree).expect("worktree");
@@ -263,28 +262,17 @@ exit 0
     fs::File::create(&heartbeat).expect("create heartbeat");
 
     let mut child = spawn_supervisor(&helper, &transcript, &heartbeat, &worktree, 30);
+    let sup_pid = child.id() as i32;
     let mut stdin = child.stdin.take().expect("stdin");
     let mut stdout = child.stdout.take().expect("stdout");
     let _ = read_frame(&mut stdout);
     let ack = encode_frame(&ControlFrame::Ack).expect("encode");
     stdin.write_all(&ack).expect("ack");
+    let pids = fixtures::snapshot_subtree(sup_pid, Duration::from_secs(5));
 
     let status = child.wait().expect("wait");
     assert!(status.success(), "supervisor should exit 0");
 
     std::thread::sleep(Duration::from_millis(500));
-    let entries = std::fs::read_dir("/proc").expect("read /proc");
-    let mut lingering = 0;
-    for entry in entries.flatten() {
-        let Ok(cmdline) = std::fs::read_to_string(entry.path().join("cmdline")) else {
-            continue;
-        };
-        if cmdline.contains("worker_reap_unique.sh") {
-            lingering += 1;
-        }
-    }
-    assert_eq!(
-        lingering, 0,
-        "worker_reap_unique.sh must not remain after supervisor Done (found {lingering})"
-    );
+    fixtures::assert_no_survivors(&pids);
 }

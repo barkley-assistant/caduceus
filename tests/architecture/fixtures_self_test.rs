@@ -28,6 +28,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::json;
 
+#[cfg(target_os = "linux")]
+use caduceus::worker::supervisor::process_lifecycle::IDENTITY;
 #[cfg_attr(not(target_os = "linux"), allow(unused_imports))]
 use fixtures::{CrashPoint, ProcessTree};
 use fixtures::{LocalOrigin, MockGitHub, ReleaseBinary, RunSupervisorArgs};
@@ -356,13 +358,13 @@ fn ac01_process_tree_spawns_observable_descendant() {
 
 /// Spawn a script that forks a long-lived background child and
 /// exits. The grandchild should survive the parent exit and be
-/// visible to the /proc walker.
+/// observable by its captured PID.
 #[cfg(target_os = "linux")]
 #[test]
 fn ac01_process_tree_detached_grandchild_survives_parent_exit() {
     let pt = ProcessTree::start("ac01-grandchild");
     let script = r#"#!/bin/bash
-(sleep 60 &)
+(sleep 60 & echo $! > grandchild.pid)
 sleep 2
 "#;
     let parent_pid = pt.spawn_detached_bash(script);
@@ -371,20 +373,23 @@ sleep 2
     // Wait for the parent bash to exit (sleeps 2s + small overhead)
     std::thread::sleep(Duration::from_secs(3));
 
-    // The grandchild (sleep 60) should still be alive.
-    // It may have been reparented to PID 1 or to the test process
-    // (since we set subreaper). We search /proc for any `sleep`
-    // process that was started after our test began.
-    let found = find_sleep_process();
+    // The script records the exact grandchild PID, so the assertion
+    // cannot match an unrelated sleep process on the host.
+    let grandchild_pid: i32 = fs::read_to_string(pt.workdir().join("grandchild.pid"))
+        .expect("grandchild pid file")
+        .trim()
+        .parse()
+        .expect("parse grandchild PID");
     assert!(
-        found,
-        "should find a sleep process as a detached grandchild"
+        IDENTITY.is_alive(grandchild_pid),
+        "detached grandchild PID {grandchild_pid} should survive"
     );
 
     // Clean up all sleep processes left over
     let _ = std::process::Command::new("pkill")
         .args(["-f", "sleep 60"])
         .status();
+    pt.kill_pid(grandchild_pid, nix::sys::signal::Signal::SIGKILL);
     let _ = std::process::Command::new("pkill")
         .args(["-f", "sleep 30"])
         .status();
@@ -410,7 +415,7 @@ fn ac01_process_tree_cleanup_leaves_no_descendants() {
         .args(["-f", "sleep 30"])
         .status();
 
-    // Reap the zombie so /proc no longer shows it
+    // Reap the zombie so the process-tree seam no longer lists it.
     pt.reap(pid);
 
     // Wait for it to die
@@ -643,31 +648,6 @@ fn ac04_release_binary_runs_with_no_user_secrets() {
 // -----------------------------------------------------------------------
 // Helpers
 // -----------------------------------------------------------------------
-
-/// Helper: search /proc for any `sleep` process.
-#[cfg(target_os = "linux")]
-fn find_sleep_process() -> bool {
-    let entries = match fs::read_dir("/proc") {
-        Ok(e) => e,
-        Err(_) => return false,
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-        let Ok(_pid) = name_str.parse::<i32>() else {
-            continue;
-        };
-        let cmdline_path = entry.path().join("cmdline");
-        let cmdline = match fs::read_to_string(&cmdline_path) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-        if cmdline.contains("sleep") {
-            return true;
-        }
-    }
-    false
-}
 
 fn tempdir(label: &str) -> PathBuf {
     let nonce = SystemTime::now()

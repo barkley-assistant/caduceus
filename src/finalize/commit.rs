@@ -115,20 +115,24 @@ pub fn commit_code_result(
         // worktree root. This catches symlink-escape attacks
         // that use absolute or `..` paths that resolve outside
         // the worktree (worker changes must stay inside the
-        // worktree).
+        // worktree). A non-existent path cannot be an escaping
+        // symlink (there is no symlink to escape through), so
+        // skip the check when the file does not exist on disk.
         let full_path = ctx.worktree.path.join(&entry.path);
-        let canonical_worktree =
-            std::fs::canonicalize(&ctx.worktree.path).unwrap_or_else(|_| ctx.worktree.path.clone());
-        let canonical_path =
-            std::fs::canonicalize(&full_path).unwrap_or_else(|_| full_path.clone());
-        if !canonical_path.starts_with(&canonical_worktree) {
-            return Err(CaduceusError::Worker {
-                context: "commit",
-                stderr: format!(
-                    "worker created an escaping symlink: {} resolves outside worktree",
-                    entry.path,
-                ),
-            });
+        if full_path.exists() {
+            let canonical_worktree = std::fs::canonicalize(&ctx.worktree.path)
+                .unwrap_or_else(|_| ctx.worktree.path.clone());
+            let canonical_path =
+                std::fs::canonicalize(&full_path).unwrap_or_else(|_| full_path.clone());
+            if !canonical_path.starts_with(&canonical_worktree) {
+                return Err(CaduceusError::Worker {
+                    context: "commit",
+                    stderr: format!(
+                        "worker created an escaping symlink: {} resolves outside worktree",
+                        entry.path,
+                    ),
+                });
+            }
         }
         // Also check the raw symlink target for direct `..` or
         // absolute targets (belt-and-braces on top of canonicalize).
