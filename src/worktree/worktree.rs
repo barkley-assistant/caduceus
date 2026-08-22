@@ -232,7 +232,9 @@ async fn create_locked(
         // re-entering with the same `run_id` (checkpoint resume after
         // a crash, or a redundant tick). The worktree and branch are
         // already correct; do not archive/remove/recreate.
-        if prior.path == worktree_path {
+        let canonical_current =
+            canonicalize_dir(worktree_path).unwrap_or_else(|_| worktree_path.to_path_buf());
+        if prior.path == canonical_current {
             info!(
                 path = %worktree_path.display(),
                 branch = %branch_name,
@@ -481,20 +483,21 @@ async fn inspect_existing(
     // a prior attempt to be archived/removed/recreated. Otherwise it
     // is a genuine collision.
     if worktree_path.exists() {
-        if let Some(branch) = worktrees.get(worktree_path).cloned() {
+        let probe = canonicalize_dir(worktree_path).unwrap_or_else(|_| worktree_path.to_path_buf());
+        if let Some(branch) = worktrees.get(&probe).cloned() {
             if branch.starts_with(&expected_prefix) {
                 pre.same_issue_prior_attempt = Some(PriorAttempt {
-                    path: worktree_path.to_path_buf(),
+                    path: probe.clone(),
                     branch,
                 });
             } else {
-                pre.foreign_worktree_dir = Some(worktree_path.to_path_buf());
+                pre.foreign_worktree_dir = Some(probe.clone());
             }
         } else {
             // A stray non-worktree directory at the target path.
             // This is a collision because the daemon never creates
             // directories through non-git means.
-            pre.foreign_worktree_dir = Some(worktree_path.to_path_buf());
+            pre.foreign_worktree_dir = Some(probe);
         }
     }
 
@@ -522,15 +525,19 @@ async fn inspect_existing(
             if p == worktree_path {
                 continue;
             }
-            if let Some(branch) = worktrees.get(&p).cloned() {
+            let probe = canonicalize_dir(&p).unwrap_or_else(|_| p.clone());
+            if let Some(branch) = worktrees.get(&probe).cloned() {
                 if branch.starts_with(&expected_prefix) {
                     if pre.same_issue_prior_attempt.is_none() {
-                        pre.same_issue_prior_attempt = Some(PriorAttempt { path: p, branch });
+                        pre.same_issue_prior_attempt = Some(PriorAttempt {
+                            path: probe.clone(),
+                            branch,
+                        });
                     }
                     continue;
                 }
             }
-            pre.foreign_worktree_dir = Some(p);
+            pre.foreign_worktree_dir = Some(probe);
             break;
         }
     }
@@ -566,12 +573,17 @@ async fn git_worktree_list(
             current_branch = Some(rest.trim().trim_start_matches("refs/heads/").to_string());
         } else if line.is_empty() {
             if let (Some(p), Some(b)) = (current_path.take(), current_branch.take()) {
-                map.insert(PathBuf::from(p), b);
+                // Parse-side normalization mirrors the GC family for macOS /var/folders.
+                let canonical =
+                    canonicalize_dir(&PathBuf::from(&p)).unwrap_or_else(|_| PathBuf::from(&p));
+                map.insert(canonical, b);
             }
         }
     }
     if let (Some(p), Some(b)) = (current_path.take(), current_branch.take()) {
-        map.insert(PathBuf::from(p), b);
+        // Parse-side normalization mirrors the GC family for macOS /var/folders.
+        let canonical = canonicalize_dir(&PathBuf::from(&p)).unwrap_or_else(|_| PathBuf::from(&p));
+        map.insert(canonical, b);
     }
     Ok(map)
 }
