@@ -1,0 +1,90 @@
+# macOS CI gate for the Caduceus v1.0 portability plan.
+#
+# Companion to ci.yml: same Rust + Python gate, but on macos-latest
+# so portability regressions surface in PR review instead of after
+# merge. The Linux runner cannot cross-compile x86_64-apple-darwin
+# because rusqlite (bundled C) and rustls (C deps) need a darwin C
+# cross-toolchain, which rustup does not provide. macOS runners are
+# free for public repos; cost is zero for this project.
+#
+# Mirrors ci.yml structure (actions/cache@v4 keyed on Cargo.lock,
+# configure git identity for tests, timeout-minutes: 30 job, 15-min
+# test step). Path filter keeps macOS runner-minute burn low — only
+# Rust crate or this workflow file changes fire the runner.
+#
+# GITHUB_TOKEN is unset for the test step so the
+# `with_config_falls_back_to_none_when_env_var_dropped` case in
+# token_resolution_test runs hermetically (the GH Actions runner's
+# auto-injected GITHUB_TOKEN would otherwise leak through
+# src/infra/config/token.rs).
+#
+# Required-check name: macos / test
+name: macos
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/macos.yml'
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/macos.yml'
+
+# Cancel in-progress runs on the same ref so a force-push does
+# not leave a stale runner burning macOS minutes.
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: install stable Rust 1.97
+        run: |
+          set -euo pipefail
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain 1.97 --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          rustup component add rustfmt clippy
+      - name: cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-macos-stable-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-macos-stable-
+      - name: configure git identity for tests
+        run: |
+          set -euo pipefail
+          git config --global user.email "ci@caduceus.local"
+          git config --global user.name "caduceus-ci"
+      - name: fmt
+        run: cargo fmt --check
+      - name: clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: build
+        run: cargo build --locked
+      - name: test
+        # hermes_lifecycle tests (ac04/ac06/ac07/ac08) each shell out
+        # to `hermes caduceus setup` which takes 2-3 minutes to
+        # compile the release binary; allow 15 min for the test
+        # step on macOS just like ci.yml.
+        timeout-minutes: 15
+        run: env -u GITHUB_TOKEN cargo test --locked --all-targets
