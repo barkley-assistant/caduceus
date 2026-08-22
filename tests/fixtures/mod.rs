@@ -45,7 +45,7 @@ pub use git_origin::LocalOrigin;
 pub use github::{Counts, MockGitHub};
 #[cfg(test)]
 #[allow(unused_imports)]
-pub use process_tree::ProcessTree;
+pub use process_tree::{assert_no_survivors, snapshot_subtree, ProcessTree};
 #[cfg(test)]
 #[allow(unused_imports)]
 pub use release_binary::{ReleaseBinary, RunSupervisorArgs};

@@ -396,7 +396,6 @@ fn _claim_token_is_compatible(token: &ClaimToken) {
 
 #[cfg(target_os = "macos")]
 mod macos_tests {
-    use super::*;
     use caduceus::worker::supervisor::process_lifecycle::IDENTITY;
 
     #[test]

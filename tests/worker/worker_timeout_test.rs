@@ -121,12 +121,12 @@ fn make_nonblocking(child: &mut Child) -> std::process::ChildStdout {
 /// driver waits `timeout_seconds` for a DONE frame.  If none
 /// arrives, it sends TERM, waits a 2 s grace period, then sends
 /// KILL — exactly like the daemon's deadline-enforcement path.
-/// Returns the final `ControlFrame::Done` frame.
+/// Returns the final frame and the supervisor's worker subtree snapshot.
 fn drive_supervisor_with_timeout(
     helper: &Path,
     worktree: &Path,
     timeout_seconds: u64,
-) -> ControlFrame {
+) -> (ControlFrame, Vec<i32>) {
     let exe = fixtures::ReleaseBinary::locate();
     let dir = worktree.parent().expect("parent");
     let transcript = dir.join("t.log");
@@ -166,6 +166,8 @@ fn drive_supervisor_with_timeout(
     let ack = worker_supervisor::encode_frame(&ControlFrame::Ack).expect("encode");
     stdin.write_all(&ack).expect("ack write");
     stdin.flush().ok();
+    let sup_pid = child.id() as i32;
+    let worker_pids = fixtures::snapshot_subtree(sup_pid, Duration::from_secs(5));
 
     // Wait for DONE with a deadline.  If the worker doesn't exit
     // before `timeout_seconds`, send TERM → 2 s grace → KILL.
@@ -232,7 +234,7 @@ fn drive_supervisor_with_timeout(
 
     let done = done.expect("supervisor should send Done");
     let _ = child.wait();
-    done
+    (done, worker_pids)
 }
 
 // 3.1 — Timeout fires → TERM→KILL→reap (AC-01, AC-02)
@@ -254,7 +256,7 @@ while :; do sleep 1; done
     fs::create_dir_all(&worktree).expect("worktree");
 
     let start = Instant::now();
-    let done = drive_supervisor_with_timeout(&helper, &worktree, 2);
+    let (done, worker_pids) = drive_supervisor_with_timeout(&helper, &worktree, 2);
     let elapsed = start.elapsed();
     eprintln!("test_timeout_fires_term_kill_reap: done={done:?} elapsed={elapsed:.1?}");
 
@@ -277,7 +279,7 @@ while :; do sleep 1; done
     }
 
     // Confirm no survivor process.
-    tree.assert_no_process_by_name("worker_helper_31");
+    fixtures::assert_no_survivors(&worker_pids);
 }
 
 // 3.2 — Timeout races normal exit (AC-01)
@@ -297,7 +299,7 @@ exit 0
     let worktree = tree.workdir().join("wt");
     fs::create_dir_all(&worktree).expect("worktree");
 
-    let done = drive_supervisor_with_timeout(&helper, &worktree, 10);
+    let (done, _) = drive_supervisor_with_timeout(&helper, &worktree, 10);
 
     match done {
         ControlFrame::Done {
@@ -362,7 +364,7 @@ while :; do sleep 1; done
     let worktree = tree.workdir().join("wt");
     fs::create_dir_all(&worktree).expect("worktree");
 
-    let done = drive_supervisor_with_timeout(&helper, &worktree, 2);
+    let (done, worker_pids) = drive_supervisor_with_timeout(&helper, &worktree, 2);
     eprintln!("test_timeout_kills_grandchild: done={done:?}");
 
     match done {
@@ -377,7 +379,7 @@ while :; do sleep 1; done
     }
 
     // Confirm no survivor.
-    tree.assert_no_process_by_name("worker_helper_34");
+    fixtures::assert_no_survivors(&worker_pids);
 }
 
 // 3.5 — supervise returns within timeout+grace (AC-05)
@@ -397,7 +399,7 @@ while :; do sleep 1; done
     fs::create_dir_all(&worktree).expect("worktree");
 
     let start = Instant::now();
-    let done = drive_supervisor_with_timeout(&helper, &worktree, 2);
+    let (done, _) = drive_supervisor_with_timeout(&helper, &worktree, 2);
     let elapsed = start.elapsed();
 
     assert!(

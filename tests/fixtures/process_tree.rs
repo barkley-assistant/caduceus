@@ -2,31 +2,39 @@
 //!
 //! Provides a [`ProcessTree`] helper that creates a temp directory,
 //! optionally sets the subreaper flag, spawns shell scripts in
-//! detached process groups, enumerates descendants from `/proc`,
-//! and sends signals to PIDs and process groups. All OS-specific
-//! methods are gated on `#[cfg(target_os = "linux")]`; non-Linux
-//! platforms receive empty stubs so the fixture compiles
-//! everywhere.
+//! detached process groups, enumerates descendants through the
+//! production process-tree seam, and sends signals to PIDs and
+//! process groups. Linux and macOS use the production seam;
+//! unsupported platforms receive empty stubs so the fixture
+//! compiles everywhere.
 //!
 //! The contract surface from `CONTRACTS.md`:
 //!
 //! * **CI-002** — fixtures MUST be hermetic and MUST NOT
 //!   require production credentials. `ProcessTree` never reads
 //!   a token, never touches a network interface, and asserts
-//!   only on procfs entries that are local to the test host.
+//!   only on local process state exposed by the production seams.
 //! * **CI-004** — the supervisor's descendant reaping relies on
-//!   `prctl(PR_SET_CHILD_SUBREAPER)` + `/proc` enumeration, and
-//!   `ProcessTree` is the fixture that exercises it.
+//!   `prctl(PR_SET_CHILD_SUBREAPER)` plus the process-tree seam,
+//!   and `ProcessTree` is the fixture that exercises it.
 
 #![allow(dead_code)]
 
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    allow(unused_imports)
+)]
+use std::collections::{HashSet, VecDeque};
 use std::fs;
 #[cfg_attr(not(target_os = "linux"), allow(unused_imports))]
 use std::io::Write;
 use std::path::{Path, PathBuf};
 #[cfg_attr(not(target_os = "linux"), allow(unused_imports))]
 use std::process::{Command, Stdio};
-#[cfg_attr(not(target_os = "linux"), allow(unused_imports))]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    allow(unused_imports)
+)]
 use std::time::{Duration, Instant};
 
 #[cfg_attr(not(target_os = "linux"), allow(unused_imports))]
@@ -35,10 +43,13 @@ use nix::sys::signal::{kill, killpg, Signal};
 use nix::unistd::Pid;
 use tempfile::TempDir;
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use caduceus::worker::supervisor::process_lifecycle::{IDENTITY, TREE};
+
 /// Owns a temporary directory with helpers for spawning, observing,
 /// and killing process trees. Every test that exercises the
-/// supervisor's /proc descendant walker or the process-group kill
-/// path should use this fixture.
+/// supervisor's descendant-reaping or process-group kill path
+/// should use this fixture.
 pub struct ProcessTree {
     _dir: TempDir,
     workdir: PathBuf,
@@ -48,7 +59,8 @@ impl ProcessTree {
     /// Create a new `ProcessTree` under a unique tempdir with the
     /// given `label`. On Linux, also calls
     /// `prctl(PR_SET_CHILD_SUBREAPER, true)` in the test process so
-    /// that orphaned descendants are visible to the `/proc` walker.
+    /// that orphaned descendants are visible to the process-tree
+    /// seam.
     ///
     /// The subreaper call is best-effort — failure is deliberately
     /// swallowed so the fixture works inside containers that may
@@ -126,15 +138,14 @@ impl ProcessTree {
         -1
     }
 
-    /// Walk `/proc` and return the PIDs of every direct child of
-    /// `ppid`. Uses the same `parse_stat_parent` logic as the
-    /// production supervisor's `collect_descendants`.
-    #[cfg(target_os = "linux")]
+    /// Return the PIDs of every direct child of `ppid` through the
+    /// production process-tree seam.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub fn descendants(&self, ppid: i32) -> Vec<i32> {
-        collect_descendants(ppid)
+        TREE.list_children(ppid)
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     pub fn descendants(&self, _ppid: i32) -> Vec<i32> {
         Vec::new()
     }
@@ -183,97 +194,73 @@ impl ProcessTree {
 
     #[cfg(not(target_os = "linux"))]
     pub fn kill_pid(&self, _pid: i32, _signal: Signal) {}
+}
 
-    /// Poll `/proc/<pid>/cmdline` for up to 5 seconds, searching
-    /// for a process whose `cmdline` contains `name`. If any such
-    /// process is found, `assert!` fails.
-    #[cfg(target_os = "linux")]
-    pub fn assert_no_process_by_name(&self, name: &str) {
+/// Poll for a direct child of `root`, then return a snapshot of its
+/// complete descendant subtree through the production process-tree
+/// seam. A missing child is a test failure rather than an empty
+/// assertion that could pass vacuously.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub fn snapshot_subtree(root: i32, timeout: Duration) -> Vec<i32> {
+    let deadline = Instant::now() + timeout;
+    let mut direct_children = TREE.list_children(root);
+    while direct_children.is_empty() {
+        if Instant::now() >= deadline {
+            panic!("no child appeared under process {root} before the deadline");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+        direct_children = TREE.list_children(root);
+    }
+
+    // Give a just-forked grandchild the same settle window used by
+    // the process-tree tests before walking the rest of the subtree.
+    std::thread::sleep(Duration::from_millis(50));
+
+    let mut pids = Vec::new();
+    let mut queue = VecDeque::new();
+    let mut seen = HashSet::from([root]);
+    for pid in direct_children {
+        if seen.insert(pid) {
+            pids.push(pid);
+            queue.push_back(pid);
+        }
+    }
+
+    while let Some(ppid) = queue.pop_front() {
+        for pid in TREE.list_children(ppid) {
+            if seen.insert(pid) {
+                pids.push(pid);
+                queue.push_back(pid);
+            }
+        }
+    }
+
+    pids
+}
+
+/// Assert that every PID in a previously captured subtree is no
+/// longer alive according to the production process-identity seam.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub fn assert_no_survivors(pids: &[i32]) {
+    for &pid in pids {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            let found = find_process_cmdline(name);
-            if !found {
-                return;
+            // A killed grandchild can remain as a zombie under the
+            // test process's subreaper until it is explicitly waited
+            // on. Reap only captured children; a non-child is harmless.
+            let _ = nix::sys::wait::waitpid(
+                Pid::from_raw(pid),
+                Some(nix::sys::wait::WaitPidFlag::WNOHANG),
+            );
+            if !IDENTITY.is_alive(pid) {
+                break;
             }
             if Instant::now() >= deadline {
-                panic!("assert_no_process_by_name: '{name}' still found after 5s");
+                panic!("process PID {pid} survived supervisor cleanup");
             }
-            std::thread::sleep(Duration::from_millis(200));
+            std::thread::sleep(Duration::from_millis(50));
         }
     }
-
-    #[cfg(not(target_os = "linux"))]
-    pub fn assert_no_process_by_name(&self, _name: &str) {}
-}
-
-/// Walk `/proc` and check if any process's `cmdline` contains
-/// `name`. Returns `true` if at least one match was found.
-#[cfg(target_os = "linux")]
-fn find_process_cmdline(name: &str) -> bool {
-    let entries = match fs::read_dir("/proc") {
-        Ok(e) => e,
-        Err(_) => return false,
-    };
-    for entry in entries.flatten() {
-        let name_os = entry.file_name();
-        let name_str = name_os.to_string_lossy();
-        let Ok(_pid) = name_str.parse::<i32>() else {
-            continue;
-        };
-        let cmdline_path = entry.path().join("cmdline");
-        let cmdline = match fs::read_to_string(&cmdline_path) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-        if cmdline.contains(name) {
-            return true;
-        }
-    }
-    false
-}
-
-/// Walk `/proc` for every PID whose `stat` reports `ppid` as its
-/// parent. Mirrors the production `collect_descendants` in
-/// `src/worker_supervisor.rs`.
-#[cfg(target_os = "linux")]
-fn collect_descendants(ppid: i32) -> Vec<i32> {
-    let mut out = Vec::new();
-    let entries = match fs::read_dir("/proc") {
-        Ok(e) => e,
-        Err(_) => return out,
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        let Ok(pid) = name.parse::<i32>() else {
-            continue;
-        };
-        if pid == ppid {
-            continue;
-        }
-        let stat = match fs::read_to_string(entry.path().join("stat")) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-        if let Some(p) = parse_stat_parent(&stat) {
-            if p == ppid {
-                out.push(pid);
-            }
-        }
-    }
-    out
-}
-
-/// Best-effort parser for `/proc/<pid>/stat`. Returns the parent
-/// PID from the first call to `rfind(')')` + field 4.
-#[cfg(target_os = "linux")]
-fn parse_stat_parent(stat: &str) -> Option<i32> {
-    let close = stat.rfind(')')?;
-    let after = &stat[close + 1..];
-    let mut it = after.split_whitespace();
-    let _state = it.next()?;
-    let ppid = it.next()?.parse().ok()?;
-    Some(ppid)
 }
 
 /// Tiny nonce for script filenames.
