@@ -2,11 +2,13 @@
 //! (`src/worker/supervisor/dispatch.rs`). Moved out of the inline
 //! `#[cfg(test)]` module per AGENTS.md.
 
+#[cfg(target_os = "linux")]
+use caduceus::worker_supervisor::parse_starttime_from_stat_for_tests;
 use caduceus::worker_supervisor::{
     clear_heartbeat, decide_deadline_kill, decode_frame, encode_frame, open_transcript,
-    parse_starttime_from_stat_for_tests, read_heartbeat, read_proc_starttime, truncate_transcript,
-    verify_identity, write_heartbeat, BoundedTranscriptWriter, ControlFrame, DeadlineKillDecision,
-    ProcessIdentity, WorkerRunPaths, MAX_FRAME_BYTES,
+    read_heartbeat, read_proc_starttime, truncate_transcript, verify_identity, write_heartbeat,
+    BoundedTranscriptWriter, ControlFrame, DeadlineKillDecision, ProcessIdentity, WorkerRunPaths,
+    MAX_FRAME_BYTES,
 };
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;

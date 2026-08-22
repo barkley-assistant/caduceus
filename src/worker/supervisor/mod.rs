@@ -84,6 +84,7 @@ pub use process_lifecycle::*;
 
 // Test seam: re-export the synthetic-stat parser so integration
 // tests can assert the field-22 contract without owning a runtime.
+#[cfg(target_os = "linux")]
 #[doc(hidden)]
 pub use self::process_lifecycle::parse_starttime_from_stat_for_tests;
 
