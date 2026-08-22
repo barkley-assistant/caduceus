@@ -1,4 +1,6 @@
-use caduceus::worker_supervisor::{read_proc_starttime, IDENTITY};
+#[cfg_attr(not(target_os = "linux"), allow(unused_imports))]
+use caduceus::worker_supervisor::read_proc_starttime;
+use caduceus::worker_supervisor::IDENTITY;
 
 #[cfg(target_os = "macos")]
 #[test]

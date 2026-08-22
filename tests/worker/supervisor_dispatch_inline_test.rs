@@ -6,10 +6,11 @@
 use caduceus::worker_supervisor::parse_starttime_from_stat_for_tests;
 use caduceus::worker_supervisor::{
     clear_heartbeat, decide_deadline_kill, decode_frame, encode_frame, open_transcript,
-    read_heartbeat, read_proc_starttime, truncate_transcript, verify_identity, write_heartbeat,
-    BoundedTranscriptWriter, ControlFrame, DeadlineKillDecision, ProcessIdentity, WorkerRunPaths,
-    MAX_FRAME_BYTES,
+    read_heartbeat, truncate_transcript, write_heartbeat, BoundedTranscriptWriter, ControlFrame,
+    DeadlineKillDecision, ProcessIdentity, WorkerRunPaths, MAX_FRAME_BYTES,
 };
+#[cfg_attr(not(target_os = "linux"), allow(unused_imports))]
+use caduceus::worker_supervisor::{read_proc_starttime, verify_identity};
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 
