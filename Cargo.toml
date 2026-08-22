@@ -606,3 +606,7 @@ path = "tests/worker/process_tree_test.rs"
 [[test]]
 name = "kill_pid_kill_pgid_test"
 path = "tests/worker/kill_pid_kill_pgid_test.rs"
+
+[[test]]
+name = "open_no_follow_test"
+path = "tests/runtime/open_no_follow_test.rs"
