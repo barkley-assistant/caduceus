@@ -273,6 +273,39 @@ fn wait_with_timeout(
     }
 }
 
+/// Wait for the daemon to exit; on non-success, panic with the
+/// captured stdout+stderr so the failure is diagnosable in CI.
+fn wait_expect_success(
+    child: &mut std::process::Child,
+    deadline: Duration,
+    what: &str,
+) -> std::process::ExitStatus {
+    let status = wait_with_timeout(child, deadline);
+    assert!(
+        status.success(),
+        "{what} must exit 0; got {status:?}\n--- stdout ---\n{}\n--- stderr ---\n{}",
+        read_pipe_stdout(child.stdout.take()),
+        read_pipe_stderr(child.stderr.take()),
+    );
+    status
+}
+
+fn read_pipe_stdout(pipe: Option<std::process::ChildStdout>) -> String {
+    let mut buf = String::new();
+    if let Some(mut p) = pipe {
+        let _ = p.read_to_string(&mut buf);
+    }
+    buf
+}
+
+fn read_pipe_stderr(pipe: Option<std::process::ChildStderr>) -> String {
+    let mut buf = String::new();
+    if let Some(mut p) = pipe {
+        let _ = p.read_to_string(&mut buf);
+    }
+    buf
+}
+
 // ---------------------------------------------------------------------------
 // Golden-state assertion helpers.
 //
@@ -359,8 +392,7 @@ async fn test_scenario_1_cold_start_empty_queue() {
     state.seed_past_tick();
 
     let mut child = spawn_daemon(&state, &["run"]);
-    let status = wait_with_timeout(&mut child, Duration::from_secs(15));
-    assert!(status.success(), "cold start must exit 0; got {status:?}");
+    let status = wait_expect_success(&mut child, Duration::from_secs(15), "cold start");
 
     // No worker spawn → no `runs/` directory.
     assert!(
@@ -435,8 +467,7 @@ async fn test_scenario_2_single_issue_discovery_to_worker() {
     state.seed_past_tick();
 
     let mut child = spawn_daemon(&state, &["run"]);
-    let status = wait_with_timeout(&mut child, Duration::from_secs(15));
-    assert!(status.success(), "scenario 2 must exit 0; got {status:?}");
+    let status = wait_expect_success(&mut child, Duration::from_secs(15), "scenario 2");
 
     // The daemon's state_meta must record *some* tick outcome —
     // either the issue was processed, or the daemon reached
@@ -515,8 +546,7 @@ async fn test_scenario_3_two_issues_same_repo_serial() {
     state.seed_past_tick();
 
     let mut child = spawn_daemon(&state, &["run"]);
-    let status = wait_with_timeout(&mut child, Duration::from_secs(15));
-    assert!(status.success(), "scenario 3 must exit 0; got {status:?}");
+    let status = wait_expect_success(&mut child, Duration::from_secs(15), "scenario 3");
 
     let observed = serde_json::json!({
         "discovery_call": "ok",
@@ -560,8 +590,7 @@ async fn test_scenario_4_rate_limit_handling_and_retry() {
     state.seed_past_tick();
 
     let mut child = spawn_daemon(&state, &["run"]);
-    let status = wait_with_timeout(&mut child, Duration::from_secs(15));
-    assert!(status.success(), "scenario 4 must exit 0; got {status:?}");
+    let status = wait_expect_success(&mut child, Duration::from_secs(15), "scenario 4");
 
     let meta = state.read_meta();
     let obs = meta.rate_limit.expect("rate-limit observation persisted");
@@ -612,10 +641,10 @@ async fn test_scenario_5_concurrent_tick_exclusion() {
             .expect("open lock");
         fs2::FileExt::lock_exclusive(&lock_file).expect("flock");
         let mut child = spawn_daemon(&state, &["run"]);
-        let status = wait_with_timeout(&mut child, Duration::from_secs(15));
-        assert!(
-            status.success(),
-            "concurrent tick must exit 0 (SkippedConcurrent); got {status:?}"
+        let status = wait_expect_success(
+            &mut child,
+            Duration::from_secs(15),
+            "concurrent tick (SkippedConcurrent)",
         );
         // SkippedConcurrent short-circuits before the cadence
         // gate, so state_meta may not be written. The exit code
@@ -686,14 +715,7 @@ async fn test_scenario_6_worker_timeout_invocates_real_worker() {
     state.seed_past_tick();
 
     let mut child = spawn_daemon(&state, &["run"]);
-    let status = wait_with_timeout(&mut child, Duration::from_secs(15));
-    if !status.success() {
-        let mut err_buf = String::new();
-        if let Some(mut s) = child.stderr.take() {
-            let _ = s.read_to_string(&mut err_buf);
-        }
-        panic!("scenario 6 must exit 0; got {status:?}\n--- stderr ---\n{err_buf}");
-    }
+    let status = wait_expect_success(&mut child, Duration::from_secs(15), "scenario 6");
 
     let observed = serde_json::json!({
         "scenario": "worker_invocates_real_worker",
@@ -760,14 +782,7 @@ async fn test_scenario_7_finalization_awaiting_review_entry() {
     fs::write(state.state_dir.join("state.json"), body).expect("write state");
 
     let mut child = spawn_daemon(&state, &["run"]);
-    let status = wait_with_timeout(&mut child, Duration::from_secs(15));
-    if !status.success() {
-        let mut err_buf = String::new();
-        if let Some(mut s) = child.stderr.take() {
-            let _ = s.read_to_string(&mut err_buf);
-        }
-        panic!("scenario 7 must exit 0; got {status:?}\n--- stderr ---\n{err_buf}");
-    }
+    let status = wait_expect_success(&mut child, Duration::from_secs(15), "scenario 7");
 
     // Verify the queue entry survives the tick round-trip.
     let body = fs::read_to_string(state.state_dir.join("state.json")).expect("read state");
@@ -816,8 +831,7 @@ async fn test_scenario_8_dry_run_zero_mutations() {
     state.seed_recent_tick();
 
     let mut child = spawn_daemon(&state, &["run"]);
-    let status = wait_with_timeout(&mut child, Duration::from_secs(15));
-    assert!(status.success(), "dry-run must exit 0; got {status:?}");
+    let status = wait_expect_success(&mut child, Duration::from_secs(15), "dry-run");
 
     // Cadence short-circuit means the worker was never invoked,
     // so the marker must NOT exist.
@@ -870,8 +884,7 @@ async fn test_scenario_9_config_bootstrap_cadence_default() {
     state.seed_past_tick();
 
     let mut child = spawn_daemon(&state, &["run"]);
-    let status = wait_with_timeout(&mut child, Duration::from_secs(15));
-    assert!(status.success(), "scenario 9 must exit 0; got {status:?}");
+    let status = wait_expect_success(&mut child, Duration::from_secs(15), "scenario 9");
 
     let meta = state.read_meta();
     assert!(
