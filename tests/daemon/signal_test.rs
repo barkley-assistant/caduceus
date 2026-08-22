@@ -169,6 +169,34 @@ fn spawn_daemon(config: &Path, args: &[&str]) -> std::process::Child {
         .expect("spawn caduceus")
 }
 
+/// Block until the daemon has installed its signal handlers.
+///
+/// `logging::init` creates `state_dir/processor.log` before the
+/// tokio runtime starts, and the first tracing event is emitted
+/// from inside the runtime — by which point the signal listener
+/// task has been spawned and its SIGINT/SIGTERM streams are
+/// registered. Polling for non-empty log content is therefore a
+/// reliable readiness signal, unlike a fixed sleep (macOS CI
+/// runners can exceed 200 ms of cold-start before `main` even
+/// begins, which sent SIGTERM to a daemon that had not yet
+/// registered handlers — the default disposition killed it).
+fn wait_for_daemon_ready(state_dir: &Path) {
+    // The tick creates its repo-storage directories as its first
+    // action inside the tokio runtime (tick() -> storage.ensure_dirs()),
+    // which runs concurrently with the signal listener registration in
+    // the same block_on. Once those dirs exist, the runtime is live and
+    // the SIGINT/SIGTERM handler streams are registered - unlike a fixed
+    // sleep, which loses the race on cold-started macOS CI runners.
+    let marker = state_dir.join("repos").join("mirrors");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !marker.is_dir() {
+        if Instant::now() > deadline {
+            panic!("daemon did not become ready within 10s (no repos/mirrors dir)");
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
 fn send(pid: u32, sig: Signal) {
     let _ = kill(Pid::from_raw(pid as i32), sig);
 }
@@ -209,8 +237,7 @@ fn idle_sigint_exits_zero() {
     let cfg = write_config(&dir, &worker, 3600);
     seed_recent_tick(&dir);
     let mut child = spawn_daemon(&cfg, &["run"]);
-    // Give the daemon a moment to install signal listeners.
-    std::thread::sleep(Duration::from_millis(200));
+    wait_for_daemon_ready(&dir);
     send(child.id(), Signal::SIGINT);
     let status = wait_with_timeout(&mut child, Duration::from_secs(10));
     assert!(
@@ -229,7 +256,7 @@ fn idle_sigterm_exits_zero() {
     let cfg = write_config(&dir, &worker, 3600);
     seed_recent_tick(&dir);
     let mut child = spawn_daemon(&cfg, &["run"]);
-    std::thread::sleep(Duration::from_millis(200));
+    wait_for_daemon_ready(&dir);
     send(child.id(), Signal::SIGTERM);
     let status = wait_with_timeout(&mut child, Duration::from_secs(10));
     assert!(
@@ -368,7 +395,7 @@ fn idle_cancellation_does_not_mutate_state() {
         .collect::<BTreeSet<_>>();
 
     let mut child = spawn_daemon(&cfg, &["run"]);
-    std::thread::sleep(Duration::from_millis(200));
+    wait_for_daemon_ready(&dir);
     send(child.id(), Signal::SIGINT);
     let status = wait_with_timeout(&mut child, Duration::from_secs(10));
     assert!(status.success(), "idle SIGINT must exit 0");
@@ -411,7 +438,7 @@ fn daemon_surfaces_cancelled_outcome_on_idle_signal() {
     let cfg = write_config(&dir, &worker, 3600);
     seed_recent_tick(&dir);
     let mut child = spawn_daemon(&cfg, &["run"]);
-    std::thread::sleep(Duration::from_millis(200));
+    wait_for_daemon_ready(&dir);
     send(child.id(), Signal::SIGINT);
     let status = wait_with_timeout(&mut child, Duration::from_secs(10));
     // Cron contract: cancelled → exit 0, no stdout.
