@@ -1,0 +1,28 @@
+"""Caduceus user harness hook — the entire user-editable surface.
+
+Two dispatch paths exist:
+
+1. New contract (this file): when this file is copied to
+   ``~/.hermes/caduceus/harness.py``, the parent runner loads it,
+   calls ``run_task(ctx)`` with a ``Ctx`` object, and runs the
+   returned argv inside the worktree.
+
+2. Legacy full-script contract: when only ``worker-bridge.py`` exists
+   at ``~/.hermes/caduceus/worker-bridge.py``, the parent exec's it
+   as a subprocess. To migrate, copy this file to ``harness.py``
+   next to ``worker-bridge.py`` and edit ``run_task``.
+
+Verify the active path with::
+
+    cat ~/.hermes/caduceus/harness.py | head   # new contract active
+    ls ~/.hermes/caduceus/                     # otherwise legacy
+
+``ctx`` exposes every ``CADUCEUS_*`` variable the daemon exports
+(see ``Ctx`` in ``plugin-assets/worker-bridge.py``). ``ctx.dry_run``
+is best-effort: it is set if the daemon propagates
+``CADUCEUS_DRY_RUN`` to the worker, otherwise it defaults to False.
+"""
+
+
+def run_task(ctx):
+    return ["opencode", "run", "--agent", "gentle-orchestrator", "-f", str(ctx.prompt)]

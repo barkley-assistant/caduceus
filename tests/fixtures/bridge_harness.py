@@ -7,6 +7,15 @@ import json
 import os
 import sys
 import time
+from pathlib import Path
+
+
+def run_task(ctx):
+    """Return a configurable argv for the parent-runner contract."""
+    configured = ctx.env.get("FAKE_HARNESS_ARGV_JSON")
+    if configured:
+        return json.loads(configured)
+    return [sys.executable, str(Path(__file__).resolve())]
 
 
 def main() -> int:
@@ -50,4 +59,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-
