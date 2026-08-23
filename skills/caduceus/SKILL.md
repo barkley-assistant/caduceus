@@ -32,11 +32,20 @@ When triggered, this skill should:
    `caduceus:` section of `~/.hermes/config.yaml`, then verify watched
    repositories exist at `<workdir_base>/<owner>/<repo>` with a matching
    noninteractive `origin`. Reference the plugin's defaults.
-4. **If the user wants to swap harnesses**: explain that they edit the
-   plugin's user-owned `worker-bridge.py` (default
-   `~/.hermes/caduceus/worker-bridge.py`) and change one function
-   (`invoke_harness`). Leave `read_required_env` / `parse_labels` /
-   `verify_prompt` alone — those enforce the daemon contract.
+4. **If the user wants to swap harnesses**: explain the new
+   one-function contract. They copy
+   `plugin-assets/caduceus_harness.py.example` to
+   `~/.hermes/caduceus/harness.py` (alongside any existing
+   `worker-bridge.py`) and edit `run_task(ctx)` to return the
+   harness argv. The parent runner in `plugin-assets/worker-bridge.py`
+   loads `harness.py` when present, calls `run_task(ctx)`, runs the
+   returned argv inside the worktree, and synthesizes
+   `worker-result.json` if the hook didn't write one. Existing
+   311-line `worker-bridge.py` copies keep working unchanged on the
+   legacy path. To verify the active path, run
+   `ls ~/.hermes/caduceus/`: a `harness.py` file means the new
+   contract; only `worker-bridge.py` means the legacy path. The parent
+   resolves this relative to `$HERMES_HOME` (default `~/.hermes`).
 5. **If something is broken**: tail `<state_dir>/processor.log` and
    `<state_dir>/runs/<run-id>.log` for the affected run. For a terminal
    failed/skipped entry, show `caduceus queue reset OWNER/REPO#N
@@ -91,15 +100,15 @@ counter.
 
 `max_issues_per_tick` (default `worker_parallelism * 4`) bounds how
 many queue entries a single tick will claim before returning. With the
-default, a tick with `worker_parallelism: 4` processes up to 16 issues
+ default, a tick with `worker_parallelism: 4` processes up to 16 issues
 and leaves the rest for the next tick. Set `0` to restore the unbounded
 drain-the-queue behavior. In-flight workers always finish their current
 work on tick exit; the cap only stops claiming new entries.
 
 ## State Recovery Procedure
 
-Both `state.json` and `state_meta.json` use temp-file + `fsync` +
-atomic rename and are never silently truncated:
+Both `state.json` and `state_meta.json` use temp-file + `fsync` + atomic
+rename and are never silently truncated:
 
 - **Corrupt `state.json`** → daemon exits 1, file preserved. Inspect
   and repair manually or use `caduceus migrate-state --from <path>
@@ -131,6 +140,10 @@ atomic rename and are never silently truncated:
   overwrites it on `setup`. If the upstream template changes, setup
   writes a sibling `.new` candidate and reports it; your edits remain
   intact.
+- The plugin (`plugin.yaml`, `__init__.py`, and this skill) does not know
+  about harness-specific shapes. To roll back the new contract, remove
+  `~/.hermes/caduceus/harness.py`; the parent runner then uses the legacy
+  `worker-bridge.py` path.
 - **The plugin does not run manifest build/hook steps.** Hermes
   installs plugin source but does not auto-build or auto-execute; you
   must run the explicit `hermes caduceus setup` step yourself.
@@ -168,7 +181,7 @@ The `hermes plugins update` step updates sources only — it does **not**
 rebuild the binary. Always re-run `hermes caduceus setup` afterwards
 to pick up the new Rust workspace. `setup` preserves the user-owned
 bridge and only writes a sibling `.new` candidate if the upstream
-template changes.
+ template changes.
 
 ### Standalone installs (no Hermes)
 

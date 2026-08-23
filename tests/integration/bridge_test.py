@@ -454,6 +454,7 @@ class TestForbiddenSideEffects:
 
 
 def _make_worktree_with_prompt(tmp_path: Path) -> Path:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     worktree = tmp_path
     prompt = worktree / "worker-prompt.md"
     prompt.write_text(
@@ -619,7 +620,7 @@ class TestSubprocessEndToEnd:
     def test_bridge_does_not_install_python_signal_handlers(
         self, bridge_module, monkeypatch, tmp_path
     ):
-        """The bridge is downstream of the daemon's worker supervisor,."""
+        """The bridge is downstream of the daemon's worker supervisor,"""
         # Provide a real worktree with a prompt so the bridge runs to
         # completion through invoke_harness.
         _make_worktree_with_prompt(tmp_path)
@@ -751,4 +752,312 @@ class TestSubprocessEndToEnd:
         assert "AUTO_ISSUE_GITHUB_TOKEN" not in record["env_keys"]
 
 
+def _write_hook(hermes_home: Path, body: str) -> Path:
+    hook_dir = hermes_home / "caduceus"
+    hook_dir.mkdir(parents=True, exist_ok=True)
+    hook = hook_dir / "harness.py"
+    hook.write_text(textwrap.dedent(body), encoding="utf-8")
+    return hook
 
+
+def _new_contract_env(worktree: Path, hermes_home: Path) -> dict:
+    env = _build_env(worktree)
+    env["HERMES_HOME"] = str(hermes_home)
+    return env
+
+
+class TestNewContract:
+    def test_hook_present_activates_new_contract(
+        self, bridge_module, tmp_path
+    ):
+        worktree = _make_worktree_with_prompt(tmp_path / "worktree")
+        hermes_home = tmp_path / "hermes home"
+        marker = tmp_path / "hook-ran.txt"
+        _write_hook(
+            hermes_home,
+            f"""
+            from pathlib import Path
+
+            def run_task(ctx):
+                return [{sys.executable!r}, "-c", "from pathlib import Path; Path({str(marker)!r}).write_text('ran')"]
+            """,
+        )
+        env = _new_contract_env(worktree, hermes_home)
+
+        assert bridge_module.main(env=env, argv=["bridge"]) == 0
+        assert marker.read_text(encoding="utf-8") == "ran"
+
+    def test_hook_absent_falls_back_to_legacy_subprocess(
+        self, bridge_module, tmp_path
+    ):
+        worktree = _make_worktree_with_prompt(tmp_path / "worktree")
+        hermes_home = tmp_path / "hermes"
+        legacy_dir = hermes_home / "caduceus"
+        legacy_dir.mkdir(parents=True)
+        marker = tmp_path / "legacy-ran.txt"
+        legacy = legacy_dir / "worker-bridge.py"
+        legacy.write_text(
+            textwrap.dedent(
+                f"""
+                #!{sys.executable}
+                from pathlib import Path
+                Path({str(marker)!r}).write_text("legacy")
+                """
+            ),
+            encoding="utf-8",
+        )
+        legacy.chmod(0o755)
+        env = _new_contract_env(worktree, hermes_home)
+
+        assert bridge_module.main(env=env, argv=["bridge"]) == 0
+        assert marker.read_text(encoding="utf-8") == "legacy"
+
+    def test_ctx_has_all_documented_fields(
+        self, bridge_module, tmp_path
+    ):
+        worktree = _make_worktree_with_prompt(tmp_path / "worktree")
+        hermes_home = tmp_path / "hermes"
+        capture = tmp_path / "ctx.json"
+        _write_hook(
+            hermes_home,
+            f"""
+            import json
+            from pathlib import Path
+
+            def run_task(ctx):
+                Path({str(capture)!r}).write_text(json.dumps({{
+                    "worktree": str(ctx.worktree),
+                    "prompt": str(ctx.prompt),
+                    "run_id": ctx.run_id,
+                    "branch": ctx.branch,
+                    "labels": ctx.labels,
+                    "issue": {{
+                        "repo": ctx.issue.repo,
+                        "number": ctx.issue.number,
+                        "title": ctx.issue.title,
+                        "body": ctx.issue.body,
+                    }},
+                    "context_json": ctx.context_json,
+                    "dry_run": ctx.dry_run,
+                    "env_keys": sorted(ctx.env),
+                    "env_type": type(ctx.env).__name__,
+                }}), encoding="utf-8")
+                return [{sys.executable!r}, "-c", "pass"]
+            """,
+        )
+        env = _new_contract_env(worktree, hermes_home)
+
+        assert bridge_module.main(env=env, argv=["bridge"]) == 0
+        observed = json.loads(capture.read_text(encoding="utf-8"))
+        assert observed["worktree"] == str(worktree.resolve())
+        assert observed["prompt"] == str((worktree / "worker-prompt.md").resolve())
+        assert observed["run_id"] == env["CADUCEUS_RUN_ID"]
+        assert observed["branch"] == env["CADUCEUS_BRANCH_NAME"]
+        assert observed["labels"] == ["🤖 auto-fix", "good first issue"]
+        assert observed["issue"] == {
+            "repo": env["CADUCEUS_ISSUE_REPO"],
+            "number": 42,
+            "title": env["CADUCEUS_ISSUE_TITLE"],
+            "body": env["CADUCEUS_ISSUE_BODY"],
+        }
+        assert observed["context_json"] == env["CADUCEUS_CONTEXT_JSON"]
+        assert observed["dry_run"] is False
+        assert "CADUCEUS_CONTEXT_JSON" in observed["env_keys"]
+        assert observed["env_type"] == "mappingproxy"
+
+    def test_argv_with_spaces_round_trips(self, bridge_module, tmp_path):
+        worktree = _make_worktree_with_prompt(tmp_path / "worktree with spaces")
+        hermes_home = tmp_path / "hermes"
+        capture = tmp_path / "capture.py"
+        received = tmp_path / "received spaces.txt"
+        capture.write_text(
+            "from pathlib import Path; import sys; "
+            "Path(sys.argv[1]).write_text(sys.argv[2], encoding='utf-8')",
+            encoding="utf-8",
+        )
+        _write_hook(
+            hermes_home,
+            f"""
+            def run_task(ctx):
+                return [{sys.executable!r}, {str(capture)!r}, {str(received)!r}, "value with spaces"]
+            """,
+        )
+
+        assert bridge_module.main(
+            env=_new_contract_env(worktree, hermes_home), argv=["bridge"]
+        ) == 0
+        assert received.read_text(encoding="utf-8") == "value with spaces"
+
+    def test_argv_with_unicode_round_trips(self, bridge_module, tmp_path):
+        worktree = _make_worktree_with_prompt(tmp_path / "worktree café 第12")
+        hermes_home = tmp_path / "hermes"
+        capture = tmp_path / "capture.py"
+        received = tmp_path / "received-unicode.txt"
+        capture.write_text(
+            "from pathlib import Path; import sys; "
+            "Path(sys.argv[1]).write_text(sys.argv[2], encoding='utf-8')",
+            encoding="utf-8",
+        )
+        argument = "café-第12-🚀"
+        _write_hook(
+            hermes_home,
+            f"""
+            def run_task(ctx):
+                return [{sys.executable!r}, {str(capture)!r}, {str(received)!r}, {argument!r}]
+            """,
+        )
+
+        assert bridge_module.main(
+            env=_new_contract_env(worktree, hermes_home), argv=["bridge"]
+        ) == 0
+        assert received.read_text(encoding="utf-8") == argument
+
+    def test_exit_code_127_for_missing_argv0(
+        self, bridge_module, tmp_path, capsys
+    ):
+        worktree = _make_worktree_with_prompt(tmp_path / "worktree")
+        hermes_home = tmp_path / "hermes"
+        _write_hook(
+            hermes_home,
+            """
+            def run_task(ctx):
+                return ["nonexistent-binary-xyz"]
+            """,
+        )
+
+        assert bridge_module.main(
+            env=_new_contract_env(worktree, hermes_home), argv=["bridge"]
+        ) == 127
+        assert "nonexistent-binary-xyz" in capsys.readouterr().err
+
+    def test_exit_code_126_for_unreachable_argv0(
+        self, bridge_module, tmp_path, capsys
+    ):
+        worktree = _make_worktree_with_prompt(tmp_path / "worktree")
+        hermes_home = tmp_path / "hermes"
+        program = tmp_path / "not-executable"
+        program.write_text("not executable", encoding="utf-8")
+        _write_hook(
+            hermes_home,
+            f"""
+            def run_task(ctx):
+                return [{str(program)!r}]
+            """,
+        )
+
+        assert bridge_module.main(
+            env=_new_contract_env(worktree, hermes_home), argv=["bridge"]
+        ) == 126
+        assert "unable to start harness" in capsys.readouterr().err
+
+    def test_exit_code_125_for_hook_crash(
+        self, bridge_module, tmp_path, capsys
+    ):
+        worktree = _make_worktree_with_prompt(tmp_path / "worktree")
+        hermes_home = tmp_path / "hermes"
+        _write_hook(
+            hermes_home,
+            """
+            def run_task(ctx):
+                raise KeyError("nope")
+            """,
+        )
+
+        assert bridge_module.main(
+            env=_new_contract_env(worktree, hermes_home), argv=["bridge"]
+        ) == 125
+        error = capsys.readouterr().err
+        assert "KeyError" in error
+        assert "nope" in error
+        assert len(error.splitlines()) == 1
+
+    def test_missing_run_task_is_a_harness_crash(
+        self, bridge_module, tmp_path, capsys
+    ):
+        worktree = _make_worktree_with_prompt(tmp_path / "worktree")
+        hermes_home = tmp_path / "hermes"
+        _write_hook(hermes_home, "VALUE = 1\n")
+
+        assert bridge_module.main(
+            env=_new_contract_env(worktree, hermes_home), argv=["bridge"]
+        ) == 125
+        assert "AttributeError" in capsys.readouterr().err
+
+    def test_result_synthesis_success_exit(self, bridge_module, tmp_path):
+        worktree = _make_worktree_with_prompt(tmp_path / "worktree")
+        hermes_home = tmp_path / "hermes"
+        _write_hook(
+            hermes_home,
+            f"""
+            def run_task(ctx):
+                return [{sys.executable!r}, "-c", "print('feat(plugin): synthesized title')"]
+            """,
+        )
+
+        assert bridge_module.main(
+            env=_new_contract_env(worktree, hermes_home), argv=["bridge"]
+        ) == 0
+        result = json.loads(
+            (worktree / "worker-result.json").read_text(encoding="utf-8")
+        )
+        assert result["status"] == "success"
+        assert result["pull_request_title"] == "feat(plugin): synthesized title"
+        assert result["investigation"] is False
+
+    def test_result_synthesis_failure_exit(self, bridge_module, tmp_path):
+        worktree = _make_worktree_with_prompt(tmp_path / "worktree")
+        hermes_home = tmp_path / "hermes"
+        _write_hook(
+            hermes_home,
+            f"""
+            def run_task(ctx):
+                return [{sys.executable!r}, "-c", "print('failure output'); raise SystemExit(1)"]
+            """,
+        )
+
+        assert bridge_module.main(
+            env=_new_contract_env(worktree, hermes_home), argv=["bridge"]
+        ) == 1
+        result = json.loads(
+            (worktree / "worker-result.json").read_text(encoding="utf-8")
+        )
+        assert result["status"] == "failure"
+        assert "failure output" in result["summary"]
+
+    def test_truncate_pull_request_title_256_chars(self, bridge_module):
+        title = "x" * 400
+        truncated = bridge_module.truncate_pull_request_title(title)
+        assert len(truncated) == 256
+        assert truncated.endswith("…")
+        assert truncated == ("x" * 255) + "…"
+
+    def test_direct_write_bypass(self, bridge_module, tmp_path):
+        worktree = _make_worktree_with_prompt(tmp_path / "worktree")
+        hermes_home = tmp_path / "hermes"
+        result_path = worktree / "worker-result.json"
+        payload = {
+            "status": "success",
+            "summary": "direct write",
+            "commit_message": "feat: direct",
+            "pull_request_title": "feat: direct",
+            "artifacts": {"note": "kept"},
+            "investigation": True,
+        }
+        payload_text = json.dumps(payload, ensure_ascii=False)
+        write_command = (
+            "from pathlib import Path; "
+            f"Path({str(result_path)!r}).write_text({payload_text!r}, "
+            "encoding='utf-8')"
+        )
+        _write_hook(
+            hermes_home,
+            f"""
+            def run_task(ctx):
+                return [{sys.executable!r}, "-c", {write_command!r}]
+            """,
+        )
+
+        assert bridge_module.main(
+            env=_new_contract_env(worktree, hermes_home), argv=["bridge"]
+        ) == 0
+        assert result_path.read_text(encoding="utf-8") == payload_text
