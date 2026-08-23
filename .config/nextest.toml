@@ -4,24 +4,36 @@
 # longer than this are terminated by nextest. The 120s budget is generous
 # on purpose; tighten later from data.
 #
+# [profile.default] also sets default-filter to exclude the
+# release_binary_canary family from per-push runs (issue #205): the
+# canary spends ~26s building a release binary and is promoted to the
+# weekly schedule trigger, which runs the nightly profile below.
+# default-filter applies only when no -E/--filter-expression is passed
+# on the command line, so the canary remains runnable ad hoc:
+#   cargo nextest run -E 'test(release_binary_canary)'
+#
 # The override profile below preserves today's effective CI behavior for
-# the five hermes_lifecycle tests that self-skip into green on CI (the
-# `hermes` binary is absent; preflight_or_skip() returns None).
-# Investigation on 2026-08-23 confirmed they pass vacuously in ~1ms each
-# today. The override is declarative belt-and-suspenders: nextest 0.9 does
-# NOT support per-test env vars in config, so the CADUCEUS_SKIP_LIFECYCLE
-# signal for #205's root-cause fix is set on the test step in ci.yml.
-# The override keeps filter + platform only — no per-test slow-timeout —
-# so the default 120s applies. On CI the tests self-skip (~1ms) and the
-# slow-timeout is irrelevant; on local hermes-less runs they self-skip
-# too. Local full-suite verification should exclude these five tests with
-# a command-line filter expression to mirror CI behavior (see tasks.md).
-# When #205 lands, the override profile is the natural place to add
-# per-test settings (priority, test-group, etc.).
+# the five hermes_lifecycle tests. As of #205 those tests carry
+# #[ignore = "env: requires hermes binary ..."], so libtest and nextest
+# skip them by default in every profile; preflight_or_skip() remains as
+# a defense-in-depth guard for explicit --ignored / --run-ignored runs
+# on hosts without hermes. The override table is kept (issues #203/#206)
+# as the natural place to add per-test settings (priority, test-group,
+# etc.). It keeps filter + platform only — no per-test slow-timeout —
+# so the default 120s applies.
 
 [profile.default]
 slow-timeout = "120s"
+default-filter = "not test(/release_binary_canary/)"
 
 [[profile.default.overrides]]
 filter = "test(test_ac04_cron_install_happy) or test(test_ac06_doctor_and_status) or test(test_ac07_gateway_prerequisite) or test(test_ac08_update_preserves_state) or test(test_ac10_uninstall_preserves_user_state)"
 platform = "x86_64-unknown-linux-gnu"
+
+# Weekly profile used by the schedule trigger in ci.yml (issue #205).
+# Profiles inherit from `default` unless `inherits` says otherwise, so
+# this profile keeps the 120s slow-timeout and the override above, and
+# re-includes the release canary by resetting default-filter to all().
+[profile.nightly]
+inherits = "default"
+default-filter = "all()"

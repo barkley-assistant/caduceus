@@ -37,11 +37,13 @@ on:
   # Option C: a weekly schedule trigger keeps the cargo and
   # target caches warm so the next human push does not pay the
   # cold-cache build cost (5-10 minutes on ubuntu-24.04 with a
-  # minimal rustup profile). The trigger runs the full gate;
-  # because the previous run cached its results, the warm run
-  # finishes in under two minutes. cron: "0 6 * * 0" is Sunday
-  # 06:00 UTC, which is off-peak for the public Actions runner
-  # pool.
+  # minimal rustup profile). The trigger runs the full gate under
+  # the nextest `nightly` profile, which re-includes the
+  # release_binary_canary test excluded from per-push runs (issue
+  # #205); because the previous run cached its results, the warm
+  # run finishes in under two minutes plus the canary's release
+  # build. cron: "0 6 * * 0" is Sunday 06:00 UTC, which is
+  # off-peak for the public Actions runner pool.
   schedule:
     - cron: '0 6 * * 0'
 
@@ -86,6 +88,9 @@ jobs:
       - name: fmt
         run: cargo fmt --check
       - name: test
+        # Per-push/PR gate only. profile.default's default-filter
+        # excludes release_binary_canary (see .config/nextest.toml).
+        if: github.event_name != 'schedule'
         env:
           # Belt-and-suspenders signal for the five hermes_lifecycle
           # tests in tests/integration/hermes_lifecycle_test.rs that
@@ -99,6 +104,15 @@ jobs:
         # 240s per-test timeout. Allow up to 15 minutes for the test step.
         timeout-minutes: 15
         run: cargo nextest run --locked --all-targets --retries 2
+      - name: test (nightly profile, includes release_binary_canary)
+        # Weekly schedule only: profile.nightly inherits profile.default
+        # and resets default-filter to all(), re-including the release
+        # canary. The five #[ignore]d hermes_lifecycle tests stay
+        # skipped in both profiles. Same job, so the check name
+        # (ci / rust-stable) is unchanged on every trigger.
+        if: github.event_name == 'schedule'
+        timeout-minutes: 20
+        run: cargo nextest run --locked --all-targets --retries 2 --profile nightly
 
   clippy:
     name: clippy
