@@ -22,21 +22,22 @@
 //!   kill the recorded session; daemon death closes the
 //!   control pipe (stdin) and makes the live supervisor kill
 //!   the worker session.
-//! * On Linux, the supervisor calls
-//!   `prctl(PR_SET_CHILD_SUBREAPER)` before spawning so any
-//!   detached descendants are still reaped by the supervisor.
-//!   Cleanup enumerates descendant PIDs from `/proc`, signals
-//!   the original negative PGID plus every descendant, waits
-//!   two seconds, rediscovers, sends `SIGKILL`, and reaps
-//!   until no descendants remain.
+//! * Descendant cleanup: on Linux the supervisor marks itself a child
+//!   subreaper with `prctl(PR_SET_CHILD_SUBREAPER)` before spawning the
+//!   worker (wired in `process_lifecycle.rs` via `set_child_subreaper`),
+//!   so orphaned grandchildren reparent here. Non-Linux platforms have
+//!   no subreaper analogue: `procctl(PROC_REAP_ACQUIRE)` is FreeBSD-only.
+//!   Teardown first signals the worker's original negative PGID, then
+//!   enumerates descendants that `setsid`-ed out of the process group
+//!   through the portable `TREE.list_children` seam — `collect_descendants`
+//!   over `/proc` on Linux, `proc_listchildpids` on macOS, and a
+//!   compile-time failure on unsupported platforms.
 //!
-//! P5 records the wire-in-vs-delete decision: descendant reaping is wired into
-//! the production cleanup path on both Linux and macOS via `TREE.list_children`.
-//! On macOS the kernel has no subreaper analogue
-//! (`procctl(PROC_REAP_ACQUIRE)` is FreeBSD-only); POSIX process-group kill is
-//! the primary mechanism, and `proc_listchildpids`-based enumeration catches
-//! `setsid`-ed grandchildren as a best-effort safety net. Unsupported platforms
-//! fail at compile time rather than silently no-oping.
+//!   Each descendant is TERM-killed, a two-second grace sleep follows,
+//!   then a bounded rediscover loop (3 iterations at 100 ms each)
+//!   re-enumerates `TREE.list_children` and SIGKILLs any survivors
+//!   (`dispatch.rs`). The pass is best-effort and bounded so a runaway
+//!   descendant cannot stall teardown.
 //!
 //! * The supervisor only ever sees the cleared worker
 //!   environment — daemon credentials never appear in any
