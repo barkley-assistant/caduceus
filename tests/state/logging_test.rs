@@ -216,6 +216,14 @@ fn init_second_call_fails_with_clear_message() {
     let root = tempdir("init-second");
     let log_path = root.join("processor.log");
 
+    // Ensure the global subscriber is installed in THIS process before
+    // asserting that a subsequent call fast-fails. Under libtest the prior
+    // serial tests in this module would have installed it; under cargo-nextest
+    // each test runs in its own process, so we install it here.
+    if !is_initialised() {
+        let _log_guard = init(&log_path).expect("first init succeeds");
+    }
+
     let err = init(&log_path).expect_err("second init must fail");
     let msg = format!("{err:?}");
     assert!(msg.contains("already initialised"), "got: {msg}");
