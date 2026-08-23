@@ -85,8 +85,6 @@ jobs:
           git config --global user.name "caduceus-ci"
       - name: fmt
         run: cargo fmt --check
-      - name: clippy
-        run: cargo clippy --locked --all-targets -- -D warnings
       - name: test
         env:
           # Belt-and-suspenders signal for the five hermes_lifecycle
@@ -101,6 +99,30 @@ jobs:
         # 240s per-test timeout. Allow up to 15 minutes for the test step.
         timeout-minutes: 15
         run: cargo nextest run --locked --all-targets --retries 2
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: install stable Rust
+        run: |
+          set -euo pipefail
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain stable --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          rustup component add clippy
+      - name: cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+      - name: configure git identity
+        run: |
+          set -euo pipefail
+          git config --global user.email "ci@caduceus.local"
+          git config --global user.name "caduceus-ci"
+      - name: clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
 
   python:
     name: python
