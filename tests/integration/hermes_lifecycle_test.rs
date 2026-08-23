@@ -474,6 +474,7 @@ fn test_ac03_setup_idempotent() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[ignore = "env: requires hermes binary (HERMES_BIN env var or PATH-resolved); absent on CI runner"]
 fn test_ac04_cron_install_happy() {
     let Some(hermes) = preflight_or_skip() else {
         return;
@@ -588,6 +589,7 @@ fn test_ac05_cron_install_no_setup() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[ignore = "env: requires hermes binary (HERMES_BIN env var or PATH-resolved); absent on CI runner"]
 fn test_ac06_doctor_and_status() {
     let Some(hermes) = preflight_or_skip() else {
         return;
@@ -645,6 +647,7 @@ fn test_ac06_doctor_and_status() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[ignore = "env: requires hermes binary (HERMES_BIN env var or PATH-resolved); absent on CI runner"]
 fn test_ac07_gateway_prerequisite() {
     let Some(hermes) = preflight_or_skip() else {
         return;
@@ -699,6 +702,7 @@ fn test_ac07_gateway_prerequisite() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[ignore = "env: requires hermes binary (HERMES_BIN env var or PATH-resolved); absent on CI runner"]
 fn test_ac08_update_preserves_state() {
     let Some(hermes) = preflight_or_skip() else {
         return;
@@ -847,6 +851,7 @@ fn test_ac09_cron_remove_idempotent() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[ignore = "env: requires hermes binary (HERMES_BIN env var or PATH-resolved); absent on CI runner"]
 fn test_ac10_uninstall_preserves_user_state() {
     let Some(hermes) = preflight_or_skip() else {
         return;
