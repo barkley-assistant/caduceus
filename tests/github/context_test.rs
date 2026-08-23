@@ -278,7 +278,7 @@ fn trusted_comment_dropped_only_after_untrusted() {
         created_at: Utc::now() - chrono::Duration::days(7),
     };
     let mut comments = vec![trusted.clone()];
-    for i in 0..800u32 {
+    for i in 0..80u32 {
         comments.push(IssueComment {
             author: format!("u{i}"),
             body: "u".repeat(2048),

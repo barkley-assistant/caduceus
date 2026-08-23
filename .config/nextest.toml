@@ -1,0 +1,27 @@
+# cargo-nextest configuration for the rust-stable CI gate (issue #203).
+#
+# [profile.default] sets a per-test slow-timeout of 120s. Tests that take
+# longer than this are terminated by nextest. The 120s budget is generous
+# on purpose; tighten later from data.
+#
+# The override profile below preserves today's effective CI behavior for
+# the five hermes_lifecycle tests that self-skip into green on CI (the
+# `hermes` binary is absent; preflight_or_skip() returns None).
+# Investigation on 2026-08-23 confirmed they pass vacuously in ~1ms each
+# today. The override is declarative belt-and-suspenders: nextest 0.9 does
+# NOT support per-test env vars in config, so the CADUCEUS_SKIP_LIFECYCLE
+# signal for #205's root-cause fix is set on the test step in ci.yml.
+# The override keeps filter + platform only — no per-test slow-timeout —
+# so the default 120s applies. On CI the tests self-skip (~1ms) and the
+# slow-timeout is irrelevant; on local hermes-less runs they self-skip
+# too. Local full-suite verification should exclude these five tests with
+# a command-line filter expression to mirror CI behavior (see tasks.md).
+# When #205 lands, the override profile is the natural place to add
+# per-test settings (priority, test-group, etc.).
+
+[profile.default]
+slow-timeout = "120s"
+
+[[profile.default.overrides]]
+filter = "test(test_ac04_cron_install_happy) or test(test_ac06_doctor_and_status) or test(test_ac07_gateway_prerequisite) or test(test_ac08_update_preserves_state) or test(test_ac10_uninstall_preserves_user_state)"
+platform = "x86_64-unknown-linux-gnu"

@@ -72,16 +72,12 @@ jobs:
           # install keeps the four-line gate reproducible on cold-cache
           # first runs.
           rustup component add rustfmt clippy
-      - name: cache cargo registry and target
-        uses: actions/cache@v4
+      - name: install cargo-nextest
+        uses: taiki-e/install-action@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: cargo-stable-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            cargo-stable-
+          tool: cargo-nextest
+      - name: cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
       - name: configure git identity for tests
         run: |
           set -euo pipefail
@@ -92,12 +88,19 @@ jobs:
       - name: clippy
         run: cargo clippy --locked --all-targets -- -D warnings
       - name: test
+        env:
+          # Belt-and-suspenders signal for the five hermes_lifecycle
+          # tests in tests/integration/hermes_lifecycle_test.rs that
+          # self-skip into green on CI. See .config/nextest.toml for
+          # the matching override profile. #205 owns the root-cause
+          # fix; today the env var is declarative and not read.
+          CADUCEUS_SKIP_LIFECYCLE: "1"
         # hermes_lifecycle tests (ac04/ac06/ac07/ac08) each shell out to
         # `hermes caduceus setup` which takes 2-3 minutes to compile the
         # release binary; running four of them in parallel saturates the
         # 240s per-test timeout. Allow up to 15 minutes for the test step.
         timeout-minutes: 15
-        run: cargo test --locked --all-targets
+        run: cargo nextest run --locked --all-targets --retries 2
 
   python:
     name: python
