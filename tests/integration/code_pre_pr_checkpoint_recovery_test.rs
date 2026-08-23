@@ -101,43 +101,48 @@ fn init_bare(dir: &Path) {
 }
 
 fn init_clone(bare: &Path, clone: &Path) {
+    // Retry the seed clone with captured stderr: under parallel-test
+    // load on CI runners, `git clone` against a fresh bare repo has
+    // failed transiently (3 occurrences across the macOS portability
+    // chain). The panic now names git's actual error instead of a
+    // bare "clone failed", and one bounded retry absorbs the flake.
     fs::create_dir_all(clone).expect("mkdir");
-    let out = Command::new("git")
-        .args(["clone", "--quiet"])
-        .arg(bare)
-        .arg(clone)
-        .output()
-        .expect("git clone");
-    assert!(out.status.success(), "clone failed");
-    let _ = Command::new("git")
-        .args(["config", "user.email", "seed@example.com"])
-        .current_dir(clone)
-        .output();
-    let _ = Command::new("git")
-        .args(["config", "user.name", "Seed"])
-        .current_dir(clone)
-        .output();
-    let _ = Command::new("git")
-        .args(["config", "commit.gpgsign", "false"])
-        .current_dir(clone)
-        .output();
-    let _ = Command::new("git")
-        .args(["checkout", "-q", "-b", "main"])
-        .current_dir(clone)
-        .output();
-    fs::write(clone.join("README.md"), "base\n").expect("write");
-    let _ = Command::new("git")
-        .args(["add", "."])
-        .current_dir(clone)
-        .output();
-    let _ = Command::new("git")
-        .args(["-c", "commit.gpgsign=false", "commit", "-m", "init"])
-        .current_dir(clone)
-        .output();
-    let _ = Command::new("git")
-        .args(["push", "-u", "origin", "main"])
-        .current_dir(clone)
-        .output();
+    let mut last_err = String::new();
+    for attempt in 0..2 {
+        let out = Command::new("git")
+            .args(["clone", "--quiet"])
+            .arg(bare)
+            .arg(clone)
+            .output()
+            .expect("git clone");
+        if out.status.success() {
+            let _ = Command::new("git")
+                .args(["config", "user.email", "seed@example.com"])
+                .current_dir(clone)
+                .output();
+            fs::write(clone.join("README.md"), "base\n").expect("write");
+            for args in [
+                vec!["add", "."],
+                vec!["-c", "commit.gpgsign=false", "commit", "-m", "init"],
+                vec!["checkout", "-q", "-b", "main"],
+                vec!["push", "-u", "origin", "main"],
+            ] {
+                let _ = Command::new("git").args(&args).current_dir(clone).output();
+            }
+            return;
+        }
+        last_err = format!(
+            "attempt {}: status {:?}, stderr: {}",
+            attempt + 1,
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        // Clean the partial clone before retrying.
+        let _ = fs::remove_dir_all(clone);
+        fs::create_dir_all(clone).expect("mkdir after failed clone");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    panic!("init_clone failed after retry: {last_err}");
 }
 
 fn client_for(gh: &MockGitHub) -> Client {
