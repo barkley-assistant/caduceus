@@ -54,7 +54,6 @@ prompts/
 # SpecOps plugin scratch; never commit it. Specops writes proposal/spec/
 # design/tasks artifacts under this directory during a run; the orchestrator
 # is expected to archive them, but the bridge is the safety net.
-openspec/
 /openspec/
 
 # Internal planning scratch; never commit it. Specops-auto and other agents
