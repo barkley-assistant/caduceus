@@ -26,6 +26,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[cfg(unix)]
+use std::os::unix::fs::symlink;
+
 use caduceus::config::Config;
 use caduceus::issue::IssueKey;
 use caduceus::worktree::{
@@ -442,6 +445,68 @@ async fn remove_is_idempotent_for_already_missing_path() {
         .output()
         .expect("branch probe");
     assert!(!probe.status.success());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn remove_is_idempotent_when_tempdir_uses_prefix_symlink() {
+    let owner = "octocat";
+    let repo = "Hello-World";
+    let root = tempdir("remove-idempotent-prefix-symlink");
+    let alias = root.with_file_name(format!(
+        "{}-alias",
+        root.file_name()
+            .expect("tempdir basename")
+            .to_string_lossy()
+    ));
+    symlink(&root, &alias).expect("create tempdir alias");
+
+    let bare = alias.join("remote.git");
+    init_bare_repo(&bare);
+    let workdir = alias.join("workdirs");
+    fs::create_dir_all(&workdir).unwrap();
+    let dest = workdir.join(owner).join(repo);
+    fs::create_dir_all(dest.parent().unwrap()).unwrap();
+    clone_into(&bare, &dest);
+
+    let cfg = config_for(&alias, "https://api.github.com");
+    let runner = GitRunner::new(&cfg);
+    let worktree = provision(&cfg, &runner, &dest, 22, "01H9Z3Y4G8W2J7N5K1QXV0F8PC").await;
+    let worktree_path = worktree.path.clone();
+    let worktree_dir = worktree_path
+        .parent()
+        .expect("worktree parent")
+        .to_path_buf();
+    let sibling = worktree_dir.join(".keep");
+    fs::write(&sibling, "keep\n").unwrap();
+
+    remove_worktree(&worktree)
+        .await
+        .expect("first remove through symlinked prefix");
+    assert!(!worktree_path.exists(), "worktree path should be removed");
+    assert!(worktree_dir.exists(), "worktree state dir should remain");
+    assert!(sibling.exists(), "sibling entry should remain");
+    assert!(
+        fs::canonicalize(&worktree_dir).is_ok(),
+        "worktree parent should still canonicalize"
+    );
+
+    let second = remove_worktree(&worktree).await;
+    assert!(
+        second.is_ok(),
+        "second remove through symlinked prefix must be idempotent, got: {second:?}"
+    );
+    let third = remove_worktree(&worktree).await;
+    assert!(
+        third.is_ok(),
+        "third remove through symlinked prefix must be idempotent, got: {third:?}"
+    );
+    assert!(
+        !worktree_path.exists(),
+        "worktree path should remain absent"
+    );
+    assert!(worktree_dir.exists(), "worktree state dir should remain");
+    assert!(sibling.exists(), "sibling entry should remain");
 }
 
 // Nested filesystem contents
