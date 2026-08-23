@@ -825,11 +825,6 @@ pub async fn remove(handle: &Worktree) -> CaduceusResult<()> {
         handle.main_path.clone()
     };
 
-    let canonical_path =
-        canonicalize_dir(worktree_path).unwrap_or_else(|_| worktree_path.to_path_buf());
-
-    // Accept the path when it lives under the daemon's per-repo
-    // state directory.
     let worktree_dir = worktree_path
         .parent()
         .ok_or_else(|| CaduceusError::Worktree {
@@ -839,6 +834,24 @@ pub async fn remove(handle: &Worktree) -> CaduceusResult<()> {
                 worktree_path.display()
             ),
         })?;
+
+    let canonical_path = match canonicalize_dir(worktree_path) {
+        Ok(p) => p,
+        Err(_) => {
+            // Leaf already removed (idempotent replay): canonicalize the
+            // parent, which still exists, and rejoin the final component.
+            let parent =
+                canonicalize_dir(worktree_dir).unwrap_or_else(|_| worktree_dir.to_path_buf());
+            parent.join(
+                worktree_path
+                    .file_name()
+                    .unwrap_or_else(|| std::ffi::OsStr::new("")),
+            )
+        }
+    };
+
+    // Accept the path when it lives under the daemon's per-repo
+    // state directory.
     let canonical_worktree_dir = canonicalize_dir(worktree_dir).unwrap_or_else(|_| {
         // If the parent cannot be canonicalised, use the non-canonical
         // form; the candidate check below will reject symlink escapes.
