@@ -17,10 +17,14 @@
 Caduceus is a Unix daemon, shipped as a Hermes plugin, that polls
 GitHub for labeled issues, runs your AI harness against them in
 isolated worktrees, enforces hard timeouts, and finalizes the
-result as branch → push → PR → close. Linux is tier-1; macOS
-compiles and runs but the supervisor's process-group kill guarantees
-are Linux-only (`prctl`, `/proc`, `setsid`). Windows is not a
-target. This is not the project for you if that's a problem.
+result as branch → push → PR → close. Linux is tier-1; macOS is
+tier-2: it compiles, runs, and is enforced by CI (`macos / test`),
+with real process-identity (`proc_pidinfo`), descendant reaping
+(`proc_listchildpids`), and subreaper semantics on Linux only
+(`prctl(PR_SET_CHILD_SUBREAPER)`; macOS relies on process-group
+kills plus best-effort descendant enumeration — grandchildren that
+`setsid` away are still reaped via the portable seam). Windows is
+not a target. This is not the project for you if that's a problem.
 
 We're opinionated about three things, and the rest of this
 document will tell you what they are, why, and how to push
