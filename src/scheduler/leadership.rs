@@ -50,19 +50,42 @@ impl LeaderToken {
     /// Run a closure inside the scheduler leadership transaction.
     /// The leadership lock is held for the duration of the closure.
     /// The lock is released when the closure returns.
+    ///
+    /// Contention is retried briefly before failing: on macOS, APFS
+    /// flock release can lag a closed descriptor by a scheduling
+    /// quantum, so the tick's immediate drop-then-reacquire sequence
+    /// (probe → MetaStore → CadenceGate) can transiently observe
+    /// `WouldBlock` from its own prior descriptor. A genuine
+    /// long-held concurrent lock still errors out after the bounded
+    /// retry window.
     pub fn with_lock<T>(
         state_dir: &Path,
         f: impl FnOnce() -> CaduceusResult<T>,
     ) -> CaduceusResult<T> {
-        let _token = match Self::try_acquire(state_dir)? {
-            Some(token) => token,
-            None => {
-                return Err(CaduceusError::LeadershipContended {
-                    context: "with_lock",
-                    stderr: "leadership lock contended".to_string(),
-                });
+        const RETRY_ATTEMPTS: u32 = 6;
+        const RETRY_BACKOFF_MS: u64 = 50;
+
+        let mut token = None;
+        for attempt in 0..RETRY_ATTEMPTS {
+            match Self::try_acquire(state_dir)? {
+                Some(t) => {
+                    token = Some(t);
+                    break;
+                }
+                None if attempt + 1 < RETRY_ATTEMPTS => {
+                    std::thread::sleep(std::time::Duration::from_millis(RETRY_BACKOFF_MS));
+                }
+                None => {
+                    return Err(CaduceusError::LeadershipContended {
+                        context: "with_lock",
+                        stderr: format!(
+                            "leadership lock contended after {RETRY_ATTEMPTS} attempts"
+                        ),
+                    });
+                }
             }
-        };
+        }
+        let _token = token.expect("retry loop guarantees a token or an early return");
         f()
     }
 }
