@@ -16,6 +16,10 @@
 //!
 //! Public field list, semantics, and defaults are pinned here —
 //! every field documented must be present.
+//!
+//! `git_author_name` and `git_author_email` are optional `String` keys in the
+//! `caduceus:` block. An absent or empty value falls through to host git
+//! config and then the last-resort daemon identity.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -135,6 +139,8 @@ pub struct Config {
     pub comment_forbidden_strings: Vec<String>,
     pub worker_env_allowlist: Vec<String>,
     pub github_token: Option<String>,
+    pub git_author_name: Option<String>,
+    pub git_author_email: Option<String>,
     pub api_base: String,
     pub dry_run: bool,
     /// Maximum number of concurrent worker processes. Default 1.
@@ -266,6 +272,8 @@ pub struct RawConfig {
     pub comment_forbidden_strings: Option<Vec<String>>,
     pub worker_env_allowlist: Option<Vec<String>>,
     pub github_token: Option<String>,
+    pub git_author_name: Option<String>,
+    pub git_author_email: Option<String>,
     pub api_base: Option<String>,
     pub dry_run: Option<bool>,
     pub worker_parallelism: Option<u32>,
@@ -820,6 +828,20 @@ impl Config {
                     Some(trimmed.to_string())
                 }
             }),
+            git_author_name: raw.git_author_name.and_then(|s| {
+                if s.trim().is_empty() {
+                    None
+                } else {
+                    Some(s.trim().to_string())
+                }
+            }),
+            git_author_email: raw.git_author_email.and_then(|s| {
+                if s.trim().is_empty() {
+                    None
+                } else {
+                    Some(s.trim().to_string())
+                }
+            }),
             api_base,
             dry_run,
             worker_parallelism,
@@ -934,6 +956,8 @@ impl Config {
             comment_forbidden_strings: Vec::new(),
             worker_env_allowlist: Vec::new(),
             github_token: None,
+            git_author_name: None,
+            git_author_email: None,
             api_base: DEFAULT_API_BASE.to_string(),
             dry_run: false,
             worker_parallelism: DEFAULT_WORKER_PARALLELISM,

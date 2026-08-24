@@ -1,5 +1,7 @@
 use super::{FinalizeAction, FinalizeContext, FinalizeOutput};
 
+use std::process::Command;
+
 use serde::{Deserialize, Serialize};
 
 use crate::infra::config::Config;
@@ -47,6 +49,42 @@ pub const WORKER_CONTROL_FILE_NAMES: &[&str] = &["worker-result.json"];
 /// added.
 pub const DEFAULT_GIT_USER_NAME: &str = "Caduceus Daemon";
 pub const DEFAULT_GIT_USER_EMAIL: &str = "caduceus@daemon.local";
+
+/// Resolve the git author and committer identity through the configured
+/// identity, host git config, and daemon default tiers.
+pub fn resolve_git_author(cfg: &Config) -> (String, String) {
+    let tier1_name = cfg.git_author_name.clone();
+    let tier1_email = cfg.git_author_email.clone();
+    let (tier2_name, tier2_email) = host_git_identity();
+    let name = tier1_name
+        .or(tier2_name)
+        .unwrap_or(DEFAULT_GIT_USER_NAME.to_string());
+    let email = tier1_email
+        .or(tier2_email)
+        .unwrap_or(DEFAULT_GIT_USER_EMAIL.to_string());
+    (name, email)
+}
+
+/// Read the host's global git identity, treating missing values and git
+/// failures as silent misses in the resolution cascade.
+pub fn host_git_identity() -> (Option<String>, Option<String>) {
+    let read = |key: &str| -> Option<String> {
+        let out = Command::new("git")
+            .args(["config", "--global", key])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if s.is_empty() {
+            None
+        } else {
+            Some(s)
+        }
+    };
+    (read("user.name"), read("user.email"))
+}
 
 /// Inspect the worktree, validate the changes, and commit
 /// the worker's work. The function:
@@ -165,11 +203,12 @@ pub fn commit_code_result(
     for path in &validated {
         git_add(&ctx.worktree.path, path, runner)?;
     }
+    let (author_name, author_email) = resolve_git_author(&ctx.config);
     let commit_oid = git_commit(
         &ctx.worktree.path,
         &worker_result.commit_message,
-        DEFAULT_GIT_USER_NAME,
-        DEFAULT_GIT_USER_EMAIL,
+        &author_name,
+        &author_email,
         runner,
     )?;
     let _ = worker_result_path;

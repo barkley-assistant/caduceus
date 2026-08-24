@@ -67,6 +67,15 @@ When triggered, this skill should:
    daemon `processor.log` lives at `<state_dir>/processor.log` and the
    heartbeat envelope sits at `<state_dir>/runs/<run_id>.heartbeat`.
 
+## Configuration keys
+
+Set `git_author_name` and `git_author_email` in the `caduceus:` block to
+configure commit identity. Each field cascades independently from explicit
+config to the host's global git config and then
+`Caduceus Daemon <caduceus@daemon.local>`, so values from different tiers can
+merge; the daemon emits a once-per-process WARN when the last-resort fallback
+is used.
+
 ## Investigation vs. Code Tickets
 
 The same bridge contract serves both. The bridge forwards labels via

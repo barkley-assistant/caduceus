@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Configurable git author identity.** `git_author_name` and
+  `git_author_email` now resolve per field through explicit config, host git
+  config, and the `Caduceus Daemon <caduceus@daemon.local>` fallback. Closes
+  #210.
+
 ## [1.0.0] - 2026-08-08
 
 ### Added

@@ -7,6 +7,7 @@
 //! ultimately delegates to `caduceus::tick::run_blocking`.
 
 use std::ffi::OsString;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use clap::{Parser, Subcommand};
 
@@ -15,6 +16,8 @@ use caduceus::error::{CaduceusError, CaduceusResult};
 use caduceus::issue::IssueKey;
 use caduceus::queue::StateStore;
 use caduceus::DaemonLock;
+
+static GIT_AUTHOR_WARNED: AtomicBool = AtomicBool::new(false);
 
 /// Caduceus v1.0.0: poll GitHub, queue one unit of work per tick, finalise
 /// code or investigation results.
@@ -156,6 +159,14 @@ pub fn run() -> CaduceusResult<()> {
                 Some(path) => Config::load_from(std::path::Path::new(&path))?,
                 None => Config::load()?,
             };
+            let (host_name, host_email) = caduceus::finalize::commit::host_git_identity();
+            let name_from_tier3 = cfg.git_author_name.is_none() && host_name.is_none();
+            let email_from_tier3 = cfg.git_author_email.is_none() && host_email.is_none();
+            if (name_from_tier3 || email_from_tier3)
+                && !GIT_AUTHOR_WARNED.swap(true, Ordering::SeqCst)
+            {
+                tracing::warn!("git_author: no config or host identity resolved — falling back to \"Caduceus Daemon <caduceus@daemon.local>\". Configure git_author_name + git_author_email in the caduceus: config block to silence this warning.");
+            }
             let outcome = caduceus::tick::run_blocking(cfg)?;
             // Map the outcome to the documented exit code so
             // the cron model (Processed / Idle / Cancelled →

@@ -445,7 +445,9 @@ fn commit_uses_daemon_identity() {
     // The commit author is the daemon's configured
     // identity, not the worker's.
     let base = tempfile::tempdir().expect("base");
-    let (cfg, wt, issue) = setup_worktree(base.path());
+    let (mut cfg, wt, issue) = setup_worktree(base.path());
+    cfg.git_author_name = Some("Caduceus Daemon".to_string());
+    cfg.git_author_email = Some("caduceus@daemon.local".to_string());
     fs::write(wt.path.join("README.md"), "modified\n").expect("write");
     let ctx = make_context(&cfg, &wt, &issue, "run-identity");
     let runner = GitRunner::new(&cfg);
