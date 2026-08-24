@@ -95,3 +95,18 @@ fn attic_zero_retention_is_rejected() {
         "unexpected error: {msg}"
     );
 }
+
+#[test]
+fn git_author_config_trims_values_and_treats_empty_as_absent() {
+    let raw = RawConfig {
+        git_author_name: Some("  Ops Bot  ".to_string()),
+        git_author_email: Some("   ".to_string()),
+        worker_command: Some(vec!["/bin/true".to_string()]),
+        reduced_containment_acknowledged: Some(true),
+        ..Default::default()
+    };
+
+    let cfg = Config::from_raw(raw, &LoadContext::default()).expect("config");
+    assert_eq!(cfg.git_author_name.as_deref(), Some("Ops Bot"));
+    assert_eq!(cfg.git_author_email, None);
+}
