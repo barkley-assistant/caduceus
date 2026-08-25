@@ -70,3 +70,4 @@ planning/
 # via write_canary_report(); never commit). Rooted so only this exact
 # generated file is ignored.
 /tests/canary_report.txt
+.opencode/
