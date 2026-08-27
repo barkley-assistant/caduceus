@@ -36,7 +36,6 @@ pub mod oci_lifecycle;
 pub mod policy;
 pub mod secret_transport;
 pub mod trusted_host;
-pub mod upgrade;
 
 /// Arguments to [`Executor::run`]. Every field the executor needs
 /// to dispatch a worker, regardless of mode.
@@ -56,9 +55,6 @@ pub struct ExecutorSpec {
     pub worker_command: Vec<String>,
     /// Cancellation token for daemon shutdown.
     pub cancellation: CancellationToken,
-    /// Optional named network profile for OCI isolation policy.
-    /// When `None`, the default network profile (none) is used.
-    pub network_profile: Option<String>,
     /// Issue title (UTF-8, NUL-free, may contain newlines).
     pub issue_title: String,
     /// Issue body (UTF-8, NUL-free, may contain newlines).

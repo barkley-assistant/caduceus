@@ -270,11 +270,30 @@ fn canonical_config_keys_appear_in_readme_examples() {
         "worker_command",
         "poll_interval_seconds",
         "ticket_label_code",
+        "sandbox",
     ] {
         // Documented config examples must mention the canonical key.
         assert!(
             matches_word(&readme, key),
             "README.md has no occurrence of canonical config key `{key}`"
+        );
+    }
+    // None of the removed flat prototype keys may appear anywhere in
+    // the README (word-boundary match — backticks do not block).
+    for key in [
+        "oci_cli",
+        "oci_image_digest",
+        "oci_pull_policy",
+        "oci_stop_timeout_seconds",
+        "oci_kill_timeout_seconds",
+        "oci_reconcile_timeout_seconds",
+        "network_profiles",
+        "secret_grants",
+        "upgrade_choice",
+    ] {
+        assert!(
+            !matches_word(&readme, key),
+            "README.md must not mention removed prototype config key `{key}`"
         );
     }
 }

@@ -132,10 +132,6 @@ name = "per_claim_test"
 path = "tests/daemon/per_claim_test.rs"
 
 [[test]]
-name = "oci_config_test"
-path = "tests/executor/oci_config_test.rs"
-
-[[test]]
 name = "oci_run_test"
 path = "tests/state/oci_run_test.rs"
 
@@ -166,10 +162,6 @@ path = "tests/executor/network_test.rs"
 [[test]]
 name = "secret_grant_test"
 path = "tests/executor/secret_grant_test.rs"
-
-[[test]]
-name = "upgrade_test"
-path = "tests/executor/upgrade_test.rs"
 
 [[test]]
 name = "isolation_escape_test"
@@ -290,6 +282,10 @@ path = "tests/state/claim_test.rs"
 [[test]]
 name = "config_bootstrap_test"
 path = "tests/state/config_bootstrap_test.rs"
+
+[[test]]
+name = "sandbox_config_test"
+path = "tests/infra/config/sandbox_config_test.rs"
 
 [[test]]
 name = "config_resolution_test"

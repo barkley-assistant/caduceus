@@ -141,23 +141,6 @@ pub(crate) fn expand_worker_command(
 
 // Validators
 
-/// Validate a secret grant name: must match `[a-z][a-z0-9-]{0,63}`.
-pub(crate) fn is_valid_secret_grant_name(name: &str) -> bool {
-    if name.is_empty() {
-        return false;
-    }
-    let bytes = name.as_bytes();
-    if !bytes[0].is_ascii_lowercase() {
-        return false;
-    }
-    if name.len() > 64 {
-        return false;
-    }
-    bytes[1..]
-        .iter()
-        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
-}
-
 pub(crate) fn validate_watched_repos(repos: &[String], errors: &mut Vec<String>) {
     let mut seen: HashSet<String> = HashSet::new();
     for repo in repos {

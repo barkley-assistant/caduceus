@@ -323,11 +323,45 @@ fn setup_config_creates_mode_0600() {
             content.contains("workdir_base"),
             "config should contain workdir_base"
         );
+        // The generated template is an explicit TrustedHost config and
+        // omits the optional `sandbox:` section entirely.
+        assert!(
+            content.contains("executor_mode: trusted_host"),
+            "config should contain executor_mode: trusted_host"
+        );
+        assert!(
+            content.contains("reduced_containment_acknowledged: true"),
+            "config should contain reduced_containment_acknowledged: true"
+        );
+        assert!(
+            !content.contains("sandbox:"),
+            "config must not emit a sandbox: section"
+        );
         // The first run creates a standalone file (no Hermes shape)
         assert!(
             !content.contains("caduceus:"),
             "standalone config should not have a caduceus: section wrapper"
         );
+        // The generated body must remain loadable: parse it through
+        // serde_yaml → RawConfig → Config::from_raw so the template can
+        // never silently regress to an unloadable shape.
+        let raw: caduceus::config::RawConfig =
+            serde_yaml::from_str(&content).expect("generated config parses as RawConfig");
+        let loaded = caduceus::config::Config::from_raw(
+            raw,
+            &caduceus::config::LoadContext {
+                hermes_home: Some(hermes_home.clone()),
+                plugin_root: None,
+                env: caduceus::config::RawEnv::default(),
+            },
+        )
+        .expect("generated config must load through Config::from_raw");
+        assert_eq!(
+            loaded.executor_mode,
+            caduceus::executor::ExecutorKind::TrustedHost
+        );
+        assert!(loaded.reduced_containment_acknowledged);
+        assert!(loaded.sandbox.is_none());
     });
 }
 
@@ -389,6 +423,14 @@ fn setup_config_preserves_existing_mode_and_yaml() {
         assert!(
             content.contains("poll_interval_seconds"),
             "merged config should have caduceus config keys"
+        );
+        assert!(
+            content.contains("executor_mode: trusted_host"),
+            "merged config should carry executor_mode: trusted_host"
+        );
+        assert!(
+            content.contains("reduced_containment_acknowledged: true"),
+            "merged config should carry reduced_containment_acknowledged: true"
         );
 
         // Verify mode was preserved (not widened above 0600)

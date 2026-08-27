@@ -151,6 +151,38 @@ This is on purpose: the Hermes plugin has a default
 bridge path; you don't, so the daemon makes you say it
 out loud.
 
+### OCI sandbox (optional)
+
+Caduceus can dispatch workers inside a container instead
+of directly on the host. The whole sandbox lives under
+one nested `sandbox:` section — the single source of
+truth for what the OCI executor enforces:
+
+```yaml
+executor_mode: oci
+sandbox:
+  engine: docker            # or podman
+  image: "caduceus-worker@sha256:<64 lowercase hex>"  # required, no default
+  pull_policy: if_missing   # never | if_missing | always
+  resources: { cpus: 2.0, memory_mb: 2048, pids: 256, tmpfs_mb: 256, shm_mb: 64 }
+  network: none             # none | unrestricted
+  pass_env: []
+  stop_timeout_seconds: 10
+  kill_timeout_seconds: 5
+  reconcile_timeout_seconds: 60
+  reserved_host_disk_mb: 2048
+```
+
+TrustedHost configs (the default) may omit `sandbox:`
+entirely; `executor_mode: oci` fails to load without a
+valid `sandbox.image`. The flat prototype keys that
+earlier versions of this project used for OCI sandbox
+configuration are rejected at load with an unknown-field
+error, and there is no migration path — that surface was
+never publicly released. The verbatim removal list lives
+on the
+[configuration wiki page](https://github.com/barkley-assistant/caduceus/wiki/Configuration).
+
 ## The 60-Second Orientation
 
 1. `git clone`, `cargo build`, `hermes caduceus setup`

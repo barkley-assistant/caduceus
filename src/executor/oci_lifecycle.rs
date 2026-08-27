@@ -3,8 +3,8 @@
 //! The [`run`] function orchestrates the five steps, persists state to
 //! the [`OciRunState`] trait at each transition, and cleans up the
 //! container on any error path. On cancellation the stop and remove
-//! steps are bounded by the configured `oci_kill_timeout_seconds` and
-//! `oci_stop_timeout_seconds` so the daemon never hangs.
+//! steps are bounded by the configured `sandbox.kill_timeout_seconds` and
+//! `sandbox.stop_timeout_seconds` so the daemon never hangs.
 //!
 //! The module is intentionally free of `tokio::process::Command` — the
 //! subprocess boundary is the tokio::process::Command inside the
@@ -17,7 +17,7 @@ use tokio::process::Command;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
-use crate::executor::oci_args::{build_argv, OciEngine};
+use crate::executor::oci_args::build_argv;
 use crate::executor::policy::EnforcedSpec;
 use crate::executor::ExecutorSpec;
 use crate::infra::config::Config;
@@ -43,7 +43,7 @@ pub async fn run(
     state: &dyn OciRunState,
     cancellation: CancellationToken,
 ) -> CaduceusResult<SupervisorOutcome> {
-    let engine = OciEngine::from_binary_name(&cfg.oci_cli.to_string_lossy());
+    let engine = cfg.sandbox().engine;
     let mounts = crate::executor::policy::default_mounts(spec);
 
     // Build argv — rejects mounts not declared in the allow-list.
@@ -74,7 +74,7 @@ pub async fn run(
 
     // Step 2: start
     let start_argv = vec![
-        cfg.oci_cli.to_string_lossy().to_string(),
+        cfg.sandbox().engine.binary_name().to_string(),
         "start".to_string(),
         container_id.clone(),
     ];
@@ -83,7 +83,7 @@ pub async fn run(
 
     // Step 3: wait
     let wait_argv = vec![
-        cfg.oci_cli.to_string_lossy().to_string(),
+        cfg.sandbox().engine.binary_name().to_string(),
         "wait".to_string(),
         container_id.clone(),
     ];
@@ -92,12 +92,12 @@ pub async fn run(
     state.update_state(&spec.run_id, &OciLifecycleState::Exited(exit_code))?;
 
     // Step 4: stop (graceful, bounded)
-    let _stop_timeout = Duration::from_secs(cfg.oci_stop_timeout_seconds);
+    let _stop_timeout = Duration::from_secs(cfg.sandbox().stop_timeout_seconds);
     let stop_argv = vec![
-        cfg.oci_cli.to_string_lossy().to_string(),
+        cfg.sandbox().engine.binary_name().to_string(),
         "stop".to_string(),
         "--time".to_string(),
-        cfg.oci_stop_timeout_seconds.to_string(),
+        cfg.sandbox().stop_timeout_seconds.to_string(),
         container_id.clone(),
     ];
     match run_cli("stop", &stop_argv, "stop", &cancellation).await {
@@ -108,7 +108,7 @@ pub async fn run(
             // If stop fails (e.g. container already gone), log and continue.
             // Kill as fallback.
             let kill_argv = vec![
-                cfg.oci_cli.to_string_lossy().to_string(),
+                cfg.sandbox().engine.binary_name().to_string(),
                 "kill".to_string(),
                 container_id.clone(),
             ];
@@ -122,12 +122,12 @@ pub async fn run(
 
     // Step 5: remove
     let remove_argv = vec![
-        cfg.oci_cli.to_string_lossy().to_string(),
+        cfg.sandbox().engine.binary_name().to_string(),
         "rm".to_string(),
         "--force".to_string(),
         container_id.clone(),
     ];
-    let remove_timeout = Duration::from_secs(cfg.oci_kill_timeout_seconds);
+    let remove_timeout = Duration::from_secs(cfg.sandbox().kill_timeout_seconds);
     match timeout(
         remove_timeout,
         run_cli("rm", &remove_argv, "remove", &cancellation),
@@ -165,7 +165,7 @@ pub async fn run_with_argv(
     enforced: EnforcedSpec,
     cancellation: CancellationToken,
 ) -> CaduceusResult<SupervisorOutcome> {
-    let engine = OciEngine::from_binary_name(&cfg.oci_cli.to_string_lossy());
+    let engine = cfg.sandbox().engine;
     let argv = enforced.argv;
 
     // Insert a Created state row.
@@ -193,7 +193,7 @@ pub async fn run_with_argv(
 
     // Step 2: start
     let start_argv = vec![
-        cfg.oci_cli.to_string_lossy().to_string(),
+        cfg.sandbox().engine.binary_name().to_string(),
         "start".to_string(),
         container_id.clone(),
     ];
@@ -202,7 +202,7 @@ pub async fn run_with_argv(
 
     // Step 3: wait
     let wait_argv = vec![
-        cfg.oci_cli.to_string_lossy().to_string(),
+        cfg.sandbox().engine.binary_name().to_string(),
         "wait".to_string(),
         container_id.clone(),
     ];
@@ -211,12 +211,12 @@ pub async fn run_with_argv(
     state.update_state(&spec.run_id, &OciLifecycleState::Exited(exit_code))?;
 
     // Step 4: stop (graceful, bounded)
-    let _stop_timeout = Duration::from_secs(cfg.oci_stop_timeout_seconds);
+    let _stop_timeout = Duration::from_secs(cfg.sandbox().stop_timeout_seconds);
     let stop_argv = vec![
-        cfg.oci_cli.to_string_lossy().to_string(),
+        cfg.sandbox().engine.binary_name().to_string(),
         "stop".to_string(),
         "--time".to_string(),
-        cfg.oci_stop_timeout_seconds.to_string(),
+        cfg.sandbox().stop_timeout_seconds.to_string(),
         container_id.clone(),
     ];
     match run_cli("stop", &stop_argv, "stop", &cancellation).await {
@@ -227,7 +227,7 @@ pub async fn run_with_argv(
             // If stop fails (e.g. container already gone), log and continue.
             // Kill as fallback.
             let kill_argv = vec![
-                cfg.oci_cli.to_string_lossy().to_string(),
+                cfg.sandbox().engine.binary_name().to_string(),
                 "kill".to_string(),
                 container_id.clone(),
             ];
@@ -239,12 +239,12 @@ pub async fn run_with_argv(
 
     // Step 5: remove
     let remove_argv = vec![
-        cfg.oci_cli.to_string_lossy().to_string(),
+        cfg.sandbox().engine.binary_name().to_string(),
         "rm".to_string(),
         "--force".to_string(),
         container_id.clone(),
     ];
-    let remove_timeout = Duration::from_secs(cfg.oci_kill_timeout_seconds);
+    let remove_timeout = Duration::from_secs(cfg.sandbox().kill_timeout_seconds);
     match timeout(
         remove_timeout,
         run_cli("rm", &remove_argv, "remove", &cancellation),
@@ -283,7 +283,7 @@ pub async fn reconcile(
         // Try to remove the container if it still exists.
         if let Some(ref container_id) = row.container_id {
             let rm_argv = vec![
-                cfg.oci_cli.to_string_lossy().to_string(),
+                cfg.sandbox().engine.binary_name().to_string(),
                 "rm".to_string(),
                 "--force".to_string(),
                 container_id.clone(),
@@ -308,7 +308,7 @@ pub async fn find_orphans(
 ) -> CaduceusResult<Vec<String>> {
     // List all containers with caduceus.daemon_id label.
     let ps_argv = vec![
-        cfg.oci_cli.to_string_lossy().to_string(),
+        cfg.sandbox().engine.binary_name().to_string(),
         "ps".to_string(),
         "-a".to_string(),
         "--filter".to_string(),
@@ -334,7 +334,7 @@ pub async fn find_orphans(
         // We need to find the run_id from the container labels.
         // Query the container inspect for caduceus.run_id.
         let inspect_argv = vec![
-            cfg.oci_cli.to_string_lossy().to_string(),
+            cfg.sandbox().engine.binary_name().to_string(),
             "inspect".to_string(),
             "--format".to_string(),
             "{{.Config.Labels.caduceus_run_id}}".to_string(),

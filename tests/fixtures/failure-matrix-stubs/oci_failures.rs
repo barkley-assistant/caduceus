@@ -42,7 +42,6 @@ pub fn spec_for_stage(run_id: &str, worker_script: PathBuf) -> ExecutorSpec {
         context_json: r#"{"stage":"fail"}"#.to_string(),
         worker_command: vec![worker_script.to_string_lossy().to_string()],
         cancellation: tokio_util::sync::CancellationToken::new(),
-        network_profile: None,
         issue_title: "title".to_string(),
         issue_body: "body".to_string(),
         labels: Vec::new(),

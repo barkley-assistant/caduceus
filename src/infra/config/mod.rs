@@ -21,12 +21,12 @@
 //! `caduceus:` block. An absent or empty value falls through to host git
 //! config and then the last-resort daemon identity.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
+use crate::executor::oci_args::SandboxEngine;
 use crate::infra::error::{CaduceusError, CaduceusResult};
 
 /// GitHub credential variable names that must never appear in the
@@ -83,15 +83,78 @@ pub const DEFAULT_EXECUTOR_MODE: crate::executor::ExecutorKind =
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OciPullPolicy {
-    #[default]
     Never,
+    #[default]
     IfMissing,
     Always,
 }
 
-pub const DEFAULT_OCI_STOP_TIMEOUT_SECONDS: u64 = 30;
-pub const DEFAULT_OCI_KILL_TIMEOUT_SECONDS: u64 = 10;
-pub const DEFAULT_OCI_RECONCILE_TIMEOUT_SECONDS: u64 = 60;
+pub const DEFAULT_SANDBOX_STOP_TIMEOUT_SECONDS: u64 = 10;
+pub const DEFAULT_SANDBOX_KILL_TIMEOUT_SECONDS: u64 = 5;
+pub const DEFAULT_SANDBOX_RECONCILE_TIMEOUT_SECONDS: u64 = 60;
+pub const DEFAULT_SANDBOX_RESERVED_HOST_DISK_MB: u64 = 2048;
+
+/// Resolved sandbox section. `image` is required — no default.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SandboxConfig {
+    pub engine: SandboxEngine,
+    /// Full immutable image reference `name@sha256:<64 hex>`.
+    pub image: String,
+    pub pull_policy: OciPullPolicy,
+    pub resources: SandboxResources,
+    pub network: SandboxNetwork,
+    pub pass_env: Vec<String>,
+    pub stop_timeout_seconds: u64,
+    pub kill_timeout_seconds: u64,
+    pub reconcile_timeout_seconds: u64,
+    pub reserved_host_disk_mb: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SandboxResources {
+    pub cpus: f64,
+    pub memory_mb: u64,
+    pub pids: u64,
+    pub tmpfs_mb: u64,
+    pub shm_mb: u64,
+}
+
+/// New enum (replaces `network_profiles`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxNetwork {
+    #[default]
+    None, // `--network none`
+    Unrestricted, // `--network host`
+}
+
+/// Raw layer — mirrors the schema with all-`Option` fields.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawSandboxConfig {
+    pub engine: Option<SandboxEngine>,
+    pub image: Option<String>,
+    pub pull_policy: Option<OciPullPolicy>,
+    pub resources: Option<RawSandboxResources>,
+    pub network: Option<SandboxNetwork>,
+    pub pass_env: Option<Vec<String>>,
+    pub stop_timeout_seconds: Option<u64>,
+    pub kill_timeout_seconds: Option<u64>,
+    pub reconcile_timeout_seconds: Option<u64>,
+    pub reserved_host_disk_mb: Option<u64>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawSandboxResources {
+    pub cpus: Option<f64>,
+    pub memory_mb: Option<u64>,
+    pub pids: Option<u64>,
+    pub tmpfs_mb: Option<u64>,
+    pub shm_mb: Option<u64>,
+}
 
 /// Caduceus configuration. Field semantics are pinned here.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -208,30 +271,11 @@ pub struct Config {
     /// `ReducedContainmentNotAcknowledged` before any subprocess spawns.
     pub reduced_containment_acknowledged: bool,
 
-    // OCI executor fields
-    /// Path to the OCI CLI binary (docker or podman). Default "docker".
-    pub oci_cli: PathBuf,
-    /// Image digest (sha256:...) pinned for the OCI executor.
-    pub oci_image_digest: String,
-    /// Image pull policy. Default Never.
-    pub oci_pull_policy: OciPullPolicy,
-    /// Grace period in seconds for `docker stop`. Default 30.
-    pub oci_stop_timeout_seconds: u64,
-    /// Grace period in seconds for `docker kill`. Default 10.
-    pub oci_kill_timeout_seconds: u64,
-    /// Total timeout in seconds for orphan reconciliation. Default 60.
-    pub oci_reconcile_timeout_seconds: u64,
-
-    // Isolation policy fields
-    /// Named network profiles for OCI executor isolation.
-    /// Empty by default — no network access unless a profile is declared.
-    pub network_profiles: HashMap<String, crate::executor::network::NetworkProfile>,
-    /// Secret names the operator has explicitly granted to workers.
-    /// Empty by default — default-deny.
-    pub secret_grants: Vec<String>,
-    /// Operator's upgrade choice for OCI mode. `None` at first start;
-    /// the daemon refuses to run in OCI mode without a persisted choice.
-    pub upgrade_choice: Option<crate::executor::upgrade::UpgradeChoice>,
+    /// The authoritative OCI sandbox section. `None` for TrustedHost
+    /// configs that omit `sandbox:`; required (and always `Some`) when
+    /// `executor_mode == oci` — `Config::from_raw` rejects OCI configs
+    /// without a valid `sandbox.image`.
+    pub sandbox: Option<SandboxConfig>,
 }
 
 /// Loose deserialisation layer used to read the YAML before the source
@@ -292,18 +336,9 @@ pub struct RawConfig {
     pub executor_mode: Option<crate::executor::ExecutorKind>,
     pub reduced_containment_acknowledged: Option<bool>,
 
-    // OCI executor fields
-    pub oci_cli: Option<PathBuf>,
-    pub oci_image_digest: Option<String>,
-    pub oci_pull_policy: Option<OciPullPolicy>,
-    pub oci_stop_timeout_seconds: Option<u64>,
-    pub oci_kill_timeout_seconds: Option<u64>,
-    pub oci_reconcile_timeout_seconds: Option<u64>,
-
-    // Isolation policy fields
-    pub network_profiles: Option<HashMap<String, crate::executor::network::NetworkProfile>>,
-    pub secret_grants: Option<Vec<String>>,
-    pub upgrade_choice: Option<crate::executor::upgrade::UpgradeChoice>,
+    /// Optional in the raw layer — absent means `Config.sandbox` is
+    /// `None` (valid for TrustedHost) unless `executor_mode == oci`.
+    pub sandbox: Option<RawSandboxConfig>,
 }
 
 /// Load context — used to resolve paths and the default worker command
@@ -427,6 +462,8 @@ poll_interval_seconds: 120
 state_dir: "{}"
 log_path: "{}/processor.log"
 workdir_base: "{}"
+executor_mode: trusted_host
+reduced_containment_acknowledged: true
 "#,
         state_dir.display(),
         state_dir.display(),
@@ -706,71 +743,26 @@ impl Config {
             );
         }
 
-        // OCI executor fields — only validate when executor_mode is Oci
-        let oci_cli = raw.oci_cli.unwrap_or_else(|| PathBuf::from("docker"));
+        // Sandbox section. Documented invariant:
+        //   - executor_mode == Oci  → `sandbox:` section REQUIRED,
+        //     `sandbox.image` REQUIRED.
+        //   - executor_mode == TrustedHost → `sandbox:` OPTIONAL; absent
+        //     ⇒ Config.sandbox is None and nothing downstream reads it.
+        //     Present ⇒ validated identically.
         let is_oci_mode = matches!(executor_mode, crate::executor::ExecutorKind::Oci);
-        let oci_image_digest = match raw.oci_image_digest {
-            Some(d) if !d.is_empty() => {
-                let digest_regex =
-                    Regex::new(r"^sha256:[a-f0-9]{64}$").expect("digest regex is valid");
-                if !digest_regex.is_match(&d) {
-                    errors.push(format!(
-                        "oci_image_digest must be a valid sha256 digest \
-  (sha256: followed by 64 hex chars), got: {d:?}"
-                    ));
-                }
-                d
-            }
-            Some(_) => {
-                // Explicitly set to empty string
-                errors.push("oci_image_digest must not be set to an empty string".to_string());
-                String::new()
-            }
+        let sandbox = match raw.sandbox {
             None => {
                 if is_oci_mode {
                     errors.push(
-                        "oci_image_digest must not be empty when executor_mode is oci \
-  (image must be pinned by digest)"
+                        "executor_mode 'oci' requires a `sandbox:` section with a valid \
+                         `sandbox.image` (name@sha256:<64 hex>)"
                             .to_string(),
                     );
                 }
-                String::new()
+                None
             }
+            Some(raw_sb) => Some(resolve_sandbox(raw_sb, &mut errors)),
         };
-        let oci_pull_policy = raw.oci_pull_policy.unwrap_or(OciPullPolicy::Never);
-        let oci_stop_timeout_seconds = raw
-            .oci_stop_timeout_seconds
-            .unwrap_or(DEFAULT_OCI_STOP_TIMEOUT_SECONDS);
-        if oci_stop_timeout_seconds == 0 {
-            errors.push("oci_stop_timeout_seconds must be > 0".to_string());
-        }
-        let oci_kill_timeout_seconds = raw
-            .oci_kill_timeout_seconds
-            .unwrap_or(DEFAULT_OCI_KILL_TIMEOUT_SECONDS);
-        if oci_kill_timeout_seconds == 0 {
-            errors.push("oci_kill_timeout_seconds must be > 0".to_string());
-        }
-        let oci_reconcile_timeout_seconds = raw
-            .oci_reconcile_timeout_seconds
-            .unwrap_or(DEFAULT_OCI_RECONCILE_TIMEOUT_SECONDS);
-        if oci_reconcile_timeout_seconds == 0 {
-            errors.push("oci_reconcile_timeout_seconds must be > 0".to_string());
-        }
-
-        // Isolation policy fields. The network_profiles
-        // map and secret_grants list default to empty (default-deny).
-        // The upgrade_choice is None by default; the daemon enforces
-        // a persisted choice at startup when executor_mode == Oci.
-        let network_profiles = raw.network_profiles.unwrap_or_default();
-        let secret_grants = raw.secret_grants.unwrap_or_default();
-        for grant in &secret_grants {
-            if !is_valid_secret_grant_name(grant) {
-                errors.push(format!(
-                    "secret_grant name {grant:?} must match [a-z][a-z0-9-]{{0,63}}"
-                ));
-            }
-        }
-        let upgrade_choice = raw.upgrade_choice;
 
         // dry_run is resolved by the env overlay. The raw
         // layer may carry a YAML-supplied hint here for tests; we
@@ -904,20 +896,17 @@ impl Config {
             repo_storage_root,
             executor_mode,
             reduced_containment_acknowledged,
-
-            // OCI executor fields
-            oci_cli,
-            oci_image_digest,
-            oci_pull_policy,
-            oci_stop_timeout_seconds,
-            oci_kill_timeout_seconds,
-            oci_reconcile_timeout_seconds,
-
-            // Isolation policy fields
-            network_profiles,
-            secret_grants,
-            upgrade_choice,
+            sandbox,
         })
+    }
+
+    /// Panics only for hand-built Configs that bypass from_raw in OCI
+    /// paths — unreachable for loaded configs (from_raw enforces
+    /// presence in OCI mode) and for test_defaults.
+    pub fn sandbox(&self) -> &SandboxConfig {
+        self.sandbox
+            .as_ref()
+            .expect("sandbox section is required for the OCI executor")
     }
 
     /// Deterministic root-anchored defaults for tests. Avoids any
@@ -983,20 +972,30 @@ impl Config {
             // `Some(false)`.
             reduced_containment_acknowledged: true,
 
-            // OCI executor defaults
-            oci_cli: PathBuf::from("docker"),
-            oci_image_digest:
-                "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-                    .to_string(),
-            oci_pull_policy: OciPullPolicy::Never,
-            oci_stop_timeout_seconds: DEFAULT_OCI_STOP_TIMEOUT_SECONDS,
-            oci_kill_timeout_seconds: DEFAULT_OCI_KILL_TIMEOUT_SECONDS,
-            oci_reconcile_timeout_seconds: DEFAULT_OCI_RECONCILE_TIMEOUT_SECONDS,
-
-            // Isolation policy defaults
-            network_profiles: HashMap::new(),
-            secret_grants: Vec::new(),
-            upgrade_choice: None,
+            // One valid default sandbox. `test_defaults` bypasses
+            // from_raw, so the regex never sees the placeholder image;
+            // YAML-loading tests supply real-shaped digests.
+            sandbox: Some(SandboxConfig {
+                engine: SandboxEngine::Docker,
+                // Format-valid placeholder; `test_defaults` bypasses
+                // from_raw, so the regex never sees it. YAML-loading
+                // tests supply real-shaped digests.
+                image: format!("caduceus-worker@sha256:{}", "0".repeat(64)),
+                pull_policy: OciPullPolicy::IfMissing,
+                resources: SandboxResources {
+                    cpus: 2.0,
+                    memory_mb: 2048,
+                    pids: 256,
+                    tmpfs_mb: 256,
+                    shm_mb: 64,
+                },
+                network: SandboxNetwork::None,
+                pass_env: Vec::new(),
+                stop_timeout_seconds: DEFAULT_SANDBOX_STOP_TIMEOUT_SECONDS,
+                kill_timeout_seconds: DEFAULT_SANDBOX_KILL_TIMEOUT_SECONDS,
+                reconcile_timeout_seconds: DEFAULT_SANDBOX_RECONCILE_TIMEOUT_SECONDS,
+                reserved_host_disk_mb: DEFAULT_SANDBOX_RESERVED_HOST_DISK_MB,
+            }),
         }
     }
 
@@ -1189,6 +1188,150 @@ impl Config {
     /// reason and a hint are surfaced).
     pub fn resolve_github_token(&self, env: &dyn TokenEnv) -> CaduceusResult<ResolvedToken> {
         resolve_token_chain(self, env, &RealGhRunner)
+    }
+}
+
+/// Resolve a raw `sandbox:` section into a validated [`SandboxConfig`].
+///
+/// Every default is applied here (the raw layer keeps every field
+/// `Option`, consistent with the rest of the config). Each rejection
+/// pushes an error naming its field into the shared `errors` vec; the
+/// caller aggregates them into `CaduceusError::Config`.
+fn resolve_sandbox(raw: RawSandboxConfig, errors: &mut Vec<String>) -> SandboxConfig {
+    // image — required, no default; validated by the full-reference
+    // regex `^[^@\s/]+@sha256:[a-f0-9]{64}$`. Failures are decomposed
+    // so the operator can locate and fix the exact problem.
+    let image = match raw.image {
+        Some(s) if !s.is_empty() => {
+            let image_regex = Regex::new(r"^[^@\s/]+@sha256:[a-f0-9]{64}$")
+                .expect("sandbox image regex is valid");
+            if !image_regex.is_match(&s) {
+                match s.split_once('@') {
+                    None => {
+                        // No digest part at all (tag-only ref, bare name).
+                        errors.push(format!(
+                            "sandbox.image must be a full reference of the form \
+                             name@sha256:<64 hex>, got: {s:?}"
+                        ));
+                    }
+                    Some((_, digest)) if !digest.starts_with("sha256:") => {
+                        errors
+                            .push("sandbox.image digest must use the sha256 algorithm".to_string());
+                    }
+                    Some((_, digest)) => {
+                        if digest.len() != "sha256:".len() + 64 {
+                            errors.push(
+                                "sandbox.image digest must be exactly 64 hex chars".to_string(),
+                            );
+                        } else {
+                            // Right shape but still not matching
+                            // (empty name, whitespace, slash in name,
+                            // non-hex characters...).
+                            errors.push(format!(
+                                "sandbox.image must be a full reference of the form \
+                                 name@sha256:<64 hex>, got: {s:?}"
+                            ));
+                        }
+                    }
+                }
+            }
+            s
+        }
+        Some(_) => {
+            // Explicitly set to empty string.
+            errors.push("sandbox.image must not be empty".to_string());
+            String::new()
+        }
+        None => {
+            errors.push(
+                "sandbox.image is required and must be a full reference of the form \
+                 name@sha256:<64 hex>"
+                    .to_string(),
+            );
+            String::new()
+        }
+    };
+
+    // engine — serde rejects unknown variants at YAML-parse time;
+    // the default is applied here.
+    let engine = raw.engine.unwrap_or_default();
+    let pull_policy = raw.pull_policy.unwrap_or(OciPullPolicy::IfMissing);
+    let network = raw.network.unwrap_or_default();
+    let resources = resolve_sandbox_resources(raw.resources.unwrap_or_default(), errors);
+    let pass_env = raw.pass_env.unwrap_or_default();
+
+    let stop_timeout_seconds = raw
+        .stop_timeout_seconds
+        .unwrap_or(DEFAULT_SANDBOX_STOP_TIMEOUT_SECONDS);
+    if stop_timeout_seconds == 0 {
+        errors.push("sandbox.stop_timeout_seconds must be > 0".to_string());
+    }
+    let kill_timeout_seconds = raw
+        .kill_timeout_seconds
+        .unwrap_or(DEFAULT_SANDBOX_KILL_TIMEOUT_SECONDS);
+    if kill_timeout_seconds == 0 {
+        errors.push("sandbox.kill_timeout_seconds must be > 0".to_string());
+    }
+    let reconcile_timeout_seconds = raw
+        .reconcile_timeout_seconds
+        .unwrap_or(DEFAULT_SANDBOX_RECONCILE_TIMEOUT_SECONDS);
+    if reconcile_timeout_seconds == 0 {
+        errors.push("sandbox.reconcile_timeout_seconds must be > 0".to_string());
+    }
+    let reserved_host_disk_mb = raw
+        .reserved_host_disk_mb
+        .unwrap_or(DEFAULT_SANDBOX_RESERVED_HOST_DISK_MB);
+    if reserved_host_disk_mb == 0 {
+        errors.push("sandbox.reserved_host_disk_mb must be > 0".to_string());
+    }
+
+    SandboxConfig {
+        engine,
+        image,
+        pull_policy,
+        resources,
+        network,
+        pass_env,
+        stop_timeout_seconds,
+        kill_timeout_seconds,
+        reconcile_timeout_seconds,
+        reserved_host_disk_mb,
+    }
+}
+
+/// Resolve the raw `resources:` block. `cpus` rejects non-finite
+/// values (YAML `.nan` parses to f64 NaN and would slip a `<`
+/// comparison) before the floor check.
+fn resolve_sandbox_resources(
+    raw: RawSandboxResources,
+    errors: &mut Vec<String>,
+) -> SandboxResources {
+    let cpus = raw.cpus.unwrap_or(2.0);
+    if !cpus.is_finite() || cpus < 0.25 {
+        errors.push(format!(
+            "sandbox.resources.cpus must be >= 0.25, got {cpus}"
+        ));
+    }
+    let memory_mb = raw.memory_mb.unwrap_or(2048);
+    if memory_mb < 64 {
+        errors.push(format!(
+            "sandbox.resources.memory_mb must be >= 64, got {memory_mb}"
+        ));
+    }
+    let pids = raw.pids.unwrap_or(256);
+    if pids < 16 {
+        errors.push(format!("sandbox.resources.pids must be >= 16, got {pids}"));
+    }
+    // tmpfs_mb / shm_mb are u64 — zero is a valid floor and negatives
+    // are impossible (serde type error at parse time).
+    let tmpfs_mb = raw.tmpfs_mb.unwrap_or(256);
+    let shm_mb = raw.shm_mb.unwrap_or(64);
+    SandboxResources {
+        cpus,
+        memory_mb,
+        pids,
+        tmpfs_mb,
+        shm_mb,
     }
 }
 
