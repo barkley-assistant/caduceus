@@ -11,7 +11,9 @@
 //! * [`trusted_host::TrustedHostExecutor`] — wraps
 //!   [`crate::worker::supervisor::supervise`] unchanged.
 //! * [`oci::OciExecutor`] — dispatches workers via Docker or Podman
-//!   CLI using the five-step lifecycle in [`oci_lifecycle`].
+//!   CLI. The `create` argv is produced by the pure
+//!   [`sandbox_spec::resolve`] → [`sandbox_renderer::render`] pipeline;
+//!   the five-step lifecycle lives in [`oci_lifecycle`].
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -29,13 +31,14 @@ use crate::worker::supervisor::SupervisorOutcome;
 use self::oci::OciExecutor;
 use self::trusted_host::TrustedHostExecutor;
 
-pub mod network;
 pub mod oci;
-pub mod oci_args;
 pub mod oci_lifecycle;
-pub mod policy;
+pub mod sandbox_renderer;
+pub mod sandbox_spec;
 pub mod secret_transport;
 pub mod trusted_host;
+
+pub use sandbox_spec::{MountSpec, RuntimeFacts, SandboxEngine, SandboxSpec};
 
 /// Arguments to [`Executor::run`]. Every field the executor needs
 /// to dispatch a worker, regardless of mode.

@@ -156,8 +156,12 @@ name = "policy_test"
 path = "tests/executor/policy_test.rs"
 
 [[test]]
-name = "network_test"
-path = "tests/executor/network_test.rs"
+name = "sandbox_renderer_test"
+path = "tests/executor/sandbox_renderer_test.rs"
+
+[[test]]
+name = "sandbox_resolve_test"
+path = "tests/executor/sandbox_resolve_test.rs"
 
 [[test]]
 name = "secret_grant_test"

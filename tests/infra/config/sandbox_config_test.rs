@@ -16,7 +16,7 @@
 //! variant, for the serde-side cases (serde_yaml 0.9 does not embed
 //! the field path in nested errors).
 
-use caduceus::executor::oci_args::SandboxEngine;
+use caduceus::executor::SandboxEngine;
 use caduceus::infra::config::{
     Config, OciPullPolicy, SandboxConfig, SandboxNetwork, SandboxResources,
 };

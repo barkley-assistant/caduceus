@@ -1,7 +1,9 @@
 //! Lifecycle tests for the OCI 5-step orchestration.
 //!
 //! Tests use unique keys per test for parallel safety and verify the
-//! typed errors, cancellation handling, and cleanup guarantees.
+//! typed errors, cancellation handling, cleanup guarantees, and the
+//! `ContainerRunRow.engine` column wiring from `run_with_argv`'s
+//! explicit `SandboxEngine` parameter.
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -9,6 +11,7 @@ use std::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use caduceus::executor::oci_lifecycle;
+use caduceus::executor::sandbox_spec::SandboxEngine;
 use caduceus::executor::ExecutorSpec;
 use caduceus::github::issue::IssueKey;
 use caduceus::infra::config::Config;
@@ -85,20 +88,41 @@ fn test_spec(run_id: &str) -> ExecutorSpec {
     }
 }
 
+/// A minimal pre-rendered create argv. The lifecycle module consumes
+/// argv only — it never re-derives it (the renderer is the sole argv
+/// producer in the crate).
+fn create_argv() -> Vec<String> {
+    vec![
+        "docker".to_string(),
+        "create".to_string(),
+        "caduceus-worker@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+            .to_string(),
+        "bridge.py".to_string(),
+    ]
+}
+
 // cleanup_on_cancel_and_timeout (AC-03)
 
 /// Cancel mid-wait → no orphan container is left behind.
 #[tokio::test]
 async fn cleanup_on_cancel_and_timeout() {
     // Without Docker, we expect the lifecycle to fail at the create
-    // step with OciEngineUnavailable. The state row should be
+    // step with a typed OCI error. The state row should be
     // inserted (Created) before the error is returned.
     let cfg = test_cfg();
     let state = FakeOciRunState::new();
     let spec = test_spec("lifecycle-cancel-001");
     let cancel = CancellationToken::new();
 
-    let result = oci_lifecycle::run(&cfg, &spec, &state, cancel).await;
+    let result = oci_lifecycle::run_with_argv(
+        &cfg,
+        &spec,
+        &state,
+        SandboxEngine::Docker,
+        create_argv(),
+        cancel,
+    )
+    .await;
     assert!(result.is_err(), "expected error without Docker");
 
     // The state row should have been inserted (Created) before the
@@ -125,9 +149,16 @@ async fn engine_unavailable_surfaces_structured() {
     let spec = test_spec("lifecycle-eng-001");
     let cancel = CancellationToken::new();
 
-    let err = oci_lifecycle::run(&cfg, &spec, &state, cancel)
-        .await
-        .expect_err("expected error without Docker");
+    let err = oci_lifecycle::run_with_argv(
+        &cfg,
+        &spec,
+        &state,
+        SandboxEngine::Docker,
+        create_argv(),
+        cancel,
+    )
+    .await
+    .expect_err("expected error without Docker");
 
     let is_oci_error = matches!(
         &err,
@@ -155,7 +186,14 @@ async fn stop_kill_remove_bounded() {
     // Use tokio::time::timeout to ensure we don't hang.
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(30),
-        oci_lifecycle::run(&cfg, &spec, &state, cancel),
+        oci_lifecycle::run_with_argv(
+            &cfg,
+            &spec,
+            &state,
+            SandboxEngine::Docker,
+            create_argv(),
+            cancel,
+        ),
     )
     .await;
 
@@ -179,6 +217,38 @@ async fn stop_kill_remove_bounded() {
             panic!("timeout: lifecycle hung");
         }
     }
+}
+
+// run_with_argv_wires_engine_into_state_row (task 4.7)
+
+/// The `engine` passed to `run_with_argv` feeds the
+/// `ContainerRunRow.engine` column — the same engine the renderer
+/// used, so the create argv and the state row cannot diverge.
+#[tokio::test]
+async fn run_with_argv_wires_engine_into_state_row() {
+    let cfg = test_cfg();
+    let state = FakeOciRunState::new();
+    let spec = test_spec("lifecycle-engine-row-001");
+    let cancel = CancellationToken::new();
+
+    // Podman engine: the renderer would have emitted `podman create`,
+    // and the state row must say "Podman".
+    let _ = oci_lifecycle::run_with_argv(
+        &cfg,
+        &spec,
+        &state,
+        SandboxEngine::Podman,
+        create_argv(),
+        cancel,
+    )
+    .await;
+
+    let row = state.get("lifecycle-engine-row-001").expect("get row");
+    let row = row.expect("row must be inserted before create");
+    assert_eq!(
+        row.engine, "Podman",
+        "ContainerRunRow.engine must match the engine passed to run_with_argv"
+    );
 }
 
 // crash_recovery (AC-05)
@@ -211,8 +281,7 @@ async fn crash_recovery() {
         .await
         .expect("reconcile should succeed");
 
-    // The row should still be PendingReconciliation (reconcile
-    // best-effort only marks Removed if the CLI succeeds).
+    // The row should still exist.
     let row = state.get("crash-rec-001").expect("get row");
     assert!(row.is_some(), "row must still exist");
 }
@@ -240,8 +309,6 @@ async fn reconcile_does_not_remove_unrelated() {
     };
     state.insert(&row).expect("insert row");
 
-    // Reconcile — should not affect unrelated rows.
-    let _cancel = CancellationToken::new();
     // Since the row is not PendingReconciliation, reconcile should
     // have nothing to do.
     let pending = state.list_pending_reconciliation().expect("list pending");

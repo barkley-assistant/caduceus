@@ -2,59 +2,57 @@
 //!
 //! These tests verify that the isolation boundary prevents tampering
 //! with the container's filesystem, secrets, and git metadata. They
-//! use INFRA-LEVEL primitives (oci_args::build_argv, redact(), argv
-//! inspection) since src/runtime/edit_validator.rs does not exist yet.
+//! use the typed pipeline (`resolve` → `render`) plus the `redact()`
+//! primitive from `infra::logging`.
 
 use std::path::PathBuf;
 
-use caduceus::executor::oci_args::build_argv;
-use caduceus::executor::policy::IsolationPolicy;
-use caduceus::executor::ExecutorSpec;
+use caduceus::executor::sandbox_renderer::render;
+use caduceus::executor::sandbox_spec::{resolve, RuntimeFacts, SandboxEngine, SandboxSpec};
 use caduceus::github::issue::IssueKey;
 use caduceus::infra::config::Config;
 use caduceus::infra::error::CaduceusError;
 use caduceus::infra::logging;
 
-fn test_cfg() -> Config {
+fn default_cfg() -> Config {
     let tmp = tempfile::tempdir().expect("tempdir");
     Config::test_defaults(tmp.path())
 }
 
-fn test_spec(run_id: &str) -> ExecutorSpec {
-    ExecutorSpec {
-        self_exe: PathBuf::from("/usr/bin/caduceus"),
-        issue: IssueKey::parse("owner/repo#1").expect("valid key"),
-        worktree: PathBuf::from("/tmp/worktree"),
+fn resolve_from(cfg: &Config, run_id: &str) -> SandboxSpec {
+    let worktree = cfg.workdir_base.join("owner").join("repo").join(run_id);
+    let output = cfg.workdir_base.join("owner").join("repo").join("result");
+    let runtime = RuntimeFacts {
         run_id: run_id.to_string(),
-        context_json: r#"{"x":1}"#.to_string(),
+        issue: IssueKey::parse("owner/repo#1").expect("valid key"),
         worker_command: vec!["python3".to_string(), "bridge.py".to_string()],
-        cancellation: tokio_util::sync::CancellationToken::new(),
-        issue_title: "title".to_string(),
-        issue_body: "body".to_string(),
-        labels: Vec::new(),
-        branch_name: "automation/issue-1".to_string(),
-    }
+        worktree,
+        output_dir: output,
+        daemon_id: "test-daemon".to_string(),
+        workdir_base: cfg.workdir_base.clone(),
+    };
+    resolve(cfg.sandbox(), &runtime).expect("must resolve")
 }
 
-// tamper_modified_files — undeclared mount is rejected
+// tamper_modified_files — an undeclared host path is rejected
 
 #[test]
 fn tamper_modified_files() {
     // An adversary who tries to inject an undeclared mount into the
-    // container must be rejected. The build_argv function enforces
-    // the mount allow-list: every -v flag must map to a declared
-    // MountSpec. An empty mount list with a spec that references
-    // /tmp/worktree triggers OciUndeclaredMount.
-
-    let cfg = test_cfg();
-    let spec = test_spec("tamper-modified-files");
-
-    // Pass an empty mount list — the worktree is in the spec but
-    // the caller didn't declare it in the mount allow-list.
-    let mounts: Vec<caduceus::executor::oci_args::MountSpec> = vec![];
-
-    let result = build_argv(&spec, &cfg, &mounts, None);
-
+    // container must be rejected. The resolution step owns the
+    // host-path allow-list: a worktree outside `workdir_base`
+    // triggers OciUndeclaredMount.
+    let cfg = default_cfg();
+    let runtime = RuntimeFacts {
+        run_id: "tamper-modified-files".to_string(),
+        issue: IssueKey::parse("owner/repo#1").expect("valid key"),
+        worker_command: vec!["python3".to_string(), "bridge.py".to_string()],
+        worktree: PathBuf::from("/tmp/worktree"),
+        output_dir: PathBuf::from("/tmp/result"),
+        daemon_id: "test-daemon".to_string(),
+        workdir_base: cfg.workdir_base.clone(),
+    };
+    let result = resolve(cfg.sandbox(), &runtime);
     match result {
         Err(CaduceusError::OciUndeclaredMount { path }) => {
             assert!(
@@ -130,33 +128,14 @@ fn tamper_secret_in_result() {
 #[test]
 fn tamper_commit_metadata() {
     // The git-less worker contract ensures that the .git directory is
-    // never mounted as a writable volume. An adversary who tries to
-    // tamper with git metadata (commit hashes, refs, config) must be
-    // blocked because .git is not accessible from inside the container.
-    //
-    // This test verifies that the argv produced by IsolationPolicy::enforce
-    // does not contain any .git volume mount.
-
-    let cfg = test_cfg();
-    let spec = test_spec("tamper-commit-metadata");
-
-    let result = IsolationPolicy::enforce(&spec, &cfg);
-
-    match &result {
-        Ok(enforced) => {
-            let argv = &enforced.argv;
-            // The .git directory should not appear as a direct
-            // volume mount path. Look for volume targets that
-            // contain ".git".
-            let git_refs: Vec<&String> = argv.iter().filter(|a| a.contains(".git")).collect();
-            // The worktree path is "/tmp/worktree" — no .git in it.
-            assert!(
-                git_refs.is_empty(),
-                "unexpected .git reference in argv: {git_refs:?}"
-            );
-        }
-        Err(e) => {
-            panic!("enforcement failed with: {e:?}");
-        }
-    }
+    // never mounted as a writable volume. The typed spec has no field
+    // for extra mounts, so the rendered argv cannot contain .git.
+    let cfg = default_cfg();
+    let spec = resolve_from(&cfg, "tamper-commit-metadata");
+    let argv = render(&spec, SandboxEngine::Docker);
+    let git_refs: Vec<&String> = argv.iter().filter(|a| a.contains(".git")).collect();
+    assert!(
+        git_refs.is_empty(),
+        "unexpected .git reference in argv: {git_refs:?}"
+    );
 }

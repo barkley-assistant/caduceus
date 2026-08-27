@@ -303,6 +303,13 @@ pub enum CaduceusError {
     #[error("OCI undeclared mount: {path}")]
     OciUndeclaredMount { path: String },
 
+    /// The workspace and output mounts resolved to overlapping host
+    /// paths (or the same path twice). This is the old
+    /// double-RW/derived-path bug made unrepresentable: the two
+    /// mounts must be distinct host paths.
+    #[error("OCI mount conflict: {detail}")]
+    OciMountConflict { detail: String },
+
     /// A potential secret leak was detected in OCI output.
     #[error("OCI secret leak suspected at {path}")]
     OciSecretLeakSuspected { path: String },
@@ -322,14 +329,6 @@ pub enum CaduceusError {
     /// An image reference is tag-only (not pinned by digest).
     #[error("OCI image is not digest-pinned: {reference}")]
     OciImageNotDigestPinned { reference: String },
-
-    /// A required resource limit (CPU, memory, or PIDs) was not set.
-    #[error("OCI resource limit required: {resource}")]
-    OciResourceLimitRequired { resource: &'static str },
-
-    /// A baseline policy check failed (e.g., engine socket mount detected).
-    #[error("OCI baseline violation: {detail}")]
-    OciBaselineViolation { detail: String },
 
     /// Pull policy `Always` is incompatible with digest-pinned images.
     #[error("OCI pull policy incompatible: {detail}")]
@@ -543,6 +542,9 @@ impl fmt::Debug for CaduceusError {
   CaduceusError::OciUndeclaredMount { path } => {
   format!("OciUndeclaredMount {{ path: {:?} }}", path)
   }
+  CaduceusError::OciMountConflict { detail } => {
+  format!("OciMountConflict {{ detail: {} }}", scrub(detail))
+  }
   CaduceusError::OciSecretLeakSuspected { path } => {
   format!("OciSecretLeakSuspected {{ path: {:?} }}", path)
   }
@@ -554,12 +556,6 @@ impl fmt::Debug for CaduceusError {
             }
             CaduceusError::OciImageNotDigestPinned { reference } => {
                 format!("OciImageNotDigestPinned {{ reference: {:?} }}", reference)
-            }
-            CaduceusError::OciResourceLimitRequired { resource } => {
-                format!("OciResourceLimitRequired {{ resource: {:?} }}", resource)
-            }
-            CaduceusError::OciBaselineViolation { detail } => {
-                format!("OciBaselineViolation {{ detail: {} }}", scrub(detail))
             }
             CaduceusError::OciPullPolicyIncompatible { detail } => {
                 format!("OciPullPolicyIncompatible {{ detail: {} }}", scrub(detail))

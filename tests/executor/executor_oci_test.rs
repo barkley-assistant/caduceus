@@ -29,11 +29,19 @@ fn setup() -> (Config, TempDir) {
     (cfg, tmp)
 }
 
-fn test_spec() -> ExecutorSpec {
+fn test_spec(cfg: &Config) -> ExecutorSpec {
+    // The worktree must live under `cfg.workdir_base` so the
+    // resolution step's host-path allow-list accepts it and the
+    // engine-availability error (not a resolution error) surfaces.
+    let worktree = cfg
+        .workdir_base
+        .join("test-owner")
+        .join("test-repo")
+        .join("run-1");
     ExecutorSpec {
         self_exe: "/usr/bin/caduceus".into(),
         issue: issue_key(),
-        worktree: "/tmp/test-worktree".into(),
+        worktree,
         run_id: "oci-run-1".to_string(),
         context_json: r#"{"x":1}"#.to_string(),
         worker_command: vec!["python3".to_string(), "bridge.py".to_string()],
@@ -53,8 +61,8 @@ fn test_spec() -> ExecutorSpec {
 #[tokio::test]
 async fn oci_executor_returns_typed_error() {
     let (cfg, _tmp) = setup();
-    let executor: Arc<dyn Executor> = Arc::new(OciExecutor::new(cfg));
-    let spec = test_spec();
+    let executor: Arc<dyn Executor> = Arc::new(OciExecutor::new(cfg.clone()));
+    let spec = test_spec(&cfg);
     let err = executor
         .run(&spec)
         .await
@@ -80,8 +88,8 @@ async fn oci_executor_returns_typed_error() {
 #[tokio::test]
 async fn oci_executor_does_not_spawn_process() {
     let (cfg, _tmp) = setup();
-    let executor: Arc<dyn Executor> = Arc::new(OciExecutor::new(cfg));
-    let spec = test_spec();
+    let executor: Arc<dyn Executor> = Arc::new(OciExecutor::new(cfg.clone()));
+    let spec = test_spec(&cfg);
     let started = Instant::now();
     let _ = executor.run(&spec).await;
     let elapsed = started.elapsed();
