@@ -1,7 +1,7 @@
 //! OCI lifecycle failure stubs for the failure matrix (AC-03).
 //!
-//! The pure-state OCI lifecycle test uses `ExecutorSpec` /
-//! `IsolationPolicy` directly — no live container engine is
+//! The pure-state OCI lifecycle test uses `ExecutorSpec` and the
+//! resolve → render pipeline directly — no live container engine is
 //! started. These helpers build the worker-script bodies and the
 //! `ExecutorSpec` shapes needed to drive each stage of the
 //! 5-step OCI lifecycle (create, start, wait, stop, remove) to a

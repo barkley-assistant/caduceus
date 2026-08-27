@@ -1,171 +1,129 @@
-//! Tests for the pure argv builder — no tokio::process::Command allowed.
+//! Rewritten argv-contract tests for the OCI executor.
+//!
+//! The legacy `build_argv` / `find_image_position` surface is deleted;
+//! the pure renderer (`sandbox_renderer::render`) is the sole argv
+//! producer. This file asserts the renderer contract: golden output,
+//! label stability across runs, secret-value hygiene, and the
+//! `SandboxEngine` detection surface (moved from the deleted
+//! `oci_args.rs`).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use caduceus::executor::oci_args::{build_argv, find_image_position, MountSpec, SandboxEngine};
-use caduceus::executor::ExecutorSpec;
+use caduceus::executor::sandbox_renderer::{render, render_with_env_files};
+use caduceus::executor::sandbox_spec::{resolve, RuntimeFacts, SandboxEngine, SandboxSpec};
 use caduceus::github::issue::IssueKey;
 use caduceus::infra::config::Config;
-use caduceus::infra::error::CaduceusError;
 
-fn test_cfg() -> Config {
+fn resolve_from(cfg: &Config, run_id: &str) -> SandboxSpec {
+    let worktree = cfg.workdir_base.join("owner").join("repo").join(run_id);
+    let output = cfg.workdir_base.join("owner").join("repo").join("result");
+    let runtime = RuntimeFacts {
+        run_id: run_id.to_string(),
+        issue: IssueKey::parse("owner/repo#1").expect("valid key"),
+        worker_command: vec!["python3".to_string(), "bridge.py".to_string()],
+        worktree,
+        output_dir: output,
+        daemon_id: "state".to_string(),
+        workdir_base: cfg.workdir_base.clone(),
+    };
+    resolve(cfg.sandbox(), &runtime).expect("must resolve")
+}
+
+fn default_cfg() -> Config {
     let tmp = tempfile::tempdir().expect("tempdir");
     Config::test_defaults(tmp.path())
 }
 
-fn test_spec(run_id: &str) -> ExecutorSpec {
-    ExecutorSpec {
-        self_exe: PathBuf::from("/usr/bin/caduceus"),
-        issue: IssueKey::parse("owner/repo#1").expect("valid key"),
-        worktree: PathBuf::from("/tmp/worktree"),
-        run_id: run_id.to_string(),
-        context_json: r#"{"x":1}"#.to_string(),
-        worker_command: vec!["python3".to_string(), "bridge.py".to_string()],
-        cancellation: tokio_util::sync::CancellationToken::new(),
-        issue_title: "title".to_string(),
-        issue_body: "body".to_string(),
-        labels: Vec::new(),
-        branch_name: "automation/issue-1".to_string(),
-    }
-}
-
-fn sample_mounts() -> Vec<MountSpec> {
-    vec![
-        MountSpec {
-            host_path: PathBuf::from("/tmp/worktree"),
-            container_path: PathBuf::from("/worktree"),
-            read_only: false,
-        },
-        MountSpec {
-            host_path: PathBuf::from("/tmp/result"),
-            container_path: PathBuf::from("/result"),
-            read_only: false,
-        },
-    ]
-}
-
-// one_contract_both_clis (AC-01)
+// one_contract_both_clis (AC-01) — both engines produce the same argv
+// modulo the binary name and the documented Podman userns delta.
 
 #[test]
 fn one_contract_both_clis() {
-    let cfg = test_cfg();
-    let spec = test_spec("run-001");
-    let mounts = sample_mounts();
+    let cfg = default_cfg();
+    let spec = resolve_from(&cfg, "run-001");
+    let docker_argv = render(&spec, SandboxEngine::Docker);
+    let podman_argv = render(&spec, SandboxEngine::Podman);
 
-    let docker_argv = build_argv(&spec, &cfg, &mounts, None).expect("docker argv must build");
-
-    let mut podman_cfg = cfg.clone();
-    podman_cfg.sandbox.as_mut().unwrap().engine = SandboxEngine::Podman;
-    let podman_argv =
-        build_argv(&spec, &podman_cfg, &mounts, None).expect("podman argv must build");
-
-    // Both produce equivalent argv modulo the binary name at index 0.
-    assert_eq!(docker_argv.len(), podman_argv.len(), "same length");
-    for i in 0..docker_argv.len() {
-        if i == 0 {
-            // Binary name differs
-            assert_eq!(docker_argv[0], "docker");
-            assert_eq!(podman_argv[0], "podman");
-        } else {
-            assert_eq!(
-                docker_argv[i], podman_argv[i],
-                "argv[{i}] differs: docker={:?}, podman={:?}",
-                docker_argv[i], podman_argv[i]
-            );
-        }
-    }
+    assert_eq!(docker_argv[0], "docker");
+    assert_eq!(podman_argv[0], "podman");
+    assert_eq!(docker_argv.len() + 2, podman_argv.len());
+    // Everything after the binary is identical except the userns pair.
+    let mut podman_without_delta: Vec<String> = podman_argv
+        .iter()
+        .filter(|a| a.as_str() != "--userns" && !a.starts_with("keep-id:"))
+        .cloned()
+        .collect();
+    podman_without_delta[0] = "docker".to_string();
+    assert_eq!(docker_argv, podman_without_delta);
 }
 
-// undeclared_mount_rejected (AC-02)
+// undeclared_mount_rejected (AC-02) — resolution rejects host paths
+// outside the declared workdir_base.
 
 #[test]
 fn undeclared_mount_rejected() {
-    let cfg = test_cfg();
-    let spec = test_spec("run-002");
-    // Pass an empty mount list — the worktree is in the spec but
-    // the caller didn't declare it in the mount allow-list.
-    let mounts: Vec<MountSpec> = vec![];
-
-    let err = build_argv(&spec, &cfg, &mounts, None)
-        .expect_err("undeclared worktree mount must be rejected");
-    match err {
-        CaduceusError::OciUndeclaredMount { .. } => {} // expected
-        ref other => panic!("expected OciUndeclaredMount; got: {other:?}"),
-    }
+    let cfg = default_cfg();
+    let runtime = RuntimeFacts {
+        run_id: "run-002".to_string(),
+        issue: IssueKey::parse("owner/repo#1").expect("valid key"),
+        worker_command: vec!["python3".to_string(), "bridge.py".to_string()],
+        worktree: PathBuf::from("/tmp/worktree"),
+        output_dir: PathBuf::from("/tmp/result"),
+        daemon_id: "state".to_string(),
+        workdir_base: cfg.workdir_base.clone(),
+    };
+    let err = resolve(cfg.sandbox(), &runtime).expect_err("undeclared worktree must be rejected");
+    assert!(
+        matches!(
+            err,
+            caduceus::infra::error::CaduceusError::OciUndeclaredMount { .. }
+        ),
+        "expected OciUndeclaredMount; got: {err:?}"
+    );
 }
 
-// argv_no_secret_value (AC-04)
+// argv_no_secret_value (AC-04) — the secret path may appear as
+// --env-file but the SECRET VALUE must never be in argv.
 
 #[test]
 fn argv_no_secret_value() {
-    let cfg = test_cfg();
-    let spec = test_spec("run-003");
-    let mounts = sample_mounts();
-    let secret_path = Some(std::path::Path::new("/tmp/secrets.env"));
-
-    let argv = build_argv(&spec, &cfg, &mounts, secret_path).expect("argv must build");
-
-    // The secret path may appear as --env-file but the SECRET
-    // VALUE must never be in argv.
+    let cfg = default_cfg();
+    let spec = resolve_from(&cfg, "run-003");
+    let secret_path = PathBuf::from("/tmp/SUPERSECRET.env");
+    let argv = render_with_env_files(&spec, SandboxEngine::Docker, &[secret_path]);
     for token in &argv {
         assert!(
-            !token.contains("SUPERSECRET"),
-            "secret value 'SUPERSECRET' must not appear in argv token: {token:?}"
+            !token.contains("SUPERSECRET_VALUE"),
+            "secret value must not appear in argv token: {token:?}"
         );
     }
 }
 
-// argv_no_tokio_process_command (AC-01 structural)
-
-#[test]
-fn argv_no_tokio_process_command() {
-    let project_root = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
-    let source = std::fs::read_to_string(format!("{project_root}/src/executor/oci_args.rs"))
-        .unwrap_or_else(|e| panic!("cannot read oci_args.rs: {e}"));
-    // The module must not IMPORT tokio::process::Command. Doc-comment
-    // mentions are fine.
-    assert!(
-        !source.contains("use tokio::process::Command"),
-        "src/executor/oci_args.rs must not import tokio::process::Command"
-    );
-    assert!(
-        !source.contains("tokio::process::Command;"),
-        "src/executor/oci_args.rs must not import tokio::process::Command"
-    );
-}
-
-// argv_label_set_stable (AC-05)
+// argv_label_set_stable (AC-05) — daemon_id identical across runs,
+// run_id differs.
 
 #[test]
 fn argv_label_set_stable() {
-    let cfg = test_cfg();
-    let mounts = sample_mounts();
+    let cfg = default_cfg();
+    let spec_a = resolve_from(&cfg, "run-010");
+    let spec_b = resolve_from(&cfg, "run-011");
 
-    // Two calls with different run_ids but same daemon_id.
-    let spec_a = test_spec("run-010");
-    let spec_b = test_spec("run-011");
-
-    let argv_a = build_argv(&spec_a, &cfg, &mounts, None).expect("argv_a must build");
-    let argv_b = build_argv(&spec_b, &cfg, &mounts, None).expect("argv_b must build");
-
-    // Extract label flags
-    let labels_a: Vec<String> = argv_a
+    let argv_a = render(&spec_a, SandboxEngine::Docker);
+    let argv_b = render(&spec_b, SandboxEngine::Docker);
+    let labels_a: Vec<&String> = argv_a
         .iter()
         .filter(|t| t.starts_with("caduceus."))
-        .cloned()
         .collect();
-    let labels_b: Vec<String> = argv_b
+    let labels_b: Vec<&String> = argv_b
         .iter()
         .filter(|t| t.starts_with("caduceus."))
-        .cloned()
         .collect();
 
-    // Both runs have the same daemon_id
-    let daemon_a: Vec<&String> = labels_a
+    let daemon_a: Vec<&&String> = labels_a
         .iter()
         .filter(|l| l.starts_with("caduceus.daemon_id"))
         .collect();
-    let daemon_b: Vec<&String> = labels_b
+    let daemon_b: Vec<&&String> = labels_b
         .iter()
         .filter(|l| l.starts_with("caduceus.daemon_id"))
         .collect();
@@ -175,12 +133,11 @@ fn argv_label_set_stable() {
         "daemon_id must be identical across runs"
     );
 
-    // Run IDs differ
-    let run_a: Vec<&String> = labels_a
+    let run_a: Vec<&&String> = labels_a
         .iter()
         .filter(|l| l.starts_with("caduceus.run_id"))
         .collect();
-    let run_b: Vec<&String> = labels_b
+    let run_b: Vec<&&String> = labels_b
         .iter()
         .filter(|l| l.starts_with("caduceus.run_id"))
         .collect();
@@ -191,7 +148,6 @@ fn argv_label_set_stable() {
 
 #[test]
 fn sandbox_engine_detects_docker_or_podman() {
-    // SandboxEngine::from_binary_name
     assert_eq!(
         SandboxEngine::from_binary_name("docker"),
         SandboxEngine::Docker
@@ -221,45 +177,16 @@ fn sandbox_engine_binary_names() {
     assert_eq!(SandboxEngine::Podman.binary_name(), "podman");
 }
 
-// find_image_position (used by policy.rs to keep engine flags before image)
+// The renderer formats the resolved identity and mounts from the
+// spec — no operator argv is re-read.
 
 #[test]
-fn find_image_position_finds_sha256() {
-    assert_eq!(
-        find_image_position(&[
-            "docker".to_string(),
-            "create".to_string(),
-            "caduceus-worker@sha256:abc123".to_string(),
-            "bridge.py".to_string(),
-        ]),
-        Some(2)
-    );
-}
-
-#[test]
-fn find_image_position_none_when_missing() {
-    assert_eq!(
-        find_image_position(&["docker".to_string(), "create".to_string()]),
-        None
-    );
-}
-
-#[test]
-fn find_image_position_correct_among_other_tokens() {
-    assert_eq!(
-        find_image_position(&[
-            "docker".to_string(),
-            "create".to_string(),
-            "--mount".to_string(),
-            "type=bind,src=/host,dst=/container".to_string(),
-            "-e".to_string(),
-            "FOO=bar".to_string(),
-            "-v".to_string(),
-            "/data:/data:ro".to_string(),
-            "caduceus-worker@sha256:abc123".to_string(),
-            "bridge.py".to_string(),
-            "--arg".to_string(),
-        ]),
-        Some(8)
-    );
+fn renderer_reads_spec_not_argv() {
+    let cfg = default_cfg();
+    let spec = resolve_from(&cfg, "run-004");
+    let argv = render(&spec, SandboxEngine::Docker);
+    assert!(argv.iter().any(|a| a == "1000:1000"));
+    assert!(argv.iter().any(|a| a.ends_with(":/workspace:rw")));
+    assert!(argv.iter().any(|a| a.ends_with(":/output:rw")));
+    let _ = Path::new("/tmp");
 }

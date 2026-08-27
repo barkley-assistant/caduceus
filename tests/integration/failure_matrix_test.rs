@@ -766,14 +766,13 @@ fn test_oci_isolation_boundaries() {
     // The canonical isolation escape tests are gated behind
     // `CADUCEUS_RUN_ISOLATION_TESTS`. When that env var is not
     // set the tests pass trivially; when it is set they run
-    // the real adversarial assertions. The
-    // `IsolationPolicy::enforce` API is the load-bearing
-    // boundary.
-    use caduceus::executor::policy::IsolationPolicy;
+    // the real adversarial assertions. The `SandboxSpec` +
+    // `resolve`/`render` pipeline is the load-bearing boundary.
+    use caduceus::executor::sandbox_spec::SandboxSpec;
     use caduceus::executor::ExecutorSpec;
 
     // Compile-time check: the surface we depend on is exported.
-    let _ = std::marker::PhantomData::<IsolationPolicy>;
+    let _ = std::marker::PhantomData::<SandboxSpec>;
     let _ = std::marker::PhantomData::<ExecutorSpec>;
     // The canonical tests in `isolation_escape_test.rs` cover
     // the five escape vectors. We do NOT duplicate them here.

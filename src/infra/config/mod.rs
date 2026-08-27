@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-use crate::executor::oci_args::SandboxEngine;
+use crate::executor::SandboxEngine;
 use crate::infra::error::{CaduceusError, CaduceusResult};
 
 /// GitHub credential variable names that must never appear in the

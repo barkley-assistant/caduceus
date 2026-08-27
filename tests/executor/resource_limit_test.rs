@@ -1,91 +1,91 @@
 //! Adversarial resource-limit tests for the OCI executor.
 //!
-//! These tests verify that cgroup-enforced resource limits (memory, PIDs,
-//! CPU) are correctly applied to worker containers. All tests require a
-//! live Docker/Podman engine and are gated behind
-//! `CADUCEUS_RUN_ISOLATION_TESTS`.
+//! These tests verify that the typed `ResourceLimits` fields reach the
+//! rendered argv as engine flags (`--cpus`, `--memory`, `--pids-limit`,
+//! `--shm-size`). All tests require a live Docker/Podman engine for
+//! the cgroup-enforcement half and are gated behind
+//! `CADUCEUS_RUN_ISOLATION_TESTS`; the argv assertions themselves run
+//! whenever the suite is executed.
 
-use std::path::PathBuf;
-
-use caduceus::executor::policy::IsolationPolicy;
-use caduceus::executor::ExecutorSpec;
+use caduceus::executor::sandbox_renderer::render;
+use caduceus::executor::sandbox_spec::{resolve, RuntimeFacts, SandboxEngine, SandboxSpec};
 use caduceus::github::issue::IssueKey;
 use caduceus::infra::config::Config;
 
-fn test_cfg() -> Config {
+fn resolve_from(cfg: &Config) -> SandboxSpec {
+    let worktree = cfg.workdir_base.join("owner").join("repo").join("run-001");
+    let output = cfg.workdir_base.join("owner").join("repo").join("result");
+    let runtime = RuntimeFacts {
+        run_id: "run-001".to_string(),
+        issue: IssueKey::parse("owner/repo#1").expect("valid key"),
+        worker_command: vec!["python3".to_string(), "bridge.py".to_string()],
+        worktree,
+        output_dir: output,
+        daemon_id: "test-daemon".to_string(),
+        workdir_base: cfg.workdir_base.clone(),
+    };
+    resolve(cfg.sandbox(), &runtime).expect("must resolve")
+}
+
+fn default_cfg() -> Config {
     let tmp = tempfile::tempdir().expect("tempdir");
     Config::test_defaults(tmp.path())
 }
 
-fn test_spec(run_id: &str) -> ExecutorSpec {
-    ExecutorSpec {
-        self_exe: PathBuf::from("/usr/bin/caduceus"),
-        issue: IssueKey::parse("owner/repo#1").expect("valid key"),
-        worktree: PathBuf::from("/tmp/worktree"),
-        run_id: run_id.to_string(),
-        context_json: r#"{"x":1}"#.to_string(),
-        worker_command: vec!["python3".to_string(), "bridge.py".to_string()],
-        cancellation: tokio_util::sync::CancellationToken::new(),
-        issue_title: "title".to_string(),
-        issue_body: "body".to_string(),
-        labels: Vec::new(),
-        branch_name: "automation/issue-1".to_string(),
-    }
+/// The resource flags are always present with the configured values
+/// (test_defaults: cpus 2.0, memory 2048m, pids 256, shm 64m).
+#[test]
+fn resource_flags_reach_argv() {
+    let cfg = default_cfg();
+    let spec = resolve_from(&cfg);
+    let argv = render(&spec, SandboxEngine::Docker);
+    assert!(argv.iter().any(|a| a == "--memory"));
+    assert!(argv.iter().any(|a| a == "2048m"));
+    assert!(argv.iter().any(|a| a == "--pids-limit"));
+    assert!(argv.iter().any(|a| a == "256"));
+    assert!(argv.iter().any(|a| a == "--cpus"));
+    assert!(argv.iter().any(|a| a == "2"));
+    assert!(argv.iter().any(|a| a == "--shm-size"));
+    assert!(argv.iter().any(|a| a == "64m"));
 }
 
-// exhaust_memory — malloc beyond --memory=256m triggers OOM-killer
+// exhaust_memory — malloc beyond --memory=2048m triggers OOM-killer
 
 #[test]
 #[cfg_attr(not(env = "CADUCEUS_RUN_ISOLATION_TESTS"), ignore)]
 fn exhaust_memory() {
-    // When a worker container exceeds its memory limit (--memory=256m),
-    // the OOM-killer fires and the container exits non-zero. The daemon
+    // When a worker container exceeds its memory limit, the
+    // OOM-killer fires and the container exits non-zero. The daemon
     // audit log must contain "MemoryLimitEnforced".
     //
     // When CADUCEUS_RUN_ISOLATION_TESTS is set:
-    //  docker run --memory=256m caduceus-worker \
-    //  python3 -c 'x = bytearray(512 * 1024 * 1024)'
+    //  docker run --memory=2048m caduceus-worker \
+    //  python3 -c 'x = bytearray(4096 * 1024 * 1024)'
     // Expected: container exits with OOM (exit code 137)
     // Daemon audit: "MemoryLimitEnforced"
-
-    let cfg = test_cfg();
-    let spec = test_spec("exhaust-memory");
-
-    // Verify the enforcement produces a valid argv with baseline flags
-    if let Ok(enforced) = IsolationPolicy::enforce(&spec, &cfg) {
-        // The memory limit flag is not yet in the argv (resource limits
-        // are not yet in ExecutorSpec). This test documents the current
-        // state and will be updated when resource-limit fields are added.
-        let _argv = &enforced.argv;
-        // When resource limits are added, assert:
-        //   argv contains "--memory" and "256m"
-    }
+    let cfg = default_cfg();
+    let spec = resolve_from(&cfg);
+    let argv = render(&spec, SandboxEngine::Docker);
+    assert!(
+        argv.iter().any(|a| a == "--memory"),
+        "argv must carry --memory for the OOM boundary"
+    );
 }
 
-// exhaust_pids — fork beyond --pids-limit=100 returns EAGAIN
+// exhaust_pids — fork beyond --pids-limit=256 returns EAGAIN
 
 #[test]
 #[cfg_attr(not(env = "CADUCEUS_RUN_ISOLATION_TESTS"), ignore)]
 fn exhaust_pids() {
-    // When a worker container exceeds its PID limit (--pids-limit=100),
-    // fork() returns EAGAIN. The daemon audit log must contain
-    // "PidsLimitEnforced".
-    //
-    // When CADUCEUS_RUN_ISOLATION_TESTS is set:
-    //  docker run --pids-limit=100 caduceus-worker \
-    //  sh -c 'for i in $(seq 1 200); do sleep 1 & done'
-    // Expected: fork fails with Resource temporarily unavailable
-    // Daemon audit: "PidsLimitEnforced"
-
-    let cfg = test_cfg();
-    let spec = test_spec("exhaust-pids");
-
-    // Verify the enforcement produces a valid argv
-    if let Ok(enforced) = IsolationPolicy::enforce(&spec, &cfg) {
-        let _argv = &enforced.argv;
-        // When resource limits are added, assert:
-        //   argv contains "--pids-limit" and "100"
-    }
+    // When a worker container exceeds its PID limit, fork() returns
+    // EAGAIN. The daemon audit log must contain "PidsLimitEnforced".
+    let cfg = default_cfg();
+    let spec = resolve_from(&cfg);
+    let argv = render(&spec, SandboxEngine::Docker);
+    assert!(
+        argv.iter().any(|a| a == "--pids-limit"),
+        "argv must carry --pids-limit for the PID boundary"
+    );
 }
 
 // exhaust_cpu — spin-loop at 100% CPU is throttled by cgroup
@@ -96,20 +96,11 @@ fn exhaust_cpu() {
     // When a worker container uses 100% CPU, the cgroup CPU throttling
     // kicks in (via --cpus). The daemon audit log must contain
     // "CpuThrottled".
-    //
-    // When CADUCEUS_RUN_ISOLATION_TESTS is set:
-    //  docker run --cpus=1 caduceus-worker \
-    //  sh -c 'while true; do :; done'
-    // Expected: CPU usage is throttled to the configured limit
-    // Daemon audit: "CpuThrottled"
-
-    let cfg = test_cfg();
-    let spec = test_spec("exhaust-cpu");
-
-    // Verify the enforcement produces a valid argv
-    if let Ok(enforced) = IsolationPolicy::enforce(&spec, &cfg) {
-        let _argv = &enforced.argv;
-        // When resource limits are added, assert:
-        //   argv contains "--cpus" and the configured limit
-    }
+    let cfg = default_cfg();
+    let spec = resolve_from(&cfg);
+    let argv = render(&spec, SandboxEngine::Docker);
+    assert!(
+        argv.iter().any(|a| a == "--cpus"),
+        "argv must carry --cpus for the CPU boundary"
+    );
 }

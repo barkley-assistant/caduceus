@@ -187,12 +187,11 @@ pub fn classify_error(err: &CaduceusError) -> FailureClass {
         CaduceusError::OciStopFailed { .. } => FailureClass::Infrastructure,
         CaduceusError::OciRemoveFailed { .. } => FailureClass::Infrastructure,
         CaduceusError::OciUndeclaredMount { .. } => FailureClass::Worker,
+        CaduceusError::OciMountConflict { .. } => FailureClass::Worker,
         CaduceusError::OciSecretLeakSuspected { .. } => FailureClass::Infrastructure,
         CaduceusError::OciSecretLeakDetected { .. } => FailureClass::Infrastructure,
         CaduceusError::ReducedContainmentNotAcknowledged => FailureClass::Infrastructure,
         CaduceusError::OciImageNotDigestPinned { .. } => FailureClass::Worker,
-        CaduceusError::OciResourceLimitRequired { .. } => FailureClass::Worker,
-        CaduceusError::OciBaselineViolation { .. } => FailureClass::Worker,
         CaduceusError::OciPullPolicyIncompatible { .. } => FailureClass::Worker,
 
         // Generic Other — content / schema / public-voice / worker
