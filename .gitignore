@@ -51,6 +51,12 @@ config.local.*
 prompts/
 /prompts/
 
+# Per-run worker prompt written by the daemon into each worktree
+# root (see PROMPT_FILE_NAME in plugin-assets/worker-bridge.py).
+# It must never be committed: the finalization diff would otherwise
+# sweep it into the daemon's own commit (as happened in 74dbbb9).
+/worker-prompt.md
+
 # SpecOps plugin scratch; never commit it. Specops writes proposal/spec/
 # design/tasks artifacts under this directory during a run; the orchestrator
 # is expected to archive them, but the bridge is the safety net.
