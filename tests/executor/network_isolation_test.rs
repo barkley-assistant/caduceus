@@ -17,7 +17,7 @@ fn test_cfg() -> Config {
     Config::test_defaults(tmp.path())
 }
 
-fn test_spec(run_id: &str, network_profile: Option<&str>) -> ExecutorSpec {
+fn test_spec(run_id: &str) -> ExecutorSpec {
     ExecutorSpec {
         self_exe: PathBuf::from("/usr/bin/caduceus"),
         issue: IssueKey::parse("owner/repo#1").expect("valid key"),
@@ -26,7 +26,6 @@ fn test_spec(run_id: &str, network_profile: Option<&str>) -> ExecutorSpec {
         context_json: r#"{"x":1}"#.to_string(),
         worker_command: vec!["python3".to_string(), "bridge.py".to_string()],
         cancellation: tokio_util::sync::CancellationToken::new(),
-        network_profile: network_profile.map(|s| s.to_string()),
         issue_title: "title".to_string(),
         issue_body: "body".to_string(),
         labels: Vec::new(),
@@ -50,7 +49,7 @@ fn probe_blocked_egress() {
     // Daemon audit: "EgressBlocked"
 
     let cfg = test_cfg();
-    let spec = test_spec("probe-blocked-egress", None);
+    let spec = test_spec("probe-blocked-egress");
 
     let args = NetworkPolicy::build_network_args(&spec, &cfg)
         .expect("network args must build for no-profile spec");
@@ -69,45 +68,38 @@ fn probe_blocked_egress() {
     // the lifecycle module when the container tries to connect.
 }
 
-// probe_allowed_egress — with a network profile, specific egress works
+// probe_allowed_egress — unrestricted network mode allows egress
 // but the audit logs the URL without the response body
 
 #[test]
 #[cfg_attr(not(env = "CADUCEUS_RUN_ISOLATION_TESTS"), ignore)]
 fn probe_allowed_egress() {
-    // With a named network profile (e.g. "github-api"), egress to the
-    // allowed endpoints succeeds. The daemon audit must log the URL
-    // but NOT the response body (to prevent credential leakage through
-    // API response logging).
+    // With `sandbox.network: unrestricted`, egress to the allowed
+    // endpoints succeeds. The daemon audit must log the URL but NOT
+    // the response body (to prevent credential leakage through API
+    // response logging).
     //
-    // When CADUCEUS_RUN_ISOLATION_TESTS is set, configure a profile
-    // that allows egress to api.github.com:
-    //  docker run --network=github-api caduceus-worker \
+    // When CADUCEUS_RUN_ISOLATION_TESTS is set:
+    //  docker run --network=host caduceus-worker \
     //  sh -c 'curl -s https://api.github.com/zen'
     // Expected: curl succeeds, response body is a random zen quote
     // Daemon audit: logs URL but NOT response body
 
     let mut cfg = test_cfg();
-    cfg.network_profiles.insert(
-        "github-api".to_string(),
-        caduceus::executor::network::NetworkProfile {
-            name: "github-api".to_string(),
-            egress_allow: vec!["api.github.com".to_string()],
-        },
-    );
+    cfg.sandbox.as_mut().unwrap().network = caduceus::infra::config::SandboxNetwork::Unrestricted;
 
-    let spec = test_spec("probe-allowed-egress", Some("github-api"));
+    let spec = test_spec("probe-allowed-egress");
 
     let args = NetworkPolicy::build_network_args(&spec, &cfg)
-        .expect("network args must build for profile spec");
+        .expect("network args must build for unrestricted spec");
 
-    // Verify --network=github-api
+    // Verify --network=host
     let pos = args.iter().position(|a| a == "--network").unwrap();
     let value = args.get(pos + 1);
     assert_eq!(
         value,
-        Some(&"github-api".to_string()),
-        "expected --network=github-api for allowed egress"
+        Some(&"host".to_string()),
+        "expected --network=host for allowed egress"
     );
 }
 
@@ -128,7 +120,7 @@ fn probe_dns_exfiltration() {
     // Daemon audit: "DnsEgressBlocked"
 
     let cfg = test_cfg();
-    let spec = test_spec("probe-dns-exfil", None);
+    let spec = test_spec("probe-dns-exfil");
 
     let args = NetworkPolicy::build_network_args(&spec, &cfg)
         .expect("network args must build for no-profile spec");

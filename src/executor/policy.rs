@@ -16,23 +16,20 @@
 //! * Image digest check — tag-only references are rejected.
 //! * Pull policy check — `Always` + digest is incompatible.
 //! * Network args — merged from [`NetworkPolicy::build_network_args`].
-//! * Secret grants — applied from config's secret grants list.
 
 use std::path::PathBuf;
 
 use crate::executor::network::NetworkPolicy;
 use crate::executor::oci_args::{build_argv, find_image_position, MountSpec};
-use crate::executor::secret_transport::EphemeralSecretFile;
 use crate::executor::ExecutorSpec;
 use crate::infra::config::{Config, OciPullPolicy};
 use crate::infra::error::{CaduceusError, CaduceusResult};
 
 /// The output of a successful policy enforcement. Contains the resolved
-/// argv ready for `oci_lifecycle::run` plus any secret handles and
-/// optional git snapshot path.
+/// argv ready for `oci_lifecycle::run` plus the optional git snapshot
+/// path.
 pub struct EnforcedSpec {
     pub argv: Vec<String>,
-    pub secret_handles: Vec<crate::executor::secret_transport::SecretHandle>,
     pub git_snapshot_path: Option<PathBuf>,
 }
 
@@ -40,7 +37,6 @@ impl std::fmt::Debug for EnforcedSpec {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EnforcedSpec")
             .field("argv", &self.argv)
-            .field("secret_handles_len", &self.secret_handles.len())
             .field("git_snapshot_path", &self.git_snapshot_path)
             .finish()
     }
@@ -88,15 +84,12 @@ impl IsolationPolicy {
             argv.insert(image_idx + i, arg);
         }
 
-        // 8. Compute secret handles from config.secret_grants.
-        //    (Secrets are resolved at the daemon level; the policy
-        //     layer just records which grants to honour.)
-        let secret_handles = resolve_secret_grants(spec, config)?;
-
-        // 9. Return the EnforcedSpec.
+        // 8. Return the EnforcedSpec. Secret transport is handled by
+        //    the caller (oci_lifecycle::run passes `secret_env_file`
+        //    explicitly); the config-level secret-grant placeholder was
+        //    removed with the prototype surface.
         Ok(EnforcedSpec {
             argv,
-            secret_handles,
             git_snapshot_path: None,
         })
     }
@@ -127,11 +120,14 @@ pub(crate) fn default_mounts(spec: &ExecutorSpec) -> Vec<MountSpec> {
 }
 
 /// Validate that the image reference is digest-pinned.
+///
+/// Defense-in-depth for hand-built `Config`s: loaded configs already
+/// regex-validate `sandbox.image` in `from_raw`.
 fn validate_image_digest(config: &Config) -> CaduceusResult<()> {
-    let digest = &config.oci_image_digest;
-    if digest.is_empty() || !digest.starts_with("sha256:") {
+    let image = &config.sandbox().image;
+    if !image.contains("@sha256:") {
         return Err(CaduceusError::OciImageNotDigestPinned {
-            reference: digest.clone(),
+            reference: image.clone(),
         });
     }
     Ok(())
@@ -139,7 +135,7 @@ fn validate_image_digest(config: &Config) -> CaduceusResult<()> {
 
 /// Validate that pull policy is compatible with digest-pinned images.
 fn validate_pull_policy(config: &Config) -> CaduceusResult<()> {
-    if config.oci_pull_policy == OciPullPolicy::Always {
+    if config.sandbox().pull_policy == OciPullPolicy::Always {
         return Err(CaduceusError::OciPullPolicyIncompatible {
             detail: "pull_policy 'Always' is incompatible with \
                      digest-pinned images; use 'IfMissing' or 'Never'"
@@ -240,28 +236,6 @@ fn inject_baseline_flags(mut argv: Vec<String>, _config: &Config) -> CaduceusRes
     }
 
     Ok(argv)
-}
-
-/// Resolve secret grants into secret handles.
-/// Each granted secret name is a key in the config.
-fn resolve_secret_grants(
-    _spec: &ExecutorSpec,
-    config: &Config,
-) -> CaduceusResult<Vec<crate::executor::secret_transport::SecretHandle>> {
-    // For now, secret grants are resolved by the daemon-side
-    // secret transport. The policy layer validates that the
-    // requested secret is in the grant list.
-    //
-    // The actual secret values are resolved by the daemon's
-    // secret resolution pipeline — the policy layer just
-    // records which grants are honoured.
-    let mut handles = Vec::new();
-    for grant_name in &config.secret_grants {
-        let handle =
-            EphemeralSecretFile::write(&[(grant_name.clone(), format!("${{{grant_name}}}"))])?;
-        handles.push(handle);
-    }
-    Ok(handles)
 }
 
 // Tests live in `tests/executor/policy_test.rs`.

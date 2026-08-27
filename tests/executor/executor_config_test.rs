@@ -61,8 +61,9 @@ fn trusted_host_with_opt_in_loads() {
 
 // SCN-03.6: oci_loads_cleanly
 
-/// `Config::from_raw` with `executor_mode: oci` returns `Ok`. The Oci
-/// stub is rejected at `OciExecutor::run`, not at config load.
+/// `Config::from_raw` with `executor_mode: oci` + a valid `sandbox:`
+/// section returns `Ok`. The Oci stub is rejected at `OciExecutor::run`,
+/// not at config load.
 #[test]
 fn oci_loads_cleanly() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -71,13 +72,18 @@ fn oci_loads_cleanly() {
         state_dir: Some(tmp.path().to_path_buf()),
         executor_mode: Some(ExecutorKind::Oci),
         reduced_containment_acknowledged: Some(true),
-        oci_image_digest: Some(
-            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
-        ),
+        sandbox: Some(caduceus::infra::config::RawSandboxConfig {
+            image: Some(
+                "caduceus-worker@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    .to_string(),
+            ),
+            ..Default::default()
+        }),
         ..Default::default()
     };
     let cfg = Config::from_raw(raw, &ctx(tmp.path())).expect("Oci must load");
     assert_eq!(cfg.executor_mode, ExecutorKind::Oci);
+    assert!(cfg.sandbox.is_some());
 }
 
 // SCN-03.4: reduced_containment_ack_default_false

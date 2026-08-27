@@ -5,12 +5,11 @@
 
 use std::path::PathBuf;
 
-use caduceus::executor::network::NetworkProfile;
 use caduceus::executor::oci_args::find_image_position;
 use caduceus::executor::policy::IsolationPolicy;
 use caduceus::executor::ExecutorSpec;
 use caduceus::github::issue::IssueKey;
-use caduceus::infra::config::{Config, OciPullPolicy};
+use caduceus::infra::config::{Config, OciPullPolicy, SandboxNetwork};
 use caduceus::infra::error::CaduceusError;
 
 fn test_cfg() -> Config {
@@ -27,7 +26,6 @@ fn test_spec(run_id: &str) -> ExecutorSpec {
         context_json: r#"{"x":1}"#.to_string(),
         worker_command: vec!["python3".to_string(), "bridge.py".to_string()],
         cancellation: tokio_util::sync::CancellationToken::new(),
-        network_profile: None,
         issue_title: "title".to_string(),
         issue_body: "body".to_string(),
         labels: Vec::new(),
@@ -162,7 +160,7 @@ fn baseline_enforced() {
 #[test]
 fn image_digest_pinned() {
     let mut cfg = test_cfg();
-    cfg.oci_image_digest = String::new(); // empty = not pinned
+    cfg.sandbox.as_mut().unwrap().image = String::new(); // empty = not pinned
 
     let spec = test_spec("test-digest-pinned");
     let result = IsolationPolicy::enforce(&spec, &cfg);
@@ -183,7 +181,7 @@ fn image_digest_pinned() {
 #[test]
 fn pull_policy_always_rejected() {
     let mut cfg = test_cfg();
-    cfg.oci_pull_policy = OciPullPolicy::Always;
+    cfg.sandbox.as_mut().unwrap().pull_policy = OciPullPolicy::Always;
 
     let spec = test_spec("test-pull-policy");
     let result = IsolationPolicy::enforce(&spec, &cfg);
@@ -225,22 +223,15 @@ fn git_less_worker() {
     }
 }
 
-// network_profile_applied — network args are merged into the argv
+// network_mode_applied — network args are merged into the argv
 
 #[test]
-fn network_profile_applied() {
+fn network_mode_applied() {
     let mut cfg = test_cfg();
-    // Add a network profile.
-    cfg.network_profiles.insert(
-        "isolated".to_string(),
-        NetworkProfile {
-            name: "isolated".to_string(),
-            egress_allow: vec!["10.0.0.0/8".to_string()],
-        },
-    );
+    // Select the unrestricted network mode.
+    cfg.sandbox.as_mut().unwrap().network = SandboxNetwork::Unrestricted;
 
-    let mut spec = test_spec("test-network-profile");
-    spec.network_profile = Some("isolated".to_string());
+    let spec = test_spec("test-network-mode");
 
     let result = IsolationPolicy::enforce(&spec, &cfg);
     match &result {
@@ -254,8 +245,8 @@ fn network_profile_applied() {
             let pos = network_pos.unwrap();
             let value = &argv[pos + 1];
             assert_eq!(
-                value, "isolated",
-                "expected --network=isolated, got --network={value}"
+                value, "host",
+                "expected --network=host, got --network={value}"
             );
         }
         Err(e) => {
@@ -264,10 +255,10 @@ fn network_profile_applied() {
     }
 }
 
-// no_network_profile_gives_none — no network_profile → --network=none
+// no_network_mode_gives_none — default network mode → --network=none
 
 #[test]
-fn no_network_profile_gives_none() {
+fn no_network_mode_gives_none() {
     let cfg = test_cfg();
     let spec = test_spec("test-no-network");
 

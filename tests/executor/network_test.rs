@@ -1,22 +1,22 @@
 //! Tests for the network policy enforcement module.
 //!
 //! Verifies that [`NetworkPolicy::build_network_args`] returns the
-//! correct `--network` flag based on the spec's network profile.
+//! correct `--network` flag based on `config.sandbox().network`:
+//! `none` → `--network none`, `unrestricted` → `--network host`.
 
 use std::path::PathBuf;
 
 use caduceus::executor::network::NetworkPolicy;
 use caduceus::executor::ExecutorSpec;
 use caduceus::github::issue::IssueKey;
-use caduceus::infra::config::Config;
-use caduceus::infra::error::CaduceusError;
+use caduceus::infra::config::{Config, SandboxNetwork};
 
 fn test_cfg() -> Config {
     let tmp = tempfile::tempdir().expect("tempdir");
     Config::test_defaults(tmp.path())
 }
 
-fn test_spec(run_id: &str, network_profile: Option<&str>) -> ExecutorSpec {
+fn test_spec(run_id: &str) -> ExecutorSpec {
     ExecutorSpec {
         self_exe: PathBuf::from("/usr/bin/caduceus"),
         issue: IssueKey::parse("owner/repo#1").expect("valid key"),
@@ -25,7 +25,6 @@ fn test_spec(run_id: &str, network_profile: Option<&str>) -> ExecutorSpec {
         context_json: r#"{"x":1}"#.to_string(),
         worker_command: vec!["python3".to_string(), "bridge.py".to_string()],
         cancellation: tokio_util::sync::CancellationToken::new(),
-        network_profile: network_profile.map(|s| s.to_string()),
         issue_title: "title".to_string(),
         issue_body: "body".to_string(),
         labels: Vec::new(),
@@ -33,15 +32,15 @@ fn test_spec(run_id: &str, network_profile: Option<&str>) -> ExecutorSpec {
     }
 }
 
-// no_profile_denies_network — no profile → --network=none
+// default_network_is_none — sandbox.network defaults to `none`
 
 #[test]
-fn no_profile_denies_network() {
+fn default_network_is_none() {
     let cfg = test_cfg();
-    let spec = test_spec("test-no-network", None);
+    let spec = test_spec("test-default-network");
 
     let args = NetworkPolicy::build_network_args(&spec, &cfg)
-        .expect("network args must build for no-profile spec");
+        .expect("network args must build for default network");
 
     assert!(
         args.contains(&"--network".to_string()),
@@ -57,52 +56,24 @@ fn no_profile_denies_network() {
     );
 }
 
-// named_profile_network — named profile → --network=<profile_name>
+// unrestricted_network_uses_host — sandbox.network = unrestricted →
+// --network host
 
 #[test]
-fn named_profile_network() {
-    let cfg = test_cfg();
-    let spec = test_spec("test-named-network", Some("my-bridge"));
-
-    // The profile "my-bridge" is not in the config.network_profiles
-    // map, so we expect OciNetworkNotInProfile error.
-    let result = NetworkPolicy::build_network_args(&spec, &cfg);
-    match result {
-        Err(CaduceusError::OciNetworkNotInProfile { profile }) => {
-            assert_eq!(profile, "my-bridge");
-        }
-        Err(other) => panic!("expected OciNetworkNotInProfile; got: {other:?}"),
-        Ok(args) => {
-            panic!("expected error for unknown profile, got args: {args:?}");
-        }
-    }
-}
-
-// named_profile_network_with_config — profile in config → --network=<name>
-
-#[test]
-fn named_profile_network_with_config() {
+fn unrestricted_network_uses_host() {
     let mut cfg = test_cfg();
+    cfg.sandbox.as_mut().unwrap().network = SandboxNetwork::Unrestricted;
 
-    // Add a network profile to config.
-    cfg.network_profiles.insert(
-        "my-bridge".to_string(),
-        caduceus::executor::network::NetworkProfile {
-            name: "my-bridge".to_string(),
-            egress_allow: vec!["10.0.0.0/8".to_string()],
-        },
-    );
-
-    let spec = test_spec("test-named-network-ok", Some("my-bridge"));
+    let spec = test_spec("test-unrestricted-network");
 
     let args = NetworkPolicy::build_network_args(&spec, &cfg)
-        .expect("network args must build for known profile");
+        .expect("network args must build for unrestricted network");
 
     let pos = args.iter().position(|a| a == "--network").unwrap();
     let value = args.get(pos + 1);
     assert_eq!(
         value,
-        Some(&"my-bridge".to_string()),
-        "expected --network=my-bridge, got: {args:?}"
+        Some(&"host".to_string()),
+        "expected --network=host, got: {args:?}"
     );
 }

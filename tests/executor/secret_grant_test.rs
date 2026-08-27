@@ -1,7 +1,13 @@
-//! Tests for the secret grant enforcement in the isolation policy.
+//! Regression tests for the removed secret-grant placeholder.
 //!
-//! Verifies that granted secrets are granted, denied secrets are
-//! rejected, and secret values never appear in argv.
+//! The prototype `secret_grants` config surface and
+//! `resolve_secret_grants` policy wiring were deleted with the
+//! `sandbox-config-section` change (no secrets backend replaces them).
+//! [`IsolationPolicy::enforce`] no longer creates ephemeral secret
+//! files from config grants and no longer emits `--env-file` — secret
+//! transport remains the caller's explicit seam
+//! (`oci_lifecycle::run` / `EphemeralSecretFile`). These tests pin
+//! that the policy layer stays out of secret handling.
 
 use std::path::PathBuf;
 
@@ -24,7 +30,6 @@ fn test_spec(run_id: &str) -> ExecutorSpec {
         context_json: r#"{"x":1}"#.to_string(),
         worker_command: vec!["python3".to_string(), "bridge.py".to_string()],
         cancellation: tokio_util::sync::CancellationToken::new(),
-        network_profile: None,
         issue_title: "title".to_string(),
         issue_body: "body".to_string(),
         labels: Vec::new(),
@@ -32,79 +37,37 @@ fn test_spec(run_id: &str) -> ExecutorSpec {
     }
 }
 
-// granted_secret_creates_ephemeral_file
+// enforce_does_not_emit_secret_env_file — the policy layer no longer
+// wires config grants into ephemeral files
 
 #[test]
-fn granted_secret_creates_ephemeral_file() {
-    let mut cfg = test_cfg();
-    cfg.secret_grants = vec!["test-secret".to_string()];
+fn enforce_does_not_emit_secret_env_file() {
+    let cfg = test_cfg();
+    let spec = test_spec("test-no-secret-file");
 
-    let spec = test_spec("test-granted-secret");
-    // The enforcement will create an ephemeral file for the
-    // granted secret. Don't assert on the exact path (it's in /tmp
-    // with a random component), but verify that the secret handle
-    // is non-empty.
-    //
-    // Since the policy layer creates secrets for each grant,
-    // and the enforcement might fail on other checks (like mounts),
-    // we just verify the secret handling doesn't panic.
-    let result = IsolationPolicy::enforce(&spec, &cfg);
-
-    // We may get an error (e.g., undeclared mount), but we should
-    // NOT get a panic and secret files should be cleaned up.
-    match result {
-        Ok(enforced) => {
-            assert!(!enforced.secret_handles.is_empty());
-        }
-        Err(_e) => {
-            // Secret file creation happens before mount validation;
-            // any error path should have cleaned up temporary files.
-        }
-    }
+    let enforced = IsolationPolicy::enforce(&spec, &cfg)
+        .expect("enforcement must succeed without any secret wiring");
+    assert!(
+        !enforced.argv.iter().any(|a| a == "--env-file"),
+        "argv must not contain --env-file, got: {:?}",
+        enforced.argv
+    );
 }
 
-// denied_secret_rejected — non-granted secret → OciSecretNotGranted
+// enforce_argv_never_contains_grant_names — nothing in the argv echoes
+// secret-ish names from the config surface
 
 #[test]
-fn denied_secret_rejected() {
-    let cfg = test_cfg(); // no secret grants
+fn enforce_argv_never_contains_grant_names() {
+    let cfg = test_cfg();
+    let spec = test_spec("test-no-grant-names");
 
-    let spec = test_spec("test-denied-secret");
-    // With no secret grants, the policy creates no handles but
-    // also doesn't reject. The secret rejection is triggered when
-    // a specific secret is requested in the run spec.
-    // For now, since the run spec does not have a secrets field,
-    // this test verifies that the policy enforcement succeeds or
-    // fails on other grounds (like mounts), not on secrets.
-    let result = IsolationPolicy::enforce(&spec, &cfg);
-    // we don't assert on success/failure, just on no panic
-    if let Ok(enforced) = result {
+    let enforced = IsolationPolicy::enforce(&spec, &cfg)
+        .expect("enforcement must succeed without any secret wiring");
+    for token in &enforced.argv {
         assert!(
-            enforced.secret_handles.is_empty(),
-            "no secrets should be granted when config.secret_grants is empty"
+            !token.contains("my-secret") && !token.contains("test-secret"),
+            "secret-ish name must not appear in argv: {token:?}"
         );
     }
-}
-
-// secret_value_not_in_argv — grep argv for the secret value → not found
-
-#[test]
-fn secret_value_not_in_argv() {
-    let mut cfg = test_cfg();
-    cfg.secret_grants = vec!["my-secret".to_string()];
-
-    let spec = test_spec("test-secret-not-in-argv");
-    let result = IsolationPolicy::enforce(&spec, &cfg);
-
-    if let Ok(enforced) = result {
-        // Search argv for the literal value "my-secret" (the grant name).
-        // The value should NOT appear in argv.
-        for token in &enforced.argv {
-            assert!(
-                !token.contains("my-secret"),
-                "secret value must not appear in argv: {token:?}"
-            );
-        }
-    }
-    // If enforcement fails for other reasons (mounts, etc.), that's fine.
 }

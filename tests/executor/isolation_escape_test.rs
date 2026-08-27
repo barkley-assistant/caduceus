@@ -31,7 +31,6 @@ fn test_spec(run_id: &str) -> ExecutorSpec {
         context_json: r#"{"x":1}"#.to_string(),
         worker_command: vec!["python3".to_string(), "bridge.py".to_string()],
         cancellation: tokio_util::sync::CancellationToken::new(),
-        network_profile: None,
         issue_title: "title".to_string(),
         issue_body: "body".to_string(),
         labels: Vec::new(),

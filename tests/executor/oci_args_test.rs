@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use caduceus::executor::oci_args::{build_argv, find_image_position, MountSpec, OciEngine};
+use caduceus::executor::oci_args::{build_argv, find_image_position, MountSpec, SandboxEngine};
 use caduceus::executor::ExecutorSpec;
 use caduceus::github::issue::IssueKey;
 use caduceus::infra::config::Config;
@@ -22,7 +22,6 @@ fn test_spec(run_id: &str) -> ExecutorSpec {
         context_json: r#"{"x":1}"#.to_string(),
         worker_command: vec!["python3".to_string(), "bridge.py".to_string()],
         cancellation: tokio_util::sync::CancellationToken::new(),
-        network_profile: None,
         issue_title: "title".to_string(),
         issue_body: "body".to_string(),
         labels: Vec::new(),
@@ -56,7 +55,7 @@ fn one_contract_both_clis() {
     let docker_argv = build_argv(&spec, &cfg, &mounts, None).expect("docker argv must build");
 
     let mut podman_cfg = cfg.clone();
-    podman_cfg.oci_cli = PathBuf::from("podman");
+    podman_cfg.sandbox.as_mut().unwrap().engine = SandboxEngine::Podman;
     let podman_argv =
         build_argv(&spec, &podman_cfg, &mounts, None).expect("podman argv must build");
 
@@ -188,26 +187,38 @@ fn argv_label_set_stable() {
     assert_ne!(run_a, run_b, "run_id labels must differ");
 }
 
-// OciEngine detection
+// SandboxEngine detection
 
 #[test]
-fn oci_engine_detects_docker_or_podman() {
-    // OciEngine::from_binary_name
-    assert_eq!(OciEngine::from_binary_name("docker"), OciEngine::Docker);
+fn sandbox_engine_detects_docker_or_podman() {
+    // SandboxEngine::from_binary_name
     assert_eq!(
-        OciEngine::from_binary_name("/usr/bin/docker"),
-        OciEngine::Docker
-    );
-    assert_eq!(OciEngine::from_binary_name("podman"), OciEngine::Podman);
-    assert_eq!(
-        OciEngine::from_binary_name("/usr/local/bin/podman"),
-        OciEngine::Podman
+        SandboxEngine::from_binary_name("docker"),
+        SandboxEngine::Docker
     );
     assert_eq!(
-        OciEngine::from_binary_name("nerdctl"),
-        OciEngine::Docker,
+        SandboxEngine::from_binary_name("/usr/bin/docker"),
+        SandboxEngine::Docker
+    );
+    assert_eq!(
+        SandboxEngine::from_binary_name("podman"),
+        SandboxEngine::Podman
+    );
+    assert_eq!(
+        SandboxEngine::from_binary_name("/usr/local/bin/podman"),
+        SandboxEngine::Podman
+    );
+    assert_eq!(
+        SandboxEngine::from_binary_name("nerdctl"),
+        SandboxEngine::Docker,
         "unknown binary defaults to Docker"
     );
+}
+
+#[test]
+fn sandbox_engine_binary_names() {
+    assert_eq!(SandboxEngine::Docker.binary_name(), "docker");
+    assert_eq!(SandboxEngine::Podman.binary_name(), "podman");
 }
 
 // find_image_position (used by policy.rs to keep engine flags before image)

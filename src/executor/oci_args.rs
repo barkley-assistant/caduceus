@@ -6,18 +6,30 @@
 
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
+
 use crate::executor::ExecutorSpec;
 use crate::infra::config::Config;
 use crate::infra::error::{CaduceusError, CaduceusResult};
 
 /// Which OCI CLI engine the argv is being built for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum OciEngine {
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxEngine {
+    #[default]
     Docker,
     Podman,
 }
 
-impl OciEngine {
+impl SandboxEngine {
+    /// CLI binary invoked for this engine.
+    pub fn binary_name(&self) -> &'static str {
+        match self {
+            Self::Docker => "docker",
+            Self::Podman => "podman",
+        }
+    }
+
     /// Determine the engine from the binary name.
     pub fn from_binary_name(name: &str) -> Self {
         let file_name = Path::new(name)
@@ -25,9 +37,9 @@ impl OciEngine {
             .map(|s| s.to_string_lossy())
             .unwrap_or_default();
         if file_name == "podman" {
-            OciEngine::Podman
+            SandboxEngine::Podman
         } else {
-            OciEngine::Docker
+            SandboxEngine::Docker
         }
     }
 }
@@ -50,8 +62,7 @@ pub fn build_argv(
     mounts: &[MountSpec],
     secret_env_file: Option<&Path>,
 ) -> CaduceusResult<Vec<String>> {
-    let _engine = OciEngine::from_binary_name(&cfg.oci_cli.to_string_lossy());
-    let cli = cfg.oci_cli.to_string_lossy().to_string();
+    let cli = cfg.sandbox().engine.binary_name().to_string();
     let mut argv = vec![
         cli,
         "create".to_string(),
@@ -110,7 +121,7 @@ pub fn build_argv(
     }
 
     // <image>@<digest>
-    let image = format!("{}@{}", derive_image_name(cfg), cfg.oci_image_digest);
+    let image = cfg.sandbox().image.clone();
     argv.push(image);
 
     // <worker_command[1..]>
@@ -129,14 +140,6 @@ fn derive_daemon_id(cfg: &Config) -> String {
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "unknown".to_string())
-}
-
-/// Derive the image name (without digest) from config.
-///
-/// The image name is currently hardcoded because the config field does
-/// not yet exist.
-fn derive_image_name(_cfg: &Config) -> String {
-    "caduceus-worker".to_string()
 }
 
 /// Find the position of the image token in an OCI CLI argv vector.
