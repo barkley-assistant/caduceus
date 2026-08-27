@@ -183,6 +183,41 @@ never publicly released. The verbatim removal list lives
 on the
 [configuration wiki page](https://github.com/barkley-assistant/caduceus/wiki/Configuration).
 
+What the worker container sees is a closed, typed spec:
+
+- **Two writable host-backed surfaces, nothing else.**
+  `/workspace` binds the per-run worktree directly (no
+  copied or `.git`-stripped second workspace) and `/output`
+  is a daemon-owned directory under the daemon state
+  directory (`<state_dir>/oci-runs/<run_id>/output`), never
+  a sibling of the worktree. `/tmp` and `/dev/shm` are the
+  only tmpfs, each bounded by the configured sizes. Any
+  other host-backed mount would be a resolution-time typed
+  error, before a container exists.
+- **A daemon-owned `.git` shadow.** A worktree's `.git` is a
+  `gitdir:` pointer into the main repo's object database, so
+  the container sees a read-only shadow at
+  `/workspace/.git` instead: a harmless sentinel file for a
+  pointer-file `.git`, an empty read-only directory for a
+  `.git` directory, and no shadow at all when `.git` is
+  absent. The worker can neither read the real gitdir nor
+  write `/workspace/.git`; repo operations belong to the
+  host-side finalize step.
+- **Dynamic runtime identity.** The container runs as the
+  worktree owner's real UID/GID, probed before container
+  start — never a hard-coded `1000:1000`. Docker rootful
+  renders `--user <owner-uid>:<owner-gid>`; Docker rootless
+  emits no `--user` (container root maps to the unprivileged
+  engine user via the rootless user namespace); Podman
+  rootless renders plain `--userns keep-id` so the
+  in-container identity equals the daemon/worktree owner;
+  Podman rootful follows the rootful rule. Unsupported
+  namespace configurations (the canonical case: a rootful
+  engine with userns-remap, or an engine whose mode cannot
+  be determined) are refused with a typed error before any
+  container is created, and `hermes caduceus doctor`
+  reports the engine/mode as unavailable.
+
 ## The 60-Second Orientation
 
 1. `git clone`, `cargo build`, `hermes caduceus setup`

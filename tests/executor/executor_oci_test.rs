@@ -2,8 +2,11 @@
 //!
 //! Verifies that `OciExecutor::run` attempts to dispatch via the
 //! configured OCI CLI. In CI without Docker/Podman, the executor
-//! returns `OciEngineUnavailable` (via `OciCliNotFound` or similar
-//! from the subprocess path). The tests verify the typed error and
+//! returns a typed OCI error: the pre-flight engine probe fails
+//! fail-closed with `OciIdentityUnsupported` (the engine mode cannot
+//! be determined without a reachable engine), surfaced from the
+//! lifecycle path as `OciEngineUnavailable`/`OciCreateFailed` in
+//! older configurations. The tests verify the typed error and
 //! that no subprocess is spawned for config-only errors.
 
 use std::sync::Arc;
@@ -26,6 +29,15 @@ fn setup() -> (Config, TempDir) {
     std::fs::create_dir_all(&state_dir).expect("create state dir");
     let mut cfg = Config::test_defaults(tmp.path());
     cfg.state_dir = state_dir;
+    // The pre-flight probe stats the worktree, so it must exist on
+    // disk (a missing worktree would fail the probe before the
+    // engine-availability error could surface).
+    let worktree = cfg
+        .workdir_base
+        .join("test-owner")
+        .join("test-repo")
+        .join("run-1");
+    std::fs::create_dir_all(&worktree).expect("create worktree dir");
     (cfg, tmp)
 }
 
@@ -57,7 +69,9 @@ fn test_spec(cfg: &Config) -> ExecutorSpec {
 
 /// `OciExecutor::run` returns a typed `CaduceusError` (not a panic).
 /// Without Docker/Podman in CI, the error is either
-/// `OciEngineUnavailable` or `OciCreateFailed`.
+/// `OciEngineUnavailable` or the fail-closed pre-flight refusal
+/// `OciIdentityUnsupported` (mode undetectable without a reachable
+/// engine).
 #[tokio::test]
 async fn oci_executor_returns_typed_error() {
     let (cfg, _tmp) = setup();
@@ -74,6 +88,7 @@ async fn oci_executor_returns_typed_error() {
             | CaduceusError::OciCreateFailed { .. }
             | CaduceusError::OciCliNotFound { .. }
             | CaduceusError::OciPullFailed { .. }
+            | CaduceusError::OciIdentityUnsupported { .. }
     );
     assert!(
         is_oci_error,

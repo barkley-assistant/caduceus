@@ -31,6 +31,7 @@ use crate::worker::supervisor::SupervisorOutcome;
 use self::oci::OciExecutor;
 use self::trusted_host::TrustedHostExecutor;
 
+pub mod engine_probe;
 pub mod oci;
 pub mod oci_lifecycle;
 pub mod sandbox_renderer;
@@ -38,7 +39,9 @@ pub mod sandbox_spec;
 pub mod secret_transport;
 pub mod trusted_host;
 
-pub use sandbox_spec::{MountSpec, RuntimeFacts, SandboxEngine, SandboxSpec};
+pub use sandbox_spec::{
+    EngineMode, GitShadowKind, MountSpec, RuntimeFacts, SandboxEngine, SandboxSpec,
+};
 
 /// Arguments to [`Executor::run`]. Every field the executor needs
 /// to dispatch a worker, regardless of mode.

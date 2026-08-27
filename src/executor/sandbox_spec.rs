@@ -8,7 +8,10 @@
 //!
 //! Pure module: no `tokio::process`, no `std::fs`, no global mutable
 //! state. The only `std::env` access is for `pass_env` filtering inside
-//! [`resolve`].
+//! [`resolve`]. Every I/O-derived fact the resolver needs (worktree
+//! owner uid/gid, host `.git` type, engine rootful/rootless mode) is
+//! gathered by the pre-flight probe (`engine_probe`) and carried in
+//! [`RuntimeFacts`].
 
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
@@ -55,6 +58,35 @@ impl SandboxEngine {
     }
 }
 
+/// Rootful vs rootless engine mode, detected by the pre-flight
+/// engine probe (`engine_probe`) and carried in [`RuntimeFacts`].
+///
+/// `resolve` stays pure: the mode is a fact gathered outside it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EngineMode {
+    /// Engine runs with host root privileges (Docker daemon as root,
+    /// Podman invoked by root).
+    Rootful,
+    /// Engine runs unprivileged (Docker rootless, Podman rootless):
+    /// container root maps to the unprivileged engine user via a
+    /// user namespace.
+    Rootless,
+}
+
+/// What `.git` is on the host worktree, probed by the pre-flight
+/// step and carried in [`RuntimeFacts`]. Determines the daemon-owned
+/// `.git` shadow form (see [`select_git_shadow`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GitShadowKind {
+    /// `.git` is a regular file or symlink (the `gitdir:` pointer
+    /// file of a linked worktree).
+    File,
+    /// `.git` is a directory (a normal checkout).
+    Dir,
+    /// `.git` does not exist.
+    Absent,
+}
+
 /// Digest-pinned image reference. The only constructor (module-private
 /// [`ImageRef::new`]) rejects any reference without `@sha256:`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -86,16 +118,24 @@ impl AsRef<str> for ImageRef {
     }
 }
 
-/// Non-root identity inside the container. Always `1000:1000`.
+/// Resolved container runtime identity, computed by [`resolve`]
+/// from the `(engine, engine_mode, worktree-owner uid/gid)` matrix.
+///
+/// * `uid`/`gid` are the worktree owner's ids as probed by the
+///   pre-flight step — never a hard-coded constant.
+/// * `emit_user` selects whether the renderer emits
+///   `--user <uid>:<gid>` (rootful modes) or nothing (rootless
+///   modes, where the engine's user namespace already maps the
+///   in-container identity to the engine user).
+/// * `userns` carries the only supported user-namespace flag value,
+///   `Some("keep-id")` for Podman rootless.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ResolvedIdentity {
     pub uid: u32,
     pub gid: u32,
+    pub emit_user: bool,
+    pub userns: Option<&'static str>,
 }
-
-/// Fixed non-root UID and GID for the worker container.
-pub const SANDBOX_UID: u32 = 1000;
-pub const SANDBOX_GID: u32 = 1000;
 
 /// A single bind-mount declaration for a container.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -152,6 +192,7 @@ pub struct SandboxSpec {
     identity: ResolvedIdentity,
     workspace_mount: MountSpec,
     output_mount: MountSpec,
+    git_shadow: Option<MountSpec>,
     tmpfs: Vec<TmpfsMount>,
     environment: Vec<(String, String)>,
     resources: ResourceLimits,
@@ -186,6 +227,12 @@ impl SandboxSpec {
     /// The single output mount (host → `/output`).
     pub fn output_mount(&self) -> &MountSpec {
         &self.output_mount
+    }
+    /// The optional daemon-owned `.git` shadow mount (host →
+    /// `/workspace/.git`, read-only). `None` when the host worktree
+    /// has no `.git` entry at all.
+    pub fn git_shadow(&self) -> Option<&MountSpec> {
+        self.git_shadow.as_ref()
     }
     /// Tmpfs mounts (ordered).
     pub fn tmpfs(&self) -> &[TmpfsMount] {
@@ -227,6 +274,7 @@ impl SandboxSpec {
         identity: ResolvedIdentity,
         workspace_mount: MountSpec,
         output_mount: MountSpec,
+        git_shadow: Option<MountSpec>,
         tmpfs: Vec<TmpfsMount>,
         environment: Vec<(String, String)>,
         resources: ResourceLimits,
@@ -241,6 +289,7 @@ impl SandboxSpec {
             identity,
             workspace_mount,
             output_mount,
+            git_shadow,
             tmpfs,
             environment,
             resources,
@@ -271,59 +320,127 @@ pub struct RuntimeFacts {
     pub worker_command: Vec<String>,
     /// Host path to the worktree root.
     pub worktree: PathBuf,
-    /// Host path to the output directory (sibling of the worktree
-    /// under the same parent, e.g. `<workdir_base>/<owner>/<repo>/result`).
+    /// Host path to the output directory. Daemon-owned:
+    /// `<state_dir>/oci-runs/<run_id>/output` (derived by the
+    /// pre-flight probe, never a worktree sibling).
     pub output_dir: PathBuf,
     /// Stable daemon identifier (state-dir basename).
     pub daemon_id: String,
     /// The declared worktree root (`Config.workdir_base`). The
-    /// host-path allow-list in `resolve` rejects mounts outside
-    /// this root.
+    /// host-path allow-list in `resolve` requires the worktree to
+    /// live under this root.
     pub workdir_base: PathBuf,
+    /// Daemon state directory. Allow-list root for the daemon-owned
+    /// surfaces (`output_dir`, `git_shadow_host`).
+    pub state_dir: PathBuf,
+    /// Worktree owner UID (pre-flight probe fact).
+    pub worktree_uid: u32,
+    /// Worktree owner GID (pre-flight probe fact).
+    pub worktree_gid: u32,
+    /// Engine mode (rootful/rootless), probed before resolution.
+    pub engine_mode: EngineMode,
+    /// Host `.git` type for the worktree (pre-flight probe fact).
+    pub git_shadow_kind: GitShadowKind,
+    /// Daemon-owned host path of the `.git` shadow artifact
+    /// (`<state_dir>/oci-runs/<run_id>/git-shadow`), created by the
+    /// pre-flight probe when `git_shadow_kind != Absent`.
+    pub git_shadow_host: PathBuf,
 }
 
 // ---------------------------------------------------------------------------
 // Resolution step
 // ---------------------------------------------------------------------------
 
+/// Type-aware `.git` shadow selection: `File` and `Dir` both yield a
+/// single read-only mount of the daemon-owned shadow artifact at
+/// `/workspace/.git`; `Absent` yields no shadow (the repo is
+/// unaffected). The kind only affects what the pre-flight creates on
+/// the host — the mount shape is uniform so both engines use one
+/// `-v …:ro` mechanism.
+///
+/// Pure — unit-testable without I/O.
+pub fn select_git_shadow(kind: GitShadowKind, shadow_host: &Path) -> Option<MountSpec> {
+    match kind {
+        GitShadowKind::File | GitShadowKind::Dir => Some(MountSpec {
+            host_path: shadow_host.to_path_buf(),
+            container_path: PathBuf::from("/workspace/.git"),
+            read_only: true,
+        }),
+        GitShadowKind::Absent => None,
+    }
+}
+
 /// Resolve a [`SandboxConfig`] plus runtime facts into a closed
 /// [`SandboxSpec`].
 ///
 /// Pure — no I/O. The only `std::env` reads are for `pass_env`
-/// filtering (task 1.13 contract).
+/// filtering (task 1.13 contract). All facts the resolver needs
+/// (owner uid/gid, `.git` type, engine mode) must already be carried
+/// in [`RuntimeFacts`] by the pre-flight probe.
 pub fn resolve(sandbox: &SandboxConfig, runtime: &RuntimeFacts) -> CaduceusResult<SandboxSpec> {
-    // 1. Host-path allow-list.
-    //    Lexically normalize both paths so we can check containment
-    //    without filesystem access (resolve is pure).
+    // 1. Lexically normalize every declared path so containment can
+    //    be checked without filesystem access (resolve is pure).
+    let undeclared = |p: &Path| CaduceusError::OciUndeclaredMount {
+        path: p.display().to_string(),
+    };
     let workdir_base_norm = lexical_normalize(&runtime.workdir_base).ok_or_else(|| {
         CaduceusError::OciUndeclaredMount {
             path: runtime.workdir_base.display().to_string(),
         }
     })?;
-    if !workdir_base_norm.is_absolute() {
-        return Err(CaduceusError::OciUndeclaredMount {
-            path: workdir_base_norm.display().to_string(),
-        });
-    }
+    let state_dir_norm =
+        lexical_normalize(&runtime.state_dir).ok_or_else(|| undeclared(&runtime.state_dir))?;
+    let worktree_norm =
+        lexical_normalize(&runtime.worktree).ok_or_else(|| undeclared(&runtime.worktree))?;
+    let output_norm =
+        lexical_normalize(&runtime.output_dir).ok_or_else(|| undeclared(&runtime.output_dir))?;
+    let shadow_norm = lexical_normalize(&runtime.git_shadow_host)
+        .ok_or_else(|| undeclared(&runtime.git_shadow_host))?;
 
-    let worktree_norm = resolve_path(&runtime.worktree, &workdir_base_norm)?;
-    let output_norm = resolve_path(&runtime.output_dir, &workdir_base_norm)?;
-
-    // 2. Workspace/output overlap check — the old double-RW mount
-    //    bug (same host path at two container paths) is rejected.
-    if output_norm.starts_with(&worktree_norm) || worktree_norm.starts_with(&output_norm) {
+    // 2. Cross-root containment policy. Checked before the per-root
+    //    allow-list so the double-RW conflict stays the reported
+    //    failure when paths overlap.
+    //
+    //    2a. The daemon state directory must not live inside the
+    //        worktree root — a misconfigured `state_dir` under
+    //        `workdir_base` would put the daemon-owned `/output` and
+    //        `.git` shadow surfaces inside the tree the worker can
+    //        traverse via other runs' worktrees.
+    if state_dir_norm.starts_with(&workdir_base_norm) {
         return Err(CaduceusError::OciMountConflict {
             detail: format!(
-                "output_dir {} must not equal or contain worktree {} \
-                 (the old double-RW mount bug: each needs a distinct host path)",
-                output_norm.display(),
-                worktree_norm.display(),
+                "state_dir {} must not be inside workdir_base {} (the \
+                 daemon-owned /output and .git shadow surfaces would live \
+                 inside the worker-visible tree)",
+                state_dir_norm.display(),
+                workdir_base_norm.display(),
             ),
         });
     }
 
-    // 3. Mounts — exactly one workspace mount and one output mount,
-    //    with fixed canonical container paths.
+    //    2b. The three daemon-declared host paths must be pairwise
+    //        disjoint — the old double-RW mount bug (same host path
+    //        at two container paths) is rejected in every pairing.
+    check_disjoint(&worktree_norm, &output_norm, "worktree", "output_dir")?;
+    check_disjoint(&worktree_norm, &shadow_norm, "worktree", "git_shadow_host")?;
+    check_disjoint(&output_norm, &shadow_norm, "output_dir", "git_shadow_host")?;
+
+    // 3. Host-path allow-list: the worktree lives under
+    //    `workdir_base`; the daemon-owned output dir and `.git`
+    //    shadow live under the daemon state directory.
+    if !worktree_norm.starts_with(&workdir_base_norm) {
+        return Err(undeclared(&runtime.worktree));
+    }
+    if !output_norm.starts_with(&state_dir_norm) {
+        return Err(undeclared(&runtime.output_dir));
+    }
+    if !shadow_norm.starts_with(&state_dir_norm) {
+        return Err(undeclared(&runtime.git_shadow_host));
+    }
+
+    // 4. Mounts — exactly one workspace mount and one output mount,
+    //    with fixed canonical container paths, plus the optional
+    //    read-only `.git` shadow at `/workspace/.git`.
     let workspace_mount = MountSpec {
         host_path: worktree_norm,
         container_path: PathBuf::from("/workspace"),
@@ -334,17 +451,49 @@ pub fn resolve(sandbox: &SandboxConfig, runtime: &RuntimeFacts) -> CaduceusResul
         container_path: PathBuf::from("/output"),
         read_only: false,
     };
+    let git_shadow = select_git_shadow(runtime.git_shadow_kind, &shadow_norm);
 
-    // 4. Identity — fixed non-root uid/gid.
-    let identity = ResolvedIdentity {
-        uid: SANDBOX_UID,
-        gid: SANDBOX_GID,
+    // 5. Identity — the closed 4-case matrix over
+    //    (engine, engine_mode). `uid`/`gid` are always the probed
+    //    worktree-owner facts; there is deliberately no fallback to
+    //    a hard-coded identity.
+    let identity = match (sandbox.engine, runtime.engine_mode) {
+        (SandboxEngine::Docker, EngineMode::Rootful) => ResolvedIdentity {
+            uid: runtime.worktree_uid,
+            gid: runtime.worktree_gid,
+            emit_user: true,
+            userns: None,
+        },
+        // Container root maps to the unprivileged engine user via the
+        // rootless user namespace; no `--user` is emitted.
+        (SandboxEngine::Docker, EngineMode::Rootless) => ResolvedIdentity {
+            uid: runtime.worktree_uid,
+            gid: runtime.worktree_gid,
+            emit_user: false,
+            userns: None,
+        },
+        // In-container uid/gid = the user invoking Podman = the
+        // daemon user = the worktree owner (the daemon created the
+        // worktree). Plain `keep-id` — no uid=/gid= mapping, which is
+        // what removed the hard-coded 1000 mapping.
+        (SandboxEngine::Podman, EngineMode::Rootless) => ResolvedIdentity {
+            uid: runtime.worktree_uid,
+            gid: runtime.worktree_gid,
+            emit_user: false,
+            userns: Some("keep-id"),
+        },
+        (SandboxEngine::Podman, EngineMode::Rootful) => ResolvedIdentity {
+            uid: runtime.worktree_uid,
+            gid: runtime.worktree_gid,
+            emit_user: true,
+            userns: None,
+        },
     };
 
-    // 5. Image — reject non-digest-pinned references.
+    // 6. Image — reject non-digest-pinned references.
     let image = ImageRef::new(&sandbox.image)?;
 
-    // 6. Pull policy — `Always` is incompatible with digest-pinned images.
+    // 7. Pull policy — `Always` is incompatible with digest-pinned images.
     if sandbox.pull_policy == OciPullPolicy::Always {
         return Err(CaduceusError::OciPullPolicyIncompatible {
             detail: "pull_policy 'Always' is incompatible with \
@@ -353,7 +502,7 @@ pub fn resolve(sandbox: &SandboxConfig, runtime: &RuntimeFacts) -> CaduceusResul
         });
     }
 
-    // 7. Resources — mapped 1:1 from SandboxResources.
+    // 8. Resources — mapped 1:1 from SandboxResources.
     let resources = ResourceLimits {
         cpus: sandbox.resources.cpus,
         memory_mb: sandbox.resources.memory_mb,
@@ -362,13 +511,13 @@ pub fn resolve(sandbox: &SandboxConfig, runtime: &RuntimeFacts) -> CaduceusResul
         shm_mb: sandbox.resources.shm_mb,
     };
 
-    // 8. Network — map from SandboxNetwork.
+    // 9. Network — map from SandboxNetwork.
     let network = match sandbox.network {
         SandboxNetwork::None => NetworkMode::None,
         SandboxNetwork::Unrestricted => NetworkMode::Unrestricted,
     };
 
-    // 9. Environment — ordered.
+    // 10. Environment — ordered.
     let mut environment: Vec<(String, String)> = vec![
         ("CADUCEUS_RUN_ID".to_string(), runtime.run_id.clone()),
         ("CADUCEUS_ISSUE_ID".to_string(), runtime.issue.display_key()),
@@ -379,39 +528,155 @@ pub fn resolve(sandbox: &SandboxConfig, runtime: &RuntimeFacts) -> CaduceusResul
         }
     }
 
-    // 10. Tmpfs — one /tmp mount sized from config.
-    let tmpfs = vec![TmpfsMount {
-        target: "/tmp".to_string(),
-        size_mb: sandbox.resources.tmpfs_mb,
-    }];
+    // 11. Tmpfs — bounded ephemeral surfaces only: `/tmp` sized from
+    //     `resources.tmpfs_mb` and `/dev/shm` sized from
+    //     `resources.shm_mb` (replacing the standalone `--shm-size`
+    //     flag, which sized the same mount redundantly).
+    let tmpfs = vec![
+        TmpfsMount {
+            target: "/tmp".to_string(),
+            size_mb: sandbox.resources.tmpfs_mb,
+        },
+        TmpfsMount {
+            target: "/dev/shm".to_string(),
+            size_mb: sandbox.resources.shm_mb,
+        },
+    ];
 
-    // 11. Labels — fixed order.
+    // 12. Labels — fixed order.
     let labels = vec![
         ("caduceus.daemon_id".to_string(), runtime.daemon_id.clone()),
         ("caduceus.run_id".to_string(), runtime.run_id.clone()),
         ("caduceus.issue_id".to_string(), runtime.issue.display_key()),
     ];
 
-    // 12. Command — worker argv.
+    // 13. Command — worker argv.
     let command = runtime.worker_command.clone();
 
-    // 13. Name — container name == run_id.
+    // 14. Name — container name == run_id.
     let name = runtime.run_id.clone();
 
-    Ok(SandboxSpec::new(
+    let spec = SandboxSpec::new(
         name,
         image,
         command,
         identity,
         workspace_mount,
         output_mount,
+        git_shadow,
         tmpfs,
         environment,
         resources,
         network,
         FixedSecurityPolicy,
         labels,
-    ))
+    );
+
+    // 15. Writable-surface invariant — enforced where the closed spec
+    //     is built, so an extra writable host-backed mount can only
+    //     ever be a future regression caught at resolution time.
+    validate_mount_policy(&spec)?;
+
+    Ok(spec)
+}
+
+/// Reject two daemon-declared host paths that are equal or nested
+/// (either direction). `left`/`right` are human-readable labels used
+/// in the conflict detail.
+fn check_disjoint(
+    left: &Path,
+    right: &Path,
+    left_label: &str,
+    right_label: &str,
+) -> CaduceusResult<()> {
+    if left == right || left.starts_with(right) || right.starts_with(left) {
+        return Err(CaduceusError::OciMountConflict {
+            detail: format!(
+                "{left_label} {} and {right_label} {} must be disjoint host \
+                 paths (the old double-RW mount bug: each mount needs a \
+                 distinct host path)",
+                left.display(),
+                right.display(),
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// Enforce the writable-surface invariant on a resolved spec:
+///
+/// - exactly two RW host-backed mounts: `/workspace` and `/output`;
+/// - the only extra host-backed mount is the `.git` shadow, and it
+///   is read-only at `/workspace/.git`;
+/// - the tmpfs set is exactly `[/tmp (tmpfs_mb), /dev/shm (shm_mb)]`.
+///
+/// A violation returns `OciUndeclaredMount`/`OciMountConflict` —
+/// structurally this can only fire on a future regression inside
+/// `resolve` itself, which is exactly the point.
+fn validate_mount_policy(spec: &SandboxSpec) -> CaduceusResult<()> {
+    // The two writable host-backed surfaces.
+    let writable = [
+        ("workspace", &spec.workspace_mount, "/workspace"),
+        ("output", &spec.output_mount, "/output"),
+    ];
+    for (label, mount, container_path) in writable {
+        if mount.read_only {
+            return Err(CaduceusError::OciMountConflict {
+                detail: format!("the {label} surface must be writable, but {mount:?} is read-only"),
+            });
+        }
+        if mount.container_path != Path::new(container_path) {
+            return Err(CaduceusError::OciMountConflict {
+                detail: format!(
+                    "the {label} surface must target {container_path}, but {:?} was declared",
+                    mount.container_path
+                ),
+            });
+        }
+    }
+
+    // The only extra host-backed mount is the read-only `.git` shadow.
+    if let Some(shadow) = &spec.git_shadow {
+        if !shadow.read_only {
+            return Err(CaduceusError::OciUndeclaredMount {
+                path: shadow.host_path.display().to_string(),
+            });
+        }
+        if shadow.container_path != Path::new("/workspace/.git") {
+            return Err(CaduceusError::OciMountConflict {
+                detail: format!(
+                    "the .git shadow must target /workspace/.git, but {:?} was declared",
+                    shadow.container_path
+                ),
+            });
+        }
+    }
+
+    // Tmpfs set is exactly the two bounded ephemeral surfaces.
+    let expected = [
+        ("/tmp", spec.resources.tmpfs_mb),
+        ("/dev/shm", spec.resources.shm_mb),
+    ];
+    if spec.tmpfs.len() != expected.len() {
+        return Err(CaduceusError::OciMountConflict {
+            detail: format!(
+                "tmpfs set must be exactly {expected:?}, got {:?}",
+                spec.tmpfs
+            ),
+        });
+    }
+    for (mount, (target, size_mb)) in spec.tmpfs.iter().zip(expected.iter()) {
+        if mount.target != *target || mount.size_mb != *size_mb {
+            return Err(CaduceusError::OciMountConflict {
+                detail: format!(
+                    "tmpfs set must be exactly {expected:?}, got {:?}",
+                    spec.tmpfs
+                ),
+            });
+        }
+    }
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -451,19 +716,4 @@ fn lexical_normalize(path: &Path) -> Option<PathBuf> {
         }
     }
     Some(out)
-}
-
-/// Resolve a host path: lexical-normalize, check absolute, check
-/// under `workdir_base_norm`. Returns the normalized path on success
-/// or `OciUndeclaredMount` on failure.
-fn resolve_path(path: &Path, workdir_base_norm: &Path) -> CaduceusResult<PathBuf> {
-    let norm = lexical_normalize(path).ok_or_else(|| CaduceusError::OciUndeclaredMount {
-        path: path.display().to_string(),
-    })?;
-    if !norm.starts_with(workdir_base_norm) {
-        return Err(CaduceusError::OciUndeclaredMount {
-            path: path.display().to_string(),
-        });
-    }
-    Ok(norm)
 }

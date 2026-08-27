@@ -8,23 +8,15 @@
 //! a structural property of the closed `SandboxSpec` + renderer.
 
 use caduceus::executor::sandbox_renderer::render;
-use caduceus::executor::sandbox_spec::{resolve, RuntimeFacts, SandboxEngine, SandboxSpec};
-use caduceus::github::issue::IssueKey;
+use caduceus::executor::sandbox_spec::{resolve, SandboxEngine, SandboxSpec};
 use caduceus::infra::config::{Config, SandboxNetwork};
+
+mod support;
 
 /// Resolve a spec from a config (paths under its workdir_base).
 fn resolve_from(cfg: &Config) -> SandboxSpec {
     let worktree = cfg.workdir_base.join("owner").join("repo").join("run-001");
-    let output = cfg.workdir_base.join("owner").join("repo").join("result");
-    let runtime = RuntimeFacts {
-        run_id: "run-001".to_string(),
-        issue: IssueKey::parse("owner/repo#1").expect("valid key"),
-        worker_command: vec!["python3".to_string(), "bridge.py".to_string()],
-        worktree,
-        output_dir: output,
-        daemon_id: "test-daemon".to_string(),
-        workdir_base: cfg.workdir_base.clone(),
-    };
+    let runtime = support::runtime_facts(cfg, "run-001", &worktree);
     resolve(cfg.sandbox(), &runtime).expect("must resolve")
 }
 
@@ -47,8 +39,8 @@ fn baseline_enforced() {
         "argv must contain --user"
     );
     assert!(
-        argv.iter().any(|a| a == "1000:1000"),
-        "argv must contain the fixed 1000:1000 identity"
+        argv.iter().any(|a| a == "4242:4242"),
+        "argv must contain the resolved worktree-owner identity"
     );
     assert!(
         argv.iter().any(|a| a == "--cap-drop"),
@@ -101,7 +93,7 @@ fn isolation_flags_precede_image() {
         .expect("image token must be present");
     let engine_flags = [
         "--user",
-        "1000:1000",
+        "4242:4242",
         "--cap-drop",
         "ALL",
         "--security-opt",
@@ -113,7 +105,6 @@ fn isolation_flags_precede_image() {
         "--cpus",
         "--memory",
         "--pids-limit",
-        "--shm-size",
         "--name",
         "-v",
         "-e",
@@ -167,7 +158,7 @@ fn no_network_mode_gives_none() {
     assert_eq!(argv[network_pos + 1], "none");
 }
 
-// git-less worker — .git is not mounted
+// git-shadow worker — `.git` is shadowed read-only, never writable
 
 #[test]
 fn git_less_worker() {
@@ -175,13 +166,23 @@ fn git_less_worker() {
     let spec = resolve_from(&cfg);
     let argv = render(&spec, SandboxEngine::Docker);
     let git_refs: Vec<&String> = argv.iter().filter(|a| a.contains(".git")).collect();
+    // The only `.git` reference is the daemon-owned read-only shadow
+    // at the fixed canonical path — the real gitdir is unreachable
+    // and `/workspace/.git` is never writable.
+    assert_eq!(
+        git_refs.len(),
+        1,
+        "exactly the shadow mount may reference .git, got: {git_refs:?}"
+    );
     assert!(
-        git_refs.is_empty(),
-        "unexpected .git reference in argv: {git_refs:?}"
+        git_refs[0].ends_with(":/workspace/.git:ro"),
+        "the .git reference must be the read-only shadow, got: {:?}",
+        git_refs[0]
     );
 }
 
-// resources always rendered — cpus/memory/pids/shm are total fields
+// resources always rendered — cpus/memory/pids are total fields; the
+// tmpfs pair covers the ephemeral surfaces
 
 #[test]
 fn resources_always_rendered() {
@@ -191,5 +192,6 @@ fn resources_always_rendered() {
     assert!(argv.iter().any(|a| a == "--cpus"));
     assert!(argv.iter().any(|a| a == "--memory"));
     assert!(argv.iter().any(|a| a == "--pids-limit"));
-    assert!(argv.iter().any(|a| a == "--shm-size"));
+    assert!(argv.iter().any(|a| a == "--tmpfs"));
+    assert!(argv.iter().any(|a| a == "/dev/shm:size=64m"));
 }

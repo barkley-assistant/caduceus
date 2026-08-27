@@ -310,6 +310,19 @@ pub enum CaduceusError {
     #[error("OCI mount conflict: {detail}")]
     OciMountConflict { detail: String },
 
+    /// Unsupported namespace / identity configuration, refused
+    /// before any container is created. `mode` is `None` when the
+    /// engine mode itself could not be determined; the canonical
+    /// named case is a rootful engine configured with
+    /// userns-remap. Raised by the pre-flight engine probe, never
+    /// after `create` argv exists.
+    #[error("OCI identity unsupported for {engine:?} (mode {mode:?}): {reason}")]
+    OciIdentityUnsupported {
+        engine: crate::executor::sandbox_spec::SandboxEngine,
+        mode: Option<crate::executor::sandbox_spec::EngineMode>,
+        reason: String,
+    },
+
     /// A potential secret leak was detected in OCI output.
     #[error("OCI secret leak suspected at {path}")]
     OciSecretLeakSuspected { path: String },
@@ -544,6 +557,12 @@ impl fmt::Debug for CaduceusError {
   }
   CaduceusError::OciMountConflict { detail } => {
   format!("OciMountConflict {{ detail: {} }}", scrub(detail))
+  }
+  CaduceusError::OciIdentityUnsupported { engine, mode, reason } => {
+  format!(
+  "OciIdentityUnsupported {{ engine: {:?}, mode: {:?}, reason: {} }}",
+  engine, mode, scrub(reason)
+  )
   }
   CaduceusError::OciSecretLeakSuspected { path } => {
   format!("OciSecretLeakSuspected {{ path: {:?} }}", path)

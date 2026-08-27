@@ -1,29 +1,22 @@
 //! Adversarial resource-limit tests for the OCI executor.
 //!
 //! These tests verify that the typed `ResourceLimits` fields reach the
-//! rendered argv as engine flags (`--cpus`, `--memory`, `--pids-limit`,
-//! `--shm-size`). All tests require a live Docker/Podman engine for
+//! rendered argv as engine flags (`--cpus`, `--memory`, `--pids-limit`
+//! and the dual `--tmpfs` list). All tests require a live
+//! Docker/Podman engine for
 //! the cgroup-enforcement half and are gated behind
 //! `CADUCEUS_RUN_ISOLATION_TESTS`; the argv assertions themselves run
 //! whenever the suite is executed.
 
 use caduceus::executor::sandbox_renderer::render;
-use caduceus::executor::sandbox_spec::{resolve, RuntimeFacts, SandboxEngine, SandboxSpec};
-use caduceus::github::issue::IssueKey;
+use caduceus::executor::sandbox_spec::{resolve, SandboxEngine, SandboxSpec};
 use caduceus::infra::config::Config;
+
+mod support;
 
 fn resolve_from(cfg: &Config) -> SandboxSpec {
     let worktree = cfg.workdir_base.join("owner").join("repo").join("run-001");
-    let output = cfg.workdir_base.join("owner").join("repo").join("result");
-    let runtime = RuntimeFacts {
-        run_id: "run-001".to_string(),
-        issue: IssueKey::parse("owner/repo#1").expect("valid key"),
-        worker_command: vec!["python3".to_string(), "bridge.py".to_string()],
-        worktree,
-        output_dir: output,
-        daemon_id: "test-daemon".to_string(),
-        workdir_base: cfg.workdir_base.clone(),
-    };
+    let runtime = support::runtime_facts(cfg, "run-001", &worktree);
     resolve(cfg.sandbox(), &runtime).expect("must resolve")
 }
 
@@ -33,7 +26,8 @@ fn default_cfg() -> Config {
 }
 
 /// The resource flags are always present with the configured values
-/// (test_defaults: cpus 2.0, memory 2048m, pids 256, shm 64m).
+/// (test_defaults: cpus 2.0, memory 2048m, pids 256, tmpfs 256m,
+/// shm 64m — `/dev/shm` is declared via the dual tmpfs list).
 #[test]
 fn resource_flags_reach_argv() {
     let cfg = default_cfg();
@@ -45,8 +39,9 @@ fn resource_flags_reach_argv() {
     assert!(argv.iter().any(|a| a == "256"));
     assert!(argv.iter().any(|a| a == "--cpus"));
     assert!(argv.iter().any(|a| a == "2"));
-    assert!(argv.iter().any(|a| a == "--shm-size"));
-    assert!(argv.iter().any(|a| a == "64m"));
+    assert!(argv.iter().any(|a| a == "--tmpfs"));
+    assert!(argv.iter().any(|a| a == "/tmp:size=256m"));
+    assert!(argv.iter().any(|a| a == "/dev/shm:size=64m"));
 }
 
 // exhaust_memory — malloc beyond --memory=2048m triggers OOM-killer

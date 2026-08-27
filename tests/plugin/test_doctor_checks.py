@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fcntl
 import os
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -248,3 +249,168 @@ def test_doctor_check_worktree_lock_held_lock(
     assert finding.category == "daemon-defect"
     assert finding.status == "ok"
     assert "held" in finding.detail.lower()
+
+
+# ---------------------------------------------------------------------------
+# _doctor_check_oci_identity (issue #244)
+# ---------------------------------------------------------------------------
+
+
+class _FakeProc:
+    """Minimal subprocess.run result double."""
+
+    def __init__(self, returncode: int, stdout: bytes, stderr: bytes = b"") -> None:
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def _patch_engine_probe(
+    adapter, monkeypatch: pytest.MonkeyPatch, docker, podman
+) -> None:
+    """Patch ``subprocess.run`` so the named engine probe returns the
+    canned result and the other engine is reported missing (OSError)."""
+
+    def _run(args, **kwargs):
+        binary = args[0]
+        canned = {"docker": docker, "podman": podman}[binary]
+        if canned is None:
+            raise FileNotFoundError(binary)
+        if isinstance(canned, Exception):
+            raise canned
+        return canned
+
+    monkeypatch.setattr(adapter.subprocess, "run", _run)
+
+
+def test_doctor_check_oci_identity_podman_rootless_ok(
+    adapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Podman rootless (``true``) is a supported identity mode."""
+    _patch_engine_probe(
+        adapter,
+        monkeypatch,
+        docker=None,
+        podman=_FakeProc(0, b"true\n"),
+    )
+    finding = adapter._doctor_check_oci_identity()
+    assert finding.category == "host-capability-unavailable"
+    assert finding.status == "ok"
+    assert "rootless" in finding.detail.lower()
+
+
+def test_doctor_check_oci_identity_podman_rootful_ok(
+    adapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Podman rootful (``false``) follows the rootful rule — supported."""
+    _patch_engine_probe(
+        adapter,
+        monkeypatch,
+        docker=None,
+        podman=_FakeProc(0, b"false\n"),
+    )
+    finding = adapter._doctor_check_oci_identity()
+    assert finding.status == "ok"
+
+
+def test_doctor_check_oci_identity_docker_rootful_ok(
+    adapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Plain rootful Docker security options are supported."""
+    _patch_engine_probe(
+        adapter,
+        monkeypatch,
+        docker=_FakeProc(0, b"[name=apparmor name=seccomp,profile=builtin]"),
+        podman=None,
+    )
+    finding = adapter._doctor_check_oci_identity()
+    assert finding.status == "ok"
+    assert "rootful" in finding.detail.lower()
+
+
+def test_doctor_check_oci_identity_docker_rootless_ok(
+    adapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``name=rootless`` in the security options is supported."""
+    _patch_engine_probe(
+        adapter,
+        monkeypatch,
+        docker=_FakeProc(0, b"[name=rootless name=seccomp,profile=builtin]"),
+        podman=None,
+    )
+    finding = adapter._doctor_check_oci_identity()
+    assert finding.status == "ok"
+    assert "rootless" in finding.detail.lower()
+
+
+def test_doctor_check_oci_identity_rootful_userns_remap_fails(
+    adapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rootful Docker with userns-remap is refused → host-capability-unavailable
+    (doctor exit code 2 category)."""
+    _patch_engine_probe(
+        adapter,
+        monkeypatch,
+        docker=_FakeProc(0, b"[name=userns-remap,value=default]"),
+        podman=None,
+    )
+    finding = adapter._doctor_check_oci_identity()
+    assert finding.category == "host-capability-unavailable"
+    assert finding.status == "fail"
+    assert "userns-remap" in finding.detail.lower()
+
+
+def test_doctor_check_oci_identity_unparseable_fails(
+    adapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An installed engine whose mode cannot be parsed is fail-closed."""
+    _patch_engine_probe(
+        adapter,
+        monkeypatch,
+        docker=_FakeProc(0, b"not-a-security-options-list"),
+        podman=None,
+    )
+    finding = adapter._doctor_check_oci_identity()
+    assert finding.category == "host-capability-unavailable"
+    assert finding.status == "fail"
+
+
+def test_doctor_check_oci_identity_probe_failure_fails(
+    adapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An installed engine whose ``info`` probe exits non-zero is fail-closed."""
+    _patch_engine_probe(
+        adapter,
+        monkeypatch,
+        docker=_FakeProc(1, b"", stderr=b"Cannot connect to the Docker daemon"),
+        podman=None,
+    )
+    finding = adapter._doctor_check_oci_identity()
+    assert finding.category == "host-capability-unavailable"
+    assert finding.status == "fail"
+
+
+def test_doctor_check_oci_identity_probe_timeout_fails(
+    adapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A hung engine probe is fail-closed (mirrors the daemon's bounded timeout)."""
+    _patch_engine_probe(
+        adapter,
+        monkeypatch,
+        docker=subprocess.TimeoutExpired(cmd="docker", timeout=15),
+        podman=None,
+    )
+    finding = adapter._doctor_check_oci_identity()
+    assert finding.status == "fail"
+
+
+def test_doctor_check_oci_identity_no_engine_ok(
+    adapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No OCI engine installed → not applicable (trusted-host dispatch)."""
+    _patch_engine_probe(adapter, monkeypatch, docker=None, podman=None)
+    # Neither binary resolves on PATH.
+    monkeypatch.setattr(adapter, "_binary_on_path", lambda _name: False)
+    finding = adapter._doctor_check_oci_identity()
+    assert finding.status == "ok"
+    assert "not applicable" in finding.detail.lower()
