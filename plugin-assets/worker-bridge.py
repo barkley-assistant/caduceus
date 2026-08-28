@@ -85,7 +85,14 @@ REQUIRED_ENV_VARS: tuple[str, ...] = (
     "CADUCEUS_RUN_ID",
     "CADUCEUS_ISSUE_LABELS_JSON",
     "CADUCEUS_BRANCH_NAME",
+    "CADUCEUS_RESULT_PATH",
 )
+
+#: Names in :data:`REQUIRED_ENV_VARS` that are soft-required. A missing
+#: entry must not abort the worker: the bridge falls back to the legacy
+#: location (with a stderr warning) instead. Every other required name
+#: is hard-required and aborts with ``EXIT_MISSING_ENV``.
+SOFT_REQUIRED_ENV_VARS: frozenset[str] = frozenset({"CADUCEUS_RESULT_PATH"})
 
 #: File names inside the worktree the daemon prepares. The bridge never
 #: reads ``worker-result.json`` (the daemon reads it after the worker
@@ -301,7 +308,20 @@ def truncate_pull_request_title(title: str) -> str:
 
 
 def _result_path(worktree: Path) -> Path:
-    """Return the daemon-consumed result path for a worktree."""
+    """Return the daemon-consumed result path for a worktree.
+
+    The daemon may export ``CADUCEUS_RESULT_PATH`` (the agent-neutral
+    result location). When set and non-empty it wins; otherwise the
+    legacy ``<worktree>/worker-result.json`` location is used and a
+    visible but non-fatal warning is written to stderr.
+    """
+    override = os.environ.get("CADUCEUS_RESULT_PATH")
+    if override:
+        return Path(override)
+    sys.stderr.write(
+        "caduceus bridge: CADUCEUS_RESULT_PATH is not set; "
+        f"falling back to legacy result path {worktree / 'worker-result.json'}\n"
+    )
     return worktree / "worker-result.json"
 
 
@@ -317,6 +337,10 @@ def _synthesize_worker_result(
     result_path = _result_path(worktree)
     if result_path.exists():
         return
+
+    # The resolved parent may be a freshly mounted directory (for
+    # example an OCI ``/output`` bind) that does not exist yet.
+    result_path.parent.mkdir(parents=True, exist_ok=True)
 
     combined = _clean_terminal_text((stdout or "") + (stderr or ""))
     lines = [line.strip() for line in combined.split("\n") if line.strip()]
@@ -406,7 +430,11 @@ def read_required_env(env: Mapping[str, str]) -> dict:
     diagnostic naming each missing key. The error message never embeds
     the values (no echo of titles, bodies, or tokens).
     """
-    missing = [name for name in REQUIRED_ENV_VARS if not env.get(name)]
+    missing = [
+        name
+        for name in REQUIRED_ENV_VARS
+        if name not in SOFT_REQUIRED_ENV_VARS and not env.get(name)
+    ]
     if missing:
         print(
             "caduceus bridge: missing required environment: "
@@ -414,7 +442,11 @@ def read_required_env(env: Mapping[str, str]) -> dict:
             file=sys.stderr,
         )
         sys.exit(EXIT_MISSING_ENV)
-    return {name: env[name] for name in REQUIRED_ENV_VARS}
+    return {
+        name: env[name]
+        for name in REQUIRED_ENV_VARS
+        if name in env and env[name]
+    }
 
 
 def parse_labels(raw: str) -> list[str]:

@@ -22,7 +22,7 @@ fn test_cfg() -> Config {
 fn resolve_from(cfg: &Config, run_id: &str) -> SandboxSpec {
     let worktree = cfg.workdir_base.join("owner").join("repo").join(run_id);
     let runtime = support::runtime_facts(cfg, run_id, &worktree);
-    resolve(cfg.sandbox(), &runtime).expect("must resolve")
+    resolve(cfg.sandbox(), &runtime, &support::executor_spec(&runtime)).expect("must resolve")
 }
 
 // stable_labels_across_calls (AC-05)

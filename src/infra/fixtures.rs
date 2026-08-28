@@ -69,6 +69,7 @@ pub const CANONICAL_WORKER_ENV_VARS: &[&str] = &[
     "CADUCEUS_ISSUE_TITLE",
     "CADUCEUS_RUN_ID",
     "CADUCEUS_WORKTREE_PATH",
+    "CADUCEUS_RESULT_PATH",
 ];
 
 /// Default allowlist for the worker environment (the worker-result

@@ -45,7 +45,8 @@ fn rejects_non_digest_image() {
     let (mut cfg, worktree) = base();
     cfg.sandbox.as_mut().expect("sandbox").image = "caduceus-worker:latest".to_string();
     let runtime = runtime_for(&cfg, &worktree);
-    let err = resolve(cfg.sandbox(), &runtime).expect_err("must reject");
+    let err = resolve(cfg.sandbox(), &runtime, &support::executor_spec(&runtime))
+        .expect_err("must reject");
     match err {
         CaduceusError::OciImageNotDigestPinned { reference } => {
             assert_eq!(reference, "caduceus-worker:latest");
@@ -60,7 +61,8 @@ fn rejects_pull_policy_always_with_digest() {
     let (mut cfg, worktree) = base();
     cfg.sandbox.as_mut().expect("sandbox").pull_policy = OciPullPolicy::Always;
     let runtime = runtime_for(&cfg, &worktree);
-    let err = resolve(cfg.sandbox(), &runtime).expect_err("must reject");
+    let err = resolve(cfg.sandbox(), &runtime, &support::executor_spec(&runtime))
+        .expect_err("must reject");
     match err {
         CaduceusError::OciPullPolicyIncompatible { .. } => {}
         other => panic!("expected OciPullPolicyIncompatible; got: {other:?}"),
@@ -72,7 +74,8 @@ fn rejects_pull_policy_always_with_digest() {
 fn rejects_worktree_outside_workdir_base() {
     let (cfg, _) = base();
     let runtime = runtime_for(&cfg, Path::new("/tmp/elsewhere/worktree"));
-    let err = resolve(cfg.sandbox(), &runtime).expect_err("must reject");
+    let err = resolve(cfg.sandbox(), &runtime, &support::executor_spec(&runtime))
+        .expect_err("must reject");
     match err {
         CaduceusError::OciUndeclaredMount { path } => {
             assert!(
@@ -92,7 +95,8 @@ fn rejects_output_outside_state_dir() {
     let (cfg, worktree) = base();
     let mut runtime = runtime_for(&cfg, &worktree);
     runtime.output_dir = PathBuf::from("/tmp/elsewhere/result");
-    let err = resolve(cfg.sandbox(), &runtime).expect_err("must reject");
+    let err = resolve(cfg.sandbox(), &runtime, &support::executor_spec(&runtime))
+        .expect_err("must reject");
     assert!(
         matches!(err, CaduceusError::OciUndeclaredMount { .. }),
         "expected OciUndeclaredMount; got: {err:?}"
@@ -105,7 +109,8 @@ fn rejects_output_outside_state_dir() {
 fn rejects_relative_worktree() {
     let (cfg, _) = base();
     let runtime = runtime_for(&cfg, Path::new("relative/worktree"));
-    let err = resolve(cfg.sandbox(), &runtime).expect_err("must reject");
+    let err = resolve(cfg.sandbox(), &runtime, &support::executor_spec(&runtime))
+        .expect_err("must reject");
     assert!(
         matches!(err, CaduceusError::OciUndeclaredMount { .. }),
         "expected OciUndeclaredMount; got: {err:?}"
@@ -118,7 +123,8 @@ fn rejects_output_equal_to_worktree() {
     let (cfg, worktree) = base();
     let mut runtime = runtime_for(&cfg, &worktree);
     runtime.output_dir = worktree.clone();
-    let err = resolve(cfg.sandbox(), &runtime).expect_err("must reject");
+    let err = resolve(cfg.sandbox(), &runtime, &support::executor_spec(&runtime))
+        .expect_err("must reject");
     match err {
         CaduceusError::OciMountConflict { detail } => {
             assert!(
@@ -137,7 +143,8 @@ fn rejects_output_containing_worktree() {
     let (cfg, worktree) = base();
     let mut runtime = runtime_for(&cfg, &worktree);
     runtime.output_dir = worktree.parent().expect("parent").to_path_buf();
-    let err = resolve(cfg.sandbox(), &runtime).expect_err("must reject");
+    let err = resolve(cfg.sandbox(), &runtime, &support::executor_spec(&runtime))
+        .expect_err("must reject");
     assert!(
         matches!(err, CaduceusError::OciMountConflict { .. }),
         "expected OciMountConflict; got: {err:?}"
@@ -154,7 +161,8 @@ fn rejects_state_dir_inside_workdir_base() {
     cfg.state_dir = cfg.workdir_base.join("state");
     let worktree = cfg.workdir_base.join("owner").join("repo").join("run-001");
     let runtime = support::runtime_facts(&cfg, "run-001", &worktree);
-    let err = resolve(cfg.sandbox(), &runtime).expect_err("must reject");
+    let err = resolve(cfg.sandbox(), &runtime, &support::executor_spec(&runtime))
+        .expect_err("must reject");
     assert!(
         matches!(err, CaduceusError::OciMountConflict { .. }),
         "expected OciMountConflict; got: {err:?}"
@@ -169,7 +177,8 @@ fn rejects_shadow_overlapping_output_or_worktree() {
     // shadow == output_dir
     let mut runtime = runtime_for(&cfg, &worktree);
     runtime.git_shadow_host = runtime.output_dir.clone();
-    let err = resolve(cfg.sandbox(), &runtime).expect_err("must reject");
+    let err = resolve(cfg.sandbox(), &runtime, &support::executor_spec(&runtime))
+        .expect_err("must reject");
     assert!(
         matches!(err, CaduceusError::OciMountConflict { .. }),
         "expected OciMountConflict for shadow == output; got: {err:?}"
@@ -179,7 +188,8 @@ fn rejects_shadow_overlapping_output_or_worktree() {
     let (cfg, worktree) = base();
     let mut runtime = runtime_for(&cfg, &worktree);
     runtime.git_shadow_host = worktree.join(".git-shadow");
-    let err = resolve(cfg.sandbox(), &runtime).expect_err("must reject");
+    let err = resolve(cfg.sandbox(), &runtime, &support::executor_spec(&runtime))
+        .expect_err("must reject");
     assert!(
         matches!(err, CaduceusError::OciMountConflict { .. }),
         "expected OciMountConflict for shadow inside worktree; got: {err:?}"
@@ -197,7 +207,8 @@ fn rejects_shadow_overlapping_output_or_worktree() {
 fn resolves_owner_identity() {
     let (cfg, worktree) = base();
     let runtime = runtime_for(&cfg, &worktree);
-    let spec = resolve(cfg.sandbox(), &runtime).expect("must resolve");
+    let spec =
+        resolve(cfg.sandbox(), &runtime, &support::executor_spec(&runtime)).expect("must resolve");
     assert_eq!(
         spec.identity(),
         ResolvedIdentity {
@@ -217,7 +228,8 @@ fn resolves_owner_identity() {
 fn resolves_canonical_container_paths() {
     let (cfg, worktree) = base();
     let runtime = runtime_for(&cfg, &worktree);
-    let spec = resolve(cfg.sandbox(), &runtime).expect("must resolve");
+    let spec =
+        resolve(cfg.sandbox(), &runtime, &support::executor_spec(&runtime)).expect("must resolve");
 
     let ws = spec.workspace_mount();
     assert_eq!(ws.host_path, worktree);
@@ -235,8 +247,8 @@ fn resolves_canonical_container_paths() {
 }
 
 /// (g) pass_env filtering — names present in the process environment
-/// are appended after the two CADUCEUS_* entries, in config order;
-/// unset names are skipped.
+/// are appended after the full canonical CADUCEUS_* set, in config
+/// order; unset names are skipped.
 #[test]
 fn pass_env_filtering() {
     struct EnvGuard(&'static str);
@@ -259,7 +271,8 @@ fn pass_env_filtering() {
         "CADUCEUS_RESOLVE_TEST_UNSET".to_string(),
     ];
     let runtime = runtime_for(&cfg, &worktree);
-    let spec = resolve(cfg.sandbox(), &runtime).expect("must resolve");
+    let spec =
+        resolve(cfg.sandbox(), &runtime, &support::executor_spec(&runtime)).expect("must resolve");
     let env = spec.environment();
     assert_eq!(
         env[0],
@@ -269,17 +282,85 @@ fn pass_env_filtering() {
         env[1],
         ("CADUCEUS_ISSUE_ID".to_string(), "owner/repo#1".to_string())
     );
+    // The 11 canonical entries precede the pass_env entries.
+    let canonical_tail = &env[11..];
     assert_eq!(
-        env[2],
-        (
+        canonical_tail,
+        &[(
             "CADUCEUS_RESOLVE_TEST_PASS_ENV".to_string(),
             "present-value".to_string()
-        )
+        ),]
     );
     assert_eq!(
         env.len(),
-        3,
+        12,
         "unset pass_env names must be skipped, got: {env:?}"
+    );
+}
+
+/// (g') The resolved environment carries the FULL canonical
+/// `CADUCEUS_*` set with CONTAINER-side path values: worktree and
+/// result paths are the fixed container paths, never the host
+/// worktree/output paths, and the remaining canonical variables
+/// mirror the spec inputs exactly (issue #243).
+#[test]
+fn resolves_full_canonical_environment_with_container_paths() {
+    let (cfg, worktree) = base();
+    let mut runtime = runtime_for(&cfg, &worktree);
+    runtime.run_id = "run-100".to_string();
+    runtime.issue = IssueKey::parse("octocat/hello#42").expect("valid key");
+    let spec_input = caduceus::executor::ExecutorSpec {
+        self_exe: PathBuf::from("/proc/self/exe"),
+        issue: runtime.issue.clone(),
+        worktree: worktree.clone(),
+        run_id: "run-100".to_string(),
+        context_json: "{\"context\":true}".to_string(),
+        worker_command: vec!["python3".to_string(), "bridge.py".to_string()],
+        cancellation: tokio_util::sync::CancellationToken::new(),
+        issue_title: "A title".to_string(),
+        issue_body: "A body\nwith newline".to_string(),
+        labels: vec!["p1".to_string(), "p2".to_string()],
+        branch_name: "caduceus/octocat/hello#42".to_string(),
+    };
+    let resolved = resolve(cfg.sandbox(), &runtime, &spec_input).expect("must resolve");
+    let env = resolved.environment();
+
+    let expected: &[(&str, String)] = &[
+        ("CADUCEUS_RUN_ID", "run-100".to_string()),
+        ("CADUCEUS_ISSUE_ID", "octocat/hello#42".to_string()),
+        ("CADUCEUS_ISSUE_NUMBER", "42".to_string()),
+        ("CADUCEUS_ISSUE_REPO", "octocat/hello".to_string()),
+        ("CADUCEUS_ISSUE_TITLE", "A title".to_string()),
+        ("CADUCEUS_ISSUE_BODY", "A body\nwith newline".to_string()),
+        ("CADUCEUS_ISSUE_LABELS_JSON", "[\"p1\",\"p2\"]".to_string()),
+        ("CADUCEUS_CONTEXT_JSON", "{\"context\":true}".to_string()),
+        (
+            "CADUCEUS_BRANCH_NAME",
+            "caduceus/octocat/hello#42".to_string(),
+        ),
+        // Container-side paths, never host paths.
+        ("CADUCEUS_WORKTREE_PATH", "/workspace".to_string()),
+        (
+            "CADUCEUS_RESULT_PATH",
+            "/output/worker-result.json".to_string(),
+        ),
+    ];
+    assert_eq!(env.len(), expected.len(), "exactly the canonical set");
+    for (entry, (key, value)) in env.iter().zip(expected.iter()) {
+        assert_eq!(entry.0, *key);
+        assert_eq!(&entry.1, value);
+    }
+    assert!(
+        !env.iter().any(|entry| entry.0.contains("TOKEN")
+            || entry.0.contains("SECRET")
+            || entry.0.contains("GITHUB_TOKEN")),
+        "no credential variable may be emitted: {env:?}"
+    );
+    // Host paths must not leak into the container environment.
+    let host_worktree = worktree.display().to_string();
+    assert!(
+        !env.iter().any(|(_, v)| v.contains(&host_worktree)),
+        "host worktree path must not appear in container env, got: {env:?}"
     );
 }
 
@@ -291,7 +372,8 @@ fn resolves_labels_in_fixed_order() {
     runtime.run_id = "run-007".to_string();
     runtime.issue = IssueKey::parse("owner/repo#7").expect("valid key");
     runtime.daemon_id = "daemon-42".to_string();
-    let spec = resolve(cfg.sandbox(), &runtime).expect("must resolve");
+    let spec =
+        resolve(cfg.sandbox(), &runtime, &support::executor_spec(&runtime)).expect("must resolve");
     assert_eq!(
         spec.labels(),
         &[
@@ -308,7 +390,8 @@ fn resolves_labels_in_fixed_order() {
 fn resolution_yields_fully_populated_spec() {
     let (cfg, worktree) = base();
     let runtime = runtime_for(&cfg, &worktree);
-    let spec: SandboxSpec = resolve(cfg.sandbox(), &runtime).expect("must resolve");
+    let spec: SandboxSpec =
+        resolve(cfg.sandbox(), &runtime, &support::executor_spec(&runtime)).expect("must resolve");
     assert!(!spec.name().is_empty());
     assert!(spec.image().contains("@sha256:"));
     assert!(!spec.command().is_empty());
@@ -330,7 +413,8 @@ fn tmpfs_sizes_from_resources() {
     cfg.sandbox.as_mut().expect("sandbox").resources.tmpfs_mb = 512;
     cfg.sandbox.as_mut().expect("sandbox").resources.shm_mb = 96;
     let runtime = runtime_for(&cfg, &worktree);
-    let spec = resolve(cfg.sandbox(), &runtime).expect("must resolve");
+    let spec =
+        resolve(cfg.sandbox(), &runtime, &support::executor_spec(&runtime)).expect("must resolve");
     assert_eq!(spec.tmpfs()[0].target, "/tmp");
     assert_eq!(spec.tmpfs()[0].size_mb, 512);
     assert_eq!(spec.tmpfs()[1].target, "/dev/shm");
@@ -366,7 +450,8 @@ fn resolve_wires_git_shadow_per_kind() {
         let (cfg, worktree) = base();
         let mut runtime = runtime_for(&cfg, &worktree);
         runtime.git_shadow_kind = kind;
-        let spec = resolve(cfg.sandbox(), &runtime).expect("must resolve");
+        let spec = resolve(cfg.sandbox(), &runtime, &support::executor_spec(&runtime))
+            .expect("must resolve");
         let shadow = spec.git_shadow().expect("shadow must be present");
         assert_eq!(shadow.host_path, support::git_shadow_host(&cfg, "run-001"));
         assert_eq!(shadow.container_path, PathBuf::from("/workspace/.git"));
@@ -377,7 +462,8 @@ fn resolve_wires_git_shadow_per_kind() {
     let (cfg, worktree) = base();
     let mut runtime = runtime_for(&cfg, &worktree);
     runtime.git_shadow_kind = GitShadowKind::Absent;
-    let spec = resolve(cfg.sandbox(), &runtime).expect("must resolve");
+    let spec =
+        resolve(cfg.sandbox(), &runtime, &support::executor_spec(&runtime)).expect("must resolve");
     assert!(
         spec.git_shadow().is_none(),
         "absent .git must yield no shadow"
@@ -396,7 +482,8 @@ fn resolve_wires_git_shadow_per_kind() {
 fn writable_surface_invariant_holds() {
     let (cfg, worktree) = base();
     let runtime = runtime_for(&cfg, &worktree);
-    let spec = resolve(cfg.sandbox(), &runtime).expect("must resolve");
+    let spec =
+        resolve(cfg.sandbox(), &runtime, &support::executor_spec(&runtime)).expect("must resolve");
 
     let ws = spec.workspace_mount();
     assert_eq!(ws.container_path, PathBuf::from("/workspace"));
@@ -440,7 +527,8 @@ fn extra_writable_host_paths_are_rejected_at_resolution() {
     // host-backed mount.
     let (cfg, worktree) = base();
     let runtime = runtime_for(&cfg, &worktree);
-    let spec = resolve(cfg.sandbox(), &runtime).expect("must resolve");
+    let spec =
+        resolve(cfg.sandbox(), &runtime, &support::executor_spec(&runtime)).expect("must resolve");
     let mut rw_container_paths: Vec<PathBuf> = vec![
         spec.workspace_mount().container_path.clone(),
         spec.output_mount().container_path.clone(),
@@ -462,7 +550,8 @@ fn extra_writable_host_paths_are_rejected_at_resolution() {
     cfg.state_dir = cfg.workdir_base.join("state");
     let worktree = cfg.workdir_base.join("owner").join("repo").join("run-001");
     let runtime = support::runtime_facts(&cfg, "run-001", &worktree);
-    let err = resolve(cfg.sandbox(), &runtime).expect_err("must reject");
+    let err = resolve(cfg.sandbox(), &runtime, &support::executor_spec(&runtime))
+        .expect_err("must reject");
     match err {
         CaduceusError::OciMountConflict { detail } => {
             assert!(
@@ -482,7 +571,8 @@ fn engine_mode_fact_flows_into_identity() {
     let (cfg, worktree) = base();
     let mut runtime = runtime_for(&cfg, &worktree);
     runtime.engine_mode = EngineMode::Rootless;
-    let spec = resolve(cfg.sandbox(), &runtime).expect("must resolve");
+    let spec =
+        resolve(cfg.sandbox(), &runtime, &support::executor_spec(&runtime)).expect("must resolve");
     assert_eq!(spec.identity().uid, 4242);
     assert_eq!(spec.identity().gid, 4242);
     assert!(!spec.identity().emit_user, "rootless emits no --user");

@@ -18,9 +18,13 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::executor::ExecutorSpec;
 use crate::github::issue::IssueKey;
 use crate::infra::config::{Config, OciPullPolicy, SandboxConfig, SandboxNetwork};
 use crate::infra::error::{CaduceusError, CaduceusResult};
+use crate::worker::worker_contract::{
+    CONTAINER_OUTPUT_PATH, CONTAINER_WORKSPACE_PATH, WORKER_RESULT_FILE,
+};
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -238,8 +242,10 @@ impl SandboxSpec {
     pub fn tmpfs(&self) -> &[TmpfsMount] {
         &self.tmpfs
     }
-    /// Environment entries (ordered). `resolve` guarantees
-    /// `CADUCEUS_RUN_ID` and `CADUCEUS_ISSUE_ID` entries.
+    /// Environment entries (ordered). `resolve` guarantees the full
+    /// canonical `CADUCEUS_*` set (run, issue, context, branch, and
+    /// the container-side worktree/result paths), not just the run
+    /// and issue identifiers.
     pub fn environment(&self) -> &[(String, String)] {
         &self.environment
     }
@@ -377,7 +383,11 @@ pub fn select_git_shadow(kind: GitShadowKind, shadow_host: &Path) -> Option<Moun
 /// filtering (task 1.13 contract). All facts the resolver needs
 /// (owner uid/gid, `.git` type, engine mode) must already be carried
 /// in [`RuntimeFacts`] by the pre-flight probe.
-pub fn resolve(sandbox: &SandboxConfig, runtime: &RuntimeFacts) -> CaduceusResult<SandboxSpec> {
+pub fn resolve(
+    sandbox: &SandboxConfig,
+    runtime: &RuntimeFacts,
+    spec: &ExecutorSpec,
+) -> CaduceusResult<SandboxSpec> {
     // 1. Lexically normalize every declared path so containment can
     //    be checked without filesystem access (resolve is pure).
     let undeclared = |p: &Path| CaduceusError::OciUndeclaredMount {
@@ -443,12 +453,12 @@ pub fn resolve(sandbox: &SandboxConfig, runtime: &RuntimeFacts) -> CaduceusResul
     //    read-only `.git` shadow at `/workspace/.git`.
     let workspace_mount = MountSpec {
         host_path: worktree_norm,
-        container_path: PathBuf::from("/workspace"),
+        container_path: PathBuf::from(CONTAINER_WORKSPACE_PATH),
         read_only: false,
     };
     let output_mount = MountSpec {
         host_path: output_norm,
-        container_path: PathBuf::from("/output"),
+        container_path: PathBuf::from(CONTAINER_OUTPUT_PATH),
         read_only: false,
     };
     let git_shadow = select_git_shadow(runtime.git_shadow_kind, &shadow_norm);
@@ -517,10 +527,47 @@ pub fn resolve(sandbox: &SandboxConfig, runtime: &RuntimeFacts) -> CaduceusResul
         SandboxNetwork::Unrestricted => NetworkMode::Unrestricted,
     };
 
-    // 10. Environment — ordered.
+    // 10. Environment — the full canonical `CADUCEUS_*` set, with
+    //     CONTAINER-side path values so host paths never leak into
+    //     the container environment (issue #243). Value formatting
+    //     mirrors the canonical layer of
+    //     `worker_contract::sanitized_env`; only
+    //     `CADUCEUS_WORKTREE_PATH` and `CADUCEUS_RESULT_PATH` are
+    //     substituted for their container paths — every other
+    //     canonical variable carries the same value as TrustedHost.
+    //     No credential variable is ever emitted here.
+    let labels_json = serde_json::to_string(&spec.labels)
+        .map_err(|err| CaduceusError::Config(format!("labels JSON serialise: {err}")))?;
     let mut environment: Vec<(String, String)> = vec![
         ("CADUCEUS_RUN_ID".to_string(), runtime.run_id.clone()),
         ("CADUCEUS_ISSUE_ID".to_string(), runtime.issue.display_key()),
+        (
+            "CADUCEUS_ISSUE_NUMBER".to_string(),
+            spec.issue.number.to_string(),
+        ),
+        (
+            "CADUCEUS_ISSUE_REPO".to_string(),
+            format!("{}/{}", spec.issue.owner, spec.issue.repo),
+        ),
+        ("CADUCEUS_ISSUE_TITLE".to_string(), spec.issue_title.clone()),
+        ("CADUCEUS_ISSUE_BODY".to_string(), spec.issue_body.clone()),
+        (
+            "CADUCEUS_ISSUE_LABELS_JSON".to_string(),
+            labels_json.clone(),
+        ),
+        (
+            "CADUCEUS_CONTEXT_JSON".to_string(),
+            spec.context_json.clone(),
+        ),
+        ("CADUCEUS_BRANCH_NAME".to_string(), spec.branch_name.clone()),
+        (
+            "CADUCEUS_WORKTREE_PATH".to_string(),
+            CONTAINER_WORKSPACE_PATH.to_string(),
+        ),
+        (
+            "CADUCEUS_RESULT_PATH".to_string(),
+            format!("{CONTAINER_OUTPUT_PATH}/{WORKER_RESULT_FILE}"),
+        ),
     ];
     for name in &sandbox.pass_env {
         if let Ok(value) = std::env::var(name) {

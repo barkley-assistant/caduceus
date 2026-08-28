@@ -18,7 +18,7 @@ mod support;
 fn resolve_from(cfg: &Config, run_id: &str) -> SandboxSpec {
     let worktree = cfg.workdir_base.join("owner").join("repo").join(run_id);
     let runtime = support::runtime_facts(cfg, run_id, &worktree);
-    resolve(cfg.sandbox(), &runtime).expect("must resolve")
+    resolve(cfg.sandbox(), &runtime, &support::executor_spec(&runtime)).expect("must resolve")
 }
 
 fn default_cfg() -> Config {
@@ -77,7 +77,8 @@ fn one_contract_both_clis() {
 fn undeclared_mount_rejected() {
     let cfg = default_cfg();
     let runtime = support::runtime_facts(&cfg, "run-002", Path::new("/tmp/worktree"));
-    let err = resolve(cfg.sandbox(), &runtime).expect_err("undeclared worktree must be rejected");
+    let err = resolve(cfg.sandbox(), &runtime, &support::executor_spec(&runtime))
+        .expect_err("undeclared worktree must be rejected");
     assert!(
         matches!(
             err,

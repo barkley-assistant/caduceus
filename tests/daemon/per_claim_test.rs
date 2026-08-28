@@ -359,6 +359,21 @@ async fn loop01_exit1_with_success_result_advances_to_awaiting_review() {
         "LOOP-01: attempts must not increment; got {}",
         entry.attempts
     );
+    // The daemon must persist the host-side result path it actually
+    // read (TrustedHost: `<worktree>/worker-result.json`) into the
+    // finalization checkpoint so resume never re-derives it.
+    let fin = entry
+        .finalization
+        .as_ref()
+        .expect("LOOP-01: finalization checkpoint must exist at AwaitingReview");
+    assert!(
+        fin.result_path
+            .file_name()
+            .map(|n| n == "worker-result.json")
+            .unwrap_or(false),
+        "LOOP-01: checkpoint result_path must be the host worker-result.json; got {:?}",
+        fin.result_path
+    );
     let fin = entry.finalization.expect("finalization present");
     assert_eq!(fin.stage, FinalizationStage::PrCreated);
     assert_eq!(fin.pr_number, Some(EXPECTED_PR_NUMBER));

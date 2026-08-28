@@ -71,6 +71,18 @@ pub struct ExecutorSpec {
     pub branch_name: String,
 }
 
+/// Result of [`Executor::run`] plus the host-side path the worker
+/// result JSON was written to. `result_path` is mode-dependent
+/// (`<worktree>/worker-result.json` for TrustedHost,
+/// `<state_dir>/oci-runs/<run_id>/output/worker-result.json` for
+/// OCI). The daemon reads the result exclusively from this path so
+/// the tick loop stays engine-agnostic.
+#[derive(Clone, Debug)]
+pub struct ExecutorOutcome {
+    pub outcome: SupervisorOutcome,
+    pub result_path: PathBuf,
+}
+
 /// Which execution mode the daemon uses to dispatch workers.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -90,12 +102,13 @@ pub enum ExecutorKind {
 pub trait Executor: Send + Sync {
     /// Run the worker according to the configured execution mode.
     ///
-    /// Returns a [`SupervisorOutcome`] on success or a typed
-    /// [`CaduceusError`] on failure.
+    /// Returns an [`ExecutorOutcome`] — the [`SupervisorOutcome`]
+    /// plus the host-side path the worker result JSON was written
+    /// to — on success, or a typed [`CaduceusError`] on failure.
     fn run<'a>(
         &'a self,
         spec: &'a ExecutorSpec,
-    ) -> Pin<Box<dyn Future<Output = CaduceusResult<SupervisorOutcome>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = CaduceusResult<ExecutorOutcome>> + Send + 'a>>;
 }
 
 /// Construct the executor matching the configured mode.

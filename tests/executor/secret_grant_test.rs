@@ -22,7 +22,7 @@ fn default_cfg() -> Config {
 fn resolve_from(cfg: &Config) -> SandboxSpec {
     let worktree = cfg.workdir_base.join("owner").join("repo").join("run-001");
     let runtime = support::runtime_facts(cfg, "run-001", &worktree);
-    resolve(cfg.sandbox(), &runtime).expect("must resolve")
+    resolve(cfg.sandbox(), &runtime, &support::executor_spec(&runtime)).expect("must resolve")
 }
 
 // render_does_not_emit_secret_env_file — the plain renderer emits no

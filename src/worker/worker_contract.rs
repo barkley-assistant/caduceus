@@ -1,7 +1,43 @@
 //! Worker invocation and result schema.
 //!
-//! The bridge writes `<worktree>/worker-result.json` on exit 0. The
-//! daemon then [`parse_result_file`]s that file — opening it with
+//! # Normative worker filesystem contract
+//!
+//! The worker runs against a container filesystem with exactly
+//! three writable locations:
+//!
+//! * `/workspace` — read-write; bind-mounts the host worktree
+//!   (`CADUCEUS_WORKTREE_PATH`).
+//! * `/output` — read-write; bind-mounts the host run output
+//!   directory at `<state_dir>/oci-runs/<run_id>/output`.
+//! * `/tmp` — a bounded writable tmpfs; no size guarantee beyond
+//!   the container runtime's configured limit.
+//!
+//! Every other path is read-only or inaccessible; the worker must
+//! not depend on writing anywhere else.
+//!
+//! # Canonical `CADUCEUS_*` environment
+//!
+//! [`sanitized_env`] exports exactly these daemon-owned variables
+//! on every invocation (see also
+//! `crate::infra::fixtures::CANONICAL_WORKER_ENV_VARS`, mirrored by
+//! the bridge's `REQUIRED_ENV_VARS`):
+//!
+//! | Variable | Value |
+//! |---|---|
+//! | `CADUCEUS_BRANCH_NAME` | target branch name |
+//! | `CADUCEUS_CONTEXT_JSON` | serialised run context |
+//! | `CADUCEUS_ISSUE_BODY` | issue body |
+//! | `CADUCEUS_ISSUE_LABELS_JSON` | JSON array of issue labels |
+//! | `CADUCEUS_ISSUE_NUMBER` | issue number |
+//! | `CADUCEUS_ISSUE_REPO` | `owner/repo` |
+//! | `CADUCEUS_ISSUE_TITLE` | issue title |
+//! | `CADUCEUS_RUN_ID` | run identifier |
+//! | `CADUCEUS_WORKTREE_PATH` | host path of the mounted worktree |
+//! | `CADUCEUS_RESULT_PATH` | host result-file path (`<worktree>/worker-result.json`) |
+//!
+//! The bridge writes its result to `CADUCEUS_RESULT_PATH` (legacy
+//! fallback: `<worktree>/worker-result.json`). The daemon then
+//! [`parse_result_file`]s that file — opening it with
 //! `O_NOFOLLOW`, verifying the descriptor is a regular file, and
 //! reading with a 1 MiB cap before allocating the full document.
 //!
@@ -47,6 +83,21 @@ use serde::{Deserialize, Serialize};
 
 use crate::github::issue::IssueKey;
 use crate::infra::error::{CaduceusError, CaduceusResult};
+
+/// Container-side workspace mount target: read-write scratch and
+/// working directory bound to the host worktree. Normative for every
+/// containerized engine; see the module-level filesystem contract.
+pub const CONTAINER_WORKSPACE_PATH: &str = "/workspace";
+
+/// Container-side result-delivery mount target: read-write directory
+/// bound to the host run output directory. Normative for every
+/// containerized engine; see the module-level filesystem contract.
+pub const CONTAINER_OUTPUT_PATH: &str = "/output";
+
+/// File name of the worker result document, relative to
+/// `CADUCEUS_RESULT_PATH`'s parent on the host and to
+/// `CONTAINER_OUTPUT_PATH` inside the container.
+pub const WORKER_RESULT_FILE: &str = "worker-result.json";
 
 /// Hard cap on the worker-result file size.
 pub const MAX_RESULT_FILE_BYTES: u64 = 1 << 20; // 1 MiB
@@ -201,6 +252,7 @@ pub fn sanitized_env(
     // surface. A bad path or empty run id is a configuration
     // error, not a runtime error.
     let worktree_str = require_absolute_utf8_path(&inputs.worktree_path, "worktree_path")?;
+    let result_path_str = format!("{worktree_str}/worker-result.json");
     if inputs.run_id.trim().is_empty() {
         return Err(CaduceusError::Config(
             "run_id must not be empty".to_string(),
@@ -257,6 +309,7 @@ pub fn sanitized_env(
         ("CADUCEUS_ISSUE_REPO", &repo),
         ("CADUCEUS_ISSUE_LABELS_JSON", &labels_json),
         ("CADUCEUS_WORKTREE_PATH", &worktree_str),
+        ("CADUCEUS_RESULT_PATH", &result_path_str),
         ("CADUCEUS_RUN_ID", &inputs.run_id),
         ("CADUCEUS_BRANCH_NAME", &inputs.branch_name),
         ("CADUCEUS_CONTEXT_JSON", &inputs.context_json),

@@ -26,7 +26,8 @@ fn rendered_for(engine: SandboxEngine, mode: EngineMode) -> (Config, Vec<String>
     let worktree = cfg.workdir_base.join("owner").join("repo").join("run-001");
     let mut runtime = support::runtime_facts(&cfg, "run-001", &worktree);
     runtime.engine_mode = mode;
-    let spec = resolve(cfg.sandbox(), &runtime).expect("facts must resolve");
+    let spec = resolve(cfg.sandbox(), &runtime, &support::executor_spec(&runtime))
+        .expect("facts must resolve");
     (cfg, render(&spec, engine))
 }
 
@@ -103,7 +104,8 @@ fn identity_never_assumes_1000() {
         cfg.sandbox.as_mut().expect("sandbox").engine = engine;
         let worktree = cfg.workdir_base.join("owner").join("repo").join("run-001");
         let runtime = support::runtime_facts(&cfg, "run-001", &worktree);
-        let spec = resolve(cfg.sandbox(), &runtime).expect("must resolve");
+        let spec = resolve(cfg.sandbox(), &runtime, &support::executor_spec(&runtime))
+            .expect("must resolve");
         assert_eq!(spec.identity().uid, 4242, "{engine:?}/{mode:?}");
         assert_eq!(spec.identity().gid, 4242, "{engine:?}/{mode:?}");
 

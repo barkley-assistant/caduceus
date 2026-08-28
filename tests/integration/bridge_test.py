@@ -32,6 +32,7 @@ REQUIRED_ENV_KEYS = (
     "CADUCEUS_RUN_ID",
     "CADUCEUS_ISSUE_LABELS_JSON",
     "CADUCEUS_BRANCH_NAME",
+    "CADUCEUS_RESULT_PATH",
 )
 
 
@@ -72,6 +73,7 @@ def fake_env(tmp_path: Path) -> dict:
         "CADUCEUS_RUN_ID": "01J0X0X0X0X0X0X0X0X0X0X0X",
         "CADUCEUS_ISSUE_LABELS_JSON": json.dumps(["🤖 auto-fix", "good first issue"]),
         "CADUCEUS_BRANCH_NAME": "automation/issue-42-01j0x0x0x0x0x0x0x0x0x0x",
+        "CADUCEUS_RESULT_PATH": str(worktree / "worker-result.json"),
     }
 
 
@@ -355,7 +357,7 @@ class TestMain:
     def test_bridge_passes_env_validation_with_full_set(
         self, bridge_module, monkeypatch, fake_env
     ):
-        """When all 9 CADUCEUS_* vars are present, validation passes and the
+        """When all 10 CADUCEUS_* vars are present, validation passes and the
         bridge reaches invoke_harness.
         """
         captured = {}
@@ -483,6 +485,7 @@ def _build_env(tmp_path: Path, **overrides: str) -> dict:
         "CADUCEUS_RUN_ID": "01J0X0X0X0X0X0X0X0X0X0X0X",
         "CADUCEUS_ISSUE_LABELS_JSON": json.dumps(["🤖 auto-fix", "good first issue"]),
         "CADUCEUS_BRANCH_NAME": "automation/issue-42-01j0x0x0x0x0x0x0x0x0x0x",
+        "CADUCEUS_RESULT_PATH": str(tmp_path / "worker-result.json"),
     }
     env.update({k: v for k, v in overrides.items() if v is not None})
     return env
@@ -1061,3 +1064,125 @@ class TestNewContract:
             env=_new_contract_env(worktree, hermes_home), argv=["bridge"]
         ) == 0
         assert result_path.read_text(encoding="utf-8") == payload_text
+
+
+# ---------------------------------------------------------------------------
+# 9. CADUCEUS_RESULT_PATH resolution — soft-required override + fallback
+# ---------------------------------------------------------------------------
+
+
+class TestResultPathResolution:
+    """``CADUCEUS_RESULT_PATH`` is soft-required: when set it wins,
+    when unset the bridge falls back to the legacy worktree-relative
+    path with a stderr warning instead of aborting."""
+
+    def test_soft_required_result_path_missing_does_not_abort(
+        self, bridge_module, fake_env
+    ):
+        env = dict(fake_env)
+        env.pop("CADUCEUS_RESULT_PATH")
+        result = bridge_module.read_required_env(env)
+        # The hard check passes; only the soft name is absent.
+        assert "CADUCEUS_RESULT_PATH" not in result
+        assert "CADUCEUS_ISSUE_NUMBER" in result
+
+    def test_hard_required_vars_still_abort_when_result_path_missing(
+        self, bridge_module, fake_env, capsys
+    ):
+        env = dict(fake_env)
+        env.pop("CADUCEUS_RESULT_PATH")
+        env.pop("CADUCEUS_RUN_ID")
+        with pytest.raises(SystemExit) as excinfo:
+            bridge_module.read_required_env(env)
+        assert excinfo.value.code == bridge_module.EXIT_MISSING_ENV
+        err = capsys.readouterr().err
+        assert "CADUCEUS_RUN_ID" in err
+        # The soft-required name is never listed as a hard failure.
+        assert "CADUCEUS_RESULT_PATH" not in err
+
+    def test_synthesis_writes_at_caduceus_result_path(
+        self, bridge_module, tmp_path, monkeypatch
+    ):
+        worktree = _make_worktree_with_prompt(tmp_path / "worktree")
+        hermes_home = tmp_path / "hermes"
+        # A distinct path whose parent directories do not exist yet —
+        # mirrors a freshly mounted `/output` directory.
+        result_path = tmp_path / "out" / "results" / "worker-result.json"
+        monkeypatch.setenv("CADUCEUS_RESULT_PATH", str(result_path))
+        _write_hook(
+            hermes_home,
+            f"""
+            def run_task(ctx):
+                return [{sys.executable!r}, "-c", "print('routed to override path')"]
+            """,
+        )
+
+        assert bridge_module.main(
+            env=_new_contract_env(worktree, hermes_home), argv=["bridge"]
+        ) == 0
+        assert result_path.exists()
+        result = json.loads(result_path.read_text(encoding="utf-8"))
+        assert result["status"] == "success"
+        assert "routed to override path" in result["summary"]
+        # The legacy worktree location stays untouched.
+        assert not (worktree / "worker-result.json").exists()
+
+    def test_post_hook_exist_check_honors_result_path_override(
+        self, bridge_module, tmp_path, monkeypatch
+    ):
+        worktree = _make_worktree_with_prompt(tmp_path / "worktree")
+        hermes_home = tmp_path / "hermes"
+        result_path = tmp_path / "out" / "worker-result.json"
+        result_path.parent.mkdir(parents=True)
+        payload = {
+            "status": "success",
+            "summary": "pre-written",
+            "commit_message": "feat: pre-written",
+            "pull_request_title": "feat: pre-written",
+            "artifacts": {},
+            "investigation": False,
+        }
+        payload_text = json.dumps(payload, ensure_ascii=False)
+        result_path.write_text(payload_text, encoding="utf-8")
+        monkeypatch.setenv("CADUCEUS_RESULT_PATH", str(result_path))
+        _write_hook(
+            hermes_home,
+            f"""
+            def run_task(ctx):
+                return [{sys.executable!r}, "-c", "print('harness ran')"]
+            """,
+        )
+
+        assert bridge_module.main(
+            env=_new_contract_env(worktree, hermes_home), argv=["bridge"]
+        ) == 0
+        # The exist-check resolved the override path, saw the direct
+        # write, and did NOT overwrite it with a synthesized result.
+        assert result_path.read_text(encoding="utf-8") == payload_text
+
+    def test_unset_result_path_falls_back_to_legacy_with_warning(
+        self, bridge_module, tmp_path, monkeypatch, capsys
+    ):
+        worktree = _make_worktree_with_prompt(tmp_path / "worktree")
+        hermes_home = tmp_path / "hermes"
+        monkeypatch.delenv("CADUCEUS_RESULT_PATH", raising=False)
+        _write_hook(
+            hermes_home,
+            f"""
+            def run_task(ctx):
+                return [{sys.executable!r}, "-c", "print('legacy fallback')"]
+            """,
+        )
+
+        assert bridge_module.main(
+            env=_new_contract_env(worktree, hermes_home), argv=["bridge"]
+        ) == 0
+        # The legacy worktree-relative path received the result.
+        result = json.loads(
+            (worktree / "worker-result.json").read_text(encoding="utf-8")
+        )
+        assert result["status"] == "success"
+        # A visible but non-fatal fallback warning reached stderr.
+        err = capsys.readouterr().err
+        assert "CADUCEUS_RESULT_PATH is not set" in err
+        assert "falling back" in err

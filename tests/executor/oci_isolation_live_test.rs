@@ -55,6 +55,25 @@ fn engine_binary(engine: SandboxEngine) -> String {
     engine.binary_name().to_string()
 }
 
+/// Build an `ExecutorSpec` fixture mirroring the live runtime facts.
+fn executor_spec_for(
+    runtime: &caduceus::executor::sandbox_spec::RuntimeFacts,
+) -> caduceus::executor::ExecutorSpec {
+    caduceus::executor::ExecutorSpec {
+        self_exe: PathBuf::from("/proc/self/exe"),
+        issue: runtime.issue.clone(),
+        worktree: runtime.worktree.clone(),
+        run_id: runtime.run_id.clone(),
+        context_json: "{}".to_string(),
+        worker_command: runtime.worker_command.clone(),
+        cancellation: tokio_util::sync::CancellationToken::new(),
+        issue_title: "Fix login bug".to_string(),
+        issue_body: "Steps to reproduce".to_string(),
+        labels: vec!["bug".to_string()],
+        branch_name: "caduceus/owner/repo#1".to_string(),
+    }
+}
+
 /// The host's actual engine and mode. Returns `None` when no engine
 /// binary is usable — the caller skips with a notice.
 fn detect_engine() -> Option<(SandboxEngine, EngineMode)> {
@@ -161,7 +180,8 @@ fn live_fixture(kind: GitShadowKind, container_script: &str) -> LiveFixture {
     }
     std::fs::create_dir_all(&runtime.output_dir).expect("create output dir");
 
-    let spec = resolve(cfg.sandbox(), &runtime).expect("live facts must resolve");
+    let spec = resolve(cfg.sandbox(), &runtime, &executor_spec_for(&runtime))
+        .expect("live facts must resolve");
     let argv = render(&spec, engine);
     LiveFixture {
         _tmp: tmp,

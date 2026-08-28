@@ -254,19 +254,21 @@ pub(crate) async fn run_claim(
         labels: issue.labels.clone(),
         branch_name: worktree.branch_name.clone(),
     };
-    let supervisor_outcome = match services.executor.run(&spec).await {
+    let exec_outcome = match services.executor.run(&spec).await {
         Ok(o) => o,
         Err(err) => {
             let class = classify_error(&err);
             return handle_infra_or_retry(cfg, guard, &err, class).await;
         }
     };
+    let supervisor_outcome = exec_outcome.outcome.clone();
     guard.attach_supervisor(supervisor_outcome.clone()).await;
     if supervisor_outcome.timed_out || supervisor_outcome.cancelled {
         let _ = guard.finish_cancelled().await;
         return Ok(TickOutcome::Cancelled);
     }
     let _ = services.clock.now();
+    let host_result_path = exec_outcome.result_path.clone();
 
     // 14. Read the worker result from the worktree; a missing or
     //     unparseable result is a worker-attributable failure through
@@ -274,9 +276,8 @@ pub(crate) async fn run_claim(
     //     success signal even if the bridge exited nonzero (issue
     //     #118); a result whose own `status` is `failure` is still a
     //     worker-attributable failure.
-    let worktree_result_path = worktree.path.join("worker-result.json");
     let worker_result =
-        match crate::worker::parse_result_file(&worktree_result_path, &claimed.entry.key) {
+        match crate::worker::parse_result_file(&host_result_path, &claimed.entry.key) {
             Ok(r) => r,
             Err(err) => {
                 let stderr = if !supervisor_outcome.signaled && supervisor_outcome.status != 0 {
@@ -314,7 +315,7 @@ pub(crate) async fn run_claim(
 
     // 15. Archive the parsed result before finalization so the
     //     daemon can resume from it later.
-    let archive_path = match archive_worker_result(&worktree_result_path, &cfg.state_dir, &run_id) {
+    let archive_path = match archive_worker_result(&host_result_path, &cfg.state_dir, &run_id) {
         Ok(p) => p,
         Err(err) => {
             let class = classify_error(&err);
@@ -348,7 +349,7 @@ pub(crate) async fn run_claim(
         match run_investigation_finalize(
             &final_ctx,
             &worker_result,
-            &archive_path,
+            &host_result_path,
             client.as_ref(),
             store,
             &cfg.ticket_label_investigation,
@@ -371,7 +372,7 @@ pub(crate) async fn run_claim(
         &final_ctx,
         &worker_result,
         &runner,
-        &archive_path,
+        &host_result_path,
         client.as_ref(),
         store,
     )

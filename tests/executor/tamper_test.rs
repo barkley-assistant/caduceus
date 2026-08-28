@@ -21,7 +21,7 @@ fn default_cfg() -> Config {
 fn resolve_from(cfg: &Config, run_id: &str) -> SandboxSpec {
     let worktree = cfg.workdir_base.join("owner").join("repo").join(run_id);
     let runtime = support::runtime_facts(cfg, run_id, &worktree);
-    resolve(cfg.sandbox(), &runtime).expect("must resolve")
+    resolve(cfg.sandbox(), &runtime, &support::executor_spec(&runtime)).expect("must resolve")
 }
 
 // tamper_modified_files — an undeclared host path is rejected
@@ -38,7 +38,7 @@ fn tamper_modified_files() {
         "tamper-modified-files",
         std::path::Path::new("/tmp/worktree"),
     );
-    let result = resolve(cfg.sandbox(), &runtime);
+    let result = resolve(cfg.sandbox(), &runtime, &support::executor_spec(&runtime));
     match result {
         Err(CaduceusError::OciUndeclaredMount { path }) => {
             assert!(
