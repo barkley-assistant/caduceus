@@ -23,12 +23,22 @@ fn with_config_resolves_from_env_var_when_config_is_none() {
 #[test]
 fn with_config_falls_back_to_none_when_env_var_dropped() {
     let c = cfg(None);
-    // Hide the gh executable so the final chain step fails deterministically
-    // when no env var is set, without depending on the host's gh auth state.
-    temp_env::with_var("PATH", None::<&str>, || {
-        let client = Client::with_config(&c).expect("client builds");
-        assert_eq!(client.token(), None);
-    });
+    // Make the chain hermetic regardless of the host environment: unset
+    // the token env vars so level 2/3 of the resolution hierarchy cannot
+    // short-circuit, and hide the `gh` executable so the final chain
+    // step fails deterministically — without depending on the host's
+    // `gh auth` state or exported tokens.
+    temp_env::with_vars(
+        [
+            ("PATH", None::<&str>),
+            ("CADUCEUS_GITHUB_TOKEN", None::<&str>),
+            ("GITHUB_TOKEN", None::<&str>),
+        ],
+        || {
+            let client = Client::with_config(&c).expect("client builds");
+            assert_eq!(client.token(), None);
+        },
+    );
 }
 
 #[test]
