@@ -41,6 +41,7 @@ const DAEMON_ENV_VARS: &[&str] = &[
     "CADUCEUS_RUN_ID",
     "CADUCEUS_CONTEXT_JSON",
     "CADUCEUS_BRANCH_NAME",
+    "CADUCEUS_RESULT_PATH",
 ];
 
 #[test]
