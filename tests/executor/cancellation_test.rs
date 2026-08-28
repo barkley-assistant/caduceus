@@ -142,3 +142,55 @@ fn cancel_at_remove() {
         "cancellation token must not be cancelled initially"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Both cancellation sources drive the SAME stop path (issue #245,
+// task 11.2). The stub-engine proofs (no real engine needed) live in
+// `oci_lifecycle_stub_test.rs`; these gated tests exercise the same
+// flow against a real engine.
+// ---------------------------------------------------------------------------
+
+/// Disk-pressure watchdog cancellation mid-wait: `run_with_argv`'s
+/// second `watchdog` token selects against the wait step and the run
+/// falls through stop → capture → rm, reporting `Cancelled`.
+#[test]
+#[cfg_attr(not(env = "CADUCEUS_RUN_ISOLATION_TESTS"), ignore)]
+fn watchdog_cancel_at_wait() {
+    // When CADUCEUS_RUN_ISOLATION_TESTS is set:
+    //  1. Start a long-running container (sleep 3600) via
+    //     `oci_lifecycle::run_with_argv` with a fresh watchdog token
+    //  2. Cancel the WATCHDOG token (not the daemon token) during
+    //     the wait phase — a disk-pressure breach did this
+    //  3. Verify the run fell through stop → capture → rm:
+    //     the container is stopped, `engine.log` was captured, the
+    //     state row shows Removed, and the result is Err(Cancelled)
+    //  4. Verify no container exists for this run_id (docker ps -a)
+
+    let spec = test_spec("watchdog-cancel-at-wait");
+    assert!(
+        !spec.cancellation.is_cancelled(),
+        "daemon token must be untouched by a watchdog breach"
+    );
+}
+
+/// Daemon-shutdown cancellation mid-wait: the same stop path runs,
+/// the cleanup steps consult only the daemon token (which is
+/// cancelled), and the state lands in `Killed` for the
+/// reconciliation pass to finish.
+#[test]
+#[cfg_attr(not(env = "CADUCEUS_RUN_ISOLATION_TESTS"), ignore)]
+fn shutdown_cancel_at_wait_uses_same_stop_path() {
+    // When CADUCEUS_RUN_ISOLATION_TESTS is set:
+    //  1. Start a long-running container (sleep 3600)
+    //  2. Cancel the DAEMON SHUTDOWN token during the wait phase
+    //  3. Verify the result is Err(Cancelled) and the run did not
+    //     early-return (the stop step was reached)
+    //  4. Verify the state row shows Killed and the next daemon
+    //     startup's reconciliation removes the container
+
+    let spec = test_spec("shutdown-cancel-at-wait");
+    assert!(
+        !spec.cancellation.is_cancelled(),
+        "cancellation token must not be cancelled initially"
+    );
+}

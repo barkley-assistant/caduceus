@@ -165,12 +165,12 @@ sandbox:
   image: "caduceus-worker@sha256:<64 lowercase hex>"  # required, no default
   pull_policy: if_missing   # never | if_missing | always
   resources: { cpus: 2.0, memory_mb: 2048, pids: 256, tmpfs_mb: 256, shm_mb: 64 }
-  network: none             # none | unrestricted
+  network: none             # only value; host networking was removed (breaking)
   pass_env: []
   stop_timeout_seconds: 10
   kill_timeout_seconds: 5
   reconcile_timeout_seconds: 60
-  reserved_host_disk_mb: 2048
+  reserved_host_disk_mb: 2048  # 0 disables the disk-pressure watchdog
 ```
 
 TrustedHost configs (the default) may omit `sandbox:`
@@ -217,6 +217,79 @@ What the worker container sees is a closed, typed spec:
   be determined) are refused with a typed error before any
   container is created, and `hermes caduceus doctor`
   reports the engine/mode as unavailable.
+
+### The mandatory per-run OCI baseline (non-weakenable)
+
+Every OCI run on both engines (Docker and Podman) gets the
+following baseline, emitted by the argv renderer on every
+single run. There is no config knob, profile, or opt-out
+that can disable or weaken any of these controls; unknown
+config fields are rejected at parse time and resource
+floors prevent zeroing a control to an unsafe value.
+
+- `--read-only` — read-only container rootfs; writes
+  outside the declared surfaces fail EROFS.
+- `--cap-drop ALL` — no Linux capabilities in-container.
+- `--security-opt no-new-privileges` — setuid cannot
+  re-escalate.
+- `--cpus <resources.cpus>` — CPU quota (floor 0.25).
+- `--memory <resources.memory_mb>m` **and**
+  `--memory-swap <resources.memory_mb>m` — the swap limit
+  is pinned EQUAL to the memory limit, so committed memory
+  (RAM + swap) can never exceed the memory bound (no swap
+  rescue). Floor 64 MiB.
+- `--pids-limit <resources.pids>` — fork bombs die at the
+  limit. Floor 16.
+- Bounded ephemeral tmpfs: `--tmpfs /tmp:size=<tmpfs_mb>m`
+  and `--tmpfs /dev/shm:size=<shm_mb>m` — the only writable
+  ephemeral surfaces, each floored at 1 MiB (a `size=0m`
+  would let the engine apply an unbounded default, silently
+  weakening the baseline).
+- No devices, no engine/runtime socket mounts
+  (`docker.sock` / `podman.sock` are denied at resolve
+  time), and no host namespace sharing (`--pid host`,
+  `--ipc host`, `--uts host` are structurally
+  unrepresentable — the spec has no field for them).
+- Typed-only networking: `--network none` is the only
+  mode. Host networking was removed (breaking): the
+  `unrestricted` value no longer parses, so `network:
+  unrestricted` configs fail at load with a typed error.
+- Bounded engine logs: `--log-opt max-size=10m` and
+  `--log-opt max-file=3` on every run (worst case 30 MiB
+  of on-disk engine logs per container).
+- Bounded daemon-side diagnostic capture: after each run,
+  the daemon persists `<engine> logs` for the container,
+  capped at 1 MiB (tail truncation with a marker), under
+  `<state_dir>/oci-runs/<run_id>/engine.log` (mode 0600).
+
+### Host disk-pressure watchdog
+
+`sandbox.reserved_host_disk_mb` (default `2048`) is a
+free-space floor, sampled every 30 s across the DISTINCT
+filesystems hosting the daemon state dir, the repo storage
+/ worktrees, and the OCI output dirs — deduplicated by
+device ID so a shared filesystem is sampled exactly once.
+
+- **Breach** (any sampled filesystem below the reserve):
+  in-flight OCI work is terminated via the existing
+  stop → kill → rm path, and new OCI dispatch is refused
+  with a typed `OciDiskPressure` error until the reserve
+  recovers. TrustedHost work is not subject to the
+  watchdog.
+- **Recovery hysteresis**: after a breach, free space must
+  exceed the reserve by 256 MiB before new work is
+  re-enabled — recovery at exactly the threshold does not
+  re-enable, preventing flapping.
+- **`0` disables the watchdog** entirely (no sampling, no
+  enforcement). The default `2048` enables it.
+
+Honest limits: this is a **host-level mitigation, not a
+per-container byte quota**. `/workspace` remains a host
+bind mount with NO per-container byte quota — a runaway
+run can still consume disk between samples (detection
+latency is bounded by the 30 s sampling interval plus the
+stop/kill timeouts). The watchdog bounds the damage and
+stops the bleeding; it does not isolate storage per run.
 
 ## The 60-Second Orientation
 

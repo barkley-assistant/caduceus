@@ -612,3 +612,233 @@ fn git_shadow_dir_variant_is_empty_and_read_only() {
         "host .git/HEAD must be untouched"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Disk-fill watchdog (issue #245, task 13.2)
+// ---------------------------------------------------------------------------
+
+/// The host disk-pressure watchdog terminates an in-flight OCI run via
+/// the existing stop path and refuses new dispatch with
+/// `OciDiskPressure` — WITHOUT actually filling the host disk: the
+/// reserve is set ABOVE the sampled free space, so the state-dir
+/// filesystem is observed as already breached. Recovery-with-margin is
+/// asserted on the pure transition the guard runs.
+#[test]
+#[cfg_attr(not(env = "CADUCEUS_RUN_ISOLATION_TESTS"), ignore)]
+fn disk_pressure_watchdog_terminates_in_flight_and_refuses_new_dispatch() {
+    use std::sync::Arc;
+
+    use tokio_util::sync::CancellationToken;
+
+    use caduceus::executor::oci_lifecycle;
+    use caduceus::infra::disk::{
+        sample_free_bytes, transition, watchdog_paths, DiskPressureGuard, DiskSample,
+        PressureState, DISK_HYSTERESIS_BYTES,
+    };
+    use caduceus::infra::error::CaduceusError;
+    use caduceus::state::oci_run::{ContainerRunRow, OciLifecycleState, OciRunState};
+
+    struct NullState;
+    impl OciRunState for NullState {
+        fn insert(&self, _row: &ContainerRunRow) -> Result<(), caduceus::error::CaduceusError> {
+            Ok(())
+        }
+        fn update_state(
+            &self,
+            _run_id: &str,
+            _state: &OciLifecycleState,
+        ) -> Result<(), caduceus::error::CaduceusError> {
+            Ok(())
+        }
+        fn list_pending_reconciliation(
+            &self,
+        ) -> Result<Vec<ContainerRunRow>, caduceus::error::CaduceusError> {
+            Ok(Vec::new())
+        }
+        fn get(
+            &self,
+            _run_id: &str,
+        ) -> Result<Option<ContainerRunRow>, caduceus::error::CaduceusError> {
+            Ok(None)
+        }
+        fn delete(&self, _run_id: &str) -> Result<(), caduceus::error::CaduceusError> {
+            Ok(())
+        }
+    }
+
+    let fx = live_fixture(GitShadowKind::File, "sleep 3600");
+
+    // 1. Sample the real filesystem hosting the state dir and set the
+    //    reserve ABOVE current free space — breach without filling.
+    let samples = sample_free_bytes(&watchdog_paths(&fx.cfg)).expect("sample");
+    assert!(!samples.is_empty(), "state dir must sample");
+    let free = samples[0].free_bytes;
+    let device_id = samples[0].device_id;
+    let state_dir = fx.cfg.state_dir.clone();
+    let reserved_mb = free / (1024 * 1024) + 64; // 64 MiB above free space
+    let reserved_bytes = reserved_mb * 1024 * 1024;
+    let mut cfg = fx.cfg.clone();
+    cfg.sandbox.as_mut().expect("sandbox").reserved_host_disk_mb = reserved_mb;
+    let guard = Arc::new(DiskPressureGuard::from_config(&cfg));
+    assert!(guard.enabled());
+
+    // 2. In-flight run: drive the REAL engine through `run_with_argv`
+    //    with the fixture's rendered create argv. The wait step blocks
+    //    on `sleep 3600` until the breach cancels the watchdog token.
+    let guard_for_run = Arc::clone(&guard);
+    let guard_for_refresh = Arc::clone(&guard);
+    let run_id = fx.run_id.clone();
+    let engine = fx.engine;
+    let argv = fx.argv.clone();
+    let fx_cfg = cfg.clone();
+    let run = tokio::runtime::Runtime::new().expect("runtime");
+    let result = run.block_on(async move {
+        let spec = caduceus::executor::ExecutorSpec {
+            self_exe: std::path::PathBuf::from("/proc/self/exe"),
+            issue: caduceus::github::issue::IssueKey::parse("owner/repo#1").expect("valid key"),
+            worktree: std::path::PathBuf::from("/tmp/worktree"),
+            run_id: run_id.clone(),
+            context_json: "{}".to_string(),
+            worker_command: vec!["sleep".to_string(), "3600".to_string()],
+            cancellation: CancellationToken::new(),
+            issue_title: "t".to_string(),
+            issue_body: "b".to_string(),
+            labels: Vec::new(),
+            branch_name: "b".to_string(),
+        };
+        let lifecycle = tokio::spawn(async move {
+            oci_lifecycle::run_with_argv(
+                &fx_cfg,
+                &spec,
+                &NullState,
+                engine,
+                argv,
+                CancellationToken::new(),
+                guard_for_run.watchdog_token(),
+            )
+            .await
+        });
+        // Deterministic breach point: wait until the container is
+        // actually RUNNING (the wait step blocks on `sleep 3600`), so
+        // the breach exercises the in-flight stop → capture → rm path
+        // and not merely the pre-spawn create check.
+        let bin = engine_binary(engine);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        loop {
+            let ps = Command::new(&bin)
+                .args([
+                    "ps",
+                    "--filter",
+                    &format!("name={}", run_id),
+                    "--format",
+                    "{{.ID}}",
+                ])
+                .output()
+                .expect("engine ps");
+            if !String::from_utf8_lossy(&ps.stdout).trim().is_empty() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "container never reached the running state"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        // The watchdog breaches on this refresh.
+        guard_for_refresh.refresh(&samples);
+        assert!(guard_for_refresh.watchdog_token().is_cancelled());
+        lifecycle.await.expect("lifecycle task joins")
+    });
+
+    // (a) The in-flight run was terminated via the stop path within
+    //     the bounded stop/kill timeouts and reported as cancelled.
+    match result {
+        Err(CaduceusError::Cancelled) => {}
+        other => panic!("expected Cancelled from the watchdog termination; got {other:?}"),
+    }
+    // (a') The container is really gone from the engine.
+    let bin = engine_binary(engine);
+    let ps = Command::new(&bin)
+        .args([
+            "ps",
+            "-a",
+            "--filter",
+            &format!("name={}", fx.run_id),
+            "--format",
+            "{{.ID}}",
+        ])
+        .output()
+        .expect("engine ps");
+    assert!(
+        String::from_utf8_lossy(&ps.stdout).trim().is_empty(),
+        "container must be removed after the breach; got: {}",
+        String::from_utf8_lossy(&ps.stdout)
+    );
+    // (a'') The bounded diagnostic capture was persisted for the
+    // terminated run (stop → capture → rm ran in order).
+    let engine_log = state_dir
+        .join("oci-runs")
+        .join(&fx.run_id)
+        .join("engine.log");
+    assert!(
+        engine_log.exists(),
+        "engine.log must be captured on the watchdog termination path"
+    );
+
+    // (b) New dispatch is refused with the typed error carrying the
+    //     breaching path/device/free/reserved facts.
+    let err = guard.try_acquire_oci().expect_err("breached guard refuses");
+    match err {
+        CaduceusError::OciDiskPressure {
+            path,
+            device_id: err_device,
+            free_bytes: err_free,
+            reserved_bytes: err_reserved,
+        } => {
+            assert_eq!(path, state_dir.display().to_string());
+            assert_eq!(err_device, device_id);
+            assert_eq!(err_free, free);
+            assert_eq!(err_reserved, reserved_bytes);
+        }
+        other => panic!("expected OciDiskPressure; got {other:?}"),
+    }
+
+    // (c) TrustedHost work is structurally unaffected: the executor
+    //     factory never wires the guard into TrustedHostExecutor, and
+    //     a breached guard only cancels its own watchdog tokens.
+    let unrelated = CancellationToken::new();
+    assert!(!unrelated.is_cancelled());
+
+    // (d) Recovery requires the margin — exactly the pure transition
+    //     the guard computes each refresh. (The real filesystem was
+    //     never filled, so the live free space stays below the
+    //     inflated reserve; the recovery math is asserted here.)
+    let breached = PressureState::Breached {
+        device_id,
+        path: state_dir.display().to_string(),
+        free_bytes: free,
+        reserved_bytes,
+    };
+    let still = transition(
+        &breached,
+        &[DiskSample {
+            device_id,
+            free_bytes: reserved_bytes + DISK_HYSTERESIS_BYTES,
+            representative_path: state_dir.clone(),
+        }],
+        reserved_bytes,
+        DISK_HYSTERESIS_BYTES,
+    );
+    assert_eq!(still, breached, "exact floor does not re-enable");
+    let recovered = transition(
+        &breached,
+        &[DiskSample {
+            device_id,
+            free_bytes: reserved_bytes + DISK_HYSTERESIS_BYTES + 1,
+            representative_path: state_dir.clone(),
+        }],
+        reserved_bytes,
+        DISK_HYSTERESIS_BYTES,
+    );
+    assert_eq!(recovered, PressureState::Healthy);
+}

@@ -122,12 +122,17 @@ pub struct SandboxResources {
 }
 
 /// New enum (replaces `network_profiles`).
+///
+/// Host networking is structurally unrepresentable: the former
+/// `Unrestricted` variant (`--network host`) was removed (breaking,
+/// issue #245). The only value is `None` (`--network none`); a YAML
+/// `network: unrestricted` fails at serde parse time as an unknown
+/// variant.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SandboxNetwork {
     #[default]
     None, // `--network none`
-    Unrestricted, // `--network host`
 }
 
 /// Raw layer — mirrors the schema with all-`Option` fields.
@@ -1278,12 +1283,12 @@ fn resolve_sandbox(raw: RawSandboxConfig, errors: &mut Vec<String>) -> SandboxCo
     if reconcile_timeout_seconds == 0 {
         errors.push("sandbox.reconcile_timeout_seconds must be > 0".to_string());
     }
+    // `0` is a valid value and DISABLES the disk-pressure watchdog
+    // (no sampling, no enforcement); any positive value is the
+    // free-space floor in MB (issue #245).
     let reserved_host_disk_mb = raw
         .reserved_host_disk_mb
         .unwrap_or(DEFAULT_SANDBOX_RESERVED_HOST_DISK_MB);
-    if reserved_host_disk_mb == 0 {
-        errors.push("sandbox.reserved_host_disk_mb must be > 0".to_string());
-    }
 
     SandboxConfig {
         engine,
@@ -1322,10 +1327,23 @@ fn resolve_sandbox_resources(
     if pids < 16 {
         errors.push(format!("sandbox.resources.pids must be >= 16, got {pids}"));
     }
-    // tmpfs_mb / shm_mb are u64 — zero is a valid floor and negatives
-    // are impossible (serde type error at parse time).
+    // tmpfs_mb / shm_mb floors: zero would let the engine apply its
+    // DEFAULT tmpfs size (`--tmpfs /tmp:size=0m` — Docker treats a
+    // zero size as unbounded), which would silently weaken the
+    // bounded-tmpfs baseline (issue #245). Negatives are impossible
+    // (serde type error at parse time).
     let tmpfs_mb = raw.tmpfs_mb.unwrap_or(256);
+    if tmpfs_mb < 1 {
+        errors.push(format!(
+            "sandbox.resources.tmpfs_mb must be >= 1, got {tmpfs_mb}"
+        ));
+    }
     let shm_mb = raw.shm_mb.unwrap_or(64);
+    if shm_mb < 1 {
+        errors.push(format!(
+            "sandbox.resources.shm_mb must be >= 1, got {shm_mb}"
+        ));
+    }
     SandboxResources {
         cpus,
         memory_mb,

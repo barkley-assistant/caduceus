@@ -13,6 +13,37 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
   config, and the `Caduceus Daemon <caduceus@daemon.local>` fallback. Closes
   #210.
 
+### Breaking
+
+- **Host networking removed from the OCI sandbox.** The `unrestricted`
+  value of `sandbox.network` (and the `--network host` argv it rendered)
+  no longer exists: host networking is structurally unrepresentable, and a
+  config carrying `network: unrestricted` fails at load with a typed
+  unknown-variant error. Migration: set `network: none` (the only value).
+- **`sandbox.reserved_host_disk_mb: 0` now disables the host disk-pressure
+  watchdog** (previously rejected as invalid). Any positive value is the
+  free-space floor in MB (default `2048`); `0` means no sampling and no
+  enforcement. Closes #245.
+
+### Added
+
+- **Hardened per-run OCI baseline** (non-weakenable, both engines):
+  `--memory-swap` pinned equal to `--memory` (no swap doubling), bounded
+  engine logs (`--log-opt max-size=10m max-file=3`), explicit resolve-time
+  denial of devices, engine/runtime socket mounts, and host namespace
+  sharing, bounded daemon-side diagnostic log capture (1 MiB cap) under
+  `<state_dir>/oci-runs/<run_id>/engine.log`, and resource floors
+  `tmpfs_mb >= 1` / `shm_mb >= 1` so a zero tmpfs size cannot silently
+  apply an engine-default unbounded size.
+- **Host disk-pressure watchdog.** `sandbox.reserved_host_disk_mb` is now
+  consumed as a free-space floor sampled every 30 s across the
+  device-ID-deduped filesystems hosting the state dir, repo storage, and
+  OCI output dirs. On breach, in-flight OCI work is terminated via the
+  existing stop path and new OCI dispatch is refused with a typed
+  `OciDiskPressure` error until the reserve recovers (256 MiB hysteresis).
+  This is a host-level mitigation — `/workspace` remains a host bind mount
+  with no per-container byte quota.
+
 ## [1.0.0] - 2026-08-08
 
 ### Added

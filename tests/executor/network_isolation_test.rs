@@ -8,7 +8,7 @@
 
 use caduceus::executor::sandbox_renderer::render;
 use caduceus::executor::sandbox_spec::{resolve, SandboxEngine, SandboxSpec};
-use caduceus::infra::config::{Config, SandboxNetwork};
+use caduceus::infra::config::Config;
 
 mod support;
 
@@ -49,18 +49,32 @@ fn probe_blocked_egress() {
     );
 }
 
-// probe_allowed_egress — unrestricted network mode allows egress
+// probe_allowed_egress — host networking is structurally
+// unrepresentable (breaking, issue #245): a config that requests
+// `network: unrestricted` fails at YAML parse time with a typed
+// unknown-variant error.
 
 #[test]
 #[cfg_attr(not(env = "CADUCEUS_RUN_ISOLATION_TESTS"), ignore)]
 fn probe_allowed_egress() {
-    let mut cfg = default_cfg();
-    cfg.sandbox.as_mut().unwrap().network = SandboxNetwork::Unrestricted;
-    assert_eq!(
-        network_value(&cfg),
-        "host",
-        "expected --network=host for allowed egress"
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.yaml");
+    let image =
+        "caduceus-worker@sha256:0000000000000000000000000000000000000000000000000000000000000000";
+    let body = format!(
+        "worker_command: [\"python3\", \"/tmp/bridge.py\"]\n\
+         state_dir: \"{}/state\"\n\
+         reduced_containment_acknowledged: true\n\
+         sandbox:\n\
+         \x20 image: \"{image}\"\n\
+         \x20 network: unrestricted\n",
+        dir.path().display()
     );
+    std::fs::write(&path, body).expect("write config");
+    let err = Config::load_from(&path).expect_err("network: unrestricted must fail to parse");
+    let msg = err.to_string();
+    assert!(msg.contains("unknown variant"), "got: {msg}");
+    assert!(msg.contains("unrestricted"), "got: {msg}");
 }
 
 // probe_dns_exfiltration — DNS queries are blocked with no network

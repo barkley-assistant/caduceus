@@ -191,6 +191,11 @@ pub fn classify_error(err: &CaduceusError) -> FailureClass {
         CaduceusError::OciWaitFailed { .. } => FailureClass::Infrastructure,
         CaduceusError::OciStopFailed { .. } => FailureClass::Infrastructure,
         CaduceusError::OciRemoveFailed { .. } => FailureClass::Infrastructure,
+        // Host disk pressure is a transient host condition — the
+        // run is refused before any container exists and retried
+        // after the reserve recovers; not worker-attributable
+        // (issue #245).
+        CaduceusError::OciDiskPressure { .. } => FailureClass::Infrastructure,
         CaduceusError::OciUndeclaredMount { .. } => FailureClass::Worker,
         CaduceusError::OciMountConflict { .. } => FailureClass::Worker,
         CaduceusError::OciSecretLeakSuspected { .. } => FailureClass::Infrastructure,

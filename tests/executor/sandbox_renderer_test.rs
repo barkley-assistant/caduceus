@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use caduceus::executor::sandbox_renderer::{render, render_with_env_files};
 use caduceus::executor::sandbox_spec::{EngineMode, GitShadowKind, SandboxEngine, SandboxSpec};
-use caduceus::infra::config::{Config, SandboxConfig, SandboxNetwork};
+use caduceus::infra::config::{Config, SandboxConfig};
 
 /// Fixed root for the golden fixtures. Never touched on disk.
 const ROOT: &str = "/tmp/caduceus-renderer-goldens";
@@ -120,8 +120,14 @@ fn docker_rootful_golden_argv() {
         "2".to_string(),
         "--memory".to_string(),
         "2048m".to_string(),
+        "--memory-swap".to_string(),
+        "2048m".to_string(),
         "--pids-limit".to_string(),
         "256".to_string(),
+        "--log-opt".to_string(),
+        "max-size=10m".to_string(),
+        "--log-opt".to_string(),
+        "max-file=3".to_string(),
         "--name".to_string(),
         "run-001".to_string(),
         "-v".to_string(),
@@ -193,8 +199,14 @@ fn podman_rootless_golden_argv() {
         "2".to_string(),
         "--memory".to_string(),
         "2048m".to_string(),
+        "--memory-swap".to_string(),
+        "2048m".to_string(),
         "--pids-limit".to_string(),
         "256".to_string(),
+        "--log-opt".to_string(),
+        "max-size=10m".to_string(),
+        "--log-opt".to_string(),
+        "max-file=3".to_string(),
         "--name".to_string(),
         "run-001".to_string(),
         "-v".to_string(),
@@ -521,18 +533,94 @@ fn renders_network_none_by_default() {
     assert_eq!(argv[pos + 1], "none");
 }
 
+/// Host networking was removed (breaking, issue #245): the rendered
+/// argv must never carry `--network host` — the only value after
+/// `--network` is `none`, for both engines.
 #[test]
-fn renders_network_host_for_unrestricted() {
-    let (spec, _, _, _, _) =
-        fixture_with("run-001", EngineMode::Rootful, GitShadowKind::File, |sb| {
-            sb.network = SandboxNetwork::Unrestricted;
-        });
-    let argv = render(&spec, SandboxEngine::Docker);
-    let pos = argv
-        .iter()
-        .position(|a| a == "--network")
-        .expect("--network");
-    assert_eq!(argv[pos + 1], "host");
+fn renders_network_none_never_host() {
+    for engine in [SandboxEngine::Docker, SandboxEngine::Podman] {
+        let (spec, _, _, _, _) = default_fixture();
+        let argv = render(&spec, engine);
+        let pos = argv
+            .iter()
+            .position(|a| a == "--network")
+            .expect("--network");
+        assert_ne!(
+            argv.get(pos + 1).map(String::as_str),
+            Some("host"),
+            "--network host must never be rendered ({engine:?}); got: {argv:?}"
+        );
+        assert_eq!(argv[pos + 1], "none");
+    }
+}
+
+/// `--memory-swap` is pinned EQUAL to `--memory` (no swap doubling)
+/// and both `--log-opt max-size=10m` / `--log-opt max-file=3` entries
+/// are present, for BOTH engines (issue #245).
+#[test]
+fn renders_memory_swap_pinned_and_bounded_log_opts() {
+    for engine in [SandboxEngine::Docker, SandboxEngine::Podman] {
+        let (spec, _, _, _, _) = default_fixture();
+        let argv = render(&spec, engine);
+        let mem_pos = argv.iter().position(|a| a == "--memory").expect("--memory");
+        assert_eq!(argv[mem_pos + 1], "2048m");
+        let swap_pos = argv
+            .iter()
+            .position(|a| a == "--memory-swap")
+            .expect("--memory-swap");
+        assert_eq!(
+            argv[swap_pos + 1],
+            argv[mem_pos + 1],
+            "--memory-swap must equal --memory ({engine:?}); got: {argv:?}"
+        );
+        assert!(
+            swap_pos == mem_pos + 2,
+            "--memory-swap must immediately follow --memory's value"
+        );
+        let log_opt_positions: Vec<usize> = argv
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| a.as_str() == "--log-opt")
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(
+            log_opt_positions.len(),
+            2,
+            "exactly two --log-opt entries for {engine:?}: {argv:?}"
+        );
+        assert_eq!(argv[log_opt_positions[0] + 1], "max-size=10m");
+        assert_eq!(argv[log_opt_positions[1] + 1], "max-file=3");
+    }
+}
+
+/// Deny tripwire (issue #245): the rendered argv for BOTH engines
+/// contains NO `--device`, NO `--pid host` / `--ipc host` /
+/// `--uts host`, NO `--network host`, and no engine/runtime socket
+/// substring. The renderer structurally cannot emit these; this test
+/// pins that against regressions.
+#[test]
+fn renders_no_host_escalation_tokens() {
+    for engine in [SandboxEngine::Docker, SandboxEngine::Podman] {
+        let (spec, _, _, _, _) = default_fixture();
+        let argv = render(&spec, engine);
+        for denied in ["--device", "--pid", "--ipc", "--uts"] {
+            assert!(
+                !argv.iter().any(|a| a == denied),
+                "{denied} must never be rendered ({engine:?}); got: {argv:?}"
+            );
+        }
+        let net_pos = argv
+            .iter()
+            .position(|a| a == "--network")
+            .expect("--network");
+        assert_eq!(argv[net_pos + 1], "none", "--network host is denied");
+        for socket in ["docker.sock", "podman.sock"] {
+            assert!(
+                !argv.iter().any(|a| a.contains(socket)),
+                "engine socket {socket} must never be mounted ({engine:?}); got: {argv:?}"
+            );
+        }
+    }
 }
 
 #[test]

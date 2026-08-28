@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 
 use crate::github::Client;
 use crate::infra::config::Config;
+use crate::infra::disk::DiskPressureGuard;
 use crate::scheduler::Pool;
 use crate::worktree::GitRunner;
 
@@ -124,6 +125,11 @@ pub struct Services {
     pub github: Arc<dyn GithubClient>,
     pub git: Arc<dyn Git>,
     pub executor: Arc<dyn crate::executor::Executor>,
+    /// Host disk-pressure watchdog shared across the tick: the tick's
+    /// sampler refreshes it, the OCI executor consults it for
+    /// dispatch refusal and links its token into in-flight runs
+    /// (issue #245).
+    pub disk: Arc<DiskPressureGuard>,
     pub pool: Arc<Pool>,
 }
 
@@ -134,6 +140,7 @@ impl std::fmt::Debug for Services {
             .field("github", &"Arc<dyn GithubClient>")
             .field("git", &"Arc<dyn Git>")
             .field("executor", &"Arc<dyn Executor>")
+            .field("disk", &"Arc<DiskPressureGuard>")
             .field("pool", &"Arc<Pool>")
             .finish()
     }
@@ -142,7 +149,9 @@ impl std::fmt::Debug for Services {
 impl Services {
     /// Production convenience constructor. The `executor` is built
     /// via [`crate::executor::executor_for_config`] from the
-    /// supplied `Config`; tests inject a custom executor via
+    /// supplied `Config`; the shared `disk` watchdog guard is
+    /// constructed by the caller (the tick) and shared with the
+    /// sampler task. Tests inject a custom executor via
     /// [`Services::for_tests`].
     pub fn production(
         cfg: &Config,
@@ -150,13 +159,15 @@ impl Services {
         github: Arc<Client>,
         git: GitRunner,
         pool: Arc<Pool>,
+        disk: Arc<DiskPressureGuard>,
     ) -> Self {
-        let executor = crate::executor::executor_for_config(cfg);
+        let executor = crate::executor::executor_for_config(cfg, Arc::clone(&disk));
         Self {
             clock,
             github: Arc::new(GithubClientAdapter::new(github)),
             git: Arc::new(GitRunnerAdapter::new(git)),
             executor,
+            disk,
             pool,
         }
     }
@@ -164,7 +175,8 @@ impl Services {
     /// Test-only constructor that takes pre-built trait objects so
     /// tests can mix real adapters with fakes. The `executor` is
     /// injected directly so tests can substitute mocks without
-    /// touching the config layer.
+    /// touching the config layer. The disk-pressure watchdog is
+    /// constructed disabled internally so no test signature churns.
     pub fn for_tests(
         clock: Arc<dyn Clock>,
         github: Arc<dyn GithubClient>,
@@ -177,6 +189,7 @@ impl Services {
             github,
             git,
             executor,
+            disk: Arc::new(DiskPressureGuard::disabled()),
             pool,
         }
     }

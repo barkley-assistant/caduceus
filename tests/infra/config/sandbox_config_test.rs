@@ -88,7 +88,7 @@ fn explicit_full_sandbox_parses_to_given_values() {
          \x20 image: \"caduceus-worker@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n\
          \x20 pull_policy: always\n\
          \x20 resources: { cpus: 4.0, memory_mb: 4096, pids: 512, tmpfs_mb: 512, shm_mb: 128 }\n\
-         \x20 network: unrestricted\n\
+         \x20 network: none\n\
          \x20 pass_env: [\"HTTP_PROXY\", \"NO_PROXY\"]\n\
          \x20 stop_timeout_seconds: 30\n\
          \x20 kill_timeout_seconds: 15\n\
@@ -108,7 +108,9 @@ fn explicit_full_sandbox_parses_to_given_values() {
     assert_eq!(sb.resources.pids, 512);
     assert_eq!(sb.resources.tmpfs_mb, 512);
     assert_eq!(sb.resources.shm_mb, 128);
-    assert_eq!(sb.network, SandboxNetwork::Unrestricted);
+    // Host networking was removed (breaking, issue #245): `none` is
+    // the only value.
+    assert_eq!(sb.network, SandboxNetwork::None);
     assert_eq!(
         sb.pass_env,
         vec!["HTTP_PROXY".to_string(), "NO_PROXY".to_string()]
@@ -204,9 +206,30 @@ fn unknown_network_value_rejected() {
     let msg = err.to_string();
     assert!(msg.contains("unknown variant"), "got: {msg}");
     assert!(msg.contains("filtered"), "got: {msg}");
+    // Host networking was removed (issue #245): `none` is the only
+    // allowed value.
     assert!(
-        msg.contains("none") && msg.contains("unrestricted"),
-        "allowed values must be listed; got: {msg}"
+        msg.contains("none") && !msg.contains("unrestricted"),
+        "allowed values must list only `none`; got: {msg}"
+    );
+}
+
+/// `network: unrestricted` (the removed host-networking value,
+/// issue #245) fails at serde parse time as an unknown variant — a
+/// typed error, exactly the spec's "parsing fails with a typed
+/// error" scenario.
+#[test]
+fn unrestricted_network_rejected() {
+    let err = load_sandbox_line(&format!(
+        "image: \"{VALID_IMAGE}\"\n  network: unrestricted"
+    ))
+    .expect_err("network: unrestricted must be rejected");
+    let msg = err.to_string();
+    assert!(msg.contains("unknown variant"), "got: {msg}");
+    assert!(msg.contains("unrestricted"), "got: {msg}");
+    assert!(
+        msg.contains("none"),
+        "the only valid value must be listed; got: {msg}"
     );
 }
 
@@ -321,22 +344,57 @@ fn pids_below_floor_rejected() {
     );
 }
 
+/// `tmpfs_mb: 0` is rejected: `--tmpfs /tmp:size=0m` lets the engine
+/// apply its DEFAULT size (Docker: effectively unbounded), which
+/// would silently weaken the bounded-tmpfs baseline (issue #245).
 #[test]
-fn tmpfs_mb_valid_at_zero() {
-    let cfg = load(&with_sandbox(&format!(
+fn tmpfs_mb_below_floor_rejected() {
+    let err = load(&with_sandbox(&format!(
         "sandbox:\n  image: \"{VALID_IMAGE}\"\n  resources: {{ tmpfs_mb: 0 }}\n"
     )))
-    .expect("tmpfs_mb 0 is a valid floor");
-    assert_eq!(cfg.sandbox().resources.tmpfs_mb, 0);
+    .expect_err("tmpfs_mb 0 must be rejected");
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("sandbox.resources.tmpfs_mb") && msg.contains(">= 1"),
+        "got: {msg}"
+    );
 }
 
+/// `shm_mb: 0` is rejected for the same reason (issue #245).
 #[test]
-fn shm_mb_valid_at_zero() {
-    let cfg = load(&with_sandbox(&format!(
+fn shm_mb_below_floor_rejected() {
+    let err = load(&with_sandbox(&format!(
         "sandbox:\n  image: \"{VALID_IMAGE}\"\n  resources: {{ shm_mb: 0 }}\n"
     )))
-    .expect("shm_mb 0 is a valid floor");
-    assert_eq!(cfg.sandbox().resources.shm_mb, 0);
+    .expect_err("shm_mb 0 must be rejected");
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("sandbox.resources.shm_mb") && msg.contains(">= 1"),
+        "got: {msg}"
+    );
+}
+
+/// `reserved_host_disk_mb: 0` parses and DISABLES the disk-pressure
+/// watchdog (no sampling, no enforcement) — issue #245.
+#[test]
+fn reserved_host_disk_mb_zero_parses_watchdog_disabled() {
+    let cfg = load(&with_sandbox(&format!(
+        "sandbox:\n  image: \"{VALID_IMAGE}\"\n  reserved_host_disk_mb: 0\n"
+    )))
+    .expect("reserved_host_disk_mb 0 must parse (watchdog disabled)");
+    assert_eq!(cfg.sandbox().reserved_host_disk_mb, 0);
+    // The guard built from this config is disabled: it never refuses.
+    use caduceus::infra::disk::DiskPressureGuard;
+    let guard = DiskPressureGuard::from_config(&cfg);
+    assert!(!guard.enabled());
+    guard.refresh(&[caduceus::infra::disk::DiskSample {
+        device_id: 1,
+        free_bytes: 0,
+        representative_path: cfg.state_dir.clone(),
+    }]);
+    guard
+        .try_acquire_oci()
+        .expect("disabled guard never refuses");
 }
 
 // ---------------------------------------------------------------------------

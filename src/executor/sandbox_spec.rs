@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::executor::ExecutorSpec;
 use crate::github::issue::IssueKey;
-use crate::infra::config::{Config, OciPullPolicy, SandboxConfig, SandboxNetwork};
+use crate::infra::config::{Config, OciPullPolicy, SandboxConfig};
 use crate::infra::error::{CaduceusError, CaduceusResult};
 use crate::worker::worker_contract::{
     CONTAINER_OUTPUT_PATH, CONTAINER_WORKSPACE_PATH, WORKER_RESULT_FILE,
@@ -157,13 +157,15 @@ pub struct TmpfsMount {
 }
 
 /// Network isolation mode for the container.
+///
+/// Host networking is structurally unrepresentable: the former
+/// `Unrestricted` variant (`--network host`) was removed (breaking,
+/// issue #245). The single variant renders `--network none`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum NetworkMode {
     /// `--network none` — no network access.
     #[default]
     None,
-    /// `--network host` — full host network access.
-    Unrestricted,
 }
 
 /// Resource limits mapped from [`SandboxResources`].
@@ -521,11 +523,10 @@ pub fn resolve(
         shm_mb: sandbox.resources.shm_mb,
     };
 
-    // 9. Network — map from SandboxNetwork.
-    let network = match sandbox.network {
-        SandboxNetwork::None => NetworkMode::None,
-        SandboxNetwork::Unrestricted => NetworkMode::Unrestricted,
-    };
+    // 9. Network — the only mode is `None` (`--network none`); host
+    //     networking is structurally unrepresentable after the
+    //     breaking removal of `SandboxNetwork::Unrestricted` (D3).
+    let network = NetworkMode::None;
 
     // 10. Environment — the full canonical `CADUCEUS_*` set, with
     //     CONTAINER-side path values so host paths never leak into
@@ -623,6 +624,12 @@ pub fn resolve(
     //     is built, so an extra writable host-backed mount can only
     //     ever be a future regression caught at resolution time.
     validate_mount_policy(&spec)?;
+
+    // 16. Host-escalation tripwire (defense in depth): no engine
+    //     socket mount and no non-isolated network may ever appear on
+    //     a resolved spec. Structurally unrepresentable after D3 —
+    //     exactly the point.
+    validate_no_host_escalation(&spec)?;
 
     Ok(spec)
 }
@@ -724,6 +731,72 @@ fn validate_mount_policy(spec: &SandboxSpec) -> CaduceusResult<()> {
     }
 
     Ok(())
+}
+
+/// Reject host-escalation surfaces on a resolved spec (issue #245):
+///
+/// - any host-backed mount (workspace, output, `.git` shadow) whose
+///   `host_path` or `container_path` file name is an engine/runtime
+///   socket (`docker.sock` / `podman.sock`) — mounting the engine
+///   socket is a container-escape primitive;
+/// - any network mode other than [`NetworkMode::None`] — a tautology
+///   after the `Unrestricted` removal that trips if a future variant
+///   is ever added without re-review.
+///
+/// `--device` and `--pid/--ipc/--uts=host` are denied *structurally*:
+/// [`SandboxSpec`] has no field that could express them and the
+/// renderer never emits those tokens; the golden renderer tests pin
+/// their absence.
+pub fn validate_no_host_escalation(spec: &SandboxSpec) -> CaduceusResult<()> {
+    for (label, mount) in [
+        ("workspace", spec.workspace_mount()),
+        ("output", spec.output_mount()),
+    ] {
+        for path in [&mount.host_path, &mount.container_path] {
+            if is_engine_socket_path(path) {
+                return Err(CaduceusError::OciMountConflict {
+                    detail: format!(
+                        "the {label} mount must not target an engine/runtime \
+                         socket path: {}",
+                        path.display()
+                    ),
+                });
+            }
+        }
+    }
+    if let Some(shadow) = spec.git_shadow() {
+        for path in [&shadow.host_path, &shadow.container_path] {
+            if is_engine_socket_path(path) {
+                return Err(CaduceusError::OciMountConflict {
+                    detail: format!(
+                        "the .git shadow mount must not target an \
+                         engine/runtime socket path: {}",
+                        path.display()
+                    ),
+                });
+            }
+        }
+    }
+    if spec.network() != NetworkMode::None {
+        return Err(CaduceusError::OciMountConflict {
+            detail: format!(
+                "network mode {:?} is denied: only --network none is \
+                 representable (host networking was removed, issue #245)",
+                spec.network()
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// True when *path*'s file name is the Docker or Podman engine
+/// socket. `pub` for testability from `tests/` per the
+/// no-inline-tests rule.
+pub fn is_engine_socket_path(path: &Path) -> bool {
+    matches!(
+        path.file_name().and_then(|s| s.to_str()),
+        Some("docker.sock") | Some("podman.sock")
+    )
 }
 
 // ---------------------------------------------------------------------------
