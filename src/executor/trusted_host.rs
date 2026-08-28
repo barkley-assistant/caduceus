@@ -9,11 +9,12 @@ use std::pin::Pin;
 
 use tokio_util::sync::CancellationToken;
 
-use crate::executor::{Executor, ExecutorSpec};
+use crate::executor::{Executor, ExecutorOutcome, ExecutorSpec};
 use crate::github::issue::IssueKey;
 use crate::infra::config::Config;
 use crate::infra::error::CaduceusResult;
-use crate::worker::supervisor::{supervise, SupervisorOutcome};
+use crate::worker::supervisor::supervise;
+use crate::worker::worker_contract::WORKER_RESULT_FILE;
 
 /// Executor that dispatches workers on the trusted host via
 /// [`crate::worker::supervisor::supervise`].
@@ -33,7 +34,7 @@ impl Executor for TrustedHostExecutor {
     fn run<'a>(
         &'a self,
         spec: &'a ExecutorSpec,
-    ) -> Pin<Box<dyn Future<Output = CaduceusResult<SupervisorOutcome>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = CaduceusResult<ExecutorOutcome>> + Send + 'a>> {
         let self_exe: &'a Path = &spec.self_exe;
         let cfg: &'a Config = &self.cfg;
         let issue: &'a IssueKey = &spec.issue;
@@ -48,7 +49,7 @@ impl Executor for TrustedHostExecutor {
         let branch_name: &'a str = &spec.branch_name;
 
         Box::pin(async move {
-            supervise(
+            let outcome = supervise(
                 self_exe,
                 cfg,
                 issue,
@@ -62,7 +63,11 @@ impl Executor for TrustedHostExecutor {
                 labels,
                 branch_name,
             )
-            .await
+            .await?;
+            Ok(ExecutorOutcome {
+                outcome,
+                result_path: spec.worktree.join(WORKER_RESULT_FILE),
+            })
         })
     }
 }

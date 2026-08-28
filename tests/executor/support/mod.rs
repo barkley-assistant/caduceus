@@ -54,3 +54,23 @@ pub fn runtime_facts(cfg: &Config, run_id: &str, worktree: &Path) -> RuntimeFact
         git_shadow_host: git_shadow_host(cfg, run_id),
     }
 }
+
+/// Build an `ExecutorSpec` fixture whose identity fields mirror the
+/// `RuntimeFacts` defaults: same run id and issue key, with fixed
+/// representative title/body/labels/branch/context values. Tests
+/// needing non-default spec inputs mutate the returned struct.
+pub fn executor_spec(runtime: &RuntimeFacts) -> caduceus::executor::ExecutorSpec {
+    caduceus::executor::ExecutorSpec {
+        self_exe: PathBuf::from("/proc/self/exe"),
+        issue: runtime.issue.clone(),
+        worktree: runtime.worktree.clone(),
+        run_id: runtime.run_id.clone(),
+        context_json: "{\"key\":\"value\"}".to_string(),
+        worker_command: runtime.worker_command.clone(),
+        cancellation: tokio_util::sync::CancellationToken::new(),
+        issue_title: "Fix the thing".to_string(),
+        issue_body: "Body text".to_string(),
+        labels: vec!["bug".to_string()],
+        branch_name: "caduceus/owner/repo#1".to_string(),
+    }
+}

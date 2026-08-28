@@ -18,13 +18,14 @@ use std::future::Future;
 use std::pin::Pin;
 
 use crate::executor::{
-    engine_probe, oci_lifecycle, sandbox_renderer, sandbox_spec, Executor, ExecutorSpec,
+    engine_probe, oci_lifecycle, sandbox_renderer, sandbox_spec, Executor, ExecutorOutcome,
+    ExecutorSpec,
 };
 use crate::infra::config::Config;
 use crate::infra::error::CaduceusResult;
 use crate::state::oci_run::OciRunDao;
 use crate::state::store;
-use crate::worker::supervisor::SupervisorOutcome;
+use crate::worker::worker_contract::WORKER_RESULT_FILE;
 
 /// Executor that dispatches workers via Docker or Podman CLI.
 #[derive(Clone, Debug)]
@@ -43,7 +44,7 @@ impl Executor for OciExecutor {
     fn run<'a>(
         &'a self,
         spec: &'a ExecutorSpec,
-    ) -> Pin<Box<dyn Future<Output = CaduceusResult<SupervisorOutcome>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = CaduceusResult<ExecutorOutcome>> + Send + 'a>> {
         Box::pin(async move {
             // 1. Pre-flight probe: collect the runtime facts (worktree
             //    owner uid/gid, host `.git` type, engine mode) and
@@ -57,7 +58,7 @@ impl Executor for OciExecutor {
             // 2. Resolve the closed typed spec. All host-path,
             //    identity, and mount decisions happen here; the
             //    renderer invents nothing.
-            let resolved = sandbox_spec::resolve(self.cfg.sandbox(), &runtime)?;
+            let resolved = sandbox_spec::resolve(self.cfg.sandbox(), &runtime, spec)?;
 
             // 3. Open the state database.
             let db_path = self.cfg.state_dir.join(store::DB_FILENAME);
@@ -73,7 +74,7 @@ impl Executor for OciExecutor {
             let argv = sandbox_renderer::render_with_env_files(&resolved, engine, &[]);
 
             // 5. Run the lifecycle with the rendered argv.
-            oci_lifecycle::run_with_argv(
+            let outcome = oci_lifecycle::run_with_argv(
                 &self.cfg,
                 spec,
                 &dao,
@@ -81,7 +82,11 @@ impl Executor for OciExecutor {
                 argv,
                 spec.cancellation.child_token(),
             )
-            .await
+            .await?;
+            Ok(ExecutorOutcome {
+                outcome,
+                result_path: runtime.output_dir.join(WORKER_RESULT_FILE),
+            })
         })
     }
 }

@@ -17,7 +17,7 @@ mod support;
 fn resolve_from(cfg: &Config) -> SandboxSpec {
     let worktree = cfg.workdir_base.join("owner").join("repo").join("run-001");
     let runtime = support::runtime_facts(cfg, "run-001", &worktree);
-    resolve(cfg.sandbox(), &runtime).expect("must resolve")
+    resolve(cfg.sandbox(), &runtime, &support::executor_spec(&runtime)).expect("must resolve")
 }
 
 fn default_cfg() -> Config {

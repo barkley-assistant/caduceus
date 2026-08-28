@@ -628,3 +628,58 @@ fn camel_to_snake(s: &str) -> String {
 fn file_extension(path: &Path) -> Option<&OsStr> {
     path.extension()
 }
+
+// ---------------------------------------------------------------------------
+// Repository-search guard — the worker-result filename has a single
+// authority: `worker_contract::WORKER_RESULT_FILE`. Executors return
+// `ExecutorOutcome.result_path` and the daemon tick paths consume it,
+// so no daemon source may re-derive the path with a filesystem join.
+// ---------------------------------------------------------------------------
+
+fn collect_rs_sources(dir: &Path, out: &mut Vec<PathBuf>) {
+    for entry in fs::read_dir(dir).unwrap_or_else(|err| panic!("read {}: {err}", dir.display())) {
+        let path = entry
+            .unwrap_or_else(|err| panic!("dir entry: {err}"))
+            .path();
+        if path.is_dir() {
+            collect_rs_sources(&path, out);
+        } else if path.extension() == Some(OsStr::new("rs")) {
+            out.push(path);
+        }
+    }
+}
+
+#[test]
+fn daemon_sources_never_join_worker_result_filename() {
+    let worker_contract = repo_root().join("src/worker/worker_contract.rs");
+    let mut sources = Vec::new();
+    collect_rs_sources(&repo_root().join("src"), &mut sources);
+    assert!(!sources.is_empty(), "expected Rust sources under src/");
+
+    let path_markers = ["join(", "PathBuf::from", "Path::new"];
+    let mut offenders: Vec<String> = Vec::new();
+    for path in &sources {
+        if path == &worker_contract {
+            continue;
+        }
+        let rel = path
+            .strip_prefix(repo_root())
+            .unwrap_or(path)
+            .display()
+            .to_string();
+        let body = fs::read_to_string(path).unwrap_or_else(|err| panic!("read {rel}: {err}"));
+        for (idx, line) in body.lines().enumerate() {
+            if line.contains("worker-result.json")
+                && path_markers.iter().any(|marker| line.contains(marker))
+            {
+                offenders.push(format!("{rel}:{}", idx + 1));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "worker-result.json path construction must live only in \
+         worker_contract (use WORKER_RESULT_FILE / ExecutorOutcome.result_path); \
+         offenders: {offenders:?}"
+    );
+}

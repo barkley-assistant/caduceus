@@ -3,6 +3,7 @@
 //! Verifies trait object-safety, dyn dispatch, input parity with
 //! `supervise`, and the subprocess-construction grep contract.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use caduceus::executor::trusted_host::TrustedHostExecutor;
@@ -122,5 +123,51 @@ fn worker_subprocess_construction_only_in_executor() {
     assert!(
         !oci_src.contains("tokio::process::Command"),
         "src/executor/oci.rs must not contain tokio::process::Command"
+    );
+}
+
+// SCN-01.5: trusted_host_run_reports_host_result_path
+
+/// `Executor::run` returns an `ExecutorOutcome` whose `result_path`
+/// is `<worktree>/worker-result.json` for the TrustedHost mode, so
+/// the tick loop reads the result without any Docker knowledge.
+/// This exercises the real supervisor subprocess (the built
+/// `caduceus` binary) with a trivially-succeeding worker.
+#[tokio::test]
+async fn trusted_host_run_reports_host_result_path() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let cfg = Config::test_defaults(tmp.path());
+    let worktree = tmp.path().join("worktree");
+    std::fs::create_dir_all(&worktree).expect("create worktree dir");
+
+    let spec = ExecutorSpec {
+        self_exe: PathBuf::from(env!("CARGO_BIN_EXE_caduceus")),
+        issue: issue_key(),
+        worktree: worktree.clone(),
+        run_id: "test-run-outcome".to_string(),
+        context_json: r#"{"x":1}"#.to_string(),
+        worker_command: vec!["/bin/true".to_string()],
+        cancellation: tokio_util::sync::CancellationToken::new(),
+        issue_title: "title".to_string(),
+        issue_body: "body".to_string(),
+        labels: Vec::new(),
+        branch_name: "automation/issue-1".to_string(),
+    };
+
+    let executor: Arc<dyn Executor> = Arc::new(TrustedHostExecutor::new(cfg));
+    let outcome = executor
+        .run(&spec)
+        .await
+        .expect("supervise must succeed for a trivially-succeeding worker");
+
+    assert!(
+        !outcome.outcome.timed_out && !outcome.outcome.cancelled,
+        "worker must not time out or be cancelled; got {:?}",
+        outcome.outcome
+    );
+    assert_eq!(
+        outcome.result_path,
+        worktree.join("worker-result.json"),
+        "TrustedHost result_path must be <worktree>/worker-result.json"
     );
 }

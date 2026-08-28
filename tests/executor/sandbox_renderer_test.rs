@@ -19,6 +19,27 @@ use caduceus::infra::config::{Config, SandboxConfig, SandboxNetwork};
 /// Fixed root for the golden fixtures. Never touched on disk.
 const ROOT: &str = "/tmp/caduceus-renderer-goldens";
 
+/// Build an `ExecutorSpec` fixture mirroring the runtime facts, with
+/// fixed representative canonical values (title/body/labels/branch/
+/// context) that the environment goldens interpolate.
+fn executor_spec_for(
+    runtime: &caduceus::executor::sandbox_spec::RuntimeFacts,
+) -> caduceus::executor::ExecutorSpec {
+    caduceus::executor::ExecutorSpec {
+        self_exe: PathBuf::from("/proc/self/exe"),
+        issue: runtime.issue.clone(),
+        worktree: runtime.worktree.clone(),
+        run_id: runtime.run_id.clone(),
+        context_json: "{}".to_string(),
+        worker_command: runtime.worker_command.clone(),
+        cancellation: tokio_util::sync::CancellationToken::new(),
+        issue_title: "Fix login bug".to_string(),
+        issue_body: "Steps to reproduce".to_string(),
+        labels: vec!["bug".to_string()],
+        branch_name: "caduceus/owner/repo#1".to_string(),
+    }
+}
+
 /// Resolve a fixture spec from `Config::test_defaults` with an
 /// optional sandbox mutation and runtime-fact overrides. Returns the
 /// spec plus the host paths the goldens interpolate into mount args.
@@ -56,8 +77,12 @@ fn fixture_with(
             .join(run_id)
             .join("git-shadow"),
     };
-    let spec = caduceus::executor::sandbox_spec::resolve(cfg.sandbox(), &runtime)
-        .expect("fixture must resolve");
+    let spec = caduceus::executor::sandbox_spec::resolve(
+        cfg.sandbox(),
+        &runtime,
+        &executor_spec_for(&runtime),
+    )
+    .expect("fixture must resolve");
     (
         spec,
         worktree,
@@ -113,6 +138,24 @@ fn docker_rootful_golden_argv() {
         "CADUCEUS_RUN_ID=run-001".to_string(),
         "-e".to_string(),
         "CADUCEUS_ISSUE_ID=owner/repo#1".to_string(),
+        "-e".to_string(),
+        "CADUCEUS_ISSUE_NUMBER=1".to_string(),
+        "-e".to_string(),
+        "CADUCEUS_ISSUE_REPO=owner/repo".to_string(),
+        "-e".to_string(),
+        "CADUCEUS_ISSUE_TITLE=Fix login bug".to_string(),
+        "-e".to_string(),
+        "CADUCEUS_ISSUE_BODY=Steps to reproduce".to_string(),
+        "-e".to_string(),
+        "CADUCEUS_ISSUE_LABELS_JSON=[\"bug\"]".to_string(),
+        "-e".to_string(),
+        "CADUCEUS_CONTEXT_JSON={}".to_string(),
+        "-e".to_string(),
+        "CADUCEUS_BRANCH_NAME=caduceus/owner/repo#1".to_string(),
+        "-e".to_string(),
+        "CADUCEUS_WORKTREE_PATH=/workspace".to_string(),
+        "-e".to_string(),
+        "CADUCEUS_RESULT_PATH=/output/worker-result.json".to_string(),
         "-l".to_string(),
         "caduceus.daemon_id=test-daemon".to_string(),
         "-l".to_string(),
@@ -168,6 +211,24 @@ fn podman_rootless_golden_argv() {
         "CADUCEUS_RUN_ID=run-001".to_string(),
         "-e".to_string(),
         "CADUCEUS_ISSUE_ID=owner/repo#1".to_string(),
+        "-e".to_string(),
+        "CADUCEUS_ISSUE_NUMBER=1".to_string(),
+        "-e".to_string(),
+        "CADUCEUS_ISSUE_REPO=owner/repo".to_string(),
+        "-e".to_string(),
+        "CADUCEUS_ISSUE_TITLE=Fix login bug".to_string(),
+        "-e".to_string(),
+        "CADUCEUS_ISSUE_BODY=Steps to reproduce".to_string(),
+        "-e".to_string(),
+        "CADUCEUS_ISSUE_LABELS_JSON=[\"bug\"]".to_string(),
+        "-e".to_string(),
+        "CADUCEUS_CONTEXT_JSON={}".to_string(),
+        "-e".to_string(),
+        "CADUCEUS_BRANCH_NAME=caduceus/owner/repo#1".to_string(),
+        "-e".to_string(),
+        "CADUCEUS_WORKTREE_PATH=/workspace".to_string(),
+        "-e".to_string(),
+        "CADUCEUS_RESULT_PATH=/output/worker-result.json".to_string(),
         "-l".to_string(),
         "caduceus.daemon_id=test-daemon".to_string(),
         "-l".to_string(),
@@ -353,6 +414,48 @@ fn renders_environment() {
     assert!(argv.iter().any(|a| a == "-e"));
     assert!(argv.iter().any(|a| a == "CADUCEUS_RUN_ID=run-001"));
     assert!(argv.iter().any(|a| a == "CADUCEUS_ISSUE_ID=owner/repo#1"));
+}
+
+/// The full canonical `CADUCEUS_*` set is emitted as `-e` entries in
+/// canonical order, with the container-side worktree/result paths
+/// (issue #243). No credential variable is ever emitted.
+#[test]
+fn renders_canonical_environment_entries() {
+    let (spec, _, _, _, _) = default_fixture();
+    let argv = render(&spec, SandboxEngine::Docker);
+    let expected: &[&str] = &[
+        "CADUCEUS_RUN_ID=run-001",
+        "CADUCEUS_ISSUE_ID=owner/repo#1",
+        "CADUCEUS_ISSUE_NUMBER=1",
+        "CADUCEUS_ISSUE_REPO=owner/repo",
+        "CADUCEUS_ISSUE_TITLE=Fix login bug",
+        "CADUCEUS_ISSUE_BODY=Steps to reproduce",
+        "CADUCEUS_ISSUE_LABELS_JSON=[\"bug\"]",
+        "CADUCEUS_CONTEXT_JSON={}",
+        "CADUCEUS_BRANCH_NAME=caduceus/owner/repo#1",
+        "CADUCEUS_WORKTREE_PATH=/workspace",
+        "CADUCEUS_RESULT_PATH=/output/worker-result.json",
+    ];
+    let env_entries: Vec<&String> = argv.iter().filter(|a| a.starts_with("CADUCEUS_")).collect();
+    assert_eq!(
+        env_entries
+            .iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<&str>>(),
+        expected,
+        "canonical -e entries must be present in canonical order"
+    );
+    assert!(
+        !env_entries
+            .iter()
+            .any(|a| a.contains("TOKEN") || a.contains("SECRET")),
+        "no credential -e entry may be emitted: {env_entries:?}"
+    );
+    // Host paths must never leak into the rendered environment.
+    assert!(
+        !env_entries.iter().any(|a| a.contains(ROOT)),
+        "host paths must not appear in container env entries: {env_entries:?}"
+    );
 }
 
 #[test]

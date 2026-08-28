@@ -17,6 +17,9 @@
 use std::path::PathBuf;
 
 use crate::executor::sandbox_spec::{NetworkMode, SandboxEngine, SandboxSpec};
+use crate::worker::worker_contract::{
+    CONTAINER_OUTPUT_PATH, CONTAINER_WORKSPACE_PATH, WORKER_RESULT_FILE,
+};
 
 /// Render the full `create` argv for the given engine with no secret
 /// env files. Delegates to [`render_with_env_files`] with an empty
@@ -152,6 +155,27 @@ pub fn render_with_env_files(
             label_value(spec, "caduceus.issue_id").unwrap_or_default(),
         )
     ));
+    // Remaining canonical `CADUCEUS_*` entries, in canonical order.
+    // `resolve` guarantees all of them; the fallbacks are a
+    // non-panicking safety net for a spec-construction bug.
+    let result_path_fallback = format!("{CONTAINER_OUTPUT_PATH}/{WORKER_RESULT_FILE}");
+    for (key, fallback) in [
+        ("CADUCEUS_ISSUE_NUMBER", ""),
+        ("CADUCEUS_ISSUE_REPO", ""),
+        ("CADUCEUS_ISSUE_TITLE", ""),
+        ("CADUCEUS_ISSUE_BODY", ""),
+        ("CADUCEUS_ISSUE_LABELS_JSON", "[]"),
+        ("CADUCEUS_CONTEXT_JSON", "{}"),
+        ("CADUCEUS_BRANCH_NAME", ""),
+        ("CADUCEUS_WORKTREE_PATH", CONTAINER_WORKSPACE_PATH),
+        ("CADUCEUS_RESULT_PATH", result_path_fallback.as_str()),
+    ] {
+        argv.push("-e".to_string());
+        argv.push(format!(
+            "{key}={}",
+            env_value(spec, key, fallback.to_string())
+        ));
+    }
 
     // --- Labels (spec order — fixed: daemon_id, run_id, issue_id).
     for (key, value) in spec.labels() {
