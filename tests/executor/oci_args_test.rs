@@ -10,22 +10,14 @@
 use std::path::{Path, PathBuf};
 
 use caduceus::executor::sandbox_renderer::{render, render_with_env_files};
-use caduceus::executor::sandbox_spec::{resolve, RuntimeFacts, SandboxEngine, SandboxSpec};
-use caduceus::github::issue::IssueKey;
+use caduceus::executor::sandbox_spec::{resolve, SandboxEngine, SandboxSpec};
 use caduceus::infra::config::Config;
+
+mod support;
 
 fn resolve_from(cfg: &Config, run_id: &str) -> SandboxSpec {
     let worktree = cfg.workdir_base.join("owner").join("repo").join(run_id);
-    let output = cfg.workdir_base.join("owner").join("repo").join("result");
-    let runtime = RuntimeFacts {
-        run_id: run_id.to_string(),
-        issue: IssueKey::parse("owner/repo#1").expect("valid key"),
-        worker_command: vec!["python3".to_string(), "bridge.py".to_string()],
-        worktree,
-        output_dir: output,
-        daemon_id: "state".to_string(),
-        workdir_base: cfg.workdir_base.clone(),
-    };
+    let runtime = support::runtime_facts(cfg, run_id, &worktree);
     resolve(cfg.sandbox(), &runtime).expect("must resolve")
 }
 
@@ -46,15 +38,36 @@ fn one_contract_both_clis() {
 
     assert_eq!(docker_argv[0], "docker");
     assert_eq!(podman_argv[0], "podman");
-    assert_eq!(docker_argv.len() + 2, podman_argv.len());
-    // Everything after the binary is identical except the userns pair.
-    let mut podman_without_delta: Vec<String> = podman_argv
-        .iter()
-        .filter(|a| a.as_str() != "--userns" && !a.starts_with("keep-id:"))
-        .cloned()
-        .collect();
-    podman_without_delta[0] = "docker".to_string();
-    assert_eq!(docker_argv, podman_without_delta);
+    // Rootful docker vs rootless-mode fixture facts for podman differ
+    // by the identity encoding: docker has the `--user` pair, the
+    // podman facts carry plain keep-id. Strip both identity encodings
+    // and the argvs are otherwise identical.
+    let strip_identity = |argv: &[String]| -> Vec<String> {
+        let mut out = Vec::new();
+        let mut skip_next = false;
+        for tok in argv {
+            if skip_next {
+                skip_next = false;
+                continue;
+            }
+            if tok == "--user" {
+                skip_next = true;
+                continue;
+            }
+            if tok == "--userns" {
+                skip_next = true;
+                continue;
+            }
+            out.push(tok.clone());
+        }
+        out
+    };
+    let docker_stripped = strip_identity(&docker_argv);
+    let podman_stripped = strip_identity(&podman_argv);
+    assert_eq!(docker_stripped[0], "docker");
+    let mut podman_as_docker = podman_stripped;
+    podman_as_docker[0] = "docker".to_string();
+    assert_eq!(docker_stripped, podman_as_docker);
 }
 
 // undeclared_mount_rejected (AC-02) — resolution rejects host paths
@@ -63,15 +76,7 @@ fn one_contract_both_clis() {
 #[test]
 fn undeclared_mount_rejected() {
     let cfg = default_cfg();
-    let runtime = RuntimeFacts {
-        run_id: "run-002".to_string(),
-        issue: IssueKey::parse("owner/repo#1").expect("valid key"),
-        worker_command: vec!["python3".to_string(), "bridge.py".to_string()],
-        worktree: PathBuf::from("/tmp/worktree"),
-        output_dir: PathBuf::from("/tmp/result"),
-        daemon_id: "state".to_string(),
-        workdir_base: cfg.workdir_base.clone(),
-    };
+    let runtime = support::runtime_facts(&cfg, "run-002", Path::new("/tmp/worktree"));
     let err = resolve(cfg.sandbox(), &runtime).expect_err("undeclared worktree must be rejected");
     assert!(
         matches!(
@@ -185,7 +190,7 @@ fn renderer_reads_spec_not_argv() {
     let cfg = default_cfg();
     let spec = resolve_from(&cfg, "run-004");
     let argv = render(&spec, SandboxEngine::Docker);
-    assert!(argv.iter().any(|a| a == "1000:1000"));
+    assert!(argv.iter().any(|a| a == "4242:4242"));
     assert!(argv.iter().any(|a| a.ends_with(":/workspace:rw")));
     assert!(argv.iter().any(|a| a.ends_with(":/output:rw")));
     let _ = Path::new("/tmp");

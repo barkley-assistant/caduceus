@@ -179,6 +179,11 @@ pub fn classify_error(err: &CaduceusError) -> FailureClass {
         // budget.
         CaduceusError::OciCliNotFound { .. } => FailureClass::Infrastructure,
         CaduceusError::OciEngineUnavailable { .. } => FailureClass::Infrastructure,
+        // Refused before any container exists: a host/environment
+        // capability problem (undetectable engine mode, unsupported
+        // namespace configuration, unreadable worktree) — not
+        // worker-attributable.
+        CaduceusError::OciIdentityUnsupported { .. } => FailureClass::Infrastructure,
         CaduceusError::OciMismatchedCliVersion { .. } => FailureClass::Infrastructure,
         CaduceusError::OciPullFailed { .. } => FailureClass::Infrastructure,
         CaduceusError::OciCreateFailed { .. } => FailureClass::Infrastructure,

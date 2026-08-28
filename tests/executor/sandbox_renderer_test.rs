@@ -5,24 +5,29 @@
 //! fixtures resolve a fixed `Config` + `RuntimeFacts` first; `resolve`
 //! does no I/O, so the fixed host paths never need to exist and the
 //! goldens are byte-for-byte deterministic.
+//!
+//! Identity is now dynamic (worktree-owner facts from the shared
+//! fixture: `4242:4242`, rootful by default) and the `.git` shadow
+//! mount and dual tmpfs list are part of every golden.
 
 use std::path::{Path, PathBuf};
 
 use caduceus::executor::sandbox_renderer::{render, render_with_env_files};
-use caduceus::executor::sandbox_spec::{RuntimeFacts, SandboxEngine, SandboxSpec};
-use caduceus::github::issue::IssueKey;
+use caduceus::executor::sandbox_spec::{EngineMode, GitShadowKind, SandboxEngine, SandboxSpec};
 use caduceus::infra::config::{Config, SandboxConfig, SandboxNetwork};
 
 /// Fixed root for the golden fixtures. Never touched on disk.
 const ROOT: &str = "/tmp/caduceus-renderer-goldens";
 
 /// Resolve a fixture spec from `Config::test_defaults` with an
-/// optional sandbox mutation. Returns the spec plus the host paths
-/// the goldens interpolate into mount args.
-fn fixture(
+/// optional sandbox mutation and runtime-fact overrides. Returns the
+/// spec plus the host paths the goldens interpolate into mount args.
+fn fixture_with(
     run_id: &str,
+    engine_mode: EngineMode,
+    shadow_kind: GitShadowKind,
     mutate: impl FnOnce(&mut SandboxConfig),
-) -> (SandboxSpec, PathBuf, PathBuf, String) {
+) -> (SandboxSpec, PathBuf, PathBuf, PathBuf, String) {
     let root = Path::new(ROOT);
     let mut cfg = Config::test_defaults(root);
     mutate(cfg.sandbox.as_mut().expect("test_defaults has a sandbox"));
@@ -31,42 +36,54 @@ fn fixture(
         .join("owner")
         .join("repo")
         .join(run_id);
-    let output = root
-        .join("workdirs")
-        .join("owner")
-        .join("repo")
-        .join("result");
-    let runtime = RuntimeFacts {
+    let output = cfg.state_dir.join("oci-runs").join(run_id).join("output");
+    let runtime = caduceus::executor::sandbox_spec::RuntimeFacts {
         run_id: run_id.to_string(),
-        issue: IssueKey::parse("owner/repo#1").expect("valid key"),
+        issue: caduceus::github::issue::IssueKey::parse("owner/repo#1").expect("valid key"),
         worker_command: vec!["python3".to_string(), "bridge.py".to_string()],
         worktree: worktree.clone(),
         output_dir: output.clone(),
-        daemon_id: "state".to_string(),
+        daemon_id: "test-daemon".to_string(),
         workdir_base: root.join("workdirs"),
+        state_dir: cfg.state_dir.clone(),
+        worktree_uid: 4242,
+        worktree_gid: 4242,
+        engine_mode,
+        git_shadow_kind: shadow_kind,
+        git_shadow_host: cfg
+            .state_dir
+            .join("oci-runs")
+            .join(run_id)
+            .join("git-shadow"),
     };
     let spec = caduceus::executor::sandbox_spec::resolve(cfg.sandbox(), &runtime)
         .expect("fixture must resolve");
-    (spec, worktree, output, cfg.sandbox().image.clone())
+    (
+        spec,
+        worktree,
+        output,
+        runtime.git_shadow_host,
+        cfg.sandbox().image.clone(),
+    )
 }
 
-/// The default fixture with no sandbox mutation.
-fn default_fixture() -> (SandboxSpec, PathBuf, PathBuf, String) {
-    fixture("run-001", |_| {})
+/// The default fixture: rootful, pointer-file `.git` shadow.
+fn default_fixture() -> (SandboxSpec, PathBuf, PathBuf, PathBuf, String) {
+    fixture_with("run-001", EngineMode::Rootful, GitShadowKind::File, |_| {})
 }
 
 // ---------------------------------------------------------------------------
-// Golden snapshots — one per engine, byte-for-byte.
+// Golden snapshots — one per engine×mode, byte-for-byte.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn docker_golden_argv() {
-    let (spec, worktree, output, image) = default_fixture();
+fn docker_rootful_golden_argv() {
+    let (spec, worktree, output, shadow, image) = default_fixture();
     let expected = vec![
         "docker".to_string(),
         "create".to_string(),
         "--user".to_string(),
-        "1000:1000".to_string(),
+        "4242:4242".to_string(),
         "--cap-drop".to_string(),
         "ALL".to_string(),
         "--security-opt".to_string(),
@@ -80,22 +97,24 @@ fn docker_golden_argv() {
         "2048m".to_string(),
         "--pids-limit".to_string(),
         "256".to_string(),
-        "--shm-size".to_string(),
-        "64m".to_string(),
         "--name".to_string(),
         "run-001".to_string(),
         "-v".to_string(),
         format!("{}:/workspace:rw", worktree.display()),
         "-v".to_string(),
         format!("{}:/output:rw", output.display()),
+        "-v".to_string(),
+        format!("{}:/workspace/.git:ro", shadow.display()),
         "--tmpfs".to_string(),
         "/tmp:size=256m".to_string(),
+        "--tmpfs".to_string(),
+        "/dev/shm:size=64m".to_string(),
         "-e".to_string(),
         "CADUCEUS_RUN_ID=run-001".to_string(),
         "-e".to_string(),
         "CADUCEUS_ISSUE_ID=owner/repo#1".to_string(),
         "-l".to_string(),
-        "caduceus.daemon_id=state".to_string(),
+        "caduceus.daemon_id=test-daemon".to_string(),
         "-l".to_string(),
         "caduceus.run_id=run-001".to_string(),
         "-l".to_string(),
@@ -109,20 +128,22 @@ fn docker_golden_argv() {
 }
 
 #[test]
-fn podman_golden_argv() {
-    let (spec, worktree, output, image) = default_fixture();
+fn podman_rootless_golden_argv() {
+    let (spec, worktree, output, shadow, image) =
+        fixture_with("run-001", EngineMode::Rootless, GitShadowKind::File, |sb| {
+            sb.engine = SandboxEngine::Podman
+        });
     let expected = vec![
         "podman".to_string(),
         "create".to_string(),
-        "--user".to_string(),
-        "1000:1000".to_string(),
+        // Rootless: no --user; plain keep-id user namespace.
         "--cap-drop".to_string(),
         "ALL".to_string(),
         "--security-opt".to_string(),
         "no-new-privileges".to_string(),
         "--read-only".to_string(),
         "--userns".to_string(),
-        "keep-id:uid=1000,gid=1000".to_string(),
+        "keep-id".to_string(),
         "--network".to_string(),
         "none".to_string(),
         "--cpus".to_string(),
@@ -131,22 +152,24 @@ fn podman_golden_argv() {
         "2048m".to_string(),
         "--pids-limit".to_string(),
         "256".to_string(),
-        "--shm-size".to_string(),
-        "64m".to_string(),
         "--name".to_string(),
         "run-001".to_string(),
         "-v".to_string(),
         format!("{}:/workspace:rw", worktree.display()),
         "-v".to_string(),
         format!("{}:/output:rw", output.display()),
+        "-v".to_string(),
+        format!("{}:/workspace/.git:ro", shadow.display()),
         "--tmpfs".to_string(),
         "/tmp:size=256m".to_string(),
+        "--tmpfs".to_string(),
+        "/dev/shm:size=64m".to_string(),
         "-e".to_string(),
         "CADUCEUS_RUN_ID=run-001".to_string(),
         "-e".to_string(),
         "CADUCEUS_ISSUE_ID=owner/repo#1".to_string(),
         "-l".to_string(),
-        "caduceus.daemon_id=state".to_string(),
+        "caduceus.daemon_id=test-daemon".to_string(),
         "-l".to_string(),
         "caduceus.run_id=run-001".to_string(),
         "-l".to_string(),
@@ -159,38 +182,71 @@ fn podman_golden_argv() {
     assert_eq!(render(&spec, SandboxEngine::Podman), expected);
 }
 
-/// The Podman output differs from Docker ONLY by the binary name and
-/// the inserted `--userns keep-id:uid=1000,gid=1000` pair.
+/// The per-engine deltas are fully encoded in the spec's identity:
+/// - Podman rootful vs Docker rootful differ only by the binary name;
+/// - Docker rootless vs Docker rootful differ only by the missing
+///   `--user`/`4242:4242` pair;
+/// - Podman rootless vs Podman rootful swap the `--user` pair for the
+///   `--userns keep-id` pair.
 #[test]
-fn podman_delta_is_only_userns_and_binary() {
-    let (spec, _, _, _) = default_fixture();
-    let docker = render(&spec, SandboxEngine::Docker);
-    let podman = render(&spec, SandboxEngine::Podman);
+fn per_engine_mode_deltas() {
+    let (spec_docker_rootful, _, _, _, _) = default_fixture();
+    let (spec_docker_rootless, _, _, _, _) =
+        fixture_with("run-001", EngineMode::Rootless, GitShadowKind::File, |_| {});
+    let (spec_podman_rootful, _, _, _, _) =
+        fixture_with("run-001", EngineMode::Rootful, GitShadowKind::File, |sb| {
+            sb.engine = SandboxEngine::Podman
+        });
+    let (spec_podman_rootless, _, _, _, _) =
+        fixture_with("run-001", EngineMode::Rootless, GitShadowKind::File, |sb| {
+            sb.engine = SandboxEngine::Podman
+        });
 
-    assert_eq!(
-        docker.len() + 2,
-        podman.len(),
-        "podman adds exactly 2 tokens"
+    let docker_rootful = render(&spec_docker_rootful, SandboxEngine::Docker);
+    let docker_rootless = render(&spec_docker_rootless, SandboxEngine::Docker);
+    let podman_rootful = render(&spec_podman_rootful, SandboxEngine::Podman);
+    let podman_rootless = render(&spec_podman_rootless, SandboxEngine::Podman);
+
+    // Rootful across engines: binary name only.
+    let mut podman_rootful_expected = docker_rootful.clone();
+    podman_rootful_expected[0] = "podman".to_string();
+    assert_eq!(podman_rootful, podman_rootful_expected);
+
+    // Docker rootless = Docker rootful minus the --user pair.
+    let user_pos = docker_rootful
+        .iter()
+        .position(|a| a == "--user")
+        .expect("--user");
+    let mut docker_rootless_expected = docker_rootful.clone();
+    docker_rootless_expected.drain(user_pos..user_pos + 2);
+    assert_eq!(docker_rootless, docker_rootless_expected);
+
+    // Podman rootless = Podman rootful minus the --user pair, plus
+    // the --userns keep-id pair at the renderer's structural
+    // position — after `--read-only`, before `--network`.
+    let mut podman_rootless_expected = podman_rootful.clone();
+    let user_pos = podman_rootless_expected
+        .iter()
+        .position(|a| a == "--user")
+        .expect("--user");
+    podman_rootless_expected.drain(user_pos..user_pos + 2);
+    let userns_pos = podman_rootless_expected
+        .iter()
+        .position(|a| a == "--read-only")
+        .expect("--read-only")
+        + 1;
+    podman_rootless_expected.splice(
+        userns_pos..userns_pos,
+        ["--userns".to_string(), "keep-id".to_string()],
     );
-    let mut podman_expected = docker.clone();
-    podman_expected[0] = "podman".to_string();
-    // Insert the userns pair immediately after --read-only and before
-    // --network (the documented delta position).
-    podman_expected.splice(
-        9..9,
-        [
-            "--userns".to_string(),
-            "keep-id:uid=1000,gid=1000".to_string(),
-        ],
-    );
-    assert_eq!(podman, podman_expected);
+    assert_eq!(podman_rootless, podman_rootless_expected);
 }
 
 /// Determinism contract: two invocations on the same inputs are
 /// byte-identical.
 #[test]
 fn render_is_deterministic() {
-    let (spec, _, _, _) = default_fixture();
+    let (spec, _, _, _, _) = default_fixture();
     assert_eq!(
         render(&spec, SandboxEngine::Docker),
         render(&spec, SandboxEngine::Docker)
@@ -215,49 +271,84 @@ fn render_is_deterministic() {
 
 #[test]
 fn renders_identity() {
-    let (spec, _, _, _) = default_fixture();
+    let (spec, _, _, _, _) = default_fixture();
     let argv = render(&spec, SandboxEngine::Docker);
     assert!(argv.iter().any(|a| a == "--user"));
-    assert!(argv.iter().any(|a| a == "1000:1000"));
+    assert!(argv.iter().any(|a| a == "4242:4242"));
 }
 
 #[test]
 fn renders_workspace_mount() {
-    let (spec, worktree, _, _) = default_fixture();
+    let (spec, worktree, _, _, _) = default_fixture();
     let argv = render(&spec, SandboxEngine::Docker);
     assert!(argv.iter().any(|a| a == "-v"));
     assert!(argv
         .iter()
         .any(|a| a == &format!("{}:/workspace:rw", worktree.display())));
-    // Exactly one workspace mount and one output mount — the
-    // double-RW bug is gone.
-    let mounts: Vec<&String> = argv
-        .iter()
-        .filter(|a| a.contains("/workspace:") || a.contains("/output:"))
-        .collect();
-    assert_eq!(mounts.len(), 2, "exactly two mounts, got: {mounts:?}");
 }
 
 #[test]
 fn renders_output_mount() {
-    let (spec, _, output, _) = default_fixture();
+    let (spec, _, output, _, _) = default_fixture();
     let argv = render(&spec, SandboxEngine::Docker);
     assert!(argv
         .iter()
         .any(|a| a == &format!("{}:/output:rw", output.display())));
 }
 
+/// The `.git` shadow is rendered read-only AFTER the `/workspace`
+/// bind (mount precedence: the nested bind wins by target depth; the
+/// deterministic argv order matches the depth rule).
+#[test]
+fn renders_git_shadow_after_workspace() {
+    let (spec, _, _, shadow, _) = default_fixture();
+    let argv = render(&spec, SandboxEngine::Docker);
+    let ws_pos = argv
+        .iter()
+        .position(|a| a.ends_with(":/workspace:rw"))
+        .expect("workspace mount");
+    let shadow_pos = argv
+        .iter()
+        .position(|a| a == &format!("{}:/workspace/.git:ro", shadow.display()))
+        .expect("shadow mount");
+    assert!(
+        shadow_pos > ws_pos,
+        "shadow must be emitted after the workspace bind"
+    );
+}
+
 #[test]
 fn renders_tmpfs() {
-    let (spec, _, _, _) = default_fixture();
+    let (spec, _, _, _, _) = default_fixture();
     let argv = render(&spec, SandboxEngine::Docker);
     assert!(argv.iter().any(|a| a == "--tmpfs"));
     assert!(argv.iter().any(|a| a == "/tmp:size=256m"));
+    assert!(argv.iter().any(|a| a == "/dev/shm:size=64m"));
+}
+
+/// `--shm-size` is gone; `/dev/shm` is declared via the dual tmpfs
+/// list (design D7).
+#[test]
+fn shm_size_is_not_emitted() {
+    let (spec, _, _, _, _) = default_fixture();
+    let argv = render(&spec, SandboxEngine::Docker);
+    assert!(
+        !argv.iter().any(|a| a == "--shm-size"),
+        "--shm-size must not be emitted, got: {argv:?}"
+    );
+    assert!(
+        !argv.iter().any(|a| a == "64m"),
+        "the standalone shm-size value must be gone, got: {argv:?}"
+    );
+    assert!(
+        argv.iter().any(|a| a == "/dev/shm:size=64m"),
+        "/dev/shm must be declared as --tmpfs with the configured bound"
+    );
 }
 
 #[test]
 fn renders_environment() {
-    let (spec, _, _, _) = default_fixture();
+    let (spec, _, _, _, _) = default_fixture();
     let argv = render(&spec, SandboxEngine::Docker);
     assert!(argv.iter().any(|a| a == "-e"));
     assert!(argv.iter().any(|a| a == "CADUCEUS_RUN_ID=run-001"));
@@ -266,7 +357,7 @@ fn renders_environment() {
 
 #[test]
 fn renders_env_files_in_slice_order() {
-    let (spec, _, _, _) = default_fixture();
+    let (spec, _, _, _, _) = default_fixture();
     let env_files = vec![
         PathBuf::from("/tmp/secret-1.env"),
         PathBuf::from("/tmp/secret-2.env"),
@@ -289,13 +380,13 @@ fn renders_env_files_in_slice_order() {
 
 #[test]
 fn renders_labels_in_fixed_order() {
-    let (spec, _, _, _) = default_fixture();
+    let (spec, _, _, _, _) = default_fixture();
     let argv = render(&spec, SandboxEngine::Docker);
     let labels: Vec<&String> = argv.iter().filter(|a| a.starts_with("caduceus.")).collect();
     assert_eq!(
         labels,
         vec![
-            &"caduceus.daemon_id=state".to_string(),
+            &"caduceus.daemon_id=test-daemon".to_string(),
             &"caduceus.run_id=run-001".to_string(),
             &"caduceus.issue_id=owner/repo#1".to_string(),
         ]
@@ -304,7 +395,7 @@ fn renders_labels_in_fixed_order() {
 
 #[test]
 fn renders_resources() {
-    let (spec, _, _, _) = default_fixture();
+    let (spec, _, _, _, _) = default_fixture();
     let argv = render(&spec, SandboxEngine::Docker);
     assert!(argv.iter().any(|a| a == "--cpus"));
     assert!(argv.iter().any(|a| a == "2"));
@@ -312,13 +403,13 @@ fn renders_resources() {
     assert!(argv.iter().any(|a| a == "2048m"));
     assert!(argv.iter().any(|a| a == "--pids-limit"));
     assert!(argv.iter().any(|a| a == "256"));
-    assert!(argv.iter().any(|a| a == "--shm-size"));
-    assert!(argv.iter().any(|a| a == "64m"));
+    assert!(argv.iter().any(|a| a == "--tmpfs"));
+    assert!(argv.iter().any(|a| a == "/dev/shm:size=64m"));
 }
 
 #[test]
 fn renders_network_none_by_default() {
-    let (spec, _, _, _) = default_fixture();
+    let (spec, _, _, _, _) = default_fixture();
     let argv = render(&spec, SandboxEngine::Docker);
     let pos = argv
         .iter()
@@ -329,9 +420,10 @@ fn renders_network_none_by_default() {
 
 #[test]
 fn renders_network_host_for_unrestricted() {
-    let (spec, _, _, _) = fixture("run-001", |sb| {
-        sb.network = SandboxNetwork::Unrestricted;
-    });
+    let (spec, _, _, _, _) =
+        fixture_with("run-001", EngineMode::Rootful, GitShadowKind::File, |sb| {
+            sb.network = SandboxNetwork::Unrestricted;
+        });
     let argv = render(&spec, SandboxEngine::Docker);
     let pos = argv
         .iter()
@@ -342,7 +434,7 @@ fn renders_network_host_for_unrestricted() {
 
 #[test]
 fn renders_entrypoint_image_and_worker_args() {
-    let (spec, _, _, image) = default_fixture();
+    let (spec, _, _, _, image) = default_fixture();
     let argv = render(&spec, SandboxEngine::Docker);
     let entrypoint_pos = argv
         .iter()
@@ -363,6 +455,44 @@ fn renders_entrypoint_image_and_worker_args() {
         !argv[..image_pos].iter().any(|a| a == "bridge.py"),
         "worker args must trail the image"
     );
+}
+
+/// An absent host `.git` renders no shadow mount — the rest of the
+/// argv is unchanged.
+#[test]
+fn absent_git_renders_no_shadow() {
+    let (spec_with, _, _, _, _) = default_fixture();
+    let (spec_absent, _, _, _, _) = fixture_with(
+        "run-001",
+        EngineMode::Rootful,
+        GitShadowKind::Absent,
+        |_| {},
+    );
+    let with = render(&spec_with, SandboxEngine::Docker);
+    let absent = render(&spec_absent, SandboxEngine::Docker);
+    let shadow_tokens: Vec<&String> = with
+        .iter()
+        .filter(|a| a.ends_with(":/workspace/.git:ro"))
+        .collect();
+    assert_eq!(shadow_tokens.len(), 1);
+    // Drop the shadow mount's trailing `-v` flag token as well as the
+    // path token, so the expected argv has no dangling `-v`.
+    let mut drop_flags = vec![false; with.len()];
+    for (i, a) in with.iter().enumerate() {
+        if a.ends_with(":/workspace/.git:ro") {
+            assert_eq!(with[i - 1], "-v", "shadow mount is `-v <spec>`");
+            drop_flags[i - 1] = true;
+            drop_flags[i] = true;
+        }
+    }
+    let expected_without_shadow: Vec<String> = with
+        .iter()
+        .zip(&drop_flags)
+        .filter(|(_, drop)| !**drop)
+        .map(|(a, _)| a.clone())
+        .collect();
+    assert_eq!(absent, expected_without_shadow);
+    assert!(spec_absent.git_shadow().is_none());
 }
 
 // ---------------------------------------------------------------------------

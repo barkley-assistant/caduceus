@@ -43,7 +43,7 @@ hex = "0.4"
 filetime = "0.2"
 walkdir = "2"
 libc = "0.2"
-nix = { version = "0.29", default-features = false, features = ["feature", "fs", "process", "signal", "time"] }
+nix = { version = "0.29", default-features = false, features = ["feature", "fs", "process", "signal", "time", "user"] }
 rusqlite = { version = "0.40", default-features = false, features = ["bundled"] }
 uuid = { version = "1", features = ["v4"] }
 tar = "0.4.46"
@@ -162,6 +162,14 @@ path = "tests/executor/sandbox_renderer_test.rs"
 [[test]]
 name = "sandbox_resolve_test"
 path = "tests/executor/sandbox_resolve_test.rs"
+
+[[test]]
+name = "identity_resolution_test"
+path = "tests/executor/identity_resolution_test.rs"
+
+[[test]]
+name = "oci_isolation_live_test"
+path = "tests/executor/oci_isolation_live_test.rs"
 
 [[test]]
 name = "secret_grant_test"

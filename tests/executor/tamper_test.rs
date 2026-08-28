@@ -5,14 +5,13 @@
 //! use the typed pipeline (`resolve` → `render`) plus the `redact()`
 //! primitive from `infra::logging`.
 
-use std::path::PathBuf;
-
 use caduceus::executor::sandbox_renderer::render;
-use caduceus::executor::sandbox_spec::{resolve, RuntimeFacts, SandboxEngine, SandboxSpec};
-use caduceus::github::issue::IssueKey;
+use caduceus::executor::sandbox_spec::{resolve, SandboxEngine, SandboxSpec};
 use caduceus::infra::config::Config;
 use caduceus::infra::error::CaduceusError;
 use caduceus::infra::logging;
+
+mod support;
 
 fn default_cfg() -> Config {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -21,16 +20,7 @@ fn default_cfg() -> Config {
 
 fn resolve_from(cfg: &Config, run_id: &str) -> SandboxSpec {
     let worktree = cfg.workdir_base.join("owner").join("repo").join(run_id);
-    let output = cfg.workdir_base.join("owner").join("repo").join("result");
-    let runtime = RuntimeFacts {
-        run_id: run_id.to_string(),
-        issue: IssueKey::parse("owner/repo#1").expect("valid key"),
-        worker_command: vec!["python3".to_string(), "bridge.py".to_string()],
-        worktree,
-        output_dir: output,
-        daemon_id: "test-daemon".to_string(),
-        workdir_base: cfg.workdir_base.clone(),
-    };
+    let runtime = support::runtime_facts(cfg, run_id, &worktree);
     resolve(cfg.sandbox(), &runtime).expect("must resolve")
 }
 
@@ -43,15 +33,11 @@ fn tamper_modified_files() {
     // host-path allow-list: a worktree outside `workdir_base`
     // triggers OciUndeclaredMount.
     let cfg = default_cfg();
-    let runtime = RuntimeFacts {
-        run_id: "tamper-modified-files".to_string(),
-        issue: IssueKey::parse("owner/repo#1").expect("valid key"),
-        worker_command: vec!["python3".to_string(), "bridge.py".to_string()],
-        worktree: PathBuf::from("/tmp/worktree"),
-        output_dir: PathBuf::from("/tmp/result"),
-        daemon_id: "test-daemon".to_string(),
-        workdir_base: cfg.workdir_base.clone(),
-    };
+    let runtime = support::runtime_facts(
+        &cfg,
+        "tamper-modified-files",
+        std::path::Path::new("/tmp/worktree"),
+    );
     let result = resolve(cfg.sandbox(), &runtime);
     match result {
         Err(CaduceusError::OciUndeclaredMount { path }) => {
@@ -123,19 +109,25 @@ fn tamper_secret_in_result() {
     }
 }
 
-// tamper_commit_metadata — argv does not contain .git volume mount
+// tamper_commit_metadata — argv's only .git reference is the
+// read-only daemon-owned shadow
 
 #[test]
 fn tamper_commit_metadata() {
-    // The git-less worker contract ensures that the .git directory is
-    // never mounted as a writable volume. The typed spec has no field
-    // for extra mounts, so the rendered argv cannot contain .git.
+    // The .git pointer is shadowed by a daemon-owned read-only mount;
+    // the real gitdir is unreachable and .git is never writable.
     let cfg = default_cfg();
     let spec = resolve_from(&cfg, "tamper-commit-metadata");
     let argv = render(&spec, SandboxEngine::Docker);
     let git_refs: Vec<&String> = argv.iter().filter(|a| a.contains(".git")).collect();
+    assert_eq!(
+        git_refs.len(),
+        1,
+        "exactly the shadow mount may reference .git, got: {git_refs:?}"
+    );
     assert!(
-        git_refs.is_empty(),
-        "unexpected .git reference in argv: {git_refs:?}"
+        git_refs[0].ends_with(":/workspace/.git:ro"),
+        "the .git reference must be the read-only shadow, got: {:?}",
+        git_refs[0]
     );
 }

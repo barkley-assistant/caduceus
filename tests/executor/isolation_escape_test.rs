@@ -13,22 +13,14 @@
 //! event (MountBoundaryHeld, GitLessBoundaryHeld, etc.).
 
 use caduceus::executor::sandbox_renderer::render;
-use caduceus::executor::sandbox_spec::{resolve, RuntimeFacts, SandboxEngine, SandboxSpec};
-use caduceus::github::issue::IssueKey;
+use caduceus::executor::sandbox_spec::{resolve, SandboxEngine, SandboxSpec};
 use caduceus::infra::config::Config;
+
+mod support;
 
 fn resolve_from(cfg: &Config) -> SandboxSpec {
     let worktree = cfg.workdir_base.join("owner").join("repo").join("run-001");
-    let output = cfg.workdir_base.join("owner").join("repo").join("result");
-    let runtime = RuntimeFacts {
-        run_id: "run-001".to_string(),
-        issue: IssueKey::parse("owner/repo#1").expect("valid key"),
-        worker_command: vec!["python3".to_string(), "bridge.py".to_string()],
-        worktree,
-        output_dir: output,
-        daemon_id: "test-daemon".to_string(),
-        workdir_base: cfg.workdir_base.clone(),
-    };
+    let runtime = support::runtime_facts(cfg, "run-001", &worktree);
     resolve(cfg.sandbox(), &runtime).expect("must resolve")
 }
 
@@ -64,22 +56,38 @@ fn escape_worktree_mount() {
     );
 }
 
-// escape_git_metadata — reading /workspace/.git/HEAD returns EROFS + audit
+// escape_git_metadata — reading /workspace/.git reaches only the
+// daemon-owned read-only shadow, never the real gitdir
 
 #[test]
 #[cfg_attr(not(env = "CADUCEUS_RUN_ISOLATION_TESTS"), ignore)]
 fn escape_git_metadata() {
-    // The git-less worker contract ensures that .git is never mounted
-    // at all. When CADUCEUS_RUN_ISOLATION_TESTS is set, run:
+    // The gitdir pointer file at /workspace/.git is shadowed by a
+    // daemon-owned read-only mount; the real main-repo gitdir path is
+    // unreachable and the shadow is not writable. When
+    // CADUCEUS_RUN_ISOLATION_TESTS is set, run:
     //  docker run --read-only -v /tmp/worktree:/workspace:rw \
-    //  caduceus-worker sh -c 'cat /workspace/.git/HEAD'
-    // Expected: cat: /workspace/.git/HEAD: No such file or directory
-    // Daemon audit: "GitLessBoundaryHeld".
+    //    -v /state/oci-runs/run/git-shadow:/workspace/.git:ro \
+    //  caduceus-worker sh -c 'cat /workspace/.git'
+    // Expected: only the sentinel shadow content (never the real
+    // gitdir path), and writes to /workspace/.git fail.
+    // Daemon audit: "GitShadowHeld".
     let argv = rendered_argv();
-    let has_git_mount = argv.iter().any(|a| a.contains(".git"));
+    let shadow_mounts: Vec<&String> = argv
+        .iter()
+        .filter(|a| a.ends_with(":/workspace/.git:ro"))
+        .collect();
+    assert_eq!(
+        shadow_mounts.len(),
+        1,
+        "exactly one read-only shadow mount for /workspace/.git: {argv:?}"
+    );
+    // No writable .git mount anywhere.
     assert!(
-        !has_git_mount,
-        ".git must not be mounted; git-less boundary enforced"
+        !argv
+            .iter()
+            .any(|a| a.contains(".git") && a.ends_with(":rw")),
+        ".git must never be mounted writable: {argv:?}"
     );
 }
 

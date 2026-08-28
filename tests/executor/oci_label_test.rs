@@ -8,10 +8,12 @@
 use std::path::{Path, PathBuf};
 
 use caduceus::executor::sandbox_renderer::render;
-use caduceus::executor::sandbox_spec::{resolve, RuntimeFacts, SandboxEngine, SandboxSpec};
+use caduceus::executor::sandbox_spec::{resolve, SandboxEngine, SandboxSpec};
 use caduceus::executor::ExecutorSpec;
 use caduceus::github::issue::IssueKey;
 use caduceus::infra::config::Config;
+
+mod support;
 
 fn test_cfg() -> Config {
     Config::test_defaults(Path::new("/tmp"))
@@ -19,16 +21,7 @@ fn test_cfg() -> Config {
 
 fn resolve_from(cfg: &Config, run_id: &str) -> SandboxSpec {
     let worktree = cfg.workdir_base.join("owner").join("repo").join(run_id);
-    let output = cfg.workdir_base.join("owner").join("repo").join("result");
-    let runtime = RuntimeFacts {
-        run_id: run_id.to_string(),
-        issue: IssueKey::parse("owner/repo#1").expect("valid key"),
-        worker_command: vec!["python3".to_string(), "bridge.py".to_string()],
-        worktree,
-        output_dir: output,
-        daemon_id: "state".to_string(),
-        workdir_base: cfg.workdir_base.clone(),
-    };
+    let runtime = support::runtime_facts(cfg, run_id, &worktree);
     resolve(cfg.sandbox(), &runtime).expect("must resolve")
 }
 

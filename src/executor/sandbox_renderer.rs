@@ -42,34 +42,32 @@ pub fn render_with_env_files(
     argv.push(engine.binary_name().to_string());
     argv.push("create".to_string());
 
-    // --- Fixed security controls (from FixedSecurityPolicy's existence).
-    argv.push("--user".to_string());
-    argv.push(format!("{}:{}", spec.identity().uid, spec.identity().gid));
+    // --- Identity, encoded entirely in the spec by `resolve`'s
+    //     (engine, engine_mode) matrix. Rootful modes emit
+    //     `--user <owner-uid>:<owner-gid>`; rootless modes emit no
+    //     `--user` (the engine's user namespace already maps the
+    //     in-container identity to the unprivileged engine user, so
+    //     no host-root privilege is granted). There is no hard-coded
+    //     identity anywhere in the renderer.
+    let identity = spec.identity();
+    if identity.emit_user {
+        argv.push("--user".to_string());
+        argv.push(format!("{}:{}", identity.uid, identity.gid));
+    }
     argv.push("--cap-drop".to_string());
     argv.push("ALL".to_string());
     argv.push("--security-opt".to_string());
     argv.push("no-new-privileges".to_string());
     argv.push("--read-only".to_string());
 
-    // --- Per-engine deltas, encoded strictly inside the match so the
-    // compiler forces both branches.
-    match engine {
-        SandboxEngine::Docker => {
-            // Default namespace: `--user 1000:1000` is exact, no
-            // userns flag needed.
-        }
-        SandboxEngine::Podman => {
-            // Rootless Podman (>= 4.3 mapping syntax): map container
-            // uid/gid 1000 to the invoking host user so `--user
-            // 1000:1000` remains meaningful. Under rootful podman the
-            // mapping is identity, so one flag is correct in both modes.
-            argv.push("--userns".to_string());
-            argv.push(format!(
-                "keep-id:uid={},gid={}",
-                spec.identity().uid,
-                spec.identity().gid
-            ));
-        }
+    // --- User namespace, also encoded in the spec: the only value
+    //     ever stored is plain `keep-id` (Podman rootless), so the
+    //     in-container identity equals the invoking user — the daemon
+    //     user, which is the worktree owner. No uid=/gid= mapping is
+    //     ever emitted.
+    if let Some(userns) = identity.userns {
+        argv.push("--userns".to_string());
+        argv.push(userns.to_string());
     }
 
     // --- Network mode.
@@ -86,17 +84,19 @@ pub fn render_with_env_files(
     argv.push(format!("{}m", spec.resources().memory_mb));
     argv.push("--pids-limit".to_string());
     argv.push(format!("{}", spec.resources().pids));
-    argv.push("--shm-size".to_string());
-    argv.push(format!("{}m", spec.resources().shm_mb));
+    // `/dev/shm` is declared via the dual tmpfs list from the spec
+    // (same bounded-size mechanism as `/tmp`); the standalone
+    // `--shm-size` flag was removed as redundant.
 
     // --- Container name.
     argv.push("--name".to_string());
     argv.push(spec.name().to_string());
 
-    // --- Mounts: exactly one workspace mount and one output mount.
-    // The container targets are the fixed canonical constants the
-    // resolver chose (`/workspace`, `/output`); the renderer formats
-    // them from the spec without inventing any path.
+    // --- Mounts: the two writable host-backed surfaces (`/workspace`,
+    //     `/output`) plus the optional read-only `.git` shadow at
+    //     `/workspace/.git`. The container targets are the fixed
+    //     canonical constants the resolver chose; the renderer
+    //     formats them from the spec without inventing any path.
     argv.push("-v".to_string());
     argv.push(format!(
         "{}:/workspace:{}",
@@ -109,6 +109,19 @@ pub fn render_with_env_files(
         spec.output_mount().host_path.display(),
         mode(spec.output_mount().read_only)
     ));
+    // The shadow is emitted after the `/workspace` bind. Docker and
+    // Podman (crun) order mounts by target depth and apply a bind
+    // whose target is nested under another bind over the parent bind
+    // — `/workspace/.git` wins over `/workspace` regardless of argv
+    // order; the deterministic ordering matches that depth rule.
+    if let Some(shadow) = spec.git_shadow() {
+        argv.push("-v".to_string());
+        argv.push(format!(
+            "{}:/workspace/.git:{}",
+            shadow.host_path.display(),
+            mode(shadow.read_only)
+        ));
+    }
 
     // --- Tmpfs mounts (in spec order).
     for mount in spec.tmpfs() {

@@ -9,9 +9,10 @@
 //! stays out of secret handling unless the caller passes env files.
 
 use caduceus::executor::sandbox_renderer::render;
-use caduceus::executor::sandbox_spec::{resolve, RuntimeFacts, SandboxEngine, SandboxSpec};
-use caduceus::github::issue::IssueKey;
+use caduceus::executor::sandbox_spec::{resolve, SandboxEngine, SandboxSpec};
 use caduceus::infra::config::Config;
+
+mod support;
 
 fn default_cfg() -> Config {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -20,16 +21,7 @@ fn default_cfg() -> Config {
 
 fn resolve_from(cfg: &Config) -> SandboxSpec {
     let worktree = cfg.workdir_base.join("owner").join("repo").join("run-001");
-    let output = cfg.workdir_base.join("owner").join("repo").join("result");
-    let runtime = RuntimeFacts {
-        run_id: "run-001".to_string(),
-        issue: IssueKey::parse("owner/repo#1").expect("valid key"),
-        worker_command: vec!["python3".to_string(), "bridge.py".to_string()],
-        worktree,
-        output_dir: output,
-        daemon_id: "test-daemon".to_string(),
-        workdir_base: cfg.workdir_base.clone(),
-    };
+    let runtime = support::runtime_facts(cfg, "run-001", &worktree);
     resolve(cfg.sandbox(), &runtime).expect("must resolve")
 }
 

@@ -703,6 +703,136 @@ def _doctor_check_hermes_home() -> _DoctorFinding:
     )
 
 
+def _doctor_check_oci_identity() -> _DoctorFinding:
+    """Check that the OCI engine identity configuration is supported (issue #244).
+
+    Mirrors the daemon's pre-flight probe decision (the Rust-side
+    ``engine_probe``): Docker's ``{{.SecurityOptions}}`` or Podman's
+    ``{{.Host.Security.Rootless}}`` is fetched with a bounded, argument-array
+    subprocess call and parsed with the same rules the daemon applies before
+    any container start. No container is ever created and no engine state is
+    mutated — this is the read-only ``info`` surface only.
+
+    Reports ``host-capability-unavailable`` (doctor exit code 2) when the
+    daemon would refuse the run with ``OciIdentityUnsupported``:
+
+    - an engine binary is installed but its ``info`` probe fails or times
+      out (engine mode cannot be determined — fail-closed);
+    - the engine reports a rootful mode with ``userns-remap`` (the canonical
+      unsupported namespace configuration).
+
+    When neither engine binary is installed the check is not applicable (the
+    daemon runs trusted-host dispatch) and reports ``ok``.
+    """
+    category = "host-capability-unavailable"
+    probes = [
+        ("docker", ["info", "--format", "{{.SecurityOptions}}"]),
+        ("podman", ["info", "--format", "{{.Host.Security.Rootless}}"]),
+    ]
+    for binary, args in probes:
+        try:
+            proc = subprocess.run(
+                [binary] + args,
+                capture_output=True,
+                timeout=SUBPROCESS_TIMEOUT_SECONDS,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            # Binary missing or engine hung — try the other engine before
+            # deciding.
+            continue
+        if proc.returncode != 0:
+            # Engine installed but not usable/reachable — try the other.
+            continue
+        stdout = proc.stdout.decode("utf-8", "replace").strip()
+        if binary == "podman":
+            if stdout == "true":
+                return _DoctorFinding(
+                    category=category,
+                    status="ok",
+                    detail="Podman rootless detected; keep-id identity is supported",
+                    next_action="",
+                    internal_detail="podman info Host.Security.Rootless = true",
+                )
+            if stdout == "false":
+                return _DoctorFinding(
+                    category=category,
+                    status="ok",
+                    detail="Podman rootful detected; owner-uid identity is supported",
+                    next_action="",
+                    internal_detail="podman info Host.Security.Rootless = false",
+                )
+            return _DoctorFinding(
+                category=category,
+                status="fail",
+                detail="Podman installed but its rootful/rootless mode could not be determined",
+                next_action="verify the Podman engine is healthy (`podman info`), then re-run doctor",
+                internal_detail=f"unparseable podman info output: {stdout!r}",
+            )
+        # Docker
+        if "name=rootless" in stdout:
+            return _DoctorFinding(
+                category=category,
+                status="ok",
+                detail="Docker rootless detected; rootless user-namespace identity is supported",
+                next_action="",
+                internal_detail=f"docker info SecurityOptions: {stdout!r}",
+            )
+        if "name=userns-remap" in stdout:
+            return _DoctorFinding(
+                category=category,
+                status="fail",
+                detail="rootful Docker with userns-remap is unsupported and will be refused before container start",
+                next_action="disable userns-remap in the Docker daemon configuration, or switch to rootless mode",
+                internal_detail=f"docker info SecurityOptions: {stdout!r}",
+            )
+        if stdout == "[]" or "name=" in stdout:
+            return _DoctorFinding(
+                category=category,
+                status="ok",
+                detail="Docker rootful detected; owner-uid identity is supported",
+                next_action="",
+                internal_detail=f"docker info SecurityOptions: {stdout!r}",
+            )
+        return _DoctorFinding(
+            category=category,
+            status="fail",
+            detail="Docker installed but its rootful/rootless mode could not be determined",
+            next_action="verify the Docker engine is healthy (`docker info`), then re-run doctor",
+            internal_detail=f"unparseable docker info output: {stdout!r}",
+        )
+    # Neither engine answered. Without any OCI engine installed the daemon
+    # runs trusted-host dispatch and the identity check is not applicable;
+    # an installed-but-broken engine is a fail (fail-closed probe outcome).
+    docker_present = any(_binary_on_path(b) for b, _ in probes)
+    if not docker_present:
+        return _DoctorFinding(
+            category=category,
+            status="ok",
+            detail="no OCI engine installed; OCI identity check not applicable (trusted-host dispatch)",
+            next_action="",
+            internal_detail="",
+        )
+    return _DoctorFinding(
+        category=category,
+        status="fail",
+        detail="OCI engine installed but its info probe failed; engine mode cannot be determined",
+        next_action="verify the Docker/Podman engine is reachable, then re-run doctor",
+        internal_detail="both docker info and podman info probes failed or timed out",
+    )
+
+
+def _binary_on_path(name: str) -> bool:
+    """True when ``name`` resolves on PATH (pure stdlib, no subprocess)."""
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        candidate = Path(directory) / name
+        try:
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def _doctor_check_worktree_lock(ctx: Any) -> _DoctorFinding:
     """Detect leftover .worktrees/.lock files via non-blocking flock probe.
 
@@ -816,6 +946,7 @@ def _cli_doctor(verbose: bool = False) -> int:
         ("Cron Capability", _doctor_check_cron_capability(ctx=None)),
         ("Worktree Lock", _doctor_check_worktree_lock(ctx=None)),
         ("Hermes Home", _doctor_check_hermes_home()),
+        ("OCI Identity", _doctor_check_oci_identity()),
     ]
 
     effective_verbose = verbose
