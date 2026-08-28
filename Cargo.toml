@@ -572,6 +572,10 @@ name = "release_canary"
 path = "tests/integration/release_canary_test.rs"
 
 [[test]]
+name = "canary_gate_test"
+path = "tests/integration/canary_gate_test.rs"
+
+[[test]]
 name = "integration_test"
 path = "tests/integration/integration_test.rs"
 

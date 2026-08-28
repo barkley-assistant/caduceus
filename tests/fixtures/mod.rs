@@ -18,6 +18,8 @@
 #[cfg(test)]
 mod crash_point;
 #[cfg(test)]
+mod doctor_report;
+#[cfg(test)]
 mod git_daemon;
 #[cfg(test)]
 mod git_origin;
@@ -31,6 +33,9 @@ mod release_binary;
 #[cfg(test)]
 #[allow(unused_imports)]
 pub use crash_point::CrashPoint;
+#[cfg(test)]
+#[allow(unused_imports)]
+pub use doctor_report::{classify_doctor, DoctorVerdict};
 #[cfg(test)]
 #[allow(unused_imports)]
 pub use git_daemon::{
