@@ -221,16 +221,22 @@ fn per_engine_mode_deltas() {
     docker_rootless_expected.drain(user_pos..user_pos + 2);
     assert_eq!(docker_rootless, docker_rootless_expected);
 
-    // Podman rootless = Podman rootful minus --user pair, plus the
-    // --userns keep-id pair.
+    // Podman rootless = Podman rootful minus the --user pair, plus
+    // the --userns keep-id pair at the renderer's structural
+    // position — after `--read-only`, before `--network`.
     let mut podman_rootless_expected = podman_rootful.clone();
     let user_pos = podman_rootless_expected
         .iter()
         .position(|a| a == "--user")
         .expect("--user");
     podman_rootless_expected.drain(user_pos..user_pos + 2);
+    let userns_pos = podman_rootless_expected
+        .iter()
+        .position(|a| a == "--read-only")
+        .expect("--read-only")
+        + 1;
     podman_rootless_expected.splice(
-        user_pos..user_pos,
+        userns_pos..userns_pos,
         ["--userns".to_string(), "keep-id".to_string()],
     );
     assert_eq!(podman_rootless, podman_rootless_expected);
@@ -469,10 +475,21 @@ fn absent_git_renders_no_shadow() {
         .filter(|a| a.ends_with(":/workspace/.git:ro"))
         .collect();
     assert_eq!(shadow_tokens.len(), 1);
+    // Drop the shadow mount's trailing `-v` flag token as well as the
+    // path token, so the expected argv has no dangling `-v`.
+    let mut drop_flags = vec![false; with.len()];
+    for (i, a) in with.iter().enumerate() {
+        if a.ends_with(":/workspace/.git:ro") {
+            assert_eq!(with[i - 1], "-v", "shadow mount is `-v <spec>`");
+            drop_flags[i - 1] = true;
+            drop_flags[i] = true;
+        }
+    }
     let expected_without_shadow: Vec<String> = with
         .iter()
-        .filter(|a| !a.ends_with(":/workspace/.git:ro"))
-        .cloned()
+        .zip(&drop_flags)
+        .filter(|(_, drop)| !**drop)
+        .map(|(a, _)| a.clone())
         .collect();
     assert_eq!(absent, expected_without_shadow);
     assert!(spec_absent.git_shadow().is_none());
