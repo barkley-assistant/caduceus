@@ -25,6 +25,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::github::issue::IssueKey;
 use crate::infra::config::Config;
+use crate::infra::disk::DiskPressureGuard;
 use crate::infra::error::CaduceusResult;
 use crate::worker::supervisor::SupervisorOutcome;
 
@@ -116,10 +117,13 @@ pub trait Executor: Send + Sync {
 /// Reads `cfg.executor_mode` and dispatches to the matching concrete
 /// implementation. The factory is the single entry point used by
 /// `Services::production`; tests inject their own `Arc<dyn Executor>`
-/// via `Services::for_tests`.
-pub fn executor_for_config(cfg: &Config) -> Arc<dyn Executor> {
+/// via `Services::for_tests`. The shared [`DiskPressureGuard`] is
+/// wired into the OCI executor (dispatch refusal + in-flight
+/// termination on breach, issue #245); TrustedHost ignores it —
+/// trusted-host work is structurally excluded from the watchdog.
+pub fn executor_for_config(cfg: &Config, disk: Arc<DiskPressureGuard>) -> Arc<dyn Executor> {
     match cfg.executor_mode {
         ExecutorKind::TrustedHost => Arc::new(TrustedHostExecutor::new(cfg.clone())),
-        ExecutorKind::Oci => Arc::new(OciExecutor::new(cfg.clone())),
+        ExecutorKind::Oci => Arc::new(OciExecutor::new(cfg.clone(), disk)),
     }
 }

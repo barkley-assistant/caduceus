@@ -10,8 +10,8 @@
 use std::path::{Path, PathBuf};
 
 use caduceus::executor::sandbox_spec::{
-    resolve, select_git_shadow, EngineMode, GitShadowKind, MountSpec, NetworkMode,
-    ResolvedIdentity, RuntimeFacts, SandboxSpec,
+    is_engine_socket_path, resolve, select_git_shadow, validate_no_host_escalation, EngineMode,
+    GitShadowKind, MountSpec, NetworkMode, ResolvedIdentity, RuntimeFacts, SandboxSpec,
 };
 use caduceus::github::issue::IssueKey;
 use caduceus::infra::config::{Config, OciPullPolicy};
@@ -399,10 +399,9 @@ fn resolution_yields_fully_populated_spec() {
     assert!(!spec.environment().is_empty());
     assert!(!spec.labels().is_empty());
     assert!(spec.resources().memory_mb > 0);
-    assert!(matches!(
-        spec.network(),
-        NetworkMode::None | NetworkMode::Unrestricted
-    ));
+    // Host networking was removed (breaking, issue #245): `None` is
+    // the only variant, so every resolved spec is network-isolated.
+    assert!(matches!(spec.network(), NetworkMode::None));
     let _ = spec.security();
 }
 
@@ -577,4 +576,87 @@ fn engine_mode_fact_flows_into_identity() {
     assert_eq!(spec.identity().gid, 4242);
     assert!(!spec.identity().emit_user, "rootless emits no --user");
     assert_eq!(spec.identity().userns, None);
+}
+
+// ---------------------------------------------------------------------------
+// Host-escalation deny (design D2, issue #245)
+// ---------------------------------------------------------------------------
+
+/// (a) A host-backed mount whose host path is named `docker.sock` /
+/// `podman.sock` is rejected at resolution time, before any container
+/// exists. Reached through `resolve`'s validate_mount_policy →
+/// validate_no_host_escalation call ordering via the `.git` shadow
+/// host path (the only caller-supplied host path that stays inside
+/// the state-dir allow-list).
+#[test]
+fn resolve_rejects_socket_named_host_path() {
+    for socket in ["docker.sock", "podman.sock"] {
+        let (cfg, worktree) = base();
+        let mut runtime = runtime_for(&cfg, &worktree);
+        runtime.git_shadow_host = cfg.state_dir.join("oci-runs").join("run-001").join(socket);
+        let err = resolve(cfg.sandbox(), &runtime, &support::executor_spec(&runtime))
+            .expect_err("socket-named host path must be rejected");
+        match &err {
+            CaduceusError::OciMountConflict { detail } => {
+                assert!(
+                    detail.contains(socket),
+                    "conflict must name the socket path, got: {detail}"
+                );
+            }
+            other => panic!("expected OciMountConflict; got: {other:?}"),
+        }
+    }
+}
+
+/// (b) Container paths are fixed canonical constants, so the
+/// socket-named *container* path branch of the validator is
+/// structurally unreachable through `resolve`; the socket-name check
+/// itself is pinned via `is_engine_socket_path` on container-path
+/// shapes, and the validator rejects anything it is ever fed.
+#[test]
+fn engine_socket_detection_covers_container_path_shapes() {
+    assert!(is_engine_socket_path(Path::new("/var/run/docker.sock")));
+    assert!(is_engine_socket_path(Path::new("/run/podman/podman.sock")));
+    assert!(is_engine_socket_path(Path::new("docker.sock")));
+    assert!(!is_engine_socket_path(Path::new("/workspace")));
+    assert!(!is_engine_socket_path(Path::new("/output")));
+    assert!(!is_engine_socket_path(Path::new("/workspace/.git")));
+    assert!(!is_engine_socket_path(Path::new(
+        "/var/run/docker.sock.bak"
+    )));
+    assert!(!is_engine_socket_path(Path::new("")));
+}
+
+/// (c) The default spec passes the escalation validator — a plain
+/// resolved spec carries no socket paths and `NetworkMode::None`.
+#[test]
+fn default_spec_passes_escalation_validator() {
+    let (cfg, worktree) = base();
+    let runtime = runtime_for(&cfg, &worktree);
+    let spec =
+        resolve(cfg.sandbox(), &runtime, &support::executor_spec(&runtime)).expect("must resolve");
+    validate_no_host_escalation(&spec).expect("default spec must pass");
+}
+
+/// (d) The validator runs inside `resolve` (ordering: after the mount
+/// policy, before the spec is returned) — a socket-named shadow host
+/// path is refused by `resolve` itself with a typed error, proving
+/// the call site is reachable end-to-end.
+#[test]
+fn escalation_validator_is_reachable_through_resolve() {
+    let (cfg, worktree) = base();
+    let mut runtime = runtime_for(&cfg, &worktree);
+    runtime.git_shadow_host = cfg
+        .state_dir
+        .join("oci-runs")
+        .join("run-001")
+        .join("docker.sock");
+    let result = resolve(cfg.sandbox(), &runtime, &support::executor_spec(&runtime));
+    assert!(
+        matches!(
+            result,
+            Err(CaduceusError::OciMountConflict { ref detail }) if detail.contains("socket")
+        ),
+        "resolve must run the escalation validator; got: {result:?}"
+    );
 }

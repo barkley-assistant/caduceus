@@ -196,6 +196,14 @@ name = "cancellation_test"
 path = "tests/executor/cancellation_test.rs"
 
 [[test]]
+name = "disk_test"
+path = "tests/infra/disk_test.rs"
+
+[[test]]
+name = "oci_lifecycle_stub_test"
+path = "tests/executor/oci_lifecycle_stub_test.rs"
+
+[[test]]
 name = "tamper_test"
 path = "tests/executor/tamper_test.rs"
 

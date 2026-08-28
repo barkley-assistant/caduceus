@@ -6,9 +6,15 @@
 //! steps are bounded by the configured `sandbox.kill_timeout_seconds` and
 //! `sandbox.stop_timeout_seconds` so the daemon never hangs.
 //!
-//! The module is intentionally free of `tokio::process::Command` — the
-//! subprocess boundary is the tokio::process::Command inside the
-//! `run_cli` helper. The lifecycle is the single call site; all other
+//! Two cancellation sources are honored during the wait step: the
+//! daemon-shutdown token and the disk-pressure watchdog token
+//! (issue #245). Cancellation from either token never early-returns —
+//! the run falls through the stop → capture → remove sequence so no
+//! container is ever leaked.
+//!
+//! The module is intentionally free of `tokio::process::Command` at the
+//! *public* boundary — the subprocess calls live in the private
+//! `run_cli` helpers. The lifecycle is the single call site; all other
 //! executor modules are pure argv builders or secret transport.
 //!
 //! `run_with_argv` is the **sole** entry point. It receives a
@@ -17,6 +23,7 @@
 
 use std::time::Duration;
 
+use tokio::io::AsyncReadExt as _;
 use tokio::process::Command;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
@@ -26,7 +33,17 @@ use crate::executor::ExecutorSpec;
 use crate::infra::config::Config;
 use crate::infra::error::{CaduceusError, CaduceusResult};
 use crate::state::oci_run::{ContainerRunRow, OciLifecycleState, OciRunState};
-use crate::worker::supervisor::SupervisorOutcome;
+use crate::worker::supervisor::{BoundedTranscriptWriter, SupervisorOutcome};
+
+/// Pinned cap for the daemon-side OCI diagnostic capture
+/// (`engine.log`). A diagnostic tail only needs the final failure
+/// output; independent of the worker-facing `transcript_max_bytes`
+/// (a different audience and budget).
+pub const OCI_DIAGNOSTIC_MAX_BYTES: u64 = 1024 * 1024;
+
+/// Read chunk size for the diagnostic capture — memory stays bounded
+/// to one chunk while the writer keeps the last-N-bytes tail.
+const OCI_DIAGNOSTIC_CHUNK_BYTES: usize = 8 * 1024;
 
 /// Run the OCI container lifecycle with a pre-built argv from the
 /// resolution → renderer pipeline.
@@ -35,6 +52,16 @@ use crate::worker::supervisor::SupervisorOutcome;
 /// `cfg`) so the create argv and the start/wait/stop/rm argvs cannot
 /// diverge from the renderer's engine; it also feeds the
 /// `ContainerRunRow.engine` column.
+///
+/// Two cancellation tokens drive the wait step:
+///
+/// * `cancellation` — the daemon-shutdown token (unchanged contract);
+/// * `watchdog` — the disk-pressure watchdog token (issue #245).
+///
+/// Cancellation from either token falls through the stop → capture →
+/// remove sequence (never an early return) and reports
+/// [`CaduceusError::Cancelled`]; the watchdog surfaces its typed
+/// refusal separately through `DiskPressureGuard::try_acquire_oci`.
 pub async fn run_with_argv(
     cfg: &Config,
     spec: &ExecutorSpec,
@@ -42,6 +69,7 @@ pub async fn run_with_argv(
     engine: SandboxEngine,
     argv: Vec<String>,
     cancellation: CancellationToken,
+    watchdog: CancellationToken,
 ) -> CaduceusResult<SupervisorOutcome> {
     // Insert a Created state row.
     let now = chrono::Utc::now().to_rfc3339();
@@ -59,7 +87,7 @@ pub async fn run_with_argv(
     state.insert(&row)?;
 
     // Step 1: create
-    let container_id = run_cli("create", &argv, "create", &cancellation).await?;
+    let container_id = run_cli("create", &argv, "create", &cancellation, &watchdog).await?;
 
     // Record container_id
     let mut row = row;
@@ -72,21 +100,55 @@ pub async fn run_with_argv(
         "start".to_string(),
         container_id.clone(),
     ];
-    run_cli("start", &start_argv, "start", &cancellation).await?;
+    run_cli("start", &start_argv, "start", &cancellation, &watchdog).await?;
     state.update_state(&spec.run_id, &OciLifecycleState::Running)?;
 
-    // Step 3: wait
+    // Step 3: wait — select over the wait command and BOTH
+    // cancellation sources (daemon shutdown + disk-pressure watchdog).
+    // Cancellation from either token must NOT early-return: it falls
+    // through the stop → capture → rm sequence below so the running
+    // container is never leaked (issue #245).
     let wait_argv = vec![
         engine.binary_name().to_string(),
         "wait".to_string(),
         container_id.clone(),
     ];
-    let wait_output = run_cli_with_output("wait", &wait_argv, "wait", &cancellation).await?;
-    let exit_code = parse_exit_code(&wait_output);
-    state.update_state(&spec.run_id, &OciLifecycleState::Exited(exit_code))?;
+    enum WaitOutcome {
+        /// `wait` completed and printed an exit code.
+        Completed(String),
+        /// Either token cancelled — the run was terminated.
+        Cancelled,
+        /// `wait` itself failed (engine error); preserved and
+        /// surfaced after cleanup so the container is not leaked.
+        Failed(CaduceusError),
+    }
+    let wait_outcome = tokio::select! {
+        result = run_cli_with_output("wait", &wait_argv, "wait", &cancellation, &watchdog) => {
+            match result {
+                Ok(output) => WaitOutcome::Completed(output),
+                // A pre-spawn cancellation check fired inside the
+                // helper — same as the token branches below.
+                Err(CaduceusError::Cancelled) => WaitOutcome::Cancelled,
+                Err(err) => WaitOutcome::Failed(err),
+            }
+        }
+        _ = watchdog.cancelled() => WaitOutcome::Cancelled,
+        _ = cancellation.cancelled() => WaitOutcome::Cancelled,
+    };
+    let exit_code = match &wait_outcome {
+        WaitOutcome::Completed(output) => {
+            let code = parse_exit_code(output);
+            state.update_state(&spec.run_id, &OciLifecycleState::Exited(code))?;
+            code
+        }
+        _ => -1,
+    };
 
-    // Step 4: stop (graceful, bounded)
-    let _stop_timeout = Duration::from_secs(cfg.sandbox().stop_timeout_seconds);
+    // Step 4: stop (graceful, bounded). Runs on EVERY path — normal
+    // exit, watchdog breach, daemon shutdown, wait failure — so no
+    // container leaks. The cleanup steps check ONLY the daemon
+    // `cancellation` token: a watchdog breach must never prevent
+    // cleanup of the container it just cancelled.
     let stop_argv = vec![
         engine.binary_name().to_string(),
         "stop".to_string(),
@@ -94,7 +156,7 @@ pub async fn run_with_argv(
         cfg.sandbox().stop_timeout_seconds.to_string(),
         container_id.clone(),
     ];
-    match run_cli("stop", &stop_argv, "stop", &cancellation).await {
+    match run_cli("stop", &stop_argv, "stop", &cancellation, &cancellation).await {
         Ok(_) => {
             state.update_state(&spec.run_id, &OciLifecycleState::Stopped)?;
         }
@@ -106,11 +168,21 @@ pub async fn run_with_argv(
                 "kill".to_string(),
                 container_id.clone(),
             ];
-            let _ = run_cli("kill", &kill_argv, "kill", &cancellation).await;
+            let _ = run_cli("kill", &kill_argv, "kill", &cancellation, &cancellation).await;
             state.update_state(&spec.run_id, &OciLifecycleState::Killed)?;
-            return Err(e);
+            // Preserve the original wait failure when one existed —
+            // the stop failure is secondary diagnostics on that path.
+            return Err(match wait_outcome {
+                WaitOutcome::Failed(err) => err,
+                _ => e,
+            });
         }
     }
+
+    // Step 4.5: bounded daemon-side diagnostic capture (issue #245).
+    // After the container has exited (logs are complete) but BEFORE
+    // `rm` destroys them. Best-effort — never fails the run.
+    capture_engine_logs(cfg, engine, &container_id, &spec.run_id).await;
 
     // Step 5: remove
     let remove_argv = vec![
@@ -122,7 +194,7 @@ pub async fn run_with_argv(
     let remove_timeout = Duration::from_secs(cfg.sandbox().kill_timeout_seconds);
     match timeout(
         remove_timeout,
-        run_cli("rm", &remove_argv, "remove", &cancellation),
+        run_cli("rm", &remove_argv, "remove", &cancellation, &cancellation),
     )
     .await
     {
@@ -134,12 +206,112 @@ pub async fn run_with_argv(
         }
     }
 
-    Ok(SupervisorOutcome {
-        status: exit_code,
-        signaled: false,
-        timed_out: false,
-        cancelled: false,
-    })
+    match wait_outcome {
+        WaitOutcome::Completed(_) => Ok(SupervisorOutcome {
+            status: exit_code,
+            signaled: false,
+            timed_out: false,
+            cancelled: false,
+        }),
+        // Watchdog breach or daemon shutdown: the run reports as
+        // cancelled to the tick, which classifies retries as usual.
+        WaitOutcome::Cancelled => Err(CaduceusError::Cancelled),
+        WaitOutcome::Failed(err) => Err(err),
+    }
+}
+
+/// Capture `<engine> logs <container_id>` into a bounded diagnostic
+/// file at `<state_dir>/oci-runs/<run_id>/engine.log`, capped at
+/// [`OCI_DIAGNOSTIC_MAX_BYTES`] via [`BoundedTranscriptWriter`] (which
+/// opens 0600 with `O_NOFOLLOW` and keeps the last-N-bytes tail).
+/// stdout and stderr are drained concurrently in
+/// [`OCI_DIAGNOSTIC_CHUNK_BYTES`] chunks so a chatty stream cannot
+/// deadlock the other pipe. Every failure is logged and never
+/// propagates — the capture is best-effort diagnostics.
+async fn capture_engine_logs(
+    cfg: &Config,
+    engine: SandboxEngine,
+    container_id: &str,
+    run_id: &str,
+) {
+    let result = capture_engine_logs_inner(cfg, engine, container_id, run_id).await;
+    if let Err(err) = result {
+        tracing::warn!(error = %err, "OCI diagnostic capture failed (best-effort)");
+    }
+}
+
+async fn capture_engine_logs_inner(
+    cfg: &Config,
+    engine: SandboxEngine,
+    container_id: &str,
+    run_id: &str,
+) -> CaduceusResult<()> {
+    // The run dir exists (created by the pre-flight engine probe);
+    // create it best-effort for direct lifecycle callers.
+    let path = cfg
+        .state_dir
+        .join("oci-runs")
+        .join(run_id)
+        .join("engine.log");
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let mut writer = BoundedTranscriptWriter::new(path.clone(), OCI_DIAGNOSTIC_MAX_BYTES)?;
+
+    let mut child = Command::new(engine.binary_name())
+        .args(["logs", container_id])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| CaduceusError::Other(format!("engine logs spawn for {container_id}: {e}")))?;
+    let mut stdout = child.stdout.take().expect("stdout is piped");
+    let mut stderr = child.stderr.take().expect("stderr is piped");
+
+    let mut out_chunk = vec![0u8; OCI_DIAGNOSTIC_CHUNK_BYTES];
+    let mut err_chunk = vec![0u8; OCI_DIAGNOSTIC_CHUNK_BYTES];
+    loop {
+        tokio::select! {
+            read = stdout.read(&mut out_chunk) => {
+                match read {
+                    Ok(0) | Err(_) => {
+                        // stdout drained — drain stderr to EOF.
+                        loop {
+                            match stderr.read(&mut err_chunk).await {
+                                Ok(0) | Err(_) => break,
+                                Ok(n) => writer.write_bytes(&err_chunk[..n]),
+                            }
+                        }
+                        break;
+                    }
+                    Ok(n) => writer.write_bytes(&out_chunk[..n]),
+                }
+            }
+            read = stderr.read(&mut err_chunk) => {
+                match read {
+                    Ok(0) | Err(_) => {
+                        // stderr drained — drain stdout to EOF.
+                        loop {
+                            match stdout.read(&mut out_chunk).await {
+                                Ok(0) | Err(_) => break,
+                                Ok(n) => writer.write_bytes(&out_chunk[..n]),
+                            }
+                        }
+                        break;
+                    }
+                    Ok(n) => writer.write_bytes(&err_chunk[..n]),
+                }
+            }
+        }
+    }
+    let _ = child.wait().await;
+    // Enforce the hard cap: the writer truncates once on first
+    // overflow but keeps appending the remaining stream (its
+    // drain-must-keep-running contract), so re-truncate after the
+    // stream drains to bound the persisted artifact at the cap plus
+    // the small truncation marker.
+    let _ = crate::worker::supervisor::truncate_transcript(&path, OCI_DIAGNOSTIC_MAX_BYTES);
+    writer.finalize()
 }
 
 /// Reconcile orphaned containers: every row in `PendingReconciliation`
@@ -163,7 +335,7 @@ pub async fn reconcile(
                 "--force".to_string(),
                 container_id.clone(),
             ];
-            let _ = run_cli("rm", &rm_argv, "remove", &cancellation).await;
+            let _ = run_cli("rm", &rm_argv, "remove", &cancellation, &cancellation).await;
         }
         // Mark as removed regardless of CLI result (best-effort).
         let _ = state.update_state(&row.run_id, &OciLifecycleState::Removed);
@@ -251,13 +423,19 @@ fn sha256_of(input: &str) -> String {
 }
 
 /// Run an OCI CLI command and return stdout on success, stderr on failure.
+///
+/// The pre-spawn check consults BOTH the daemon `cancellation` token
+/// and the `watchdog` token. Cleanup call sites pass
+/// `&cancellation` as `watchdog` so a watchdog breach never blocks
+/// cleanup of the container it just cancelled.
 async fn run_cli(
     step: &'static str,
     argv: &[String],
     context: &'static str,
     cancellation: &CancellationToken,
+    watchdog: &CancellationToken,
 ) -> CaduceusResult<String> {
-    if cancellation.is_cancelled() {
+    if cancellation.is_cancelled() || watchdog.is_cancelled() {
         return Err(CaduceusError::Cancelled);
     }
 
@@ -281,8 +459,9 @@ async fn run_cli_with_output(
     argv: &[String],
     context: &'static str,
     cancellation: &CancellationToken,
+    watchdog: &CancellationToken,
 ) -> CaduceusResult<String> {
-    if cancellation.is_cancelled() {
+    if cancellation.is_cancelled() || watchdog.is_cancelled() {
         return Err(CaduceusError::Cancelled);
     }
 

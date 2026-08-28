@@ -120,7 +120,8 @@ async fn cleanup_on_cancel_and_timeout() {
         &state,
         SandboxEngine::Docker,
         create_argv(),
-        cancel,
+        cancel.clone(),
+        CancellationToken::new(),
     )
     .await;
     assert!(result.is_err(), "expected error without Docker");
@@ -155,7 +156,8 @@ async fn engine_unavailable_surfaces_structured() {
         &state,
         SandboxEngine::Docker,
         create_argv(),
-        cancel,
+        cancel.clone(),
+        CancellationToken::new(),
     )
     .await
     .expect_err("expected error without Docker");
@@ -193,6 +195,7 @@ async fn stop_kill_remove_bounded() {
             SandboxEngine::Docker,
             create_argv(),
             cancel,
+            CancellationToken::new(),
         ),
     )
     .await;
@@ -240,6 +243,7 @@ async fn run_with_argv_wires_engine_into_state_row() {
         SandboxEngine::Podman,
         create_argv(),
         cancel,
+        CancellationToken::new(),
     )
     .await;
 

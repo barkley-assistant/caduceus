@@ -99,3 +99,116 @@ fn exhaust_cpu() {
         "argv must carry --cpus for the CPU boundary"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Hardened baseline additions (issue #245, task 13.1)
+// ---------------------------------------------------------------------------
+
+// memory_swap_pinned — --memory-swap equals --memory, so a worker
+// cannot escape the memory bound via swap (no swap rescue)
+
+#[test]
+#[cfg_attr(not(env = "CADUCEUS_RUN_ISOLATION_TESTS"), ignore)]
+fn memory_swap_pinned_no_swap_rescue() {
+    // When CADUCEUS_RUN_ISOLATION_TESTS is set:
+    //  docker run --memory 2048m --memory-swap 2048m caduceus-worker \
+    //  python3 -c 'x = bytearray(4096 * 1024 * 1024)'
+    // Expected: OOM kill (exit 137) with NO swap rescue — committed
+    // memory (mem + swap) cannot exceed the --memory value.
+    let cfg = default_cfg();
+    let spec = resolve_from(&cfg);
+    let argv = render(&spec, SandboxEngine::Docker);
+    let mem_pos = argv.iter().position(|a| a == "--memory").expect("--memory");
+    let swap_pos = argv
+        .iter()
+        .position(|a| a == "--memory-swap")
+        .expect("--memory-swap must be rendered");
+    assert_eq!(
+        argv[swap_pos + 1],
+        argv[mem_pos + 1],
+        "--memory-swap must be pinned equal to --memory"
+    );
+}
+
+// tmpfs_bounds — writes beyond the configured tmpfs `size=` fail
+
+#[test]
+#[cfg_attr(not(env = "CADUCEUS_RUN_ISOLATION_TESTS"), ignore)]
+fn tmpfs_write_beyond_size_fails() {
+    // When CADUCEUS_RUN_ISOLATION_TESTS is set:
+    //  dd if=/dev/zero of=/tmp/over bs=1M count=$((tmpfs_mb + 16))
+    //  dd if=/dev/zero of=/dev/shm/over bs=1M count=$((shm_mb + 16))
+    // Expected: both writes fail with ENOSPC once the bounded tmpfs
+    // is full — the sizes come from --tmpfs size= in the argv below.
+    let cfg = default_cfg();
+    let spec = resolve_from(&cfg);
+    let argv = render(&spec, SandboxEngine::Docker);
+    assert!(
+        argv.iter()
+            .any(|a| a == &format!("/tmp:size={}m", cfg.sandbox().resources.tmpfs_mb)),
+        "/tmp tmpfs must be bounded by resources.tmpfs_mb"
+    );
+    assert!(
+        argv.iter()
+            .any(|a| a == &format!("/dev/shm:size={}m", cfg.sandbox().resources.shm_mb)),
+        "/dev/shm tmpfs must be bounded by resources.shm_mb"
+    );
+}
+
+// rootfs_read_only — writes to the container rootfs fail EROFS
+
+#[test]
+#[cfg_attr(not(env = "CADUCEUS_RUN_ISOLATION_TESTS"), ignore)]
+fn rootfs_write_fails_erofs() {
+    // When CADUCEUS_RUN_ISOLATION_TESTS is set:
+    //  touch /etc/escape-attempt
+    // Expected: touch fails with EROFS (Read-only file system) — the
+    // rootfs is --read-only and the only writable surfaces are the
+    // two binds and the two bounded tmpfs.
+    let cfg = default_cfg();
+    let spec = resolve_from(&cfg);
+    let argv = render(&spec, SandboxEngine::Docker);
+    assert!(
+        argv.iter().any(|a| a == "--read-only"),
+        "argv must carry --read-only for the rootfs boundary"
+    );
+}
+
+// caps_absent — --cap-drop ALL leaves no capabilities in-container
+
+#[test]
+#[cfg_attr(not(env = "CADUCEUS_RUN_ISOLATION_TESTS"), ignore)]
+fn capabilities_absent() {
+    // When CADUCEUS_RUN_ISOLATION_TESTS is set:
+    //  capsh --print   (or: grep CapEff /proc/self/status)
+    // Expected: CapEff == 0000000000000000 — every capability was
+    // dropped; no-new-privileges blocks re-acquisition via setuid.
+    let cfg = default_cfg();
+    let spec = resolve_from(&cfg);
+    let argv = render(&spec, SandboxEngine::Docker);
+    let cap_pos = argv
+        .iter()
+        .position(|a| a == "--cap-drop")
+        .expect("--cap-drop");
+    assert_eq!(argv[cap_pos + 1], "ALL", "every capability must be dropped");
+    assert!(
+        argv.iter().any(|a| a == "no-new-privileges"),
+        "no-new-privileges must accompany --cap-drop ALL"
+    );
+}
+
+// network_none_default — default render asserts --network none; no
+// egress, no DNS, no host networking (structurally unrepresentable)
+
+#[test]
+#[cfg_attr(not(env = "CADUCEUS_RUN_ISOLATION_TESTS"), ignore)]
+fn default_render_is_network_none() {
+    let cfg = default_cfg();
+    let spec = resolve_from(&cfg);
+    let argv = render(&spec, SandboxEngine::Docker);
+    let pos = argv
+        .iter()
+        .position(|a| a == "--network")
+        .expect("--network");
+    assert_eq!(argv[pos + 1], "none");
+}

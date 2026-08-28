@@ -9,7 +9,7 @@
 
 use caduceus::executor::sandbox_renderer::render;
 use caduceus::executor::sandbox_spec::{resolve, SandboxEngine, SandboxSpec};
-use caduceus::infra::config::{Config, SandboxNetwork};
+use caduceus::infra::config::Config;
 
 mod support;
 
@@ -129,19 +129,19 @@ fn isolation_flags_precede_image() {
     );
 }
 
-// network_mode_applied — unrestricted network → --network host
+// network_mode_applied — the only network mode is `none` (host
+// networking was removed, breaking: issue #245)
 
 #[test]
 fn network_mode_applied() {
-    let mut cfg = default_cfg();
-    cfg.sandbox.as_mut().unwrap().network = SandboxNetwork::Unrestricted;
+    let cfg = default_cfg();
     let spec = resolve_from(&cfg);
     let argv = render(&spec, SandboxEngine::Docker);
     let network_pos = argv
         .iter()
         .position(|a| a == "--network")
         .expect("--network");
-    assert_eq!(argv[network_pos + 1], "host");
+    assert_eq!(argv[network_pos + 1], "none");
 }
 
 // no_network_mode_gives_none — default network mode → --network=none

@@ -5,6 +5,7 @@
 //! through a business module. They're the "stdio of Caduceus".
 
 pub mod config;
+pub mod disk;
 pub mod error;
 pub mod fixtures;
 pub mod install;

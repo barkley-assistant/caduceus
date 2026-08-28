@@ -145,7 +145,15 @@ pub async fn run_with_config(
     let clock: Arc<dyn crate::daemon::orchestration::Clock> = Arc::new(SystemClock);
     let client = Arc::new(Client::with_config(&cfg)?);
     let git = GitRunner::new(&cfg);
-    let services = Services::production(&cfg, clock, Arc::clone(&client), git, Arc::clone(&pool));
+    let disk = Arc::new(crate::infra::disk::DiskPressureGuard::from_config(&cfg));
+    let services = Services::production(
+        &cfg,
+        clock,
+        Arc::clone(&client),
+        git,
+        Arc::clone(&pool),
+        disk,
+    );
     tick(cfg, services, pool, cancellation).await
 }
 
@@ -188,6 +196,48 @@ pub async fn tick(
     static LEGACY_SWEEP_RAN: AtomicBool = AtomicBool::new(false);
     if !LEGACY_SWEEP_RAN.swap(true, Ordering::SeqCst) {
         crate::worktree::gc::prune_legacy_registrations(&cfg).await;
+    }
+
+    // 0.7. Disk-pressure sampler (issue #245). When the watchdog is
+    //      enabled, spawn a background loop that samples the free
+    //      space of the device-ID-deduped filesystems hosting the
+    //      state dir, repo storage, and worktree base every
+    //      DISK_SAMPLE_INTERVAL_SECS and folds the result into the
+    //      shared guard. A breach cancels the guard's token, which
+    //      terminates in-flight OCI work via the existing stop path
+    //      and (via try_acquire_oci) refuses new dispatch. The task
+    //      dies with the tick: in-flight runs live only inside the
+    //      tick's JoinSet drain, so coverage is exactly the
+    //      in-flight window.
+    if services.disk.enabled() {
+        let disk_guard = Arc::clone(&services.disk);
+        let sampler_cancellation = cancellation.clone();
+        let sampler_cfg = cfg.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(
+                crate::infra::disk::DISK_SAMPLE_INTERVAL_SECS,
+            ));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tokio::select! {
+                    _ = sampler_cancellation.cancelled() => break,
+                    _ = interval.tick() => {
+                        let paths = crate::infra::disk::watchdog_paths(&sampler_cfg);
+                        match crate::infra::disk::sample_free_bytes(&paths) {
+                            Ok(samples) => disk_guard.refresh(&samples),
+                            Err(err) => {
+                                // Sampling failure must never kill the
+                                // tick; the next interval retries.
+                                tracing::warn!(
+                                    error = %err,
+                                    "disk-pressure sampling failed; watchdog keeps previous state"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        });
     }
 
     // 1. Check scheduler leadership. If another tick holds the

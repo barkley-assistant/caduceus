@@ -425,6 +425,9 @@ async fn run_tick(
         Arc::new(client),
         git,
         Arc::clone(&pool),
+        // Disabled watchdog: tick tests must not depend on host disk
+        // state. The tick only samples when the guard is enabled.
+        std::sync::Arc::new(caduceus::infra::disk::DiskPressureGuard::disabled()),
     );
     caduceus::tick::tick(cfg, services, pool, CancellationToken::new()).await
 }

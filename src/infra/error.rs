@@ -347,6 +347,19 @@ pub enum CaduceusError {
     #[error("OCI pull policy incompatible: {detail}")]
     OciPullPolicyIncompatible { detail: String },
 
+    /// OCI dispatch was refused because the host disk-pressure
+    /// watchdog is breached on the sampled filesystem carrying
+    /// `path`: free space fell below the configured
+    /// `reserved_host_disk_mb` floor. Constructed only by
+    /// `DiskPressureGuard::try_acquire_oci` (issue #245).
+    #[error("OCI dispatch refused: host disk pressure on {path} (device {device_id}): {free_bytes} bytes free < {reserved_bytes} bytes reserved")]
+    OciDiskPressure {
+        path: String,
+        device_id: u64,
+        free_bytes: u64,
+        reserved_bytes: u64,
+    },
+
     #[error("{0}")]
     Other(String),
 }
@@ -579,6 +592,18 @@ impl fmt::Debug for CaduceusError {
             CaduceusError::OciPullPolicyIncompatible { detail } => {
                 format!("OciPullPolicyIncompatible {{ detail: {} }}", scrub(detail))
             }
+            CaduceusError::OciDiskPressure {
+                path,
+                device_id,
+                free_bytes,
+                reserved_bytes,
+            } => format!(
+                "OciDiskPressure {{ path: {}, device_id: {}, free_bytes: {}, reserved_bytes: {} }}",
+                scrub(path),
+                device_id,
+                free_bytes,
+                reserved_bytes
+            ),
             CaduceusError::Other(s) => format!("Other({})", scrub(s)),
         };
         f.write_str(&rendered)

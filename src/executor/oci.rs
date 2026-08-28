@@ -16,12 +16,14 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use crate::executor::{
     engine_probe, oci_lifecycle, sandbox_renderer, sandbox_spec, Executor, ExecutorOutcome,
     ExecutorSpec,
 };
 use crate::infra::config::Config;
+use crate::infra::disk::DiskPressureGuard;
 use crate::infra::error::CaduceusResult;
 use crate::state::oci_run::OciRunDao;
 use crate::state::store;
@@ -31,12 +33,15 @@ use crate::worker::worker_contract::WORKER_RESULT_FILE;
 #[derive(Clone, Debug)]
 pub struct OciExecutor {
     cfg: Config,
+    /// Host disk-pressure watchdog: refuses new dispatch and
+    /// terminates in-flight work on breach (issue #245).
+    disk: Arc<DiskPressureGuard>,
 }
 
 impl OciExecutor {
-    /// Wrap a config snapshot.
-    pub fn new(cfg: Config) -> Self {
-        Self { cfg }
+    /// Wrap a config snapshot and the shared disk-pressure guard.
+    pub fn new(cfg: Config, disk: Arc<DiskPressureGuard>) -> Self {
+        Self { cfg, disk }
     }
 }
 
@@ -46,6 +51,13 @@ impl Executor for OciExecutor {
         spec: &'a ExecutorSpec,
     ) -> Pin<Box<dyn Future<Output = CaduceusResult<ExecutorOutcome>> + Send + 'a>> {
         Box::pin(async move {
+            // 0. Disk-pressure gate: refuse new OCI dispatch while the
+            //    host watchdog is breached — before the probe, before
+            //    any container can be created (issue #245). TrustedHost
+            //    work is structurally excluded: it never reaches this
+            //    executor.
+            self.disk.try_acquire_oci()?;
+
             // 1. Pre-flight probe: collect the runtime facts (worktree
             //    owner uid/gid, host `.git` type, engine mode) and
             //    create the daemon-owned host artifacts. Every
@@ -73,7 +85,10 @@ impl Executor for OciExecutor {
             let engine = self.cfg.sandbox().engine;
             let argv = sandbox_renderer::render_with_env_files(&resolved, engine, &[]);
 
-            // 5. Run the lifecycle with the rendered argv.
+            // 5. Run the lifecycle with the rendered argv. The run's
+            //    lifecycle token is linked with the watchdog token so
+            //    a disk-pressure breach terminates in-flight work via
+            //    the existing stop path (issue #245).
             let outcome = oci_lifecycle::run_with_argv(
                 &self.cfg,
                 spec,
@@ -81,6 +96,7 @@ impl Executor for OciExecutor {
                 engine,
                 argv,
                 spec.cancellation.child_token(),
+                self.disk.watchdog_token(),
             )
             .await?;
             Ok(ExecutorOutcome {

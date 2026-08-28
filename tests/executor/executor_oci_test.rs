@@ -16,6 +16,7 @@ use caduceus::executor::oci::OciExecutor;
 use caduceus::executor::{Executor, ExecutorSpec};
 use caduceus::github::issue::IssueKey;
 use caduceus::infra::config::Config;
+use caduceus::infra::disk::DiskPressureGuard;
 use caduceus::infra::error::CaduceusError;
 use tempfile::TempDir;
 
@@ -75,7 +76,10 @@ fn test_spec(cfg: &Config) -> ExecutorSpec {
 #[tokio::test]
 async fn oci_executor_returns_typed_error() {
     let (cfg, _tmp) = setup();
-    let executor: Arc<dyn Executor> = Arc::new(OciExecutor::new(cfg.clone()));
+    let executor: Arc<dyn Executor> = Arc::new(OciExecutor::new(
+        cfg.clone(),
+        Arc::new(DiskPressureGuard::from_config(&cfg)),
+    ));
     let spec = test_spec(&cfg);
     let err = executor
         .run(&spec)
@@ -103,7 +107,10 @@ async fn oci_executor_returns_typed_error() {
 #[tokio::test]
 async fn oci_executor_does_not_spawn_process() {
     let (cfg, _tmp) = setup();
-    let executor: Arc<dyn Executor> = Arc::new(OciExecutor::new(cfg.clone()));
+    let executor: Arc<dyn Executor> = Arc::new(OciExecutor::new(
+        cfg.clone(),
+        Arc::new(DiskPressureGuard::from_config(&cfg)),
+    ));
     let spec = test_spec(&cfg);
     let started = Instant::now();
     let _ = executor.run(&spec).await;

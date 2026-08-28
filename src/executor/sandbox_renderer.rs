@@ -21,6 +21,16 @@ use crate::worker::worker_contract::{
     CONTAINER_OUTPUT_PATH, CONTAINER_WORKSPACE_PATH, WORKER_RESULT_FILE,
 };
 
+/// Pinned engine-log rotation cap per rotated segment (`--log-opt
+/// max-size`). Both engines' default drivers (Docker `json-file`,
+/// Podman `k8s-file`) accept these options; no explicit
+/// `--log-driver` is emitted so the renderer stays engine-agnostic.
+pub const OCI_LOG_MAX_SIZE: &str = "10m";
+
+/// Pinned engine-log segment count (`--log-opt max-file`). Worst-case
+/// per-container on-disk logs: 3 × 10 MiB = 30 MiB.
+pub const OCI_LOG_MAX_FILE: &str = "3";
+
 /// Render the full `create` argv for the given engine with no secret
 /// env files. Delegates to [`render_with_env_files`] with an empty
 /// slice.
@@ -73,11 +83,12 @@ pub fn render_with_env_files(
         argv.push(userns.to_string());
     }
 
-    // --- Network mode.
+    // --- Network mode. Host networking is structurally
+    //     unrepresentable: `NetworkMode` has a single variant, so
+    //     `--network none` is emitted unconditionally (issue #245).
     argv.push("--network".to_string());
     argv.push(match spec.network() {
         NetworkMode::None => "none".to_string(),
-        NetworkMode::Unrestricted => "host".to_string(),
     });
 
     // --- Resource limits (total fields — always emitted).
@@ -85,11 +96,26 @@ pub fn render_with_env_files(
     argv.push(format!("{}", spec.resources().cpus));
     argv.push("--memory".to_string());
     argv.push(format!("{}m", spec.resources().memory_mb));
+    // Swap is pinned EQUAL to the memory limit: for both engines
+    // `memory-swap == memory` means total (mem + swap) equals the
+    // memory limit, i.e. swap cannot double committed memory.
+    argv.push("--memory-swap".to_string());
+    argv.push(format!("{}m", spec.resources().memory_mb));
     argv.push("--pids-limit".to_string());
     argv.push(format!("{}", spec.resources().pids));
     // `/dev/shm` is declared via the dual tmpfs list from the spec
     // (same bounded-size mechanism as `/tmp`); the standalone
     // `--shm-size` flag was removed as redundant.
+
+    // --- Bounded engine logs. Both entries are emitted for every
+    //     run on both engines, without an explicit `--log-driver`:
+    //     each engine's default driver (Docker `json-file`, Podman
+    //     `k8s-file`) accepts `max-size` / `max-file`, so no
+    //     per-engine branch is needed.
+    argv.push("--log-opt".to_string());
+    argv.push(format!("max-size={OCI_LOG_MAX_SIZE}"));
+    argv.push("--log-opt".to_string());
+    argv.push(format!("max-file={OCI_LOG_MAX_FILE}"));
 
     // --- Container name.
     argv.push("--name".to_string());
