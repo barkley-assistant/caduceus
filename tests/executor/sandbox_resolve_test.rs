@@ -244,9 +244,11 @@ fn resolves_canonical_container_paths() {
     assert!(!out.read_only, "output is RW");
 }
 
-/// (g) pass_env filtering — names present in the process environment
-/// are appended after the full canonical CADUCEUS_* set, in config
-/// order; unset names are skipped.
+/// (g) pass_env filtering — FROZEN v1 semantics (issue #249): a
+/// name PRESENT in the daemon process environment is included; a
+/// name ABSENT fails the run with a typed error naming the variable
+/// (never warn-and-skip). The full resolution matrix lives in
+/// `sandbox_spec_env_test.rs`.
 #[test]
 fn pass_env_filtering() {
     struct EnvGuard(&'static str);
@@ -269,38 +271,43 @@ fn pass_env_filtering() {
         "CADUCEUS_RESOLVE_TEST_UNSET".to_string(),
     ];
     let runtime = runtime_for(&cfg, &worktree);
+    // ABSENT ⇒ typed error; nothing is silently skipped.
+    let err = resolve(cfg.sandbox(), &runtime, &support::executor_spec(&runtime))
+        .expect_err("absent pass_env name must fail the run");
+    match &err {
+        CaduceusError::Config(msg) => {
+            assert!(
+                msg.contains("CADUCEUS_RESOLVE_TEST_UNSET")
+                    && msg.contains("not present in daemon environment"),
+                "error must name the absent variable: {msg}"
+            );
+        }
+        other => panic!("expected CaduceusError::Config; got: {other:?}"),
+    }
+
+    // PRESENT ⇒ included (alongside the canonical + compat set).
+    cfg.sandbox.as_mut().expect("sandbox").pass_env =
+        vec!["CADUCEUS_RESOLVE_TEST_PASS_ENV".to_string()];
     let spec =
         resolve(cfg.sandbox(), &runtime, &support::executor_spec(&runtime)).expect("must resolve");
     let env = spec.environment();
-    assert_eq!(
-        env[0],
-        ("CADUCEUS_RUN_ID".to_string(), "run-001".to_string())
-    );
-    assert_eq!(
-        env[1],
-        ("CADUCEUS_ISSUE_ID".to_string(), "owner/repo#1".to_string())
-    );
-    // The 11 canonical entries precede the pass_env entries.
-    let canonical_tail = &env[11..];
-    assert_eq!(
-        canonical_tail,
-        &[(
+    assert!(
+        env.contains(&(
             "CADUCEUS_RESOLVE_TEST_PASS_ENV".to_string(),
             "present-value".to_string()
-        ),]
+        )),
+        "resolved value must be present, got: {env:?}"
     );
-    assert_eq!(
-        env.len(),
-        12,
-        "unset pass_env names must be skipped, got: {env:?}"
-    );
+    // Canonical 11 + compat 2 + the one resolved entry.
+    assert_eq!(env.len(), 14, "got: {env:?}");
 }
 
 /// (g') The resolved environment carries the FULL canonical
 /// `CADUCEUS_*` set with CONTAINER-side path values: worktree and
 /// result paths are the fixed container paths, never the host
-/// worktree/output paths, and the remaining canonical variables
-/// mirror the spec inputs exactly (issue #243).
+/// worktree/output paths. Canonical free-text values mirror the spec
+/// inputs with newline normalization (the OCI env file is
+/// line-based; the spec input here is deliberately multi-line).
 #[test]
 fn resolves_full_canonical_environment_with_container_paths() {
     let (cfg, worktree) = base();
@@ -323,27 +330,34 @@ fn resolves_full_canonical_environment_with_container_paths() {
     let resolved = resolve(cfg.sandbox(), &runtime, &spec_input).expect("must resolve");
     let env = resolved.environment();
 
+    // Canonical 11 + compat HOME/TMPDIR, sorted by key (issue #249).
     let expected: &[(&str, String)] = &[
-        ("CADUCEUS_RUN_ID", "run-100".to_string()),
-        ("CADUCEUS_ISSUE_ID", "octocat/hello#42".to_string()),
-        ("CADUCEUS_ISSUE_NUMBER", "42".to_string()),
-        ("CADUCEUS_ISSUE_REPO", "octocat/hello".to_string()),
-        ("CADUCEUS_ISSUE_TITLE", "A title".to_string()),
-        ("CADUCEUS_ISSUE_BODY", "A body\nwith newline".to_string()),
-        ("CADUCEUS_ISSUE_LABELS_JSON", "[\"p1\",\"p2\"]".to_string()),
-        ("CADUCEUS_CONTEXT_JSON", "{\"context\":true}".to_string()),
         (
             "CADUCEUS_BRANCH_NAME",
             "caduceus/octocat/hello#42".to_string(),
         ),
-        // Container-side paths, never host paths.
-        ("CADUCEUS_WORKTREE_PATH", "/workspace".to_string()),
+        ("CADUCEUS_CONTEXT_JSON", "{\"context\":true}".to_string()),
+        ("CADUCEUS_ISSUE_BODY", "A body with newline".to_string()),
+        ("CADUCEUS_ISSUE_ID", "octocat/hello#42".to_string()),
+        ("CADUCEUS_ISSUE_LABELS_JSON", "[\"p1\",\"p2\"]".to_string()),
+        ("CADUCEUS_ISSUE_NUMBER", "42".to_string()),
+        ("CADUCEUS_ISSUE_REPO", "octocat/hello".to_string()),
+        ("CADUCEUS_ISSUE_TITLE", "A title".to_string()),
         (
             "CADUCEUS_RESULT_PATH",
             "/output/worker-result.json".to_string(),
         ),
+        ("CADUCEUS_RUN_ID", "run-100".to_string()),
+        // Container-side paths, never host paths.
+        ("CADUCEUS_WORKTREE_PATH", "/workspace".to_string()),
+        ("HOME", "/tmp".to_string()),
+        ("TMPDIR", "/tmp".to_string()),
     ];
-    assert_eq!(env.len(), expected.len(), "exactly the canonical set");
+    assert_eq!(
+        env.len(),
+        expected.len(),
+        "exactly the canonical set plus compat"
+    );
     for (entry, (key, value)) in env.iter().zip(expected.iter()) {
         assert_eq!(entry.0, *key);
         assert_eq!(&entry.1, value);
@@ -360,6 +374,65 @@ fn resolves_full_canonical_environment_with_container_paths() {
         !env.iter().any(|(_, v)| v.contains(&host_worktree)),
         "host worktree path must not appear in container env, got: {env:?}"
     );
+}
+
+/// (g'') A multi-line issue title/body (routine GitHub input) is
+/// newline-normalized at resolution, so the resolved environment
+/// assembles into a well-formed single-line env file and the run
+/// proceeds — no pre-create error. The full multi-line content still
+/// reaches the worker via the prompt file written into the worktree
+/// (`write_prompt`); the normalization is transport-format only.
+#[test]
+fn multi_line_issue_text_resolves_to_single_line_env_file() {
+    use std::collections::BTreeMap;
+
+    use caduceus::executor::oci_env_file::OciEnvFile;
+
+    let (cfg, worktree) = base();
+    let runtime = runtime_for(&cfg, &worktree);
+    let spec_input = caduceus::executor::ExecutorSpec {
+        self_exe: PathBuf::from("/proc/self/exe"),
+        issue: runtime.issue.clone(),
+        worktree: worktree.clone(),
+        run_id: "run-101".to_string(),
+        context_json: "{}".to_string(),
+        worker_command: vec!["python3".to_string(), "bridge.py".to_string()],
+        cancellation: tokio_util::sync::CancellationToken::new(),
+        issue_title: "A title\nwith lines\r\nand CR".to_string(),
+        issue_body: "A body\r\nwith CRLF\nand LF".to_string(),
+        labels: vec!["p1".to_string()],
+        branch_name: "caduceus/owner/repo#1".to_string(),
+    };
+    let resolved = resolve(cfg.sandbox(), &runtime, &spec_input).expect(
+        "multi-line issue title/body must resolve (newline-normalized, \
+         not rejected)",
+    );
+    let env: BTreeMap<String, String> = resolved.environment().iter().cloned().collect();
+    assert_eq!(
+        env.get("CADUCEUS_ISSUE_BODY").map(String::as_str),
+        Some("A body with CRLF and LF"),
+        "CRLF and LF must collapse to single spaces"
+    );
+    assert_eq!(
+        env.get("CADUCEUS_ISSUE_TITLE").map(String::as_str),
+        Some("A title with lines and CR"),
+        "newlines must collapse to single spaces"
+    );
+
+    // The whole resolved environment must assemble into a
+    // well-formed env file: exactly one KEY=VALUE line per entry,
+    // with no embedded newline inside any value.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let run_dir = tmp.path().join("oci-runs").join("run-multi");
+    let file = OciEnvFile::create(&run_dir, &env)
+        .expect("multi-line issue text must produce a valid env file");
+    let body = std::fs::read_to_string(file.path()).expect("read env file");
+    assert_eq!(
+        body.lines().count(),
+        env.len(),
+        "exactly one line per env entry, got: {body:?}"
+    );
+    drop(file);
 }
 
 /// (h) labels in fixed order daemon_id, run_id, issue_id.

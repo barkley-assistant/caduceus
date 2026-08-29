@@ -31,20 +31,24 @@ pub const OCI_LOG_MAX_SIZE: &str = "10m";
 /// per-container on-disk logs: 3 × 10 MiB = 30 MiB.
 pub const OCI_LOG_MAX_FILE: &str = "3";
 
-/// Render the full `create` argv for the given engine with no secret
-/// env files. Delegates to [`render_with_env_files`] with an empty
-/// slice.
+/// Render the full `create` argv for the given engine with no env
+/// files. Delegates to [`render_with_env_files`] with an empty slice
+/// — the `-e` fallback path (no production caller: the OCI executor
+/// always supplies the daemon-private env file).
 pub fn render(spec: &SandboxSpec, engine: SandboxEngine) -> Vec<String> {
     render_with_env_files(spec, engine, &[])
 }
 
 /// Render the full `create` argv for the given engine, appending each
-/// ephemeral secret env-file path in slice order after the tmpfs
-/// mounts and before the `-e` environment entries.
+/// env-file path in slice order after the tmpfs mounts.
 ///
-/// `env_files` are paths only — created after resolution
-/// (`secret_transport::EphemeralSecretFile`), so they never live in
-/// the spec and the spec stays snapshot-pure.
+/// Transport precedence (frozen, issue #249; design D4): when at
+/// least one env file is supplied, the file is **authoritative** and
+/// carries ALL OCI environment values — zero `-e` tokens are emitted,
+/// so no environment value can reach argv. The `-e` fallback below
+/// runs only for callers that render without env files (the plain
+/// [`render`] path); production always supplies the daemon-private
+/// env file (`oci_env_file::OciEnvFile`).
 pub fn render_with_env_files(
     spec: &SandboxSpec,
     engine: SandboxEngine,
@@ -172,49 +176,58 @@ pub fn render_with_env_files(
         argv.push(format!("{}:size={}m", mount.target, mount.size_mb));
     }
 
-    // --- Secret env files (in slice order).
+    // --- Env files (in slice order). Exactly one daemon-private
+    // env file is supplied in production; it carries the ENTIRE
+    // assembled OCI environment.
     for path in env_files {
         argv.push("--env-file".to_string());
         argv.push(path.display().to_string());
     }
 
-    // --- Environment, read from the spec (not `std::env`).
-    // `resolve` guarantees both CADUCEUS_* entries; the fallbacks are
-    // a non-panicking safety net for a spec-construction bug.
-    argv.push("-e".to_string());
-    argv.push(format!(
-        "CADUCEUS_RUN_ID={}",
-        env_value(spec, "CADUCEUS_RUN_ID", spec.name().to_string())
-    ));
-    argv.push("-e".to_string());
-    argv.push(format!(
-        "CADUCEUS_ISSUE_ID={}",
-        env_value(
-            spec,
-            "CADUCEUS_ISSUE_ID",
-            label_value(spec, "caduceus.issue_id").unwrap_or_default(),
-        )
-    ));
-    // Remaining canonical `CADUCEUS_*` entries, in canonical order.
-    // `resolve` guarantees all of them; the fallbacks are a
-    // non-panicking safety net for a spec-construction bug.
-    let result_path_fallback = format!("{CONTAINER_OUTPUT_PATH}/{WORKER_RESULT_FILE}");
-    for (key, fallback) in [
-        ("CADUCEUS_ISSUE_NUMBER", ""),
-        ("CADUCEUS_ISSUE_REPO", ""),
-        ("CADUCEUS_ISSUE_TITLE", ""),
-        ("CADUCEUS_ISSUE_BODY", ""),
-        ("CADUCEUS_ISSUE_LABELS_JSON", "[]"),
-        ("CADUCEUS_CONTEXT_JSON", "{}"),
-        ("CADUCEUS_BRANCH_NAME", ""),
-        ("CADUCEUS_WORKTREE_PATH", CONTAINER_WORKSPACE_PATH),
-        ("CADUCEUS_RESULT_PATH", result_path_fallback.as_str()),
-    ] {
+    // --- Environment. The `-e` fallback exists only for callers
+    // that render without env files: a supplied env file is
+    // authoritative (it is built from the same `spec.environment`),
+    // and emitting `-e` alongside it would put environment values
+    // back into argv, violating the frozen no-values-in-argv
+    // invariant (issue #249; design D4).
+    if env_files.is_empty() {
+        // `resolve` guarantees both CADUCEUS_* entries; the fallbacks
+        // are a non-panicking safety net for a spec-construction bug.
         argv.push("-e".to_string());
         argv.push(format!(
-            "{key}={}",
-            env_value(spec, key, fallback.to_string())
+            "CADUCEUS_RUN_ID={}",
+            env_value(spec, "CADUCEUS_RUN_ID", spec.name().to_string())
         ));
+        argv.push("-e".to_string());
+        argv.push(format!(
+            "CADUCEUS_ISSUE_ID={}",
+            env_value(
+                spec,
+                "CADUCEUS_ISSUE_ID",
+                label_value(spec, "caduceus.issue_id").unwrap_or_default(),
+            )
+        ));
+        // Remaining canonical `CADUCEUS_*` entries, in canonical order.
+        // `resolve` guarantees all of them; the fallbacks are a
+        // non-panicking safety net for a spec-construction bug.
+        let result_path_fallback = format!("{CONTAINER_OUTPUT_PATH}/{WORKER_RESULT_FILE}");
+        for (key, fallback) in [
+            ("CADUCEUS_ISSUE_NUMBER", ""),
+            ("CADUCEUS_ISSUE_REPO", ""),
+            ("CADUCEUS_ISSUE_TITLE", ""),
+            ("CADUCEUS_ISSUE_BODY", ""),
+            ("CADUCEUS_ISSUE_LABELS_JSON", "[]"),
+            ("CADUCEUS_CONTEXT_JSON", "{}"),
+            ("CADUCEUS_BRANCH_NAME", ""),
+            ("CADUCEUS_WORKTREE_PATH", CONTAINER_WORKSPACE_PATH),
+            ("CADUCEUS_RESULT_PATH", result_path_fallback.as_str()),
+        ] {
+            argv.push("-e".to_string());
+            argv.push(format!(
+                "{key}={}",
+                env_value(spec, key, fallback.to_string())
+            ));
+        }
     }
 
     // --- Labels (spec order — fixed: daemon_id, run_id, issue_id).

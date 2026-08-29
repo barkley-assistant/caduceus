@@ -713,6 +713,7 @@ fn disk_pressure_watchdog_terminates_in_flight_and_refuses_new_dispatch() {
                 &NullState,
                 engine,
                 argv,
+                None,
                 CancellationToken::new(),
                 guard_for_run.watchdog_token(),
             )

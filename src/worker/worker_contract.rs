@@ -358,7 +358,13 @@ pub fn spawn(
 
 /// Return true when *name* (an `OsStr`) is a credential or
 /// daemon-internal secret the worker must never see.
-fn denied_name(name: &OsStr) -> bool {
+///
+/// `pub(crate)` so the OCI path (`sandbox.pass_env` config validation
+/// in `infra::config::setup` and defensive re-checking in
+/// `executor::sandbox_spec::resolve_with_env`) reuses this single
+/// deny authority — the table is shared, NOT copied (spec R4,
+/// design D1). Semantics unchanged.
+pub(crate) fn denied_name(name: &OsStr) -> bool {
     let bytes = name.as_bytes();
     // Exact-name denials.
     for denied in DENIED_EXACT_VARS {

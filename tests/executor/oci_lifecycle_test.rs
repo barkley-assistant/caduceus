@@ -120,6 +120,7 @@ async fn cleanup_on_cancel_and_timeout() {
         &state,
         SandboxEngine::Docker,
         create_argv(),
+        None,
         cancel.clone(),
         CancellationToken::new(),
     )
@@ -156,6 +157,7 @@ async fn engine_unavailable_surfaces_structured() {
         &state,
         SandboxEngine::Docker,
         create_argv(),
+        None,
         cancel.clone(),
         CancellationToken::new(),
     )
@@ -194,6 +196,7 @@ async fn stop_kill_remove_bounded() {
             &state,
             SandboxEngine::Docker,
             create_argv(),
+            None,
             cancel,
             CancellationToken::new(),
         ),
@@ -242,6 +245,7 @@ async fn run_with_argv_wires_engine_into_state_row() {
         &state,
         SandboxEngine::Podman,
         create_argv(),
+        None,
         cancel,
         CancellationToken::new(),
     )

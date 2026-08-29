@@ -7,12 +7,15 @@
 //! only formats what the spec already contains.
 //!
 //! Pure module: no `tokio::process`, no `std::fs`, no global mutable
-//! state. The only `std::env` access is for `pass_env` filtering inside
-//! [`resolve`]. Every I/O-derived fact the resolver needs (worktree
+//! state. The only `std::env` access is the single parent-env capture
+//! inside [`resolve`]; [`resolve_with_env`] takes an injected snapshot
+//! instead. Every I/O-derived fact the resolver needs (worktree
 //! owner uid/gid, host `.git` type, engine rootful/rootless mode) is
 //! gathered by the pre-flight probe (`engine_probe`) and carried in
 //! [`RuntimeFacts`].
 
+use std::collections::BTreeMap;
+use std::ffi::{OsStr, OsString};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
@@ -23,8 +26,32 @@ use crate::github::issue::IssueKey;
 use crate::infra::config::{Config, SandboxConfig, SandboxNetwork};
 use crate::infra::error::{CaduceusError, CaduceusResult};
 use crate::worker::worker_contract::{
-    CONTAINER_OUTPUT_PATH, CONTAINER_WORKSPACE_PATH, WORKER_RESULT_FILE,
+    denied_name, CONTAINER_OUTPUT_PATH, CONTAINER_WORKSPACE_PATH, WORKER_RESULT_FILE,
 };
+
+/// The canonical `CADUCEUS_*` variable names every OCI worker
+/// receives (the frozen worker-environment contract, issue #249).
+/// Shared authority for `resolve_with_env` assembly and for the
+/// `sandbox.pass_env` reserved-key collision check at config load.
+pub const CANONICAL_ENV_KEYS: &[&str] = &[
+    "CADUCEUS_RUN_ID",
+    "CADUCEUS_ISSUE_ID",
+    "CADUCEUS_ISSUE_NUMBER",
+    "CADUCEUS_ISSUE_REPO",
+    "CADUCEUS_ISSUE_TITLE",
+    "CADUCEUS_ISSUE_BODY",
+    "CADUCEUS_ISSUE_LABELS_JSON",
+    "CADUCEUS_CONTEXT_JSON",
+    "CADUCEUS_BRANCH_NAME",
+    "CADUCEUS_WORKTREE_PATH",
+    "CADUCEUS_RESULT_PATH",
+];
+
+/// Compat values always present in the OCI worker environment. The
+/// container root filesystem is read-only with a bounded tmpfs at
+/// `/tmp`, so both point there; they are never inherited from the
+/// host environment.
+pub const COMPAT_ENV_KEYS: &[&str] = &["HOME", "TMPDIR"];
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -212,7 +239,13 @@ pub struct FixedSecurityPolicy;
 /// Construction is only possible via [`resolve`] — no public
 /// constructor, no `Default`, no builder. Every mandatory control
 /// is a total (non-`Option`) field.
-#[derive(Clone, Debug)]
+///
+/// `Debug` is a manual impl (not derived): `environment` is rendered
+/// as the sorted KEY list only — never the values — so a spec dumped
+/// through `Debug` (logs, panic messages, test failures) cannot leak
+/// resolved `pass_env` values or canonical content (spec R6; design
+/// D7).
+#[derive(Clone)]
 pub struct SandboxSpec {
     name: String,
     image: ImageRef,
@@ -227,6 +260,33 @@ pub struct SandboxSpec {
     network: NetworkMode,
     security: FixedSecurityPolicy,
     labels: Vec<(String, String)>,
+}
+
+impl std::fmt::Debug for SandboxSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `environment` renders as the sorted key list only; resolved
+        // values never reach `Debug` output (spec R6, design D7).
+        let env_keys: Vec<&str> = self
+            .environment
+            .iter()
+            .map(|(key, _)| key.as_str())
+            .collect();
+        f.debug_struct("SandboxSpec")
+            .field("name", &self.name)
+            .field("image", &self.image)
+            .field("command", &self.command)
+            .field("identity", &self.identity)
+            .field("workspace_mount", &self.workspace_mount)
+            .field("output_mount", &self.output_mount)
+            .field("git_shadow", &self.git_shadow)
+            .field("tmpfs", &self.tmpfs)
+            .field("environment", &env_keys)
+            .field("resources", &self.resources)
+            .field("network", &self.network)
+            .field("security", &self.security)
+            .field("labels", &self.labels)
+            .finish()
+    }
 }
 
 // --- SandboxSpec accessors ------------------------------------------------
@@ -270,10 +330,11 @@ impl SandboxSpec {
     pub fn tmpfs(&self) -> &[TmpfsMount] {
         &self.tmpfs
     }
-    /// Environment entries (ordered). `resolve` guarantees the full
-    /// canonical `CADUCEUS_*` set (run, issue, context, branch, and
-    /// the container-side worktree/result paths), not just the run
-    /// and issue identifiers.
+    /// Environment entries, sorted by key. `resolve_with_env`
+    /// guarantees the full canonical `CADUCEUS_*` set (run, issue,
+    /// context, branch, and the container-side worktree/result
+    /// paths), the two compat values (`HOME`/`TMPDIR`), and the
+    /// resolved `sandbox.pass_env` entries — and nothing else.
     pub fn environment(&self) -> &[(String, String)] {
         &self.environment
     }
@@ -407,14 +468,44 @@ pub fn select_git_shadow(kind: GitShadowKind, shadow_host: &Path) -> Option<Moun
 /// Resolve a [`SandboxConfig`] plus runtime facts into a closed
 /// [`SandboxSpec`].
 ///
-/// Pure — no I/O. The only `std::env` reads are for `pass_env`
-/// filtering (task 1.13 contract). All facts the resolver needs
-/// (owner uid/gid, `.git` type, engine mode) must already be carried
-/// in [`RuntimeFacts`] by the pre-flight probe.
+/// This is a pure function: it reads only the sandbox configuration,
+/// the probed runtime facts, and the executor spec. It performs no
+/// I/O and no subprocess calls; the argv renderer and the lifecycle
+/// runner consume its output. The only environment access is the
+/// `pass_env` filter below (spec R4).
 pub fn resolve(
     sandbox: &SandboxConfig,
     runtime: &RuntimeFacts,
     spec: &ExecutorSpec,
+) -> CaduceusResult<SandboxSpec> {
+    let parent_env: BTreeMap<OsString, OsString> = std::env::vars_os().collect();
+    resolve_with_env(sandbox, runtime, spec, &parent_env)
+}
+
+/// Newline normalization for canonical free-text values (issue
+/// title/body, context JSON, …): the OCI env file is line-based and
+/// cannot represent a newline, so a multi-line canonical value is
+/// collapsed deterministically — `\r\n` and lone `\n` first, then
+/// any remaining `\r`, each becoming a single space. GitHub issue
+/// bodies are routinely multi-line, so this lets every real issue
+/// resolve and run instead of hard-failing at env-file creation.
+/// Content fidelity is unaffected: the full multi-line prompt is
+/// written into the worktree by `write_prompt`, and operator
+/// `pass_env` values are never normalized (they fail closed,
+/// design D3).
+fn normalize_canonical_value(value: &str) -> String {
+    value.replace("\r\n", "\n").replace(['\n', '\r'], " ")
+}
+
+/// [`resolve`] with an injected parent-environment map
+/// (`BTreeMap<OsString, OsString>`): the `pass_env` filter consults
+/// ONLY this map — never `std::env` — so resolution is deterministic
+/// and directly testable (spec R3; design D3).
+pub fn resolve_with_env(
+    sandbox: &SandboxConfig,
+    runtime: &RuntimeFacts,
+    spec: &ExecutorSpec,
+    parent_env: &BTreeMap<OsString, OsString>,
 ) -> CaduceusResult<SandboxSpec> {
     // 1. Lexically normalize every declared path so containment can
     //    be checked without filesystem access (resolve is pure).
@@ -547,18 +638,77 @@ pub fn resolve(
     //     networking is structurally unrepresentable either way.
     let network = NetworkMode::from(sandbox.network);
 
-    // 10. Environment — the full canonical `CADUCEUS_*` set, with
-    //     CONTAINER-side path values so host paths never leak into
-    //     the container environment (issue #243). Value formatting
-    //     mirrors the canonical layer of
-    //     `worker_contract::sanitized_env`; only
+    // 10. Environment — exactly three sources (frozen contract,
+    //     issue #249): the resolved `sandbox.pass_env` entries, the
+    //     canonical `CADUCEUS_*` set, and the two compat values.
+    //     Stored as a sorted map so the env-file byte layout is
+    //     deterministic (design D5).
+    //
+    //     `pass_env` resolution (spec R4, FROZEN v1): each entry is
+    //     an EXACT daemon-environment variable name. PRESENT ⇒ its
+    //     value is included; ABSENT ⇒ a typed error FAILS the run
+    //     BEFORE container create — never warn-and-skip. The shared
+    //     `denied_name` authority is re-applied defensively here
+    //     (a denied name is refused regardless of presence), and
+    //     values must be valid UTF-8 free of `\n`/`\r` because the
+    //     OCI env file is line-based. Error messages carry the
+    //     variable NAME only — never its value.
+    let mut environment: BTreeMap<String, String> = BTreeMap::new();
+    for name in &sandbox.pass_env {
+        let name_os = OsStr::new(name.as_str());
+        if denied_name(name_os) {
+            return Err(CaduceusError::Config(format!(
+                "sandbox.pass_env entry {name:?} is a denied credential or \
+                 daemon-internal name"
+            )));
+        }
+        let value = match parent_env.get(name_os) {
+            Some(value) => value,
+            None => {
+                return Err(CaduceusError::Config(format!(
+                    "sandbox.pass_env name {name} not present in daemon environment"
+                )));
+            }
+        };
+        let value = value.to_str().ok_or_else(|| {
+            CaduceusError::Config(format!(
+                "sandbox.pass_env name {name} is not valid UTF-8 in the \
+                 daemon environment"
+            ))
+        })?;
+        if value.contains('\n') || value.contains('\r') {
+            return Err(CaduceusError::Config(format!(
+                "sandbox.pass_env name {name} contains a newline and cannot \
+                 be transported in the OCI env file"
+            )));
+        }
+        // Resolved entries go in first; the canonical + compat writes
+        // below are authoritative even if a reserved-key collision
+        // somehow bypassed config validation (design D3 step 3).
+        environment.insert(name.clone(), value.to_string());
+    }
+
+    //     The canonical `CADUCEUS_*` set carries CONTAINER-side path
+    //     values so host paths never leak into the container
+    //     environment (issue #243). Value formatting mirrors the
+    //     canonical layer of `worker_contract::sanitized_env`; only
     //     `CADUCEUS_WORKTREE_PATH` and `CADUCEUS_RESULT_PATH` are
     //     substituted for their container paths — every other
     //     canonical variable carries the same value as TrustedHost.
     //     No credential variable is ever emitted here.
+    //
+    //     Canonical values are newline-normalized (below) because the
+    //     OCI env file is line-based and GitHub issue titles/bodies
+    //     are routinely multi-line: normalization lets every real
+    //     issue resolve and run instead of failing pre-create. The
+    //     full multi-line content still reaches the worker verbatim
+    //     through the prompt file written into the worktree
+    //     (`write_prompt`). Operator `pass_env` values are NOT
+    //     normalized — a newline-bearing one fails closed above
+    //     (design D3).
     let labels_json = serde_json::to_string(&spec.labels)
         .map_err(|err| CaduceusError::Config(format!("labels JSON serialise: {err}")))?;
-    let mut environment: Vec<(String, String)> = vec![
+    let canonical: Vec<(String, String)> = vec![
         ("CADUCEUS_RUN_ID".to_string(), runtime.run_id.clone()),
         ("CADUCEUS_ISSUE_ID".to_string(), runtime.issue.display_key()),
         (
@@ -589,11 +739,15 @@ pub fn resolve(
             format!("{CONTAINER_OUTPUT_PATH}/{WORKER_RESULT_FILE}"),
         ),
     ];
-    for name in &sandbox.pass_env {
-        if let Ok(value) = std::env::var(name) {
-            environment.push((name.clone(), value));
-        }
+    for (key, value) in canonical {
+        environment.insert(key, normalize_canonical_value(&value));
     }
+    // Two compat values, always present (frozen contract): the
+    // container rootfs is read-only with a bounded tmpfs at `/tmp`.
+    for (key, value) in [("HOME", "/tmp"), ("TMPDIR", "/tmp")] {
+        environment.insert(key.to_string(), value.to_string());
+    }
+    let environment: Vec<(String, String)> = environment.into_iter().collect();
 
     // 11. Tmpfs — bounded ephemeral surfaces only: `/tmp` sized from
     //     `resources.tmpfs_mb` and `/dev/shm` sized from

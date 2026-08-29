@@ -177,7 +177,11 @@ pub fn redact(value: &str) -> String {
     if value.is_empty() {
         return value.to_string();
     }
-    let mut redacted = value.to_string();
+    // Env-file path pattern (`caduceus_env_*.env`, issue #249): the
+    // daemon-private env file holds the assembled worker environment
+    // at rest, so its path is never loggable content — replace the
+    // whole token before any other redaction.
+    let mut redacted = redact_env_file_paths(value);
     for needle in ["GITHUB_TOKEN", "CADUCEUS_GITHUB_TOKEN", "GH_TOKEN"] {
         let mut search_from = 0usize;
         while let Some(pos) = redacted[search_from..].find(needle) {
@@ -213,6 +217,29 @@ pub fn redact(value: &str) -> String {
         }
     }
     redacted
+}
+
+/// Replace every `caduceus_env_*.env` path token with `<redacted>`
+/// (issue #249). The env file carries the assembled OCI environment
+/// at rest, so its path must never be mistaken for loggable content;
+/// only the random file name is replaced — the daemon-private run
+/// directory prefix carries no secret. A `caduceus_env_` prefix whose
+/// `.env` suffix never arrives is redacted to the end of the token.
+fn redact_env_file_paths(value: &str) -> String {
+    const NEEDLE: &str = "caduceus_env_";
+    const SUFFIX: &str = ".env";
+    let mut out = value.to_string();
+    let mut search_from = 0usize;
+    while let Some(pos) = out[search_from..].find(NEEDLE) {
+        let start = search_from + pos;
+        let end = match out[start..].find(SUFFIX) {
+            Some(rel) => start + rel + SUFFIX.len(),
+            None => out.len(),
+        };
+        out.replace_range(start..end, "<redacted>");
+        search_from = start + "<redacted>".len();
+    }
+    out
 }
 
 fn advance_to_end_of_value(s: &str, start: usize) -> usize {

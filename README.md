@@ -185,6 +185,40 @@ on the
 
 What the worker container sees is a closed, typed spec:
 
+- **An exactly-specified environment.** The container receives the
+  canonical `CADUCEUS_*` variable set (run, issue, context, branch,
+  and the container-side worktree/result paths), the two compat
+  values `HOME=/tmp` and `TMPDIR=/tmp`, and nothing else from the
+  host — no host-environment inheritance. The whole environment
+  travels through ONE daemon-private file (mode 0600, randomly
+  named, under `<state_dir>/oci-runs/<run_id>`) passed to `create`
+  as a single `--env-file`; no environment value is ever in the
+  container-create argv, and the file is deleted immediately after
+  `create` returns on every path (success, failure, cancellation).
+  Canonical free-text values (such as the issue title and body) are
+  newline-normalized for the line-based env file (`\r\n` and `\n`
+  collapse to a single space), so multi-line GitHub issues run; the
+  full multi-line content still reaches the worker verbatim through
+  the prompt file written into the worktree. Operator `pass_env`
+  values are NOT normalized: a newline-bearing value fails the run
+  closed, before the container is created.
+- **Operator `sandbox.pass_env` (exact names only).** Each entry
+  names ONE daemon-environment variable to forward, verbatim — no
+  prefix patterns. A requested name absent from the daemon
+  environment fails the run with a typed error BEFORE the container
+  is created; nothing is silently skipped. Credential names
+  (`GITHUB_TOKEN`, `GH_TOKEN`, `CADUCEUS_GITHUB_TOKEN`,
+  `AUTO_ISSUE_GITHUB_TOKEN`, any name containing both `GITHUB` and
+  `TOKEN`, and any `CADUCEUS_*` name containing `SECRET` or
+  `TOKEN`) are refused at config load — whether or not the variable
+  currently exists. Names colliding with the canonical
+  `CADUCEUS_*` set or `HOME`/`TMPDIR` are also refused at load.
+- **Threat note.** Anything handed to a worker — including
+  `pass_env` values — is readable and exfiltratable by that worker,
+  especially with `network: unrestricted`. `pass_env` is for
+  non-sensitive worker inputs (proxy endpoints, feature flags, tool
+  config); never for credentials. A worker with unrestricted
+  network access can send anything it can read to any host.
 - **Two writable host-backed surfaces, nothing else.**
   `/workspace` binds the per-run worktree directly (no
   copied or `.git`-stripped second workspace) and `/output`

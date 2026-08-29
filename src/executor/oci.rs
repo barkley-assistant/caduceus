@@ -14,13 +14,14 @@
 //! and daemon-owned artifact creation, `oci_image` owns image acquisition,
 //! and `oci_lifecycle` only consumes already-rendered argv.
 
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
 use crate::executor::{
-    engine_probe, oci_image, oci_lifecycle, oci_platform, sandbox_renderer, sandbox_spec, Executor,
-    ExecutorOutcome, ExecutorSpec,
+    engine_probe, oci_env_file, oci_image, oci_lifecycle, oci_platform, sandbox_renderer,
+    sandbox_spec, Executor, ExecutorOutcome, ExecutorSpec,
 };
 use crate::infra::config::Config;
 use crate::infra::disk::DiskPressureGuard;
@@ -77,20 +78,33 @@ impl Executor for OciExecutor {
             let conn = store::open(&db_path)?;
             let dao = OciRunDao::new(conn);
 
-            // 4. Render the create argv. Secret env files are created
-            //    after resolution (`secret_transport`) and passed as
-            //    renderer parameters; today the daemon writes no
-            //    secrets, so the slice is empty and no `--env-file`
-            //    is emitted.
+            // 4. Write the assembled environment (canonical + compat +
+            //    resolved `pass_env` from `spec.environment`) to the
+            //    daemon-private, randomly named, mode-0600 env file
+            //    under `state_dir/oci-runs/<run_id>` (issue #249). Its
+            //    path is the ONLY env surface that reaches argv: the
+            //    renderer emits one `--env-file` token and zero `-e`
+            //    tokens. A creation failure fails the run pre-create —
+            //    there is no `-e` fallback (design D4/D5). The
+            //    lifecycle owns the deletion guard and drops it
+            //    immediately after `create` returns.
             let engine = self.cfg.sandbox().engine;
-            let argv = sandbox_renderer::render_with_env_files(&resolved, engine, &[]);
+            let run_dir = runtime.state_dir.join("oci-runs").join(&runtime.run_id);
+            let env_map: BTreeMap<String, String> =
+                resolved.environment().iter().cloned().collect();
+            let env_file = oci_env_file::OciEnvFile::create(&run_dir, &env_map)?;
+            let argv = sandbox_renderer::render_with_env_files(
+                &resolved,
+                engine,
+                &[env_file.path().to_path_buf()],
+            );
 
             // 5. Acquire and verify the immutable worker image before the
             //    lifecycle can insert its Created state or invoke create.
-            //    The run directory is already created by the probe, but is
-            //    passed explicitly so provenance remains scoped to this run.
+            //    The run directory is already created by the probe (and
+            //    idempotently re-ensured by the env file), but is passed
+            //    explicitly so provenance remains scoped to this run.
             let host = oci_platform::host_platform();
-            let run_dir = runtime.state_dir.join("oci-runs").join(&runtime.run_id);
             let _image = oci_image::ensure_image(
                 engine,
                 resolved.image_ref(),
@@ -111,6 +125,7 @@ impl Executor for OciExecutor {
                 &dao,
                 engine,
                 argv,
+                Some(env_file),
                 spec.cancellation.child_token(),
                 self.disk.watchdog_token(),
             )

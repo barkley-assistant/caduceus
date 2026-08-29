@@ -686,6 +686,88 @@ fn renders_env_files_in_slice_order() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// File-only transport (issue #249; design D4): a supplied env file is
+// authoritative — zero `-e` tokens, so no env value reaches argv.
+// ---------------------------------------------------------------------------
+
+/// OCI file-mode render emits exactly one `--env-file <path>` and
+/// ZERO `-e` tokens for any `spec.environment` entry.
+#[test]
+fn file_mode_emits_exactly_one_env_file_and_zero_e() {
+    let (spec, _, _, _, _) = default_fixture();
+    let env_file = PathBuf::from("/state/oci-runs/run-001/caduceus_env_01J.env");
+    let argv = render_with_env_files(&spec, SandboxEngine::Docker, &[env_file]);
+    let env_file_positions: Vec<usize> = argv
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| a.as_str() == "--env-file")
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(
+        env_file_positions.len(),
+        1,
+        "exactly one --env-file for the OCI environment, got: {argv:?}"
+    );
+    assert_eq!(
+        argv[env_file_positions[0] + 1],
+        "/state/oci-runs/run-001/caduceus_env_01J.env"
+    );
+    assert_eq!(
+        argv.iter().filter(|a| a.as_str() == "-e").count(),
+        0,
+        "file mode must emit zero -e tokens, got: {argv:?}"
+    );
+}
+
+/// Precedence pin: `env_files` non-empty ⇒ zero `-e` tokens even with
+/// a non-empty `spec.environment`. The renderer's `-e` fallback runs
+/// only for callers that render without env files.
+#[test]
+fn env_files_non_empty_implies_zero_e_even_with_non_empty_environment() {
+    let (spec, _, _, _, _) = default_fixture();
+    assert!(
+        !spec.environment().is_empty(),
+        "fixture spec has a non-empty environment"
+    );
+    // Plain render (no files) still emits the -e fallback.
+    assert!(
+        render(&spec, SandboxEngine::Docker)
+            .iter()
+            .any(|a| a.as_str() == "-e"),
+        "the -e fallback must exist for callers without env files"
+    );
+    // File mode suppresses it entirely.
+    let env_file = PathBuf::from("/state/oci-runs/run-001/caduceus_env_01K.env");
+    let argv = render_with_env_files(&spec, SandboxEngine::Docker, &[env_file]);
+    assert!(
+        !argv.iter().any(|a| a.as_str() == "-e"),
+        "env file is authoritative; -e must be suppressed, got: {argv:?}"
+    );
+}
+
+/// No canonical env value bytes appear in file-mode argv: the
+/// `--env-file` argument is the only env surface in argv.
+#[test]
+fn file_mode_argv_carries_no_env_value_bytes() {
+    let (spec, _, _, _, _) = default_fixture();
+    let env_file = PathBuf::from("/state/oci-runs/run-001/caduceus_env_01L.env");
+    let argv = render_with_env_files(&spec, SandboxEngine::Docker, &[env_file]);
+    // Representative canonical value bytes must not appear in argv.
+    for value_bytes in ["Fix login bug", "Steps to reproduce", "run-001="] {
+        assert!(
+            !argv.iter().any(|a| a.contains(value_bytes)),
+            "canonical value byte {value_bytes:?} must not appear in file-mode argv: {argv:?}"
+        );
+    }
+    // No KEY=VALUE token for any env entry.
+    assert!(
+        !argv.iter().any(|a| a.contains('=')
+            && (a.starts_with("CADUCEUS_") || a == "HOME=/tmp" || a == "TMPDIR=/tmp")),
+        "no env KEY=VALUE token may appear in file-mode argv: {argv:?}"
+    );
+}
+
 #[test]
 fn renders_labels_in_fixed_order() {
     let (spec, _, _, _, _) = default_fixture();

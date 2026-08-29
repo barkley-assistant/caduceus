@@ -1,11 +1,14 @@
 use super::{LoadContext, DENIED_ENV_VARS, FORBIDDEN_INTERPOLATION_TOKENS, PLUGIN_ROOT_TOKEN};
 
 use std::collections::HashSet;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use regex::Regex;
 
+use crate::executor::sandbox_spec::{CANONICAL_ENV_KEYS, COMPAT_ENV_KEYS};
 use crate::infra::error::{CaduceusError, CaduceusResult};
+use crate::worker::worker_contract::denied_name;
 
 // Path / interpolation helpers
 
@@ -306,6 +309,62 @@ pub(crate) fn validate_worker_env_allowlist(values: &[String], errors: &mut Vec<
             ));
         }
     }
+}
+
+/// OCI `sandbox.pass_env` deny validation (spec "Config-time pass_env
+/// deny validation"; design D2). Mirrors the structure of
+/// [`validate_worker_env_allowlist`] but uses the SHARED
+/// `denied_name` authority — no copied credential-name table.
+///
+/// Every rejection is PRESENCE-INDEPENDENT (a name-shape property,
+/// checked whether or not the variable currently exists):
+///
+/// 1. Empty entry.
+/// 2. Name charset must match `^[A-Za-z_][A-Za-z0-9_]*$` — the OCI
+///    env file cannot quote keys, so this closes injection shapes
+///    such as `=`, newlines, or `#` comment markers.
+/// 3. `denied_name(OsStr::new(name))` — the four exact credential
+///    names, the `GITHUB`∧`TOKEN` substring rule, and
+///    `CADUCEUS_*`∧(`SECRET`|`TOKEN`).
+/// 4. Reserved-key collision with a canonical `CADUCEUS_*` variable
+///    or the compat keys `HOME`/`TMPDIR` — a `pass_env` override
+///    would let config spoof worker identity or result routing.
+pub(crate) fn validate_sandbox_pass_env(values: &[String], errors: &mut Vec<String>) {
+    for name in values {
+        if name.is_empty() {
+            errors.push("sandbox.pass_env entry must not be empty".to_string());
+            continue;
+        }
+        if !is_portable_env_name(name) {
+            errors.push(format!(
+                "sandbox.pass_env entry {name:?} must match ^[A-Za-z_][A-Za-z0-9_]*$"
+            ));
+            continue;
+        }
+        if denied_name(OsStr::new(name.as_str())) {
+            errors.push(format!(
+                "sandbox.pass_env contains denied credential name: {name:?}"
+            ));
+            continue;
+        }
+        if CANONICAL_ENV_KEYS.contains(&name.as_str()) || COMPAT_ENV_KEYS.contains(&name.as_str()) {
+            errors.push(format!(
+                "sandbox.pass_env entry {name:?} collides with a reserved \
+                 canonical/compat key"
+            ));
+        }
+    }
+}
+
+/// True when *name* matches `^[A-Za-z_][A-Za-z0-9_]*$` — the closed
+/// portable env-key charset accepted by the OCI env-file transport.
+fn is_portable_env_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Return ``true`` when *value* (an exact name or a terminal ``*``
