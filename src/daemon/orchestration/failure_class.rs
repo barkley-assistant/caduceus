@@ -12,6 +12,9 @@ use crate::infra::error::CaduceusError;
 ///   that counts against its retry budget (`Worker { .. }`
 ///   variants, content/schema/result validation errors, voice
 ///   rejections, code-result with no changes).
+/// * [`FailureClass::ImageVerification`] — a digest or architecture
+///   contract violation was found in an image. These deterministic
+///   failures do not count against the worker retry budget.
 /// * [`FailureClass::Infrastructure`] — the daemon encountered a
 ///   transport, filesystem, or operator configuration problem
 ///   that does not count against the budget. The orchestrator
@@ -27,6 +30,7 @@ use crate::infra::error::CaduceusError;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FailureClass {
     Worker,
+    ImageVerification,
     Infrastructure,
     RateLimit {
         reset_at: u64,
@@ -55,7 +59,10 @@ impl FailureClass {
         match self {
             FailureClass::RateLimit { .. } => Some(crate::state::meta::TickOutcome::RateLimited),
             FailureClass::Cancellation => Some(crate::state::meta::TickOutcome::Cancelled),
-            FailureClass::Worker | FailureClass::Infrastructure | FailureClass::Terminal => None,
+            FailureClass::Worker
+            | FailureClass::ImageVerification
+            | FailureClass::Infrastructure
+            | FailureClass::Terminal => None,
         }
     }
 
@@ -185,7 +192,15 @@ pub fn classify_error(err: &CaduceusError) -> FailureClass {
         // worker-attributable.
         CaduceusError::OciIdentityUnsupported { .. } => FailureClass::Infrastructure,
         CaduceusError::OciMismatchedCliVersion { .. } => FailureClass::Infrastructure,
-        CaduceusError::OciPullFailed { .. } => FailureClass::Infrastructure,
+        // Pull, inspect, and missing-image failures are transient engine or
+        // environment conditions and receive the existing worker treatment.
+        CaduceusError::OciPullFailed { .. }
+        | CaduceusError::OciImageInspectFailed { .. }
+        | CaduceusError::OciImageMissing { .. } => FailureClass::Worker,
+        // Digest and architecture failures are deterministic image-contract
+        // violations, so callers can distinguish them from transient pulls.
+        CaduceusError::OciImageDigestMismatch { .. }
+        | CaduceusError::OciImageArchitectureMismatch { .. } => FailureClass::ImageVerification,
         CaduceusError::OciCreateFailed { .. } => FailureClass::Infrastructure,
         CaduceusError::OciStartFailed { .. } => FailureClass::Infrastructure,
         CaduceusError::OciWaitFailed { .. } => FailureClass::Infrastructure,
@@ -202,7 +217,6 @@ pub fn classify_error(err: &CaduceusError) -> FailureClass {
         CaduceusError::OciSecretLeakDetected { .. } => FailureClass::Infrastructure,
         CaduceusError::ReducedContainmentNotAcknowledged => FailureClass::Infrastructure,
         CaduceusError::OciImageNotDigestPinned { .. } => FailureClass::Worker,
-        CaduceusError::OciPullPolicyIncompatible { .. } => FailureClass::Worker,
 
         // Generic Other — content / schema / public-voice / worker
         // result validation land here. Voice rejections and

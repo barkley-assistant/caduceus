@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::executor::ExecutorSpec;
 use crate::github::issue::IssueKey;
-use crate::infra::config::{Config, OciPullPolicy, SandboxConfig};
+use crate::infra::config::{Config, SandboxConfig};
 use crate::infra::error::{CaduceusError, CaduceusResult};
 use crate::worker::worker_contract::{
     CONTAINER_OUTPUT_PATH, CONTAINER_WORKSPACE_PATH, WORKER_RESULT_FILE,
@@ -217,6 +217,10 @@ impl SandboxSpec {
     /// Digest-pinned image reference.
     pub fn image(&self) -> &ImageRef {
         &self.image
+    }
+    /// The configured digest-pinned image reference as a plain string.
+    pub fn image_ref(&self) -> &str {
+        self.image.as_ref()
     }
     /// Worker command argv.
     pub fn command(&self) -> &[String] {
@@ -505,16 +509,7 @@ pub fn resolve(
     // 6. Image — reject non-digest-pinned references.
     let image = ImageRef::new(&sandbox.image)?;
 
-    // 7. Pull policy — `Always` is incompatible with digest-pinned images.
-    if sandbox.pull_policy == OciPullPolicy::Always {
-        return Err(CaduceusError::OciPullPolicyIncompatible {
-            detail: "pull_policy 'Always' is incompatible with \
-                     digest-pinned images; use 'IfMissing' or 'Never'"
-                .to_string(),
-        });
-    }
-
-    // 8. Resources — mapped 1:1 from SandboxResources.
+    // 7. Resources — mapped 1:1 from SandboxResources.
     let resources = ResourceLimits {
         cpus: sandbox.resources.cpus,
         memory_mb: sandbox.resources.memory_mb,

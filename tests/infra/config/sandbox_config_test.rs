@@ -174,6 +174,26 @@ fn overlong_digest_rejected() {
     );
 }
 
+#[test]
+fn registry_paths_and_ports_are_valid_immutable_references() {
+    for image in [
+        "worker@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "registry.example/worker@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "registry.example:5000/ns/worker@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    ] {
+        load(&with_sandbox(&format!("sandbox:\n  image: \"{image}\"\n")))
+            .expect("digest-pinned registry reference should load");
+    }
+}
+
+#[test]
+fn tagged_image_reference_is_rejected_even_with_a_digest_suffix() {
+    assert_image_rejected(
+        "\"registry.example/worker:latest@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"",
+        "name@sha256:<64 hex>",
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 10.3 — serde enum rejections (surface from serde, not from_raw)
 // ---------------------------------------------------------------------------
@@ -513,7 +533,7 @@ fn test_defaults_sandbox_is_some() {
     assert_eq!(sb.pull_policy, OciPullPolicy::IfMissing);
     assert_eq!(
         sb.image,
-        format!("caduceus-worker@sha256:{}", "0".repeat(64))
+        format!("placeholder/worker@sha256:{}", "0".repeat(64))
     );
     let res: &SandboxResources = &sb.resources;
     assert_eq!(res.cpus, 2.0);

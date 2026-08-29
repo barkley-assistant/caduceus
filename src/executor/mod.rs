@@ -34,7 +34,10 @@ use self::trusted_host::TrustedHostExecutor;
 
 pub mod engine_probe;
 pub mod oci;
+pub mod oci_engine;
+pub mod oci_image;
 pub mod oci_lifecycle;
+pub mod oci_platform;
 pub mod sandbox_renderer;
 pub mod sandbox_spec;
 pub mod secret_transport;

@@ -55,18 +55,16 @@ fn rejects_non_digest_image() {
     }
 }
 
-/// (b) pull_policy Always + digest image → OciPullPolicyIncompatible.
+/// (b) pull_policy Always + digest image is accepted and remains available
+/// to the acquisition layer.
 #[test]
-fn rejects_pull_policy_always_with_digest() {
+fn accepts_pull_policy_always_with_digest() {
     let (mut cfg, worktree) = base();
     cfg.sandbox.as_mut().expect("sandbox").pull_policy = OciPullPolicy::Always;
     let runtime = runtime_for(&cfg, &worktree);
-    let err = resolve(cfg.sandbox(), &runtime, &support::executor_spec(&runtime))
-        .expect_err("must reject");
-    match err {
-        CaduceusError::OciPullPolicyIncompatible { .. } => {}
-        other => panic!("expected OciPullPolicyIncompatible; got: {other:?}"),
-    }
+    let resolved = resolve(cfg.sandbox(), &runtime, &support::executor_spec(&runtime))
+        .expect("always must resolve");
+    assert_eq!(resolved.image_ref(), cfg.sandbox().image);
 }
 
 /// (c) worktree outside workdir_base → OciUndeclaredMount.

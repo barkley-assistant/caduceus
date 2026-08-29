@@ -152,6 +152,30 @@ name = "oci_label_test"
 path = "tests/executor/oci_label_test.rs"
 
 [[test]]
+name = "oci_image_policy_test"
+path = "tests/executor/oci_image_policy_test.rs"
+
+[[test]]
+name = "oci_image_inspect_test"
+path = "tests/executor/oci_image_inspect_test.rs"
+
+[[test]]
+name = "oci_image_verify_test"
+path = "tests/executor/oci_image_verify_test.rs"
+
+[[test]]
+name = "oci_engine_seam_test"
+path = "tests/executor/oci_engine_seam_test.rs"
+
+[[test]]
+name = "oci_ensure_image_test"
+path = "tests/executor/oci_ensure_image_test.rs"
+
+[[test]]
+name = "oci_provenance_test"
+path = "tests/executor/oci_provenance_test.rs"
+
+[[test]]
 name = "policy_test"
 path = "tests/executor/policy_test.rs"
 
