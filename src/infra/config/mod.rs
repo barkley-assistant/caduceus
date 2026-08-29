@@ -985,7 +985,7 @@ impl Config {
                 // Format-valid placeholder; `test_defaults` bypasses
                 // from_raw, so the regex never sees it. YAML-loading
                 // tests supply real-shaped digests.
-                image: format!("caduceus-worker@sha256:{}", "0".repeat(64)),
+                image: format!("placeholder/worker@sha256:{}", "0".repeat(64)),
                 pull_policy: OciPullPolicy::IfMissing,
                 resources: SandboxResources {
                     cpus: 2.0,
@@ -1204,12 +1204,15 @@ impl Config {
 /// caller aggregates them into `CaduceusError::Config`.
 fn resolve_sandbox(raw: RawSandboxConfig, errors: &mut Vec<String>) -> SandboxConfig {
     // image — required, no default; validated by the full-reference
-    // regex `^[^@\s/]+@sha256:[a-f0-9]{64}$`. Failures are decomposed
+    // regex `^[A-Za-z0-9][A-Za-z0-9.-]*(?::[0-9]+)?(?:/[A-Za-z0-9._-]+)*@sha256:[a-f0-9]{64}$`.
+    // Failures are decomposed
     // so the operator can locate and fix the exact problem.
     let image = match raw.image {
         Some(s) if !s.is_empty() => {
-            let image_regex = Regex::new(r"^[^@\s/]+@sha256:[a-f0-9]{64}$")
-                .expect("sandbox image regex is valid");
+            let image_regex = Regex::new(
+                r"^[A-Za-z0-9][A-Za-z0-9.-]*(?::[0-9]+)?(?:/[A-Za-z0-9._-]+)*@sha256:[a-f0-9]{64}$",
+            )
+            .expect("sandbox image regex is valid");
             if !image_regex.is_match(&s) {
                 match s.split_once('@') {
                     None => {

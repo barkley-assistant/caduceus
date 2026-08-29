@@ -343,9 +343,31 @@ pub enum CaduceusError {
     #[error("OCI image is not digest-pinned: {reference}")]
     OciImageNotDigestPinned { reference: String },
 
-    /// Pull policy `Always` is incompatible with digest-pinned images.
-    #[error("OCI pull policy incompatible: {detail}")]
-    OciPullPolicyIncompatible { detail: String },
+    /// The inspected image does not advertise the configured digest in its
+    /// repository digests.
+    #[error("OCI image digest mismatch for {reference}: expected {expected}, found {found:?}")]
+    OciImageDigestMismatch {
+        reference: String,
+        expected: String,
+        found: Vec<String>,
+    },
+
+    /// The inspected image does not match the host architecture and variant
+    /// required for this run.
+    #[error("OCI image architecture mismatch for {reference}: expected {expected}, found {found}")]
+    OciImageArchitectureMismatch {
+        reference: String,
+        expected: String,
+        found: String,
+    },
+
+    /// A local image was not found while pulling was disabled.
+    #[error("OCI image missing for {reference}: pull is disabled")]
+    OciImageMissing { reference: String },
+
+    /// The engine returned an unusable or otherwise failed image inspection.
+    #[error("OCI image inspect failed for {reference}: {detail}")]
+    OciImageInspectFailed { reference: String, detail: String },
 
     /// OCI dispatch was refused because the host disk-pressure
     /// watchdog is breached on the sampled filesystem carrying
@@ -589,9 +611,30 @@ impl fmt::Debug for CaduceusError {
             CaduceusError::OciImageNotDigestPinned { reference } => {
                 format!("OciImageNotDigestPinned {{ reference: {:?} }}", reference)
             }
-            CaduceusError::OciPullPolicyIncompatible { detail } => {
-                format!("OciPullPolicyIncompatible {{ detail: {} }}", scrub(detail))
+            CaduceusError::OciImageDigestMismatch {
+                reference,
+                expected,
+                found,
+            } => format!(
+                "OciImageDigestMismatch {{ reference: {:?}, expected: {:?}, found: {:?} }}",
+                reference, expected, found
+            ),
+            CaduceusError::OciImageArchitectureMismatch {
+                reference,
+                expected,
+                found,
+            } => format!(
+                "OciImageArchitectureMismatch {{ reference: {:?}, expected: {:?}, found: {:?} }}",
+                reference, expected, found
+            ),
+            CaduceusError::OciImageMissing { reference } => {
+                format!("OciImageMissing {{ reference: {:?} }}", reference)
             }
+            CaduceusError::OciImageInspectFailed { reference, detail } => format!(
+                "OciImageInspectFailed {{ reference: {:?}, detail: {} }}",
+                reference,
+                scrub(detail)
+            ),
             CaduceusError::OciDiskPressure {
                 path,
                 device_id,

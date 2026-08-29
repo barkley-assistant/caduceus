@@ -4,23 +4,23 @@
 //! the runtime facts (worktree owner, `.git` type, engine mode) and
 //! create the daemon-owned host artifacts, resolves a typed
 //! [`SandboxSpec`] from the sandbox config and those facts, renders
-//! the `create` argv with the pure renderer, then delegates to
-//! [`oci_lifecycle::run_with_argv`] for the five-step container
-//! lifecycle (create → start → wait → stop → remove). The state DAO
-//! is injected through the config's state directory.
+//! the `create` argv with the pure renderer, acquires and verifies the
+//! configured image, then delegates to [`oci_lifecycle::run_with_argv`]
+//! for the five-step container lifecycle (create → start → wait → stop →
+//! remove). The state DAO is injected through the config's state directory.
 //!
 //! The renderer is the sole argv producer in the crate: `resolve` owns
-//! every host-path and identity decision, `engine_probe` is the sole
-//! pre-flight I/O surface, and `oci_lifecycle` only consumes
-//! already-rendered argv.
+//! every host-path and identity decision, `engine_probe` owns runtime facts
+//! and daemon-owned artifact creation, `oci_image` owns image acquisition,
+//! and `oci_lifecycle` only consumes already-rendered argv.
 
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
 use crate::executor::{
-    engine_probe, oci_lifecycle, sandbox_renderer, sandbox_spec, Executor, ExecutorOutcome,
-    ExecutorSpec,
+    engine_probe, oci_image, oci_lifecycle, oci_platform, sandbox_renderer, sandbox_spec, Executor,
+    ExecutorOutcome, ExecutorSpec,
 };
 use crate::infra::config::Config;
 use crate::infra::disk::DiskPressureGuard;
@@ -85,7 +85,23 @@ impl Executor for OciExecutor {
             let engine = self.cfg.sandbox().engine;
             let argv = sandbox_renderer::render_with_env_files(&resolved, engine, &[]);
 
-            // 5. Run the lifecycle with the rendered argv. The run's
+            // 5. Acquire and verify the immutable worker image before the
+            //    lifecycle can insert its Created state or invoke create.
+            //    The run directory is already created by the probe, but is
+            //    passed explicitly so provenance remains scoped to this run.
+            let host = oci_platform::host_platform();
+            let run_dir = runtime.state_dir.join("oci-runs").join(&runtime.run_id);
+            let _image = oci_image::ensure_image(
+                engine,
+                resolved.image_ref(),
+                self.cfg.sandbox().pull_policy,
+                &host,
+                &run_dir,
+                &runtime.run_id,
+            )
+            .await?;
+
+            // 6. Run the lifecycle with the rendered argv. The run's
             //    lifecycle token is linked with the watchdog token so
             //    a disk-pressure breach terminates in-flight work via
             //    the existing stop path (issue #245).

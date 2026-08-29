@@ -63,6 +63,45 @@ fn infrastructure_still_infrastructure() {
 }
 
 #[test]
+fn oci_image_failures_use_their_distinct_failure_classes() {
+    let digest_mismatch = CaduceusError::OciImageDigestMismatch {
+        reference: "worker@sha256:expected".to_string(),
+        expected: "sha256:expected".to_string(),
+        found: vec![],
+    };
+    assert_eq!(
+        classify_error(&digest_mismatch),
+        FailureClass::ImageVerification
+    );
+
+    let architecture_mismatch = CaduceusError::OciImageArchitectureMismatch {
+        reference: "worker@sha256:expected".to_string(),
+        expected: "amd64".to_string(),
+        found: "arm64".to_string(),
+    };
+    assert_eq!(
+        classify_error(&architecture_mismatch),
+        FailureClass::ImageVerification
+    );
+
+    for error in [
+        CaduceusError::OciPullFailed {
+            image: "worker@sha256:expected".to_string(),
+            stderr: "registry unavailable".to_string(),
+        },
+        CaduceusError::OciImageInspectFailed {
+            reference: "worker@sha256:expected".to_string(),
+            detail: "inspect failed".to_string(),
+        },
+        CaduceusError::OciImageMissing {
+            reference: "worker@sha256:expected".to_string(),
+        },
+    ] {
+        assert_eq!(classify_error(&error), FailureClass::Worker);
+    }
+}
+
+#[test]
 fn terminal_predicates_match_existing_classes() {
     // Worker still counts against budget; RateLimit/Cancellation still have
     // their dedicated predicates; Infrastructure and Terminal do not.
@@ -72,6 +111,10 @@ fn terminal_predicates_match_existing_classes() {
     );
     assert_eq!(
         failure_class_predicates_for_tests(FailureClass::Infrastructure),
+        (false, false, false)
+    );
+    assert_eq!(
+        failure_class_predicates_for_tests(FailureClass::ImageVerification),
         (false, false, false)
     );
     assert_eq!(
