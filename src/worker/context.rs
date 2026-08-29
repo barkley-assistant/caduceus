@@ -517,9 +517,9 @@ fn approx_json_array_len<T: Serialize + Clone>(key: &str, items: &[T]) -> Caduce
     let owned: Vec<T> = items.to_vec();
     let mut map: BTreeMap<&str, &Vec<T>> = BTreeMap::new();
     map.insert(key, &owned);
-    let s = serde_json::to_string(&map).map_err(|err| CaduceusError::Worker {
+    let s = serde_json::to_string(&map).map_err(|_err| CaduceusError::Worker {
         context: "context:approx_size",
-        stderr: format!("serde_json: {err}"),
+        stderr: "serde_json encoding failed".to_string(),
     })?;
     Ok(s.len())
 }
