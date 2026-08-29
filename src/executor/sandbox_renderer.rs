@@ -83,13 +83,27 @@ pub fn render_with_env_files(
         argv.push(userns.to_string());
     }
 
-    // --- Network mode. Host networking is structurally
-    //     unrepresentable: `NetworkMode` has a single variant, so
-    //     `--network none` is emitted unconditionally (issue #245).
+    // --- Network mode. This exhaustive `(mode, engine)` match is
+    //     the only code path that can produce the `--network` token:
+    //     `None` renders `--network none` on both engines;
+    //     `Unrestricted` renders the engine's default isolated bridge
+    //     (`bridge` — NAT'd outbound egress, no host namespace
+    //     joining; the Podman token is pinned per `podman-create(1)`:
+    //     "bridge: Create a network stack on the default bridge").
+    //     Host networking is structurally unrepresentable: no arm can
+    //     emit `host`, and adding a third `NetworkMode` or
+    //     `SandboxEngine` variant fails to compile until this match
+    //     is deliberately extended.
+    let network_token = match (spec.network(), engine) {
+        (NetworkMode::None, _) => "none",
+        // Docker: the default isolated bridge (NAT'd egress).
+        (NetworkMode::Unrestricted, SandboxEngine::Docker) => "bridge",
+        // Podman: the default isolated bridge (NAT'd egress) — token
+        // verified against `podman-create(1)`. Never `host`.
+        (NetworkMode::Unrestricted, SandboxEngine::Podman) => "bridge",
+    };
     argv.push("--network".to_string());
-    argv.push(match spec.network() {
-        NetworkMode::None => "none".to_string(),
-    });
+    argv.push(network_token.to_string());
 
     // --- Resource limits (total fields — always emitted).
     argv.push("--cpus".to_string());

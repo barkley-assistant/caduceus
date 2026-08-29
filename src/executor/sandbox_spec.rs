@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::executor::ExecutorSpec;
 use crate::github::issue::IssueKey;
-use crate::infra::config::{Config, SandboxConfig};
+use crate::infra::config::{Config, SandboxConfig, SandboxNetwork};
 use crate::infra::error::{CaduceusError, CaduceusResult};
 use crate::worker::worker_contract::{
     CONTAINER_OUTPUT_PATH, CONTAINER_WORKSPACE_PATH, WORKER_RESULT_FILE,
@@ -156,16 +156,38 @@ pub struct TmpfsMount {
     pub size_mb: u64,
 }
 
-/// Network isolation mode for the container.
+/// Network isolation mode for the container — a closed two-variant
+/// enum.
 ///
-/// Host networking is structurally unrepresentable: the former
-/// `Unrestricted` variant (`--network host`) was removed (breaking,
-/// issue #245). The single variant renders `--network none`.
+/// `None` renders `--network none` (loopback-only). `Unrestricted`
+/// renders the engine's default isolated bridge (`--network bridge`
+/// on both Docker and Podman): NAT'd outbound egress with **no** host
+/// namespace joining — it is **not** host networking. Host networking
+/// is structurally unrepresentable: no variant can ever produce
+/// `--network host`, and the exhaustive matches in the renderer and
+/// in [`validate_no_host_escalation`] force a deliberate dual edit
+/// before any third mode can exist.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum NetworkMode {
-    /// `--network none` — no network access.
+    /// `--network none` — no network access (the default).
     #[default]
     None,
+    /// The engine's default isolated bridge (`--network bridge`) —
+    /// NAT'd outbound egress, never host networking.
+    Unrestricted,
+}
+
+/// The single conversion site between the config layer
+/// (`SandboxNetwork`) and the spec layer ([`NetworkMode`]).
+/// Exhaustive by construction: a new `SandboxNetwork` variant breaks
+/// this build until the spec-layer mapping is deliberately extended.
+impl From<SandboxNetwork> for NetworkMode {
+    fn from(value: SandboxNetwork) -> Self {
+        match value {
+            SandboxNetwork::None => Self::None,
+            SandboxNetwork::Unrestricted => Self::Unrestricted,
+        }
+    }
 }
 
 /// Resource limits mapped from [`SandboxResources`].
@@ -518,10 +540,12 @@ pub fn resolve(
         shm_mb: sandbox.resources.shm_mb,
     };
 
-    // 9. Network — the only mode is `None` (`--network none`); host
-    //     networking is structurally unrepresentable after the
-    //     breaking removal of `SandboxNetwork::Unrestricted` (D3).
-    let network = NetworkMode::None;
+    // 9. Network — sourced from `sandbox.network` through the single
+    //     `SandboxNetwork → NetworkMode` conversion. `None` renders
+    //     `--network none` (loopback-only); `Unrestricted` renders the
+    //     engine's default isolated bridge (NAT'd egress) — host
+    //     networking is structurally unrepresentable either way.
+    let network = NetworkMode::from(sandbox.network);
 
     // 10. Environment — the full canonical `CADUCEUS_*` set, with
     //     CONTAINER-side path values so host paths never leak into
@@ -621,9 +645,10 @@ pub fn resolve(
     validate_mount_policy(&spec)?;
 
     // 16. Host-escalation tripwire (defense in depth): no engine
-    //     socket mount and no non-isolated network may ever appear on
-    //     a resolved spec. Structurally unrepresentable after D3 —
-    //     exactly the point.
+    //     socket mount may ever appear on a resolved spec, and the
+    //     network mode is re-checked against the closed two-mode
+    //     allow-list — the host network namespace is never joined,
+    //     structurally, on every path.
     validate_no_host_escalation(&spec)?;
 
     Ok(spec)
@@ -734,9 +759,13 @@ fn validate_mount_policy(spec: &SandboxSpec) -> CaduceusResult<()> {
 ///   `host_path` or `container_path` file name is an engine/runtime
 ///   socket (`docker.sock` / `podman.sock`) — mounting the engine
 ///   socket is a container-escape primitive;
-/// - any network mode other than [`NetworkMode::None`] — a tautology
-///   after the `Unrestricted` removal that trips if a future variant
-///   is ever added without re-review.
+/// - any network mode outside the closed two-variant allow-list —
+///   both [`NetworkMode::None`] (loopback-only) and
+///   [`NetworkMode::Unrestricted`] (the engine's default isolated
+///   bridge, NAT'd egress) preserve the
+///   host-namespace-never-joined invariant; the exhaustive `match`
+///   trips at compile time if a host-representing variant is ever
+///   added without re-review.
 ///
 /// `--device` and `--pid/--ipc/--uts=host` are denied *structurally*:
 /// [`SandboxSpec`] has no field that could express them and the
@@ -772,14 +801,14 @@ pub fn validate_no_host_escalation(spec: &SandboxSpec) -> CaduceusResult<()> {
             }
         }
     }
-    if spec.network() != NetworkMode::None {
-        return Err(CaduceusError::OciMountConflict {
-            detail: format!(
-                "network mode {:?} is denied: only --network none is \
-                 representable (host networking was removed, issue #245)",
-                spec.network()
-            ),
-        });
+    // Both network modes keep the host network namespace out of
+    // reach: `None` is loopback-only; `Unrestricted` is the engine's
+    // default isolated bridge (NAT'd outbound egress, never host).
+    // The match is exhaustive over the closed enum, so a hypothetical
+    // future host-representing variant fails to compile here until
+    // this guard is deliberately re-reviewed (SAN-NET-4).
+    match spec.network() {
+        NetworkMode::None | NetworkMode::Unrestricted => {}
     }
     Ok(())
 }

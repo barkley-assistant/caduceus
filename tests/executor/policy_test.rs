@@ -25,6 +25,21 @@ fn default_cfg() -> Config {
     Config::test_defaults(tmp.path())
 }
 
+/// `Config::test_defaults` with `sandbox.network` set to
+/// `unrestricted` (the engine's default isolated bridge — NAT'd
+/// egress, never host networking).
+fn unrestricted_cfg() -> Config {
+    use caduceus::infra::config::SandboxNetwork;
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut cfg = Config::test_defaults(tmp.path());
+    cfg.sandbox
+        .as_mut()
+        .expect("test_defaults has a sandbox")
+        .network = SandboxNetwork::Unrestricted;
+    cfg
+}
+
 // baseline_enforced — argv has --user, --cap-drop ALL, --security-opt
 // no-new-privileges, --read-only, --tmpfs; no docker.sock; no --device
 
@@ -129,8 +144,9 @@ fn isolation_flags_precede_image() {
     );
 }
 
-// network_mode_applied — the only network mode is `none` (host
-// networking was removed, breaking: issue #245)
+// network_mode_applied — the default network mode is `none`
+// (loopback-only); `unrestricted` opts into the engine's default
+// isolated bridge and renders `--network bridge`, never host
 
 #[test]
 fn network_mode_applied() {
@@ -142,6 +158,78 @@ fn network_mode_applied() {
         .position(|a| a == "--network")
         .expect("--network");
     assert_eq!(argv[network_pos + 1], "none");
+}
+
+// both_network_modes_pass_host_escalation_validation — SAN-NET-4:
+// `validate_no_host_escalation` permits the closed two-variant set
+// (`None`, `Unrestricted`); neither joins the host network namespace.
+
+#[test]
+fn both_network_modes_pass_host_escalation_validation() {
+    use caduceus::executor::sandbox_spec::{validate_no_host_escalation, NetworkMode};
+
+    // Default config → NetworkMode::None passes.
+    let cfg = default_cfg();
+    let spec = resolve_from(&cfg);
+    assert_eq!(spec.network(), NetworkMode::None);
+    validate_no_host_escalation(&spec).expect("NetworkMode::None must pass");
+
+    // `unrestricted` config → NetworkMode::Unrestricted passes too.
+    let cfg = unrestricted_cfg();
+    let spec = resolve_from(&cfg);
+    assert_eq!(spec.network(), NetworkMode::Unrestricted);
+    validate_no_host_escalation(&spec).expect("NetworkMode::Unrestricted must pass");
+
+    // And the rendered argv for both modes never carries host
+    // networking on either engine.
+    for engine in [SandboxEngine::Docker, SandboxEngine::Podman] {
+        for cfg in [default_cfg(), unrestricted_cfg()] {
+            let spec = resolve_from(&cfg);
+            let argv = render(&spec, engine);
+            let pos = argv
+                .iter()
+                .position(|a| a == "--network")
+                .expect("--network");
+            assert_ne!(
+                argv.get(pos + 1).map(String::as_str),
+                Some("host"),
+                "--network host must never be rendered ({engine:?}); got: {argv:?}"
+            );
+        }
+    }
+}
+
+// unrestricted_config_renders_bridge — `sandbox.network =
+// unrestricted` resolves to `NetworkMode::Unrestricted` and renders
+// the engine's default isolated bridge (`bridge`) on both engines,
+// never `none`, never `host`.
+
+#[test]
+fn unrestricted_config_renders_bridge() {
+    use caduceus::infra::config::SandboxNetwork;
+
+    let cfg = unrestricted_cfg();
+    assert_eq!(
+        cfg.sandbox().network,
+        SandboxNetwork::Unrestricted,
+        "the mutated config must carry network: unrestricted"
+    );
+    let spec = resolve_from(&cfg);
+    for engine in [SandboxEngine::Docker, SandboxEngine::Podman] {
+        let argv = render(&spec, engine);
+        let pos = argv
+            .iter()
+            .position(|a| a == "--network")
+            .expect("--network");
+        assert_eq!(
+            argv[pos + 1],
+            "bridge",
+            "--network bridge (engine default isolated bridge) expected for \
+             unrestricted ({engine:?}); got: {argv:?}"
+        );
+        assert_ne!(argv[pos + 1], "none");
+        assert_ne!(argv[pos + 1], "host");
+    }
 }
 
 // no_network_mode_gives_none — default network mode → --network=none

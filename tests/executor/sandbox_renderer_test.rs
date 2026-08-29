@@ -13,8 +13,10 @@
 use std::path::{Path, PathBuf};
 
 use caduceus::executor::sandbox_renderer::{render, render_with_env_files};
-use caduceus::executor::sandbox_spec::{EngineMode, GitShadowKind, SandboxEngine, SandboxSpec};
-use caduceus::infra::config::{Config, SandboxConfig};
+use caduceus::executor::sandbox_spec::{
+    EngineMode, GitShadowKind, NetworkMode, SandboxEngine, SandboxSpec,
+};
+use caduceus::infra::config::{Config, SandboxConfig, SandboxNetwork};
 
 /// Fixed root for the golden fixtures. Never touched on disk.
 const ROOT: &str = "/tmp/caduceus-renderer-goldens";
@@ -253,6 +255,197 @@ fn podman_rootless_golden_argv() {
         "bridge.py".to_string(),
     ];
     assert_eq!(render(&spec, SandboxEngine::Podman), expected);
+}
+
+/// Golden: Docker + `NetworkMode::Unrestricted` renders the engine's
+/// default isolated bridge — exactly `--network bridge` (NAT'd
+/// outbound egress), never `--network host` and never `none`
+/// (SAN-NET-3). Every other token matches the Docker rootful `none`
+/// golden.
+#[test]
+fn docker_unrestricted_golden_argv() {
+    let (spec, worktree, output, shadow, image) =
+        fixture_with("run-001", EngineMode::Rootful, GitShadowKind::File, |sb| {
+            sb.network = SandboxNetwork::Unrestricted
+        });
+    assert_eq!(spec.network(), NetworkMode::Unrestricted);
+    let expected = vec![
+        "docker".to_string(),
+        "create".to_string(),
+        "--user".to_string(),
+        "4242:4242".to_string(),
+        "--cap-drop".to_string(),
+        "ALL".to_string(),
+        "--security-opt".to_string(),
+        "no-new-privileges".to_string(),
+        "--read-only".to_string(),
+        "--network".to_string(),
+        "bridge".to_string(),
+        "--cpus".to_string(),
+        "2".to_string(),
+        "--memory".to_string(),
+        "2048m".to_string(),
+        "--memory-swap".to_string(),
+        "2048m".to_string(),
+        "--pids-limit".to_string(),
+        "256".to_string(),
+        "--log-opt".to_string(),
+        "max-size=10m".to_string(),
+        "--log-opt".to_string(),
+        "max-file=3".to_string(),
+        "--name".to_string(),
+        "run-001".to_string(),
+        "-v".to_string(),
+        format!("{}:/workspace:rw", worktree.display()),
+        "-v".to_string(),
+        format!("{}:/output:rw", output.display()),
+        "-v".to_string(),
+        format!("{}:/workspace/.git:ro", shadow.display()),
+        "--tmpfs".to_string(),
+        "/tmp:size=256m".to_string(),
+        "--tmpfs".to_string(),
+        "/dev/shm:size=64m".to_string(),
+        "-e".to_string(),
+        "CADUCEUS_RUN_ID=run-001".to_string(),
+        "-e".to_string(),
+        "CADUCEUS_ISSUE_ID=owner/repo#1".to_string(),
+        "-e".to_string(),
+        "CADUCEUS_ISSUE_NUMBER=1".to_string(),
+        "-e".to_string(),
+        "CADUCEUS_ISSUE_REPO=owner/repo".to_string(),
+        "-e".to_string(),
+        "CADUCEUS_ISSUE_TITLE=Fix login bug".to_string(),
+        "-e".to_string(),
+        "CADUCEUS_ISSUE_BODY=Steps to reproduce".to_string(),
+        "-e".to_string(),
+        "CADUCEUS_ISSUE_LABELS_JSON=[\"bug\"]".to_string(),
+        "-e".to_string(),
+        "CADUCEUS_CONTEXT_JSON={}".to_string(),
+        "-e".to_string(),
+        "CADUCEUS_BRANCH_NAME=caduceus/owner/repo#1".to_string(),
+        "-e".to_string(),
+        "CADUCEUS_WORKTREE_PATH=/workspace".to_string(),
+        "-e".to_string(),
+        "CADUCEUS_RESULT_PATH=/output/worker-result.json".to_string(),
+        "-l".to_string(),
+        "caduceus.daemon_id=test-daemon".to_string(),
+        "-l".to_string(),
+        "caduceus.run_id=run-001".to_string(),
+        "-l".to_string(),
+        "caduceus.issue_id=owner/repo#1".to_string(),
+        "--entrypoint".to_string(),
+        "python3".to_string(),
+        image.clone(),
+        "bridge.py".to_string(),
+    ];
+    let argv = render(&spec, SandboxEngine::Docker);
+    // Exact token: the only value after --network is `bridge`.
+    let net_pos = argv
+        .iter()
+        .position(|a| a == "--network")
+        .expect("--network");
+    assert_eq!(argv[net_pos + 1], "bridge");
+    assert_ne!(argv.get(net_pos + 1).map(String::as_str), Some("host"));
+    assert_ne!(argv.get(net_pos + 1).map(String::as_str), Some("none"));
+    // Byte-for-byte golden.
+    assert_eq!(argv, expected);
+}
+
+/// Golden: Podman + `NetworkMode::Unrestricted` renders Podman's
+/// default isolated bridge — exactly `--network bridge` (NAT'd
+/// outbound egress; token pinned per `podman-create(1)`: "bridge:
+/// Create a network stack on the default bridge"), never
+/// `--network host` and never `none` (SAN-NET-3). Every other token
+/// matches the Podman rootless `none` golden.
+#[test]
+fn podman_unrestricted_golden_argv() {
+    let (spec, worktree, output, shadow, image) =
+        fixture_with("run-001", EngineMode::Rootless, GitShadowKind::File, |sb| {
+            sb.engine = SandboxEngine::Podman;
+            sb.network = SandboxNetwork::Unrestricted;
+        });
+    assert_eq!(spec.network(), NetworkMode::Unrestricted);
+    let expected = vec![
+        "podman".to_string(),
+        "create".to_string(),
+        // Rootless: no --user; plain keep-id user namespace.
+        "--cap-drop".to_string(),
+        "ALL".to_string(),
+        "--security-opt".to_string(),
+        "no-new-privileges".to_string(),
+        "--read-only".to_string(),
+        "--userns".to_string(),
+        "keep-id".to_string(),
+        "--network".to_string(),
+        "bridge".to_string(),
+        "--cpus".to_string(),
+        "2".to_string(),
+        "--memory".to_string(),
+        "2048m".to_string(),
+        "--memory-swap".to_string(),
+        "2048m".to_string(),
+        "--pids-limit".to_string(),
+        "256".to_string(),
+        "--log-opt".to_string(),
+        "max-size=10m".to_string(),
+        "--log-opt".to_string(),
+        "max-file=3".to_string(),
+        "--name".to_string(),
+        "run-001".to_string(),
+        "-v".to_string(),
+        format!("{}:/workspace:rw", worktree.display()),
+        "-v".to_string(),
+        format!("{}:/output:rw", output.display()),
+        "-v".to_string(),
+        format!("{}:/workspace/.git:ro", shadow.display()),
+        "--tmpfs".to_string(),
+        "/tmp:size=256m".to_string(),
+        "--tmpfs".to_string(),
+        "/dev/shm:size=64m".to_string(),
+        "-e".to_string(),
+        "CADUCEUS_RUN_ID=run-001".to_string(),
+        "-e".to_string(),
+        "CADUCEUS_ISSUE_ID=owner/repo#1".to_string(),
+        "-e".to_string(),
+        "CADUCEUS_ISSUE_NUMBER=1".to_string(),
+        "-e".to_string(),
+        "CADUCEUS_ISSUE_REPO=owner/repo".to_string(),
+        "-e".to_string(),
+        "CADUCEUS_ISSUE_TITLE=Fix login bug".to_string(),
+        "-e".to_string(),
+        "CADUCEUS_ISSUE_BODY=Steps to reproduce".to_string(),
+        "-e".to_string(),
+        "CADUCEUS_ISSUE_LABELS_JSON=[\"bug\"]".to_string(),
+        "-e".to_string(),
+        "CADUCEUS_CONTEXT_JSON={}".to_string(),
+        "-e".to_string(),
+        "CADUCEUS_BRANCH_NAME=caduceus/owner/repo#1".to_string(),
+        "-e".to_string(),
+        "CADUCEUS_WORKTREE_PATH=/workspace".to_string(),
+        "-e".to_string(),
+        "CADUCEUS_RESULT_PATH=/output/worker-result.json".to_string(),
+        "-l".to_string(),
+        "caduceus.daemon_id=test-daemon".to_string(),
+        "-l".to_string(),
+        "caduceus.run_id=run-001".to_string(),
+        "-l".to_string(),
+        "caduceus.issue_id=owner/repo#1".to_string(),
+        "--entrypoint".to_string(),
+        "python3".to_string(),
+        image.clone(),
+        "bridge.py".to_string(),
+    ];
+    let argv = render(&spec, SandboxEngine::Podman);
+    // Exact token: the only value after --network is `bridge`.
+    let net_pos = argv
+        .iter()
+        .position(|a| a == "--network")
+        .expect("--network");
+    assert_eq!(argv[net_pos + 1], "bridge");
+    assert_ne!(argv.get(net_pos + 1).map(String::as_str), Some("host"));
+    assert_ne!(argv.get(net_pos + 1).map(String::as_str), Some("none"));
+    // Byte-for-byte golden.
+    assert_eq!(argv, expected);
 }
 
 /// The per-engine deltas are fully encoded in the spec's identity:
