@@ -56,15 +56,15 @@ fn leak_via_argv() {
 
     assert!(
         !debug_output.contains("ghp_abc123_secret"),
-        "secret leaked into Debug: {debug_output}"
+        "secret leaked into Debug output"
     );
     assert!(
         !debug_output.contains("ghp_def456_secret"),
-        "second secret leaked into Debug: {debug_output}"
+        "second secret leaked into Debug output"
     );
     assert!(
         !display_output.contains("ghp_abc123_secret"),
-        "secret leaked into Display: {display_output}"
+        "secret leaked into Display output"
     );
 
     // Verify paths don't contain secret values
@@ -72,7 +72,7 @@ fn leak_via_argv() {
         let path_str = path.to_string_lossy();
         assert!(
             !path_str.contains("ghp_abc123_secret"),
-            "secret leaked into path: {path_str}"
+            "secret leaked into path"
         );
     }
 
