@@ -165,7 +165,7 @@ sandbox:
   image: "caduceus-worker@sha256:<64 lowercase hex>"  # required, no default
   pull_policy: if_missing   # never | if_missing | always
   resources: { cpus: 2.0, memory_mb: 2048, pids: 256, tmpfs_mb: 256, shm_mb: 64 }
-  network: none             # only value; host networking was removed (breaking)
+  network: none             # none | unrestricted (see below; never host)
   pass_env: []
   stop_timeout_seconds: 10
   kill_timeout_seconds: 5
@@ -250,10 +250,16 @@ floors prevent zeroing a control to an unsafe value.
   time), and no host namespace sharing (`--pid host`,
   `--ipc host`, `--uts host` are structurally
   unrepresentable — the spec has no field for them).
-- Typed-only networking: `--network none` is the only
-  mode. Host networking was removed (breaking): the
-  `unrestricted` value no longer parses, so `network:
-  unrestricted` configs fail at load with a typed error.
+- Typed-only networking, two modes: `sandbox.network` is
+  `none` (the default) or `unrestricted`. `none` renders
+  `--network none`: loopback-only, no outbound connectivity
+  at all. `unrestricted` renders `--network bridge` on
+  both engines: the engine's default isolated bridge with
+  full outbound internet access via NAT. `unrestricted`
+  is NOT host networking — the container joins no host
+  namespace, and `--network host` is structurally
+  unrepresentable (the config rejects any `host` token at
+  load with a typed error).
 - Bounded engine logs: `--log-opt max-size=10m` and
   `--log-opt max-file=3` on every run (worst case 30 MiB
   of on-disk engine logs per container).

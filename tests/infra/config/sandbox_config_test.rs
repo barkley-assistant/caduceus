@@ -108,8 +108,8 @@ fn explicit_full_sandbox_parses_to_given_values() {
     assert_eq!(sb.resources.pids, 512);
     assert_eq!(sb.resources.tmpfs_mb, 512);
     assert_eq!(sb.resources.shm_mb, 128);
-    // Host networking was removed (breaking, issue #245): `none` is
-    // the only value.
+    // Closed two-variant network model: `none` (loopback-only
+    // default) or `unrestricted` (engine default isolated bridge).
     assert_eq!(sb.network, SandboxNetwork::None);
     assert_eq!(
         sb.pass_env,
@@ -226,31 +226,60 @@ fn unknown_network_value_rejected() {
     let msg = err.to_string();
     assert!(msg.contains("unknown variant"), "got: {msg}");
     assert!(msg.contains("filtered"), "got: {msg}");
-    // Host networking was removed (issue #245): `none` is the only
-    // allowed value.
+    // The closed two-variant set: only `none` and `unrestricted` are
+    // allowed values.
     assert!(
-        msg.contains("none") && !msg.contains("unrestricted"),
-        "allowed values must list only `none`; got: {msg}"
+        msg.contains("none") && msg.contains("unrestricted"),
+        "allowed values must list `none` and `unrestricted`; got: {msg}"
     );
 }
 
-/// `network: unrestricted` (the removed host-networking value,
-/// issue #245) fails at serde parse time as an unknown variant — a
-/// typed error, exactly the spec's "parsing fails with a typed
-/// error" scenario.
+/// `network: host` (and every other non-`none`/`unrestricted` token)
+/// fails at serde parse time as an unknown variant — host networking
+/// is structurally unrepresentable (SAN-NET-5).
 #[test]
-fn unrestricted_network_rejected() {
-    let err = load_sandbox_line(&format!(
-        "image: \"{VALID_IMAGE}\"\n  network: unrestricted"
-    ))
-    .expect_err("network: unrestricted must be rejected");
+fn host_network_rejected() {
+    let err = load_sandbox_line(&format!("image: \"{VALID_IMAGE}\"\n  network: host"))
+        .expect_err("network: host must be rejected");
     let msg = err.to_string();
     assert!(msg.contains("unknown variant"), "got: {msg}");
-    assert!(msg.contains("unrestricted"), "got: {msg}");
-    assert!(
-        msg.contains("none"),
-        "the only valid value must be listed; got: {msg}"
+    assert!(msg.contains("host"), "got: {msg}");
+}
+
+/// `network: unrestricted` parses to `SandboxNetwork::Unrestricted`
+/// and round-trips through `resolve()` into `NetworkMode::Unrestricted`
+/// (SAN-NET-5). It maps to the engine's default isolated bridge
+/// (NAT'd outbound egress) — never host networking.
+#[test]
+fn unrestricted_network_accepted() {
+    use caduceus::executor::sandbox_spec::{resolve, NetworkMode};
+
+    #[path = "../../executor/support/mod.rs"]
+    mod support;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let body = format!(
+        "worker_command: [\"python3\", \"/tmp/bridge.py\"]\n\
+         state_dir: \"{}/state\"\n\
+         workdir_base: \"{}/projects\"\n\
+         reduced_containment_acknowledged: true\n\
+         sandbox:\n\
+         \x20 image: \"{VALID_IMAGE}\"\n\
+         \x20 network: unrestricted\n",
+        dir.path().display(),
+        dir.path().display()
     );
+    let path = dir.path().join("config.yaml");
+    std::fs::write(&path, body).expect("write config");
+    let cfg = Config::load_from(&path).expect("network: unrestricted must parse");
+    assert_eq!(cfg.sandbox().network, SandboxNetwork::Unrestricted);
+
+    // Round-trip: the resolved spec carries NetworkMode::Unrestricted.
+    let worktree = cfg.workdir_base.join("owner").join("repo").join("run-001");
+    let runtime = support::runtime_facts(&cfg, "run-001", &worktree);
+    let spec =
+        resolve(cfg.sandbox(), &runtime, &support::executor_spec(&runtime)).expect("must resolve");
+    assert_eq!(spec.network(), NetworkMode::Unrestricted);
 }
 
 #[test]

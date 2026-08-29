@@ -397,8 +397,9 @@ fn resolution_yields_fully_populated_spec() {
     assert!(!spec.environment().is_empty());
     assert!(!spec.labels().is_empty());
     assert!(spec.resources().memory_mb > 0);
-    // Host networking was removed (breaking, issue #245): `None` is
-    // the only variant, so every resolved spec is network-isolated.
+    // SAN-NET-2: the default network mode is `None` (`--network
+    // none`, loopback-only); `unrestricted` opts into the engine's
+    // default isolated bridge.
     assert!(matches!(spec.network(), NetworkMode::None));
     let _ = spec.security();
 }

@@ -121,18 +121,27 @@ pub struct SandboxResources {
     pub shm_mb: u64,
 }
 
-/// New enum (replaces `network_profiles`).
+/// Closed two-variant network mode for the OCI sandbox
+/// (`sandbox.network`).
 ///
-/// Host networking is structurally unrepresentable: the former
-/// `Unrestricted` variant (`--network host`) was removed (breaking,
-/// issue #245). The only value is `None` (`--network none`); a YAML
-/// `network: unrestricted` fails at serde parse time as an unknown
-/// variant.
+/// `None` (the default) renders `--network none` — loopback-only, no
+/// network access. `Unrestricted` renders the engine's default
+/// isolated bridge (`--network bridge` on both Docker and Podman):
+/// NAT'd outbound egress with **no** host namespace joining — it is
+/// **not** host networking. Host networking is structurally
+/// unrepresentable: no variant maps to `--network host`, and any
+/// other YAML token (`host`, `bridge`, unknown names) fails at serde
+/// parse time as an unknown variant.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SandboxNetwork {
+    /// `--network none` — loopback-only, no network access (the
+    /// default).
     #[default]
-    None, // `--network none`
+    None,
+    /// The engine's default isolated bridge (`--network bridge`) —
+    /// NAT'd outbound egress, never host networking.
+    Unrestricted,
 }
 
 /// Raw layer — mirrors the schema with all-`Option` fields.
