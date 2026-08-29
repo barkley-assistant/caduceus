@@ -1276,6 +1276,11 @@ fn resolve_sandbox(raw: RawSandboxConfig, errors: &mut Vec<String>) -> SandboxCo
     let network = raw.network.unwrap_or_default();
     let resources = resolve_sandbox_resources(raw.resources.unwrap_or_default(), errors);
     let pass_env = raw.pass_env.unwrap_or_default();
+    // OCI pass_env deny validation (design D2): presence-independent
+    // — a denied credential name, a reserved canonical/compat key, or
+    // a malformed name fails config load regardless of whether the
+    // variable exists in the daemon environment.
+    validate_sandbox_pass_env(&pass_env, errors);
 
     let stop_timeout_seconds = raw
         .stop_timeout_seconds

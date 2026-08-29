@@ -15,7 +15,7 @@
 //! The module is intentionally free of `tokio::process::Command` at the
 //! *public* boundary — the subprocess calls live in the private
 //! `run_cli` helpers. The lifecycle is the single call site; all other
-//! executor modules are pure argv builders or secret transport.
+//! executor modules are pure argv builders or env-file transport.
 //!
 //! `run_with_argv` is the **sole** entry point. It receives a
 //! pre-rendered `create` argv from the resolution → renderer pipeline
@@ -28,6 +28,7 @@ use tokio::process::Command;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
+use crate::executor::oci_env_file::OciEnvFile;
 use crate::executor::sandbox_spec::SandboxEngine;
 use crate::executor::ExecutorSpec;
 use crate::infra::config::Config;
@@ -58,16 +59,31 @@ const OCI_DIAGNOSTIC_CHUNK_BYTES: usize = 8 * 1024;
 /// * `cancellation` — the daemon-shutdown token (unchanged contract);
 /// * `watchdog` — the disk-pressure watchdog token (issue #245).
 ///
+/// `env_file` carries the assembled OCI environment as the single
+/// `--env-file` referenced by the create argv (issue #249). It is
+/// owned by the lifecycle ONLY up to the end of the `create` call:
+/// the guard is dropped explicitly, immediately after `create`
+/// returns and before the result is propagated, so the values are
+/// deleted from disk on success, create-failure, and
+/// cooperative-cancellation paths alike — `start`/`wait`/`stop`/`rm`
+/// never run with the env file still on disk (design D5).
+///
 /// Cancellation from either token falls through the stop → capture →
 /// remove sequence (never an early return) and reports
 /// [`CaduceusError::Cancelled`]; the watchdog surfaces its typed
 /// refusal separately through `DiskPressureGuard::try_acquire_oci`.
+///
+/// Test seam: `tokens_for_tests` exposes the two-token carrier the
+/// function races the wait step against. Identical shape to the
+/// private `run_with_argv` call site.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_with_argv(
     cfg: &Config,
     spec: &ExecutorSpec,
     state: &dyn OciRunState,
     engine: SandboxEngine,
     argv: Vec<String>,
+    env_file: Option<OciEnvFile>,
     cancellation: CancellationToken,
     watchdog: CancellationToken,
 ) -> CaduceusResult<SupervisorOutcome> {
@@ -86,8 +102,15 @@ pub async fn run_with_argv(
     };
     state.insert(&row)?;
 
-    // Step 1: create
-    let container_id = run_cli("create", &argv, "create", &cancellation, &watchdog).await?;
+    // Step 1: create. The env file is consumed by `create` only —
+    // `start` never re-reads it — so the guard is dropped
+    // explicitly, immediately after the call returns and before the
+    // result is propagated: deletion happens on success,
+    // create-failure, and cooperative-cancellation paths alike
+    // (issue #249; design D5).
+    let create_result = run_cli("create", &argv, "create", &cancellation, &watchdog).await;
+    drop(env_file);
+    let container_id = create_result?;
 
     // Record container_id
     let mut row = row;

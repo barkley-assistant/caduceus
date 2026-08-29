@@ -256,6 +256,7 @@ async fn watchdog_cancellation_proceeds_through_stop_capture_rm() {
                 &*state,
                 SandboxEngine::Docker,
                 create_argv(),
+                None,
                 shutdown,
                 watchdog,
             )
@@ -320,6 +321,7 @@ async fn shutdown_cancellation_falls_through_cleanup_and_reports_cancelled() {
                 &*state,
                 SandboxEngine::Docker,
                 create_argv(),
+                None,
                 shutdown,
                 watchdog,
             )
@@ -379,6 +381,7 @@ async fn diagnostic_capture_is_bounded_with_truncation_marker() {
         &state,
         SandboxEngine::Docker,
         create_argv(),
+        None,
         CancellationToken::new(),
         CancellationToken::new(),
     )

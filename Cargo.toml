@@ -144,8 +144,16 @@ name = "oci_lifecycle_test"
 path = "tests/executor/oci_lifecycle_test.rs"
 
 [[test]]
-name = "oci_secret_transport_test"
-path = "tests/executor/oci_secret_transport_test.rs"
+name = "sandbox_renderer_test"
+path = "tests/executor/sandbox_renderer_test.rs"
+
+[[test]]
+name = "sandbox_spec_env_test"
+path = "tests/executor/sandbox_spec_env_test.rs"
+
+[[test]]
+name = "oci_env_file_test"
+path = "tests/executor/oci_env_file_test.rs"
 
 [[test]]
 name = "oci_label_test"
@@ -180,10 +188,6 @@ name = "policy_test"
 path = "tests/executor/policy_test.rs"
 
 [[test]]
-name = "sandbox_renderer_test"
-path = "tests/executor/sandbox_renderer_test.rs"
-
-[[test]]
 name = "sandbox_resolve_test"
 path = "tests/executor/sandbox_resolve_test.rs"
 
@@ -194,10 +198,6 @@ path = "tests/executor/identity_resolution_test.rs"
 [[test]]
 name = "oci_isolation_live_test"
 path = "tests/executor/oci_isolation_live_test.rs"
-
-[[test]]
-name = "secret_grant_test"
-path = "tests/executor/secret_grant_test.rs"
 
 [[test]]
 name = "isolation_escape_test"
@@ -330,6 +330,10 @@ path = "tests/state/config_bootstrap_test.rs"
 [[test]]
 name = "sandbox_config_test"
 path = "tests/infra/config/sandbox_config_test.rs"
+
+[[test]]
+name = "sandbox_pass_env_test"
+path = "tests/config/sandbox_pass_env_test.rs"
 
 [[test]]
 name = "config_resolution_test"
@@ -658,3 +662,7 @@ path = "tests/worker/kill_pid_kill_pgid_test.rs"
 [[test]]
 name = "open_no_follow_test"
 path = "tests/runtime/open_no_follow_test.rs"
+
+[[test]]
+name = "oci_env_live_test"
+path = "tests/integration/oci_env_live_test.rs"
