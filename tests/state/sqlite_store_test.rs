@@ -53,6 +53,31 @@ fn open_rejects_future_schema() {
 }
 
 #[test]
+fn open_rejects_v6_without_migration() {
+    let path = db_path();
+    let conn = Connection::open(&path).expect("open raw");
+    conn.execute_batch(
+        "CREATE TABLE schema_version (version INTEGER NOT NULL, migrated_at TEXT NOT NULL);
+         INSERT INTO schema_version VALUES (6, '2026-01-01T00:00:00Z');",
+    )
+    .expect("create v6 fixture");
+    drop(conn);
+
+    let err = open(&path).expect_err("v6 must be rejected");
+    let text = err.to_string();
+    assert!(text.contains("stale schema v6"), "got: {text}");
+
+    let conn = Connection::open(&path).expect("reopen raw");
+    let version: i64 = conn
+        .query_row("SELECT MAX(version) FROM schema_version", [], |row| {
+            row.get(0)
+        })
+        .expect("read unchanged version");
+    assert_eq!(version, 6, "rejection must not record v7");
+    let _ = fs::remove_file(&path);
+}
+
+#[test]
 fn schema_tables_are_created() {
     let path = db_path();
     let conn = open(&path).expect("open fresh db");
@@ -305,13 +330,16 @@ fn migrates_v5_to_v6_adds_block_columns() {
         conn.close().expect("close");
     }
 
-    let conn = open(&path).expect("open v6");
+    let conn = open(&path).expect("open current schema");
     let version: i64 = conn
         .query_row("SELECT MAX(version) FROM schema_version", [], |row| {
             row.get(0)
         })
         .expect("read version");
-    assert_eq!(version, 6, "schema version must be v6 after migration");
+    assert_eq!(
+        version, SCHEMA_VERSION,
+        "schema version must be current after migration"
+    );
 
     let cols: Vec<String> = conn
         .prepare("SELECT name FROM pragma_table_info('queue_entries') ORDER BY name")

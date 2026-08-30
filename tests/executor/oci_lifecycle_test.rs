@@ -2,21 +2,23 @@
 //!
 //! Tests use unique keys per test for parallel safety and verify the
 //! typed errors, cancellation handling, cleanup guarantees, and the
-//! `ContainerRunRow.engine` column wiring from `run_with_argv`'s
+//! `ContainerRunRow.engine` column wiring from the canonical lifecycle's
 //! explicit `SandboxEngine` parameter.
 
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use tokio_util::sync::CancellationToken;
 
 use caduceus::executor::oci_lifecycle;
-use caduceus::executor::sandbox_spec::SandboxEngine;
+use caduceus::executor::sandbox_spec::{resolve, SandboxEngine};
 use caduceus::executor::ExecutorSpec;
 use caduceus::github::issue::IssueKey;
 use caduceus::infra::config::Config;
 use caduceus::infra::error::{CaduceusError, CaduceusResult};
 use caduceus::state::oci_run::{ContainerRunRow, OciLifecycleState, OciRunState};
+
+mod support;
 
 // FakeOciRunState — in-memory state for testing
 
@@ -43,6 +45,14 @@ impl OciRunState for FakeOciRunState {
         let mut rows = self.rows.lock().unwrap();
         if let Some(row) = rows.iter_mut().find(|r| r.run_id == run_id) {
             row.state = state.clone();
+        }
+        Ok(())
+    }
+
+    fn update_container_id(&self, run_id: &str, container_id: &str) -> CaduceusResult<()> {
+        let mut rows = self.rows.lock().unwrap();
+        if let Some(row) = rows.iter_mut().find(|r| r.run_id == run_id) {
+            row.container_id = Some(container_id.to_string());
         }
         Ok(())
     }
@@ -101,6 +111,43 @@ fn create_argv() -> Vec<String> {
     ]
 }
 
+async fn run_lifecycle(
+    cfg: &Config,
+    input: &ExecutorSpec,
+    state: Arc<FakeOciRunState>,
+    engine: SandboxEngine,
+    argv: Vec<String>,
+    cancel: CancellationToken,
+    pressure: CancellationToken,
+) -> CaduceusResult<caduceus::supervisor::SupervisorOutcome> {
+    let worktree = cfg
+        .workdir_base
+        .join("owner")
+        .join("repo")
+        .join(&input.run_id);
+    let runtime = support::runtime_facts(cfg, &input.run_id, &worktree);
+    let resolved = resolve(cfg.sandbox(), &runtime, input)?;
+    let adapter = oci_lifecycle::OciAdapter::new(
+        engine,
+        state,
+        cfg.state_dir.clone(),
+        runtime.daemon_id,
+        input.issue.clone(),
+        input.issue.display_key(),
+        "test-command-sha".to_string(),
+        argv,
+        None,
+    );
+    oci_lifecycle::run_oci_lifecycle(
+        &resolved,
+        &adapter,
+        &oci_lifecycle::LifecycleTimeouts::from_config(cfg),
+        cancel,
+        pressure,
+    )
+    .await
+}
+
 // cleanup_on_cancel_and_timeout (AC-03)
 
 /// Cancel mid-wait → no orphan container is left behind.
@@ -110,17 +157,16 @@ async fn cleanup_on_cancel_and_timeout() {
     // step with a typed OCI error. The state row should be
     // inserted (Created) before the error is returned.
     let cfg = test_cfg();
-    let state = FakeOciRunState::new();
+    let state = Arc::new(FakeOciRunState::new());
     let spec = test_spec("lifecycle-cancel-001");
     let cancel = CancellationToken::new();
 
-    let result = oci_lifecycle::run_with_argv(
+    let result = run_lifecycle(
         &cfg,
         &spec,
-        &state,
+        state.clone(),
         SandboxEngine::Docker,
         create_argv(),
-        None,
         cancel.clone(),
         CancellationToken::new(),
     )
@@ -147,17 +193,16 @@ async fn cleanup_on_cancel_and_timeout() {
 #[tokio::test]
 async fn engine_unavailable_surfaces_structured() {
     let cfg = test_cfg();
-    let state = FakeOciRunState::new();
+    let state = Arc::new(FakeOciRunState::new());
     let spec = test_spec("lifecycle-eng-001");
     let cancel = CancellationToken::new();
 
-    let err = oci_lifecycle::run_with_argv(
+    let err = run_lifecycle(
         &cfg,
         &spec,
-        &state,
+        state.clone(),
         SandboxEngine::Docker,
         create_argv(),
-        None,
         cancel.clone(),
         CancellationToken::new(),
     )
@@ -183,20 +228,19 @@ async fn stop_kill_remove_bounded() {
     // Without Docker, the lifecycle should fail at create step
     // (fast), not hang.
     let cfg = test_cfg();
-    let state = FakeOciRunState::new();
+    let state = Arc::new(FakeOciRunState::new());
     let spec = test_spec("lifecycle-bounded-001");
     let cancel = CancellationToken::new();
 
     // Use tokio::time::timeout to ensure we don't hang.
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(30),
-        oci_lifecycle::run_with_argv(
+        run_lifecycle(
             &cfg,
             &spec,
-            &state,
+            state.clone(),
             SandboxEngine::Docker,
             create_argv(),
-            None,
             cancel,
             CancellationToken::new(),
         ),
@@ -225,27 +269,26 @@ async fn stop_kill_remove_bounded() {
     }
 }
 
-// run_with_argv_wires_engine_into_state_row (task 4.7)
+// lifecycle_wires_engine_into_state_row
 
-/// The `engine` passed to `run_with_argv` feeds the
+/// The engine passed to the lifecycle adapter feeds the
 /// `ContainerRunRow.engine` column — the same engine the renderer
 /// used, so the create argv and the state row cannot diverge.
 #[tokio::test]
-async fn run_with_argv_wires_engine_into_state_row() {
+async fn lifecycle_wires_engine_into_state_row() {
     let cfg = test_cfg();
-    let state = FakeOciRunState::new();
+    let state = Arc::new(FakeOciRunState::new());
     let spec = test_spec("lifecycle-engine-row-001");
     let cancel = CancellationToken::new();
 
     // Podman engine: the renderer would have emitted `podman create`,
     // and the state row must say "Podman".
-    let _ = oci_lifecycle::run_with_argv(
+    let _ = run_lifecycle(
         &cfg,
         &spec,
-        &state,
+        state.clone(),
         SandboxEngine::Podman,
         create_argv(),
-        None,
         cancel,
         CancellationToken::new(),
     )
@@ -255,17 +298,16 @@ async fn run_with_argv_wires_engine_into_state_row() {
     let row = row.expect("row must be inserted before create");
     assert_eq!(
         row.engine, "Podman",
-        "ContainerRunRow.engine must match the engine passed to run_with_argv"
+        "ContainerRunRow.engine must match the engine passed to the adapter"
     );
 }
 
 // crash_recovery (AC-05)
 
-/// Simulate crash recovery: insert a row in PendingReconciliation,
-/// call reconcile, verify the row is marked Removed.
+/// Simulate a durable crash residual: insert a row in
+/// `PendingReconciliation` and retain it for startup recovery.
 #[tokio::test]
 async fn crash_recovery() {
-    let cfg = test_cfg();
     let state = FakeOciRunState::new();
 
     // Insert a row as if it was created before a crash.
@@ -282,14 +324,7 @@ async fn crash_recovery() {
     };
     state.insert(&row).expect("insert row");
 
-    // Reconcile — this should try to remove the container (will fail
-    // without Docker) and mark the row as Removed.
-    let cancel = CancellationToken::new();
-    oci_lifecycle::reconcile(&cfg, &state, cancel)
-        .await
-        .expect("reconcile should succeed");
-
-    // The row should still exist.
+    // The row remains available for the startup reconciliation pass.
     let row = state.get("crash-rec-001").expect("get row");
     assert!(row.is_some(), "row must still exist");
 }
@@ -300,7 +335,6 @@ async fn crash_recovery() {
 /// are left untouched.
 #[tokio::test]
 async fn reconcile_does_not_remove_unrelated() {
-    let _cfg = test_cfg();
     let state = FakeOciRunState::new();
 
     // Insert a row with a different run_id pattern.
@@ -338,12 +372,9 @@ fn parse_exit_code_parses_number() {
     assert_eq!(oci_lifecycle::parse_exit_code_for_tests("not-a-number"), -1);
 }
 
-// derive_daemon_id (moved from src/executor/oci_lifecycle.rs inline tests)
-
 #[test]
-fn derive_daemon_id_from_state_dir() {
-    let mut cfg = Config::test_defaults(Path::new("/tmp"));
-    cfg.state_dir = Path::new("/tmp").join("my-daemon");
-    let id = oci_lifecycle::derive_daemon_id_for_tests(&cfg);
-    assert_eq!(id, "my-daemon");
+fn discovery_uses_the_quoted_run_label_template() {
+    let template = oci_lifecycle::discovery_template_for_tests();
+    assert_eq!(template, r#"{{index .Config.Labels "caduceus.run_id"}}"#);
+    assert!(!template.contains("caduceus_run_id"));
 }

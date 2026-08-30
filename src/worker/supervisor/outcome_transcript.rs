@@ -22,6 +22,8 @@ pub struct SupervisorOutcome {
     /// SIGINT, or SIGTERM) and the supervisor confirmed the
     /// worker session is gone.
     pub cancelled: bool,
+    /// True when the OCI disk-pressure watchdog won the lifecycle race.
+    pub disk_pressure: bool,
 }
 
 /// Path layout for one worker's runtime artefacts. The

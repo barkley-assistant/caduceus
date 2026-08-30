@@ -263,7 +263,10 @@ pub(crate) async fn run_claim(
     };
     let supervisor_outcome = exec_outcome.outcome.clone();
     guard.attach_supervisor(supervisor_outcome.clone()).await;
-    if supervisor_outcome.timed_out || supervisor_outcome.cancelled {
+    if supervisor_outcome.timed_out
+        || supervisor_outcome.cancelled
+        || supervisor_outcome.disk_pressure
+    {
         let _ = guard.finish_cancelled().await;
         return Ok(TickOutcome::Cancelled);
     }

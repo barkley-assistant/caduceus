@@ -962,16 +962,16 @@ async fn test_scenario_9_config_bootstrap_cadence_default() {
 }
 
 // ---------------------------------------------------------------------------
-// Scenario 10: schema migration from v4 to v5 (idempotent).
+// Scenario 10: schema initialization at v7 (idempotent).
 //
 // We don't drive this through `caduceus run` because the
 // schema migration lives in `caduceus migrate-state`. We
 // invoke that subcommand and assert the migration is a
-// no-op when the database is already at v6.
+// no-op when the database is already at v7.
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn test_scenario_10_schema_migration_v5_to_v6_idempotent() {
+async fn test_scenario_10_schema_v7_idempotent() {
     use caduceus::state::store::{open_in, SCHEMA_VERSION};
 
     let state = IsolatedState::new("http://127.0.0.1:1".to_string());
@@ -989,7 +989,7 @@ async fn test_scenario_10_schema_migration_v5_to_v6_idempotent() {
         v_after_open, SCHEMA_VERSION,
         "fresh DB must be at SCHEMA_VERSION"
     );
-    assert_eq!(v_after_open, 6, "v6 is the canonical current schema");
+    assert_eq!(v_after_open, 7, "v7 is the canonical current schema");
 
     // Second open: idempotent — no migration, schema_version
     // table is unchanged, oci_runs table still exists.
@@ -1007,8 +1007,8 @@ async fn test_scenario_10_schema_migration_v5_to_v6_idempotent() {
         )
         .expect("query oci_runs");
     drop(conn2);
-    assert_eq!(v_again, 6, "second open must remain v6 (idempotent)");
-    assert_eq!(oci_runs_count, 1, "oci_runs table must exist at v6");
+    assert_eq!(v_again, 7, "second open must remain v7 (idempotent)");
+    assert_eq!(oci_runs_count, 1, "oci_runs table must exist at v7");
 
     let observed = serde_json::json!({
         "schema_version_after_open": v_after_open,

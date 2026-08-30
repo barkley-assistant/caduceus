@@ -35,9 +35,7 @@ use std::time::Duration;
 
 use nix::unistd::{chown, Gid, Uid};
 
-use crate::executor::sandbox_spec::{
-    derive_daemon_id, EngineMode, GitShadowKind, RuntimeFacts, SandboxEngine,
-};
+use crate::executor::sandbox_spec::{EngineMode, GitShadowKind, RuntimeFacts, SandboxEngine};
 use crate::executor::ExecutorSpec;
 use crate::infra::config::Config;
 use crate::infra::error::{CaduceusError, CaduceusResult};
@@ -64,6 +62,23 @@ const ENGINE_PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 pub async fn probe_runtime_facts(
     cfg: &Config,
     spec: &ExecutorSpec,
+) -> CaduceusResult<RuntimeFacts> {
+    let meta = if cfg.state_backend == "sqlite" {
+        crate::state::meta::MetaStore::open_sqlite(&cfg.state_dir)?
+    } else {
+        crate::state::meta::MetaStore::open(&cfg.state_dir)?
+    };
+    let daemon_id = meta.get_or_create_installation_uuid()?;
+    probe_runtime_facts_with_daemon_id(cfg, spec, &daemon_id).await
+}
+
+/// Variant used by the daemon after it has loaded its persisted installation
+/// UUID. Keeping the identity an explicit input ensures labels are never
+/// rendered before the UUID has been durably established.
+pub async fn probe_runtime_facts_with_daemon_id(
+    cfg: &Config,
+    spec: &ExecutorSpec,
+    daemon_id: &str,
 ) -> CaduceusResult<RuntimeFacts> {
     let engine = cfg.sandbox().engine;
 
@@ -142,7 +157,7 @@ pub async fn probe_runtime_facts(
         worker_command: spec.worker_command.clone(),
         worktree: spec.worktree.clone(),
         output_dir,
-        daemon_id: derive_daemon_id(cfg),
+        daemon_id: daemon_id.to_string(),
         workdir_base: cfg.workdir_base.clone(),
         state_dir,
         worktree_uid,

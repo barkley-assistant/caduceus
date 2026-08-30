@@ -53,7 +53,19 @@ use crate::infra::error::{CaduceusError, CaduceusResult};
 /// - `queue_entries` gains `blocked_source TEXT` and
 ///   `blocked_recovery_hint TEXT` columns for terminal refuse-to-
 ///   operate metadata. Existing rows get NULL defaults.
-pub const SCHEMA_VERSION: i64 = 6;
+///
+/// ## v7
+///
+/// - OCI run identity and installation attribution are now part of the
+///   supported state contract. There is intentionally no v6 -> v7
+///   migration: v6 state must be reinitialised rather than being read
+///   with different lifecycle semantics.
+pub const SCHEMA_VERSION: i64 = 7;
+
+/// The last schema version that is deliberately rejected instead of
+/// migrated. Keeping this explicit prevents a future schema bump from
+/// accidentally turning the breaking v6 boundary into a silent upgrade.
+pub const STALE_SCHEMA_VERSION: i64 = 6;
 
 /// Name of the SQLite database file inside the state directory.
 pub const DB_FILENAME: &str = "state.db";
@@ -202,6 +214,13 @@ pub fn open(path: &Path) -> CaduceusResult<Connection> {
                 message: format!(
                     "SQLite store has schema v{existing_version} but this daemon only supports v{SCHEMA_VERSION} — upgrade required"
                 ),
+            });
+        }
+
+        if existing_version == STALE_SCHEMA_VERSION {
+            return Err(CaduceusError::StateCorrupt {
+                path: db_path,
+                message: "SQLite store has stale schema v6; v6 state is not migrated and must be reinitialized with fresh state".to_string(),
             });
         }
 

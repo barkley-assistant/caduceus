@@ -77,6 +77,71 @@ fn empty_meta_round_trips_sqlite() {
 }
 
 #[test]
+fn installation_uuid_is_generated_once_and_reused_for_json() {
+    let root = tempdir("installation-uuid-json");
+    let store = MetaStore::open(&root).expect("open json meta store");
+    let first = store
+        .get_or_create_installation_uuid()
+        .expect("generate UUID");
+    let second = MetaStore::open(&root)
+        .expect("reopen json meta store")
+        .get_or_create_installation_uuid()
+        .expect("reuse UUID");
+    assert_eq!(first, second);
+    assert!(uuid::Uuid::parse_str(&first).is_ok());
+    assert!(root
+        .join(caduceus::meta::INSTALLATION_UUID_FILENAME)
+        .is_file());
+}
+
+#[test]
+fn installation_uuid_is_generated_once_and_reused_for_sqlite() {
+    let root = tempdir("installation-uuid-sqlite");
+    let first = MetaStore::open_sqlite(&root)
+        .expect("open sqlite meta store")
+        .get_or_create_installation_uuid()
+        .expect("generate UUID");
+    let second = MetaStore::open_sqlite(&root)
+        .expect("reopen sqlite meta store")
+        .get_or_create_installation_uuid()
+        .expect("reuse UUID");
+    assert_eq!(first, second);
+    assert!(uuid::Uuid::parse_str(&first).is_ok());
+}
+
+#[test]
+fn same_basename_installations_get_distinct_json_identities() {
+    let root = tempdir("same-basename");
+    let first_dir = root.join("first").join("daemon");
+    let second_dir = root.join("second").join("daemon");
+    let first = MetaStore::open(&first_dir)
+        .expect("open first installation")
+        .get_or_create_installation_uuid()
+        .expect("first UUID");
+    let second = MetaStore::open(&second_dir)
+        .expect("open second installation")
+        .get_or_create_installation_uuid()
+        .expect("second UUID");
+    assert_ne!(first, second, "installation identity must not use basename");
+}
+
+#[test]
+fn same_basename_installations_get_distinct_sqlite_identities() {
+    let root = tempdir("same-basename-sqlite");
+    let first_dir = root.join("first").join("daemon");
+    let second_dir = root.join("second").join("daemon");
+    let first = MetaStore::open_sqlite(&first_dir)
+        .expect("open first installation")
+        .get_or_create_installation_uuid()
+        .expect("first UUID");
+    let second = MetaStore::open_sqlite(&second_dir)
+        .expect("open second installation")
+        .get_or_create_installation_uuid()
+        .expect("second UUID");
+    assert_ne!(first, second, "installation identity must not use basename");
+}
+
+#[test]
 fn full_meta_round_trips_sqlite() {
     let root = tempdir("full-sqlite");
     let store = MetaStore::open_sqlite(&root).expect("open sqlite");

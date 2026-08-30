@@ -5,9 +5,9 @@
 //! create the daemon-owned host artifacts, resolves a typed
 //! [`SandboxSpec`] from the sandbox config and those facts, renders
 //! the `create` argv with the pure renderer, acquires and verifies the
-//! configured image, then delegates to [`oci_lifecycle::run_with_argv`]
-//! for the five-step container lifecycle (create → start → wait → stop →
-//! remove). The state DAO is injected through the config's state directory.
+//! configured image, then delegates to [`oci_lifecycle::run_oci_lifecycle`]
+//! for the single crash-safe container lifecycle. The state DAO is injected
+//! through the config's state directory.
 //!
 //! The renderer is the sole argv producer in the crate: `resolve` owns
 //! every host-path and identity decision, `engine_probe` owns runtime facts
@@ -26,6 +26,7 @@ use crate::executor::{
 use crate::infra::config::Config;
 use crate::infra::disk::DiskPressureGuard;
 use crate::infra::error::CaduceusResult;
+use crate::state::meta::MetaStore;
 use crate::state::oci_run::OciRunDao;
 use crate::state::store;
 use crate::worker::worker_contract::WORKER_RESULT_FILE;
@@ -59,26 +60,37 @@ impl Executor for OciExecutor {
             //    executor.
             self.disk.try_acquire_oci()?;
 
-            // 1. Pre-flight probe: collect the runtime facts (worktree
+            // 1. Load and durably establish the installation identity
+            //    before any labels or create argv are rendered.
+            let meta = if self.cfg.state_backend == "sqlite" {
+                MetaStore::open_sqlite(&self.cfg.state_dir)?
+            } else {
+                MetaStore::open(&self.cfg.state_dir)?
+            };
+            let daemon_id = meta.get_or_create_installation_uuid()?;
+
+            // 2. Pre-flight probe: collect the runtime facts (worktree
             //    owner uid/gid, host `.git` type, engine mode) and
             //    create the daemon-owned host artifacts. Every
             //    unsupported-configuration refusal (typed
             //    `OciIdentityUnsupported`) is raised here — before any
             //    `create` argv exists, so `oci_lifecycle` is never
             //    reached on a refusal path.
-            let runtime = engine_probe::probe_runtime_facts(&self.cfg, spec).await?;
+            let runtime =
+                engine_probe::probe_runtime_facts_with_daemon_id(&self.cfg, spec, &daemon_id)
+                    .await?;
 
-            // 2. Resolve the closed typed spec. All host-path,
+            // 3. Resolve the closed typed spec. All host-path,
             //    identity, and mount decisions happen here; the
             //    renderer invents nothing.
             let resolved = sandbox_spec::resolve(self.cfg.sandbox(), &runtime, spec)?;
 
-            // 3. Open the state database.
+            // 4. Open the state database.
             let db_path = self.cfg.state_dir.join(store::DB_FILENAME);
             let conn = store::open(&db_path)?;
             let dao = OciRunDao::new(conn);
 
-            // 4. Write the assembled environment (canonical + compat +
+            // 5. Write the assembled environment (canonical + compat +
             //    resolved `pass_env` from `spec.environment`) to the
             //    daemon-private, randomly named, mode-0600 env file
             //    under `state_dir/oci-runs/<run_id>` (issue #249). Its
@@ -99,7 +111,7 @@ impl Executor for OciExecutor {
                 &[env_file.path().to_path_buf()],
             );
 
-            // 5. Acquire and verify the immutable worker image before the
+            // 6. Acquire and verify the immutable worker image before the
             //    lifecycle can insert its Created state or invoke create.
             //    The run directory is already created by the probe (and
             //    idempotently re-ensured by the env file), but is passed
@@ -119,13 +131,21 @@ impl Executor for OciExecutor {
             //    lifecycle token is linked with the watchdog token so
             //    a disk-pressure breach terminates in-flight work via
             //    the existing stop path (issue #245).
-            let outcome = oci_lifecycle::run_with_argv(
-                &self.cfg,
-                spec,
-                &dao,
+            let adapter = oci_lifecycle::OciAdapter::new(
                 engine,
+                Arc::new(dao),
+                self.cfg.state_dir.clone(),
+                daemon_id,
+                spec.issue.clone(),
+                spec.issue.display_key(),
+                sha256_of(&spec.worker_command.join(" ")),
                 argv,
                 Some(env_file),
+            );
+            let outcome = oci_lifecycle::run_oci_lifecycle(
+                &resolved,
+                &adapter,
+                &oci_lifecycle::LifecycleTimeouts::from_config(&self.cfg),
                 spec.cancellation.child_token(),
                 self.disk.watchdog_token(),
             )
@@ -136,4 +156,11 @@ impl Executor for OciExecutor {
             })
         })
     }
+}
+
+fn sha256_of(input: &str) -> String {
+    use sha2::Digest;
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(input.as_bytes());
+    hex::encode(hasher.finalize())
 }

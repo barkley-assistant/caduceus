@@ -73,6 +73,38 @@ fn update_oci_run_state() {
     assert_eq!(loaded.state, OciLifecycleState::Running);
 }
 
+#[test]
+fn container_id_is_durably_updatable_and_indexed() {
+    let dao = dao();
+    dao.insert(&sample_row("run-id", OciLifecycleState::Created))
+        .expect("insert");
+    dao.update_container_id("run-id", "created-before-start")
+        .expect("persist container id");
+    let row = dao
+        .get_by_container_id("created-before-start")
+        .expect("lookup")
+        .expect("row exists");
+    assert_eq!(row.run_id, "run-id");
+    assert_eq!(row.container_id.as_deref(), Some("created-before-start"));
+}
+
+#[test]
+fn daemon_id_lookup_is_scoped_to_installation() {
+    let dao = dao();
+    let mut own = sample_row("run-own", OciLifecycleState::Running);
+    own.daemon_id = "installation-a".to_string();
+    let mut foreign = sample_row("run-foreign", OciLifecycleState::Running);
+    foreign.daemon_id = "installation-b".to_string();
+    dao.insert(&own).expect("insert own row");
+    dao.insert(&foreign).expect("insert foreign row");
+
+    let rows = dao
+        .list_by_daemon_id("installation-a")
+        .expect("installation lookup");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].run_id, "run-own");
+}
+
 // list_pending_reconciliation_returns_only_pending
 
 #[test]

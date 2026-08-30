@@ -18,6 +18,7 @@ use std::collections::BTreeMap;
 use std::os::unix::fs::PermissionsExt;
 use std::panic;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use serial_test::serial;
@@ -25,12 +26,14 @@ use tokio_util::sync::CancellationToken;
 
 use caduceus::executor::oci_env_file::OciEnvFile;
 use caduceus::executor::oci_lifecycle;
-use caduceus::executor::sandbox_spec::SandboxEngine;
+use caduceus::executor::sandbox_spec::{resolve, SandboxEngine};
 use caduceus::executor::ExecutorSpec;
 use caduceus::github::issue::IssueKey;
 use caduceus::infra::config::Config;
 use caduceus::infra::error::{CaduceusError, CaduceusResult};
 use caduceus::state::oci_run::{ContainerRunRow, OciLifecycleState, OciRunState};
+
+mod support;
 
 fn env_map(entries: &[(&str, &str)]) -> BTreeMap<String, String> {
     entries
@@ -317,7 +320,7 @@ case "$1" in
 esac
 "#;
 
-/// Drive `run_with_argv` against the failing-create stub engine and
+/// Drive the canonical lifecycle against the failing-create stub engine and
 /// assert the env file is gone before the create error propagates.
 #[tokio::test]
 #[serial]
@@ -363,15 +366,31 @@ async fn create_failure_leaves_no_env_file() {
         "image@sha256:0000000000000000000000000000000000000000000000000000000000000000".to_string(),
     ];
 
+    let state = Arc::new(FakeOciRunState);
+    let worktree = cfg
+        .workdir_base
+        .join("owner")
+        .join("repo")
+        .join(&spec.run_id);
+    let facts = support::runtime_facts(&cfg, &spec.run_id, &worktree);
+    let resolved = resolve(cfg.sandbox(), &facts, &spec).expect("sandbox resolves");
+    let adapter = oci_lifecycle::OciAdapter::new(
+        SandboxEngine::Docker,
+        state,
+        cfg.state_dir.clone(),
+        facts.daemon_id,
+        spec.issue.clone(),
+        spec.issue.display_key(),
+        "test-command-sha".to_string(),
+        argv,
+        Some(env_file),
+    );
     let result = tokio::time::timeout(
         Duration::from_secs(30),
-        oci_lifecycle::run_with_argv(
-            &cfg,
-            &spec,
-            &FakeOciRunState,
-            SandboxEngine::Docker,
-            argv,
-            Some(env_file),
+        oci_lifecycle::run_oci_lifecycle(
+            &resolved,
+            &adapter,
+            &oci_lifecycle::LifecycleTimeouts::from_config(&cfg),
             CancellationToken::new(),
             CancellationToken::new(),
         ),
