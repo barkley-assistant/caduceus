@@ -636,6 +636,14 @@ name = "fixtures_self_test"
 path = "tests/architecture/fixtures_self_test.rs"
 
 [[test]]
+name = "oci_fixture_parity_test"
+path = "tests/architecture/oci_fixture_parity_test.rs"
+
+[[test]]
+name = "oci_independence_test"
+path = "tests/architecture/oci_independence_test.rs"
+
+[[test]]
 name = "awaiting_review_test"
 path = "tests/daemon/awaiting_review_test.rs"
 

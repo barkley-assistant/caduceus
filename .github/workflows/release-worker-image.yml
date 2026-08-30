@@ -1,0 +1,88 @@
+name: release-worker-image
+
+# Digest-pinned publication of the Caduceus OCI worker reference image.
+#
+# Runs ONLY on version tags from the canonical repository; main CI
+# (ci.yml, job `oci-reference-image`) builds the same Containerfile
+# locally and never pushes, and forks never get registry credentials.
+# Publication is therefore exclusive to this workflow (D5).
+#
+# The published digest is echoed into the workflow summary and appended
+# to the GitHub release notes so every publication is digest-pinned and
+# auditable.
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push (same Containerfile, digest-pinned base)
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: plugin-assets/worker-reference-image
+          file: plugin-assets/worker-reference-image/Containerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ghcr.io/barkley-assistant/caduceus-worker-reference:${{ steps.version.outputs.version }}
+            ghcr.io/barkley-assistant/caduceus-worker-reference:latest
+          # Provenance attestation makes the publication auditable; the
+          # base image itself is already pinned by its manifest digest.
+          provenance: mode=max
+          sbom: false
+
+      - name: Echo digest into workflow summary
+        run: |
+          {
+            echo "## Published caduceus-worker-reference"
+            echo ""
+            echo "- Version: \`${{ steps.version.outputs.version }}\`"
+            echo "- Digest: \`${{ steps.build.outputs.digest }}\`"
+            echo "- Tags: \`ghcr.io/barkley-assistant/caduceus-worker-reference:${{ steps.version.outputs.version }}\`, \`ghcr.io/barkley-assistant/caduceus-worker-reference:latest\`"
+            echo "- Image ref (digest-pinned): \`ghcr.io/barkley-assistant/caduceus-worker-reference:${{ steps.version.outputs.version }}@${{ steps.build.outputs.digest }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Append digest to release notes (idempotent)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          digest="${{ steps.build.outputs.digest }}"
+          marker="Reference worker image digest: \`$digest\`"
+          body="$(gh release view "$GITHUB_REF_NAME" --json body -q .body 2>/dev/null || true)"
+          if [ -n "$body" ]; then
+            if ! grep -qF "$digest" <<<"$body"; then
+              gh release edit "$GITHUB_REF_NAME" --notes "$body"$'\n\n'"$marker"
+            fi
+          else
+            # The release.yml workflow may not have created the GitHub
+            # release yet; the digest is always in the workflow summary.
+            echo "note: GitHub release for $GITHUB_REF_NAME not found yet; digest is recorded in the workflow summary" >> "$GITHUB_STEP_SUMMARY"
+          fi

@@ -1,0 +1,45 @@
+# Caduceus OCI worker reference image.
+#
+# The minimal deterministic worker image that proves the OCI worker
+# contract end to end (canonical CADUCEUS_* environment, /workspace,
+# schema-valid /output/worker-result.json, certification probes). It is
+# a test fixture, a CI artifact, and an operator example — never a
+# production dependency of the executor (see README.md in this
+# directory).
+#
+# Determinism: the base is busybox 1.36.1 pinned by its linux/amd64
+# manifest digest (verified 2026-08-30 via `docker buildx imagetools
+# inspect`), so the build never floats on a mutable tag. Busybox ships
+# POSIX sh plus coreutils in one static binary: no package manager, no
+# compiler, no language runtime, no LLM tooling, no install step.
+FROM docker.io/library/busybox:1.36.1@sha256:b7f3d86d6e84fc17718c48bcde1450807faa2d56704205c697b4bd5df7b9e29f
+
+# Contract helper, result writer, probe dispatcher, and the four
+# certification probes, copied at fixed paths (design D1/D3). The
+# executor passes arbitrary --entrypoint argv, so nothing relies on the
+# default command below.
+COPY scripts/caduceus-env.sh /usr/local/bin/caduceus-env.sh
+COPY scripts/write-result.sh /usr/local/bin/write-result.sh
+COPY scripts/worker-probe /usr/local/bin/worker-probe
+COPY scripts/probes/sentinel-read.sh /usr/local/bin/probes/sentinel-read.sh
+COPY scripts/probes/mount-probe.sh /usr/local/bin/probes/mount-probe.sh
+COPY scripts/probes/resource-hog.sh /usr/local/bin/probes/resource-hog.sh
+COPY scripts/probes/network-probe.sh /usr/local/bin/probes/network-probe.sh
+
+# World-readable and executable at fixed paths; the only RUN step.
+RUN chmod 0755 \
+    /usr/local/bin/caduceus-env.sh \
+    /usr/local/bin/write-result.sh \
+    /usr/local/bin/worker-probe \
+    /usr/local/bin/probes/sentinel-read.sh \
+    /usr/local/bin/probes/mount-probe.sh \
+    /usr/local/bin/probes/resource-hog.sh \
+    /usr/local/bin/probes/network-probe.sh
+
+LABEL org.opencontainers.image.title="caduceus-worker-reference" \
+      org.opencontainers.image.description="Minimal contract-correct reference worker image for Caduceus OCI" \
+      org.opencontainers.image.source="https://github.com/barkley-assistant/caduceus"
+
+# Default command: a one-line contract summary. Nothing depends on it —
+# the executor overrides the command with arbitrary argv.
+CMD ["sh", "-c", "echo caduceus-worker-reference: contract helper, result writer, and probes at /usr/local/bin"]
