@@ -250,7 +250,26 @@ What the worker container sees is a closed, typed spec:
   engine with userns-remap, or an engine whose mode cannot
   be determined) are refused with a typed error before any
   container is created, and `hermes caduceus doctor`
-  reports the engine/mode as unavailable.
+   reports the engine/mode as unavailable.
+
+### OCI crash recovery and state compatibility
+
+OCI runs use one crash-safe lifecycle. The container ID is durably recorded
+after `create` and before `start`; execution is raced against the worker
+deadline, daemon cancellation, and disk pressure. Cleanup uses bounded
+`stop` → `kill` → `rm --force` and confirms the container is absent before
+recording `Removed`. A fresh daemon token keeps cleanup running even when the
+parent run is cancelled, and active runs refresh the normal 5-second
+heartbeat.
+
+The OCI run store is schema **v7**. There is no legacy v6 migration: starting
+against a v6 state database stops with a stale-schema error, and operators
+must initialise fresh state. Each installation also gets a UUID persisted
+atomically by the metadata store. It replaces the state-directory basename
+as `caduceus.daemon_id`, so discovery never touches containers belonging to a
+different installation. Restarting the daemon is the recovery operation;
+startup reconciliation converges durable rows and labeled engine containers
+without manual container cleanup.
 
 ### The mandatory per-run OCI baseline (non-weakenable)
 

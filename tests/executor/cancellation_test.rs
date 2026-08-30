@@ -150,7 +150,7 @@ fn cancel_at_remove() {
 // flow against a real engine.
 // ---------------------------------------------------------------------------
 
-/// Disk-pressure watchdog cancellation mid-wait: `run_with_argv`'s
+/// Disk-pressure watchdog cancellation mid-wait: the canonical lifecycle's
 /// second `watchdog` token selects against the wait step and the run
 /// falls through stop → capture → rm, reporting `Cancelled`.
 #[test]
@@ -158,7 +158,7 @@ fn cancel_at_remove() {
 fn watchdog_cancel_at_wait() {
     // When CADUCEUS_RUN_ISOLATION_TESTS is set:
     //  1. Start a long-running container (sleep 3600) via
-    //     `oci_lifecycle::run_with_argv` with a fresh watchdog token
+    //     `oci_lifecycle::run_oci_lifecycle` with a fresh watchdog token
     //  2. Cancel the WATCHDOG token (not the daemon token) during
     //     the wait phase — a disk-pressure breach did this
     //  3. Verify the run fell through stop → capture → rm:

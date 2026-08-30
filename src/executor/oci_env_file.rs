@@ -22,7 +22,7 @@
 //!   so this rejection is the fail-closed backstop for operator
 //!   `pass_env` values, which are never normalized (design D3).
 //! - **Deletion**: `Drop` removes the file; the lifecycle guard
-//!   (`oci_lifecycle::run_with_argv`) drops the handle immediately
+//!   (`oci_lifecycle`'s lifecycle core) drops the handle immediately
 //!   after the `create` CLI call returns on every path (success,
 //!   create-failure, cancellation), so `start`/`wait`/`stop`/`rm` run
 //!   with the values already gone from disk.

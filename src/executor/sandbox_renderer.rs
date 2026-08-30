@@ -31,6 +31,25 @@ pub const OCI_LOG_MAX_SIZE: &str = "10m";
 /// per-container on-disk logs: 3 × 10 MiB = 30 MiB.
 pub const OCI_LOG_MAX_FILE: &str = "3";
 
+/// Labels shared by container creation and reconciliation discovery.
+pub const OCI_DAEMON_LABEL: &str = "caduceus.daemon_id";
+pub const OCI_RUN_LABEL: &str = "caduceus.run_id";
+pub const OCI_ISSUE_LABEL: &str = "caduceus.issue_id";
+/// Quoted because Docker/Podman Go templates parse dotted label keys as
+/// field paths rather than literal map keys.
+pub const OCI_DAEMON_ID_DISCOVERY_TEMPLATE: &str =
+    r#"{{index .Config.Labels "caduceus.daemon_id"}}"#;
+pub const OCI_RUN_ID_DISCOVERY_TEMPLATE: &str = r#"{{index .Config.Labels "caduceus.run_id"}}"#;
+
+/// Render the identity labels in their canonical order.
+pub fn render_labels(daemon_id: &str, run_id: &str, issue_id: &str) -> Vec<(String, String)> {
+    vec![
+        (OCI_DAEMON_LABEL.to_string(), daemon_id.to_string()),
+        (OCI_RUN_LABEL.to_string(), run_id.to_string()),
+        (OCI_ISSUE_LABEL.to_string(), issue_id.to_string()),
+    ]
+}
+
 /// Render the full `create` argv for the given engine with no env
 /// files. Delegates to [`render_with_env_files`] with an empty slice
 /// — the `-e` fallback path (no production caller: the OCI executor

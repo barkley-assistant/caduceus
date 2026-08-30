@@ -43,7 +43,7 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Duration, Utc};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use crate::github::issue::IssueKey;
@@ -66,6 +66,11 @@ pub const META_FILENAME: &str = "state_meta.json";
 
 /// Marker filename written when corruption is detected.
 pub const CORRUPT_MARKER_FILENAME: &str = "state_meta.corrupt";
+
+/// File used by the JSON metadata backend for the daemon's installation
+/// identity. It is deliberately separate from the versioned metadata
+/// envelope so existing metadata readers remain backward compatible.
+pub const INSTALLATION_UUID_FILENAME: &str = "installation_uuid";
 
 /// Persisted tick metadata. Field semantics are pinned by the
 /// StateMeta contract.
@@ -227,6 +232,7 @@ impl MetaStore {
     /// created if needed and the current `state_meta` rows are read
     /// into the in-memory cache.
     pub fn open_sqlite(state_dir: &Path) -> CaduceusResult<Self> {
+        fs::create_dir_all(state_dir)?;
         // Open once to ensure the schema is present.
         let _conn = crate::state::store::open_in(state_dir)?;
         let meta = if let Ok(conn) = crate::state::store::open_in(state_dir) {
@@ -338,6 +344,78 @@ impl MetaStore {
     pub fn state_dir(&self) -> &Path {
         &self.state_dir
     }
+
+    /// Load the installation UUID, generating it once when this is the
+    /// first start. JSON uses the shared atomic-write primitive; SQLite
+    /// uses one immediate transaction so two writers cannot create two
+    /// identities. The persisted value is never overwritten.
+    pub fn get_or_create_installation_uuid(&self) -> CaduceusResult<String> {
+        let _guard = self.inner.lock().expect("meta mutex poisoned");
+        match &self.backend {
+            MetaStoreBackend::Json { .. } => {
+                let path = self.state_dir.join(INSTALLATION_UUID_FILENAME);
+                if path.exists() {
+                    return read_installation_uuid(&path);
+                }
+                let uuid = uuid::Uuid::new_v4().to_string();
+                crate::infra::install::atomic_write(&path, uuid.as_bytes())?;
+                read_installation_uuid(&path)
+            }
+            MetaStoreBackend::Sqlite(state_dir) => {
+                let conn = crate::state::store::open_in(state_dir)?;
+                let tx = conn
+                    .unchecked_transaction()
+                    .map_err(|e| CaduceusError::StateCorrupt {
+                        path: state_dir.join(crate::state::store::DB_FILENAME),
+                        message: format!("cannot begin installation UUID transaction: {e}"),
+                    })?;
+                let existing: Option<String> = tx
+                    .query_row(
+                        "SELECT value FROM state_meta WHERE key = 'installation_uuid'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(|e| CaduceusError::StateCorrupt {
+                        path: state_dir.join(crate::state::store::DB_FILENAME),
+                        message: format!("cannot read installation UUID: {e}"),
+                    })?;
+                let uuid = match existing {
+                    Some(value) => validate_installation_uuid(&value, state_dir)?,
+                    None => {
+                        let value = uuid::Uuid::new_v4().to_string();
+                        tx.execute(
+                            "INSERT INTO state_meta (key, value) VALUES ('installation_uuid', ?1)",
+                            params![value],
+                        )
+                        .map_err(|e| CaduceusError::StateCorrupt {
+                            path: state_dir.join(crate::state::store::DB_FILENAME),
+                            message: format!("cannot persist installation UUID: {e}"),
+                        })?;
+                        value
+                    }
+                };
+                tx.commit().map_err(|e| CaduceusError::StateCorrupt {
+                    path: state_dir.join(crate::state::store::DB_FILENAME),
+                    message: format!("cannot commit installation UUID: {e}"),
+                })?;
+                Ok(uuid)
+            }
+        }
+    }
+}
+
+fn read_installation_uuid(path: &Path) -> CaduceusResult<String> {
+    let value = fs::read_to_string(path).map_err(CaduceusError::Io)?;
+    validate_installation_uuid(value.trim(), path)
+}
+
+fn validate_installation_uuid(value: &str, path: &Path) -> CaduceusResult<String> {
+    uuid::Uuid::parse_str(value).map_err(|_| CaduceusError::StateCorrupt {
+        path: path.to_path_buf(),
+        message: format!("invalid installation UUID {value:?}"),
+    })?;
+    Ok(value.to_string())
 }
 
 /// Rate-limit observer backed by a [`MetaStore`]. Concurrent HTTP

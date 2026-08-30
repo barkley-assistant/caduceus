@@ -59,6 +59,7 @@ pub fn runtime_facts(cfg: &Config, run_id: &str, worktree: &Path) -> RuntimeFact
 /// `RuntimeFacts` defaults: same run id and issue key, with fixed
 /// representative title/body/labels/branch/context values. Tests
 /// needing non-default spec inputs mutate the returned struct.
+#[allow(dead_code)]
 pub fn executor_spec(runtime: &RuntimeFacts) -> caduceus::executor::ExecutorSpec {
     caduceus::executor::ExecutorSpec {
         self_exe: PathBuf::from("/proc/self/exe"),

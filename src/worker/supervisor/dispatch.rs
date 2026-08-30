@@ -81,6 +81,7 @@ pub async fn supervise(
         signaled: false,
         timed_out: false,
         cancelled: false,
+        disk_pressure: false,
     };
 
     let spawn_result = run_supervisor(
@@ -207,6 +208,7 @@ pub(crate) async fn run_supervisor(
                             signaled: true,
                             timed_out: false,
                             cancelled: true,
+                            disk_pressure: false,
                         };
                     }
                     _ = tokio::time::sleep(Duration::from_secs(worker_timeout_seconds)) => {
@@ -221,6 +223,7 @@ pub(crate) async fn run_supervisor(
                                     signaled: false,
                                     timed_out: true,
                                     cancelled: false,
+                                    disk_pressure: false,
                                 };
                             }
                             DeadlineKillDecision::Signal | DeadlineKillDecision::BestEffort => {
@@ -250,6 +253,7 @@ pub(crate) async fn run_supervisor(
                                     signaled: false,
                                     timed_out: true,
                                     cancelled: false,
+                                    disk_pressure: false,
                                 };
                             }
                             DeadlineKillDecision::Signal | DeadlineKillDecision::BestEffort => {
@@ -281,6 +285,7 @@ pub(crate) async fn run_supervisor(
                             signaled: true,
                             timed_out: true,
                             cancelled: false,
+                            disk_pressure: false,
                         };
                     }
                     frame = read_frame_async(&mut stdout, &mut buf) => {
@@ -293,6 +298,7 @@ pub(crate) async fn run_supervisor(
                                     signaled: false,
                                     timed_out: false,
                                     cancelled: false,
+                                    disk_pressure: false,
                                 };
                             }
                             Err(err) => return err.into_outcome(),
@@ -312,6 +318,7 @@ pub(crate) async fn run_supervisor(
                                     signaled,
                                     timed_out: false,
                                     cancelled: false,
+                                    disk_pressure: false,
                                 };
                             }
                             ControlFrame::Fatal { reason } => {
@@ -321,6 +328,7 @@ pub(crate) async fn run_supervisor(
                                     signaled: false,
                                     timed_out: false,
                                     cancelled: false,
+                                    disk_pressure: false,
                                 };
                             }
                             ControlFrame::Ack | ControlFrame::Terminate { .. } => {
@@ -330,6 +338,7 @@ pub(crate) async fn run_supervisor(
                                     signaled: false,
                                     timed_out: false,
                                     cancelled: false,
+                                    disk_pressure: false,
                                 };
                             }
                         }
@@ -411,6 +420,7 @@ impl IntoOutcome for CaduceusError {
             signaled: false,
             timed_out: false,
             cancelled: false,
+            disk_pressure: false,
         }
     }
 }

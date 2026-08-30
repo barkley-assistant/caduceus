@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::executor::ExecutorSpec;
 use crate::github::issue::IssueKey;
-use crate::infra::config::{Config, SandboxConfig, SandboxNetwork};
+use crate::infra::config::{SandboxConfig, SandboxNetwork};
 use crate::infra::error::{CaduceusError, CaduceusResult};
 use crate::worker::worker_contract::{
     denied_name, CONTAINER_OUTPUT_PATH, CONTAINER_WORKSPACE_PATH, WORKER_RESULT_FILE,
@@ -419,7 +419,7 @@ pub struct RuntimeFacts {
     /// `<state_dir>/oci-runs/<run_id>/output` (derived by the
     /// pre-flight probe, never a worktree sibling).
     pub output_dir: PathBuf,
-    /// Stable daemon identifier (state-dir basename).
+    /// Stable installation UUID loaded from the metadata store.
     pub daemon_id: String,
     /// The declared worktree root (`Config.workdir_base`). The
     /// host-path allow-list in `resolve` requires the worktree to
@@ -765,11 +765,11 @@ pub fn resolve_with_env(
     ];
 
     // 12. Labels — fixed order.
-    let labels = vec![
-        ("caduceus.daemon_id".to_string(), runtime.daemon_id.clone()),
-        ("caduceus.run_id".to_string(), runtime.run_id.clone()),
-        ("caduceus.issue_id".to_string(), runtime.issue.display_key()),
-    ];
+    let labels = crate::executor::sandbox_renderer::render_labels(
+        &runtime.daemon_id,
+        &runtime.run_id,
+        &runtime.issue.display_key(),
+    );
 
     // 13. Command — worker argv.
     let command = runtime.worker_command.clone();
@@ -980,16 +980,6 @@ pub fn is_engine_socket_path(path: &Path) -> bool {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Derive a stable daemon identifier from the config.
-/// Uses the state-dir basename — guaranteed stable for the lifetime
-/// of a daemon instance.
-pub(crate) fn derive_daemon_id(cfg: &Config) -> String {
-    cfg.state_dir
-        .file_name()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "unknown".to_string())
-}
 
 /// Lexically normalize an absolute path: resolve `.` and `..`
 /// components without touching the filesystem. Returns `None` for

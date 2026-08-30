@@ -260,12 +260,22 @@ pub async fn tick(
     // 2. Open the metadata + state stores and enforce the
     //    rate-limit and cadence gates.
     let use_sqlite = cfg.state_backend == "sqlite";
-    let meta = LeaderToken::with_lock(&state_dir, || {
-        if use_sqlite {
-            MetaStore::open_sqlite(&state_dir)
+    let (meta, oci_daemon_id) = LeaderToken::with_lock(&state_dir, || {
+        let meta = if use_sqlite {
+            MetaStore::open_sqlite(&state_dir)?
         } else {
-            MetaStore::open(&state_dir)
-        }
+            MetaStore::open(&state_dir)?
+        };
+        // Establish the installation identity during daemon initialization,
+        // before any OCI executor can render labels or create a container.
+        // Keep generation under the scheduler lock so concurrent daemon
+        // starts cannot replace the persisted identity between read/write.
+        let daemon_id = if cfg.executor_mode == crate::executor::ExecutorKind::Oci {
+            Some(meta.get_or_create_installation_uuid()?)
+        } else {
+            None
+        };
+        Ok((meta, daemon_id))
     })?;
     let gate = if use_sqlite {
         CadenceGate::open_with_store(MetaStore::open_sqlite(&state_dir)?)
@@ -301,6 +311,27 @@ pub async fn tick(
             StateStore::open(&state_dir)
         }
     })?);
+
+    // 3.1. OCI startup recovery is deliberately before stale-claim
+    // handling and before the dispatcher can accept a new claim. The
+    // identity is loaded first, then the same adapter teardown path is
+    // used to converge labeled containers and durable run rows.
+    if cfg.executor_mode == crate::executor::ExecutorKind::Oci {
+        let daemon_id = oci_daemon_id
+            .as_deref()
+            .expect("OCI initialization must load installation UUID");
+        let oci_state = Arc::new(crate::state::oci_run::OciRunDao::new(
+            crate::state::store::open_in(&state_dir)?,
+        ));
+        crate::executor::oci_lifecycle::reconcile_installation(
+            &cfg,
+            oci_state,
+            daemon_id,
+            cancellation.clone(),
+        )
+        .await?;
+    }
+
     let _ = crate::state::queue::reap_stale_claims(
         &state_dir,
         services.clock.now(),

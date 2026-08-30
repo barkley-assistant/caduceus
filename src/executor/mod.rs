@@ -13,7 +13,7 @@
 //! * [`oci::OciExecutor`] — dispatches workers via Docker or Podman
 //!   CLI. The `create` argv is produced by the pure
 //!   [`sandbox_spec::resolve`] → [`sandbox_renderer::render`] pipeline;
-//!   the five-step lifecycle lives in [`oci_lifecycle`].
+//!   the single crash-safe lifecycle lives in [`oci_lifecycle`].
 
 use std::future::Future;
 use std::path::PathBuf;

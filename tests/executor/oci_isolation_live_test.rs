@@ -682,7 +682,7 @@ fn disk_pressure_watchdog_terminates_in_flight_and_refuses_new_dispatch() {
     let guard = Arc::new(DiskPressureGuard::from_config(&cfg));
     assert!(guard.enabled());
 
-    // 2. In-flight run: drive the REAL engine through `run_with_argv`
+    // 2. In-flight run: drive the REAL engine through the canonical lifecycle
     //    with the fixture's rendered create argv. The wait step blocks
     //    on `sleep 3600` until the breach cancels the watchdog token.
     let guard_for_run = Arc::clone(&guard);
@@ -690,6 +690,9 @@ fn disk_pressure_watchdog_terminates_in_flight_and_refuses_new_dispatch() {
     let run_id = fx.run_id.clone();
     let engine = fx.engine;
     let argv = fx.argv.clone();
+    let worktree = fx.worktree.clone();
+    let shadow_host = fx.shadow_host.clone();
+    let engine_mode = fx.engine_mode;
     let fx_cfg = cfg.clone();
     let run = tokio::runtime::Runtime::new().expect("runtime");
     let result = run.block_on(async move {
@@ -706,14 +709,43 @@ fn disk_pressure_watchdog_terminates_in_flight_and_refuses_new_dispatch() {
             labels: Vec::new(),
             branch_name: "b".to_string(),
         };
+        let runtime = caduceus::executor::sandbox_spec::RuntimeFacts {
+            run_id: run_id.clone(),
+            issue: spec.issue.clone(),
+            worker_command: spec.worker_command.clone(),
+            worktree: worktree.clone(),
+            output_dir: fx_cfg
+                .state_dir
+                .join("oci-runs")
+                .join(&run_id)
+                .join("output"),
+            daemon_id: "live-test-daemon".to_string(),
+            workdir_base: fx_cfg.workdir_base.clone(),
+            state_dir: fx_cfg.state_dir.clone(),
+            worktree_uid: std::fs::metadata(&worktree).expect("worktree stat").uid(),
+            worktree_gid: std::fs::metadata(&worktree).expect("worktree stat").gid(),
+            engine_mode,
+            git_shadow_kind: GitShadowKind::File,
+            git_shadow_host: shadow_host,
+        };
+        let resolved = resolve(fx_cfg.sandbox(), &runtime, &spec).expect("sandbox resolves");
+        let state = Arc::new(NullState);
+        let adapter = oci_lifecycle::OciAdapter::new(
+            engine,
+            state,
+            fx_cfg.state_dir.clone(),
+            runtime.daemon_id,
+            spec.issue.clone(),
+            spec.issue.display_key(),
+            "live-test-command-sha".to_string(),
+            argv,
+            None,
+        );
         let lifecycle = tokio::spawn(async move {
-            oci_lifecycle::run_with_argv(
-                &fx_cfg,
-                &spec,
-                &NullState,
-                engine,
-                argv,
-                None,
+            oci_lifecycle::run_oci_lifecycle(
+                &resolved,
+                &adapter,
+                &oci_lifecycle::LifecycleTimeouts::from_config(&fx_cfg),
                 CancellationToken::new(),
                 guard_for_run.watchdog_token(),
             )
