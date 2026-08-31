@@ -1,0 +1,15 @@
+# Unrelated fixture image for OCI tests that need a real container.
+#
+# Deliberately NOT the Caduceus reference worker image (D6): the base
+# here is Debian slim, so this fixture shares no layers with the
+# minimal static-base reference image and never imports it. Tests that
+# need a real container should build this image locally and pass its
+# digest to the live-test override (e.g. CADUCEUS_LIVE_TEST_IMAGE) —
+# never the reference image. The fixture-parity test
+# (tests/architecture/oci_fixture_parity_test.rs) enforces this
+# separation.
+FROM debian:bookworm-slim
+
+# Marker file so the fixture is distinguishable from the reference
+# image during inspection and in tests.
+COPY fixture-marker.txt /fixture-marker.txt

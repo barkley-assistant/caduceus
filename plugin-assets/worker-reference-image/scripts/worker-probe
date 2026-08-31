@@ -1,0 +1,30 @@
+#!/bin/sh
+# Caduceus OCI worker certification probe dispatcher (WR-4).
+#
+# Maps subcommand names to the small POSIX sh probes at fixed paths:
+#
+#   worker-probe sentinel-read [path]  read a sentinel file from /workspace
+#   worker-probe mount-probe           verify /workspace /output writable,
+#                                      /tmp writable bounded tmpfs
+#   worker-probe resource-hog [cpu] [kib]  bounded CPU + memory allocation
+#   worker-probe network-probe [mode]  reachability per network mode
+#
+# Each probe prints a single-line pass report and exits zero on
+# success, or exits non-zero with a diagnostic on failure. The
+# dispatcher execs the probe so its exit status propagates unchanged.
+
+case "${1:-}" in
+  sentinel-read) shift; exec /usr/local/bin/probes/sentinel-read.sh "$@" ;;
+  mount-probe) shift; exec /usr/local/bin/probes/mount-probe.sh "$@" ;;
+  resource-hog) shift; exec /usr/local/bin/probes/resource-hog.sh "$@" ;;
+  network-probe) shift; exec /usr/local/bin/probes/network-probe.sh "$@" ;;
+  "")
+    echo "usage: worker-probe <sentinel-read|mount-probe|resource-hog|network-probe> [args...]" >&2
+    exit 2
+    ;;
+  *)
+    echo "worker-probe: unknown probe: $1" >&2
+    echo "usage: worker-probe <sentinel-read|mount-probe|resource-hog|network-probe> [args...]" >&2
+    exit 2
+    ;;
+esac

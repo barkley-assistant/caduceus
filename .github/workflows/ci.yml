@@ -169,3 +169,200 @@ jobs:
           path: pytest-junit.xml
           retention-days: 14
           if-no-files-found: error
+
+  oci-reference-image:
+    # Local build + contract smoke only (D4): the reference worker
+    # image is never pushed from CI, and PRs/forks get no registry
+    # credentials. Publication happens exclusively from the
+    # release-worker-image workflow on `v*` tags. Not a required
+    # branch-protection check; existing required names are unchanged.
+    name: oci-reference-image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: build reference image locally (never pushed)
+        run: |
+          set -euo pipefail
+          docker build --pull \
+            -f plugin-assets/worker-reference-image/Containerfile \
+            -t caduceus-worker-reference:ci \
+            plugin-assets/worker-reference-image
+      - name: smoke — default CMD contract summary
+        run: |
+          set -euo pipefail
+          summary="$(docker run --rm caduceus-worker-reference:ci)"
+          printf '%s\n' "$summary" | grep -q "caduceus-worker-reference" || {
+            echo "expected the default contract summary line" >&2
+            exit 1
+          }
+      - name: smoke — caduceus-env.sh (WR-2)
+        run: |
+          set -euo pipefail
+          full_env=(
+            -e CADUCEUS_RUN_ID=ci-smoke
+            -e CADUCEUS_ISSUE_ID=ci-smoke
+            -e CADUCEUS_ISSUE_NUMBER=1
+            -e CADUCEUS_ISSUE_REPO=example/example
+            -e CADUCEUS_ISSUE_TITLE="Smoke test"
+            -e CADUCEUS_ISSUE_BODY="Smoke body"
+            -e 'CADUCEUS_ISSUE_LABELS_JSON=["smoke"]'
+            -e 'CADUCEUS_CONTEXT_JSON={"run":"smoke"}'
+            -e CADUCEUS_BRANCH_NAME=main
+            -e CADUCEUS_WORKTREE_PATH=/workspace
+            -e CADUCEUS_RESULT_PATH=/output/worker-result.json
+          )
+          # names-only: all eleven canonical names, sorted.
+          names="$(docker run --rm "${full_env[@]}" \
+            caduceus-worker-reference:ci /usr/local/bin/caduceus-env.sh --names-only)"
+          test "$(printf '%s\n' "$names" | wc -l)" -eq 11
+          for name in \
+            CADUCEUS_BRANCH_NAME CADUCEUS_CONTEXT_JSON CADUCEUS_ISSUE_BODY \
+            CADUCEUS_ISSUE_ID CADUCEUS_ISSUE_LABELS_JSON CADUCEUS_ISSUE_NUMBER \
+            CADUCEUS_ISSUE_REPO CADUCEUS_ISSUE_TITLE CADUCEUS_RESULT_PATH \
+            CADUCEUS_RUN_ID CADUCEUS_WORKTREE_PATH
+          do
+            printf '%s\n' "$names" | grep -qx "$name" || {
+              echo "names-only output missing $name" >&2
+              exit 1
+            }
+          done
+          # Full mode: NAME=VALUE per line.
+          pairs="$(docker run --rm "${full_env[@]}" \
+            caduceus-worker-reference:ci /usr/local/bin/caduceus-env.sh)"
+          printf '%s\n' "$pairs" | grep -qx 'CADUCEUS_RUN_ID=ci-smoke' || {
+            echo "NAME=VALUE output missing CADUCEUS_RUN_ID=ci-smoke" >&2
+            exit 1
+          }
+          # A missing canonical variable must fail loudly and name it.
+          missing_env=(
+            -e CADUCEUS_RUN_ID=ci-smoke
+            -e CADUCEUS_ISSUE_ID=ci-smoke
+            -e CADUCEUS_ISSUE_NUMBER=1
+            -e CADUCEUS_ISSUE_REPO=example/example
+            -e CADUCEUS_ISSUE_TITLE="Smoke test"
+            -e CADUCEUS_ISSUE_BODY="Smoke body"
+            -e 'CADUCEUS_ISSUE_LABELS_JSON=["smoke"]'
+            -e 'CADUCEUS_CONTEXT_JSON={"run":"smoke"}'
+            -e CADUCEUS_BRANCH_NAME=main
+            -e CADUCEUS_WORKTREE_PATH=/workspace
+          )
+          if docker run --rm "${missing_env[@]}" \
+            caduceus-worker-reference:ci /usr/local/bin/caduceus-env.sh \
+            >/dev/null 2>caduceus-env.err; then
+            echo "caduceus-env.sh must fail when CADUCEUS_RESULT_PATH is unset" >&2
+            exit 1
+          fi
+          grep -q "CADUCEUS_RESULT_PATH" caduceus-env.err || {
+            echo "missing-variable diagnostic must name CADUCEUS_RESULT_PATH" >&2
+            exit 1
+          }
+      - name: smoke — write-result.sh (WR-3)
+        run: |
+          set -euo pipefail
+          out="$(mktemp -d)"
+          trap 'rm -rf "$out"' EXIT
+          env=(
+            -e CADUCEUS_RUN_ID=ci-smoke
+            -e CADUCEUS_ISSUE_ID=ci-smoke
+            -e CADUCEUS_ISSUE_NUMBER=1
+            -e CADUCEUS_ISSUE_REPO=example/example
+            -e CADUCEUS_ISSUE_TITLE="Smoke test"
+            -e CADUCEUS_ISSUE_BODY="Smoke body"
+            -e 'CADUCEUS_ISSUE_LABELS_JSON=["smoke"]'
+            -e 'CADUCEUS_CONTEXT_JSON={"run":"smoke"}'
+            -e CADUCEUS_BRANCH_NAME=main
+            -e CADUCEUS_WORKTREE_PATH=/workspace
+            -e CADUCEUS_RESULT_PATH=/output/worker-result.json
+          )
+          # write-result.sh only reads CADUCEUS_RESULT_PATH, but keep the
+          # canonical set complete apart from the unset result path.
+          env_without_result=(
+            -e CADUCEUS_RUN_ID=ci-smoke
+            -e CADUCEUS_ISSUE_ID=ci-smoke
+            -e CADUCEUS_ISSUE_NUMBER=1
+            -e CADUCEUS_ISSUE_REPO=example/example
+            -e CADUCEUS_ISSUE_TITLE="Smoke test"
+            -e CADUCEUS_ISSUE_BODY="Smoke body"
+            -e 'CADUCEUS_ISSUE_LABELS_JSON=["smoke"]'
+            -e 'CADUCEUS_CONTEXT_JSON={"run":"smoke"}'
+            -e CADUCEUS_BRANCH_NAME=main
+            -e CADUCEUS_WORKTREE_PATH=/workspace
+          )
+          # Honor CADUCEUS_RESULT_PATH: schema-valid document.
+          docker run --rm --read-only --tmpfs /tmp:size=64m \
+            -v "$out":/output:rw "${env[@]}" \
+            caduceus-worker-reference:ci /usr/local/bin/write-result.sh
+          python3 - "$out/worker-result.json" <<'PY'
+          import json
+          import sys
+          doc = json.load(open(sys.argv[1], encoding="utf-8"))
+          assert doc["status"] == "success", doc
+          for field in ("summary", "commit_message", "pull_request_title"):
+              assert isinstance(doc[field], str) and doc[field].strip(), field
+          PY
+          # Default path: no CADUCEUS_RESULT_PATH -> /output/worker-result.json.
+          rm -f "$out/worker-result.json"
+          docker run --rm --read-only --tmpfs /tmp:size=64m \
+            -v "$out":/output:rw "${env_without_result[@]}" \
+            caduceus-worker-reference:ci /usr/local/bin/write-result.sh
+          test -f "$out/worker-result.json"
+          # --status failure stays schema-valid.
+          docker run --rm --read-only --tmpfs /tmp:size=64m \
+            -v "$out":/output:rw "${env[@]}" \
+            caduceus-worker-reference:ci /usr/local/bin/write-result.sh --status failure
+          python3 - "$out/worker-result.json" <<'PY'
+          import json
+          import sys
+          doc = json.load(open(sys.argv[1], encoding="utf-8"))
+          assert doc["status"] == "failure", doc
+          PY
+          # Unwritable target: non-zero exit, no partial file.
+          if docker run --rm --read-only --tmpfs /tmp:size=64m \
+            -v "$out":/output:rw \
+            -e CADUCEUS_RESULT_PATH=/proc/worker-result.json \
+            -e CADUCEUS_RUN_ID=ci-smoke \
+            caduceus-worker-reference:ci /usr/local/bin/write-result.sh \
+            >/dev/null 2>&1; then
+            echo "write-result.sh must fail on an unwritable target" >&2
+            exit 1
+          fi
+      - name: smoke — probes (WR-4)
+        run: |
+          set -euo pipefail
+          ws="$(mktemp -d)"
+          out="$(mktemp -d)"
+          trap 'rm -rf "$ws" "$out"' EXIT
+          printf 'ci-sentinel\n' > "$ws/sentinel.txt"
+          restricted=(
+            --read-only --network none --tmpfs /tmp:size=64m
+            -v "$ws":/workspace:rw -v "$out":/output:rw
+          )
+          open=(
+            --read-only --tmpfs /tmp:size=64m
+            -v "$ws":/workspace:rw -v "$out":/output:rw
+          )
+          docker run --rm "${restricted[@]}" \
+            caduceus-worker-reference:ci /usr/local/bin/worker-probe sentinel-read
+          docker run --rm "${restricted[@]}" \
+            caduceus-worker-reference:ci /usr/local/bin/worker-probe mount-probe
+          docker run --rm "${restricted[@]}" \
+            caduceus-worker-reference:ci /usr/local/bin/worker-probe resource-hog 1 1024
+          docker run --rm "${restricted[@]}" \
+            caduceus-worker-reference:ci /usr/local/bin/worker-probe network-probe none
+          # Default network reports reachability either way.
+          docker run --rm "${open[@]}" \
+            caduceus-worker-reference:ci /usr/local/bin/worker-probe network-probe auto
+          # Arbitrary --entrypoint argv is the contract.
+          docker run --rm --entrypoint /bin/sh \
+            caduceus-worker-reference:ci -c 'echo arbitrary-entrypoint-ok' \
+            | grep -q arbitrary-entrypoint-ok
+          # Probe failure paths: non-zero exits fail this step.
+          rm -f "$ws/sentinel.txt"
+          if docker run --rm "${restricted[@]}" \
+            caduceus-worker-reference:ci /usr/local/bin/worker-probe sentinel-read \
+            </dev/null >/dev/null 2>&1; then
+            echo "sentinel-read must fail when the sentinel is missing" >&2
+            exit 1
+          fi

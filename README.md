@@ -350,6 +350,67 @@ latency is bounded by the 30 s sampling interval plus the
 stop/kill timeouts). The watchdog bounds the damage and
 stops the bleeding; it does not isolate storage per run.
 
+### The reference worker image
+
+Caduceus ships a minimal, deterministic reference worker
+image that proves the worker contract end to end:
+`plugin-assets/worker-reference-image/` (see its
+[README](plugin-assets/worker-reference-image/README.md)).
+It pins `busybox:1.36.1` by SHA256 digest (no package
+manager, compiler, or LLM tooling) and contains only the
+contract helper (`caduceus-env.sh`), the result writer
+(`write-result.sh`), the certification probes
+(`worker-probe sentinel-read|mount-probe|resource-hog|
+network-probe`), and the busybox runtime. The image is a
+test fixture and an operator example — never a production
+dependency of the executor (an independence test keeps
+`src/` free of any reference to it).
+
+CI builds the image locally and runs the contract smoke in
+the `oci-reference-image` job of `.github/workflows/ci.yml`
+(no push). Publication happens only from the
+`release-worker-image` workflow on `v*` tags, which pushes
+`ghcr.io/barkley-assistant/caduceus-worker-reference:
+vX.Y.Z` and `latest` with provenance and echoes the
+published digest into the workflow summary and release
+notes.
+
+Operator example — run it exactly like the executor does:
+read-only rootfs, `/workspace` and `/output` bind mounts, a
+bounded `/tmp` tmpfs, the canonical environment, and
+arbitrary `--entrypoint` argv:
+
+```sh
+ws="$(mktemp -d)" && out="$(mktemp -d)"
+echo "example-sentinel" > "$ws/sentinel.txt"
+
+docker run --rm --read-only --network none --tmpfs /tmp:size=256m \
+  -v "$ws":/workspace:rw -v "$out":/output:rw \
+  -e CADUCEUS_RUN_ID=example \
+  -e CADUCEUS_ISSUE_ID=example \
+  -e CADUCEUS_ISSUE_NUMBER=1 \
+  -e CADUCEUS_ISSUE_REPO=owner/repo \
+  -e CADUCEUS_ISSUE_TITLE="Example run" \
+  -e CADUCEUS_ISSUE_BODY="Example body" \
+  -e 'CADUCEUS_ISSUE_LABELS_JSON=["example"]' \
+  -e 'CADUCEUS_CONTEXT_JSON={}' \
+  -e CADUCEUS_BRANCH_NAME=main \
+  -e CADUCEUS_WORKTREE_PATH=/workspace \
+  -e CADUCEUS_RESULT_PATH=/output/worker-result.json \
+  --entrypoint /bin/sh \
+  caduceus-worker-reference:local -c '
+    /usr/local/bin/caduceus-env.sh --names-only &&
+    /usr/local/bin/worker-probe sentinel-read &&
+    /usr/local/bin/write-result.sh &&
+    cat /output/worker-result.json
+  '
+```
+
+OCI tests that need a real container use the **unrelated**
+fixture image (`tests/fixtures/oci-fixture-image/`), never
+the reference image; the fixture-parity test enforces the
+separation.
+
 ## The 60-Second Orientation
 
 1. `git clone`, `cargo build`, `hermes caduceus setup`
