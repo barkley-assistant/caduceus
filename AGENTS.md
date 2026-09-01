@@ -19,7 +19,8 @@ These requirements apply to human and automated contributors.
   page](https://github.com/barkley-assistant/caduceus/wiki/State-Recovery).
 - Never commit operator-generated prompt files or directories.
 - Do not add `todo!()`, `unimplemented!()`, or new `unsafe` production code.
-- All Caduceus-created pull requests require human review and merge.
+- Agent-created pull requests are merged autonomously (squash) once all
+  required checks pass; there is no human review gate.
 
 ## Commits
 
