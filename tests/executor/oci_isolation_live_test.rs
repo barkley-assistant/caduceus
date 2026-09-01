@@ -32,6 +32,7 @@ use caduceus::executor::engine_probe::{parse_engine_mode, GIT_SHADOW_FILE_CONTEN
 use caduceus::executor::sandbox_renderer::render;
 use caduceus::executor::sandbox_spec::{resolve, EngineMode, GitShadowKind, SandboxEngine};
 use caduceus::infra::config::Config;
+use caduceus::readiness::{run_live_with_options, ProbeOptions, ReadinessVerdict};
 use tempfile::TempDir;
 
 /// Build the live fixture: a real worktree (with a `.git` artifact of
@@ -253,6 +254,37 @@ fn wait_for(predicate: impl Fn() -> bool, budget: Duration, what: &str) -> bool 
 // ---------------------------------------------------------------------------
 // Named mount-enumeration test (consumed by task I12)
 // ---------------------------------------------------------------------------
+
+/// Exercise the same live readiness gate used by dispatch against a real
+/// engine and the configured digest-pinned image.
+#[tokio::test]
+#[cfg_attr(not(env = "CADUCEUS_RUN_ISOLATION_TESTS"), ignore)]
+async fn oci_readiness_gate_accepts_live_engine_and_image() {
+    if std::env::var("CADUCEUS_LIVE_TEST_IMAGE").is_err() {
+        println!("skipped: set CADUCEUS_LIVE_TEST_IMAGE to a digest-pinned image");
+        return;
+    }
+    let fx = live_fixture(GitShadowKind::Absent, "true");
+    for path in [
+        &fx.cfg.state_dir,
+        &fx.cfg.repo_storage_root,
+        &fx.cfg.workdir_base,
+    ] {
+        std::fs::create_dir_all(path).expect("create readiness root");
+    }
+    let mut cfg = fx.cfg.clone();
+    cfg.sandbox.as_mut().expect("sandbox").reserved_host_disk_mb = 0;
+    let report = run_live_with_options(
+        &cfg,
+        &ProbeOptions {
+            cgroup_root: PathBuf::from("/sys/fs/cgroup"),
+            engine_binary: Some(PathBuf::from(engine_binary(fx.engine))),
+        },
+    )
+    .await;
+    assert_eq!(report.verdict, ReadinessVerdict::Ready, "{report:?}");
+    assert!(report.verified_image.is_some());
+}
 
 /// I12 consumption point: run a real container whose command dumps
 /// `/proc/mounts`; assert the writable host-backed set ==

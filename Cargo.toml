@@ -644,6 +644,10 @@ name = "oci_independence_test"
 path = "tests/architecture/oci_independence_test.rs"
 
 [[test]]
+name = "readiness_test"
+path = "tests/readiness_test.rs"
+
+[[test]]
 name = "awaiting_review_test"
 path = "tests/daemon/awaiting_review_test.rs"
 

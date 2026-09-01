@@ -26,6 +26,7 @@ use crate::executor::{
 use crate::infra::config::Config;
 use crate::infra::disk::DiskPressureGuard;
 use crate::infra::error::CaduceusResult;
+use crate::readiness;
 use crate::state::meta::MetaStore;
 use crate::state::oci_run::OciRunDao;
 use crate::state::store;
@@ -38,12 +39,31 @@ pub struct OciExecutor {
     /// Host disk-pressure watchdog: refuses new dispatch and
     /// terminates in-flight work on breach (issue #245).
     disk: Arc<DiskPressureGuard>,
+    readiness_options: readiness::ProbeOptions,
 }
 
 impl OciExecutor {
     /// Wrap a config snapshot and the shared disk-pressure guard.
     pub fn new(cfg: Config, disk: Arc<DiskPressureGuard>) -> Self {
-        Self { cfg, disk }
+        Self {
+            cfg,
+            disk,
+            readiness_options: readiness::ProbeOptions::default(),
+        }
+    }
+
+    /// Construct an executor with an explicit readiness probe seam.
+    /// Production callers should use [`Self::new`].
+    pub fn new_with_readiness_options(
+        cfg: Config,
+        disk: Arc<DiskPressureGuard>,
+        readiness_options: readiness::ProbeOptions,
+    ) -> Self {
+        Self {
+            cfg,
+            disk,
+            readiness_options,
+        }
     }
 }
 
@@ -53,14 +73,16 @@ impl Executor for OciExecutor {
         spec: &'a ExecutorSpec,
     ) -> Pin<Box<dyn Future<Output = CaduceusResult<ExecutorOutcome>> + Send + 'a>> {
         Box::pin(async move {
-            // 0. Disk-pressure gate: refuse new OCI dispatch while the
-            //    host watchdog is breached — before the probe, before
-            //    any container can be created (issue #245). TrustedHost
-            //    work is structurally excluded: it never reaches this
-            //    executor.
+            // 0. Disk-pressure gate: refuse new OCI dispatch while the host
+            //    watchdog is breached before any readiness probe or other
+            //    per-run side effect (issue #245).
             self.disk.try_acquire_oci()?;
 
-            // 1. Load and durably establish the installation identity
+            // 1. Live readiness gate: no cached doctor result is consulted.
+            let image_acquisition =
+                readiness::assert_live_with_options(&self.cfg, &self.readiness_options).await?;
+
+            // 2. Load and durably establish the installation identity
             //    before any labels or create argv are rendered.
             let meta = if self.cfg.state_backend == "sqlite" {
                 MetaStore::open_sqlite(&self.cfg.state_dir)?
@@ -69,7 +91,7 @@ impl Executor for OciExecutor {
             };
             let daemon_id = meta.get_or_create_installation_uuid()?;
 
-            // 2. Pre-flight probe: collect the runtime facts (worktree
+            // 3. Pre-flight probe: collect the runtime facts (worktree
             //    owner uid/gid, host `.git` type, engine mode) and
             //    create the daemon-owned host artifacts. Every
             //    unsupported-configuration refusal (typed
@@ -80,17 +102,17 @@ impl Executor for OciExecutor {
                 engine_probe::probe_runtime_facts_with_daemon_id(&self.cfg, spec, &daemon_id)
                     .await?;
 
-            // 3. Resolve the closed typed spec. All host-path,
+            // 4. Resolve the closed typed spec. All host-path,
             //    identity, and mount decisions happen here; the
             //    renderer invents nothing.
             let resolved = sandbox_spec::resolve(self.cfg.sandbox(), &runtime, spec)?;
 
-            // 4. Open the state database.
+            // 5. Open the state database.
             let db_path = self.cfg.state_dir.join(store::DB_FILENAME);
             let conn = store::open(&db_path)?;
             let dao = OciRunDao::new(conn);
 
-            // 5. Write the assembled environment (canonical + compat +
+            // 6. Write the assembled environment (canonical + compat +
             //    resolved `pass_env` from `spec.environment`) to the
             //    daemon-private, randomly named, mode-0600 env file
             //    under `state_dir/oci-runs/<run_id>` (issue #249). Its
@@ -111,23 +133,22 @@ impl Executor for OciExecutor {
                 &[env_file.path().to_path_buf()],
             );
 
-            // 6. Acquire and verify the immutable worker image before the
-            //    lifecycle can insert its Created state or invoke create.
-            //    The run directory is already created by the probe (and
-            //    idempotently re-ensured by the env file), but is passed
-            //    explicitly so provenance remains scoped to this run.
+            // 7. Record the immutable worker image facts acquired by the
+            //    readiness gate before the lifecycle can insert its Created
+            //    state or invoke create. The run directory is already
+            //    created by the probe and keeps provenance scoped to this run.
             let host = oci_platform::host_platform();
-            let _image = oci_image::ensure_image(
+            oci_image::write_acquisition_provenance(
+                &run_dir,
                 engine,
                 resolved.image_ref(),
                 self.cfg.sandbox().pull_policy,
                 &host,
-                &run_dir,
                 &runtime.run_id,
-            )
-            .await?;
+                &image_acquisition,
+            );
 
-            // 6. Run the lifecycle with the rendered argv. The run's
+            // 8. Run the lifecycle with the rendered argv. The run's
             //    lifecycle token is linked with the watchdog token so
             //    a disk-pressure breach terminates in-flight work via
             //    the existing stop path (issue #245).

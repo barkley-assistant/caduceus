@@ -183,6 +183,60 @@ never publicly released. The verbatim removal list lives
 on the
 [configuration wiki page](https://github.com/barkley-assistant/caduceus/wiki/Configuration).
 
+### OCI readiness and `caduceus doctor`
+
+OCI dispatch runs the readiness checks live at the dispatch boundary. A stored
+doctor report is never used to authorize a worker. The checks cover the Linux
+platform, engine reachability and mode, namespace mapping, cgroup `cpu`,
+`memory`, and `pids` controllers, configured storage and disk reserve, the
+digest-pinned operator image, network representability, and the engine's basic
+sandbox primitives.
+
+The image check performs the configured pull-policy action, inspects the
+result, and verifies both the requested repository digest and the host
+architecture. A successful dispatch reuses those verified image facts rather
+than pulling or inspecting the image a second time. The executor writes the
+facts and timing data to `<state_dir>/oci-runs/<run_id>/provenance.log`.
+
+The readiness filesystem policy is intentionally tiered: the repository
+storage root must be a daemon-owned, non-symlink directory with mode `0700`;
+the state and worktree roots must be daemon-owned, non-symlink directories
+with no group/other write permission. All three roots are checked before
+dispatch.
+
+Run the same checks manually:
+
+```sh
+caduceus doctor
+caduceus doctor --json
+```
+
+The mandatory verdict is `READY` only when every mandatory check passes. Any
+failure produces `UNAVAILABLE` with a remediation message, and OCI dispatch
+refuses with a typed infrastructure error. `caduceus doctor --json` keeps the
+mandatory `checks` and optional `diagnostic_canary` results in separate fields.
+
+The canary is opt-in and diagnostic only. It never changes the mandatory
+verdict and never runs the configured production `worker_command`. Supply a
+digest-pinned canary image and its benign contract command explicitly:
+
+```sh
+caduceus doctor \
+  --canary-image 'registry.example/reference@sha256:<64 lowercase hex>' \
+  --canary-command /path/to/contract-command
+```
+
+The image may also be supplied through `CADUCEUS_DOCTOR_CANARY_IMAGE` and the
+command through `CADUCEUS_DOCTOR_CANARY_COMMAND`. If either is absent, the
+canary is reported as `SKIP`; if it cannot be pulled, started, or produce a
+valid result artifact, it is reported as `FAILURE`. Neither case makes an
+otherwise-ready production sandbox unavailable. The last report is written to
+`<state_dir>/doctor.json` for informational status display only.
+
+This binary command is separate from the Hermes plugin's
+`hermes caduceus doctor`, which checks plugin installation and provider
+configuration.
+
 What the worker container sees is a closed, typed spec:
 
 - **An exactly-specified environment.** The container receives the

@@ -13,8 +13,11 @@ use clap::{Parser, Subcommand};
 
 use caduceus::config::{Config, SetupAction};
 use caduceus::error::{CaduceusError, CaduceusResult};
+use caduceus::executor::oci::OciExecutor;
+use caduceus::executor::{Executor, ExecutorSpec};
 use caduceus::issue::IssueKey;
 use caduceus::queue::StateStore;
+use caduceus::readiness::{self, DiagnosticCanary, DiagnosticStatus, ReadinessVerdict};
 use caduceus::DaemonLock;
 
 static GIT_AUTHOR_WARNED: AtomicBool = AtomicBool::new(false);
@@ -47,6 +50,21 @@ pub enum Command {
         /// Print machine-readable JSON instead of the human summary.
         #[arg(long)]
         json: bool,
+    },
+    /// Check live OCI production readiness.
+    Doctor {
+        /// Print machine-readable JSON instead of the human summary.
+        #[arg(long)]
+        json: bool,
+        /// Do not run the optional diagnostic canary.
+        #[arg(long)]
+        skip_canary: bool,
+        /// Digest-pinned image to use for the optional diagnostic canary.
+        #[arg(long)]
+        canary_image: Option<String>,
+        /// Command argv to use for the optional diagnostic canary.
+        #[arg(long, num_args = 1..)]
+        canary_command: Vec<String>,
     },
     /// Garbage-collect stale worktrees.
     WorktreeGc {
@@ -206,6 +224,12 @@ pub fn run() -> CaduceusResult<()> {
             }
             Ok(())
         }
+        Some(Command::Doctor {
+            json,
+            skip_canary,
+            canary_image,
+            canary_command,
+        }) => run_doctor(json, skip_canary, canary_image, canary_command),
         Some(Command::MigrateState {
             from,
             dry_run,
@@ -249,6 +273,179 @@ pub fn run() -> CaduceusResult<()> {
         // is being built.
         _ => Ok(()),
     }
+}
+
+fn run_doctor(
+    json: bool,
+    skip_canary: bool,
+    canary_image: Option<String>,
+    canary_command: Vec<String>,
+) -> CaduceusResult<()> {
+    let config = match std::env::var_os("CADUCEUS_CONFIG") {
+        Some(path) => Config::load_from(std::path::Path::new(&path))?,
+        None => Config::load()?,
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|err| CaduceusError::Other(format!("build doctor runtime: {err}")))?;
+    let mut report = runtime.block_on(readiness::run_live(&config));
+    if !skip_canary {
+        let image = canary_image.or_else(|| std::env::var("CADUCEUS_DOCTOR_CANARY_IMAGE").ok());
+        let command = if canary_command.is_empty() {
+            std::env::var("CADUCEUS_DOCTOR_CANARY_COMMAND")
+                .ok()
+                .map(|value| value.split_whitespace().map(str::to_string).collect())
+                .unwrap_or_default()
+        } else {
+            canary_command
+        };
+        let canary = runtime.block_on(run_canary(&config, &report, image, command));
+        report.diagnostic_canary = Some(canary);
+    } else {
+        report.diagnostic_canary = Some(DiagnosticCanary {
+            status: DiagnosticStatus::Skip,
+            detail: "disabled by --skip-canary".to_string(),
+        });
+    }
+    if let Err(err) = readiness::write_informational_report(&config.state_dir, &report) {
+        eprintln!("caduceus doctor: could not write informational report: {err}");
+    }
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", readiness::render_human(&report));
+    }
+    if report.verdict == ReadinessVerdict::Unavailable {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+async fn run_canary(
+    config: &Config,
+    report: &caduceus::readiness::ReadinessReport,
+    image: Option<String>,
+    command: Vec<String>,
+) -> DiagnosticCanary {
+    let Some(image) = image else {
+        return DiagnosticCanary {
+            status: DiagnosticStatus::Skip,
+            detail:
+                "no canary image configured (use --canary-image or CADUCEUS_DOCTOR_CANARY_IMAGE)"
+                    .to_string(),
+        };
+    };
+    if command.is_empty() {
+        return DiagnosticCanary {
+            status: DiagnosticStatus::Skip,
+            detail: "no canary command configured (use --canary-command or CADUCEUS_DOCTOR_CANARY_COMMAND)".to_string(),
+        };
+    }
+    if report.verdict != ReadinessVerdict::Ready {
+        return DiagnosticCanary {
+            status: DiagnosticStatus::Skip,
+            detail: "mandatory readiness is unavailable; canary was not attempted".to_string(),
+        };
+    }
+    let Some(sandbox) = config.sandbox.as_ref() else {
+        return DiagnosticCanary {
+            status: DiagnosticStatus::Skip,
+            detail: "OCI sandbox is not configured".to_string(),
+        };
+    };
+    let mut canary_config = config.clone();
+    let mut canary_sandbox = sandbox.clone();
+    canary_sandbox.image = image;
+    canary_sandbox.pull_policy = caduceus::config::OciPullPolicy::IfMissing;
+    canary_config.sandbox = Some(canary_sandbox);
+
+    let run_id = format!("doctor-canary-{}", uuid::Uuid::new_v4().simple());
+    let canary_root = std::env::temp_dir().join(&run_id);
+    canary_config.state_dir = canary_root.join("state");
+    canary_config.repo_storage_root = canary_root.join("repos");
+    canary_config.workdir_base = canary_root.join("workdirs");
+    canary_config.log_path = canary_root.join("doctor-canary.log");
+    let canary_paths = [
+        canary_config.state_dir.clone(),
+        canary_config.repo_storage_root.clone(),
+        canary_config.workdir_base.clone(),
+    ];
+    if let Err(err) = canary_paths.iter().try_for_each(std::fs::create_dir_all) {
+        return DiagnosticCanary {
+            status: DiagnosticStatus::Failure,
+            detail: format!("cannot create canary storage: {err}"),
+        };
+    }
+    #[cfg(unix)]
+    for path in &canary_paths {
+        if let Err(err) =
+            std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o700))
+        {
+            let _ = std::fs::remove_dir_all(&canary_root);
+            return DiagnosticCanary {
+                status: DiagnosticStatus::Failure,
+                detail: format!("cannot secure canary storage: {err}"),
+            };
+        }
+    }
+    let worktree = canary_config.workdir_base.join(&run_id);
+    if let Err(err) = std::fs::create_dir_all(&worktree) {
+        let _ = std::fs::remove_dir_all(&canary_root);
+        return DiagnosticCanary {
+            status: DiagnosticStatus::Failure,
+            detail: format!("cannot create canary worktree: {err}"),
+        };
+    }
+    let issue = match IssueKey::parse("caduceus/doctor#1") {
+        Ok(issue) => issue,
+        Err(err) => {
+            let _ = std::fs::remove_dir_all(&canary_root);
+            return DiagnosticCanary {
+                status: DiagnosticStatus::Failure,
+                detail: format!("cannot create canary issue key: {err}"),
+            };
+        }
+    };
+    let spec = ExecutorSpec {
+        self_exe: std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("caduceus")),
+        issue,
+        worktree: worktree.clone(),
+        run_id,
+        context_json: "{}".to_string(),
+        worker_command: command,
+        cancellation: tokio_util::sync::CancellationToken::new(),
+        issue_title: "OCI readiness canary".to_string(),
+        issue_body: "Diagnostic only".to_string(),
+        labels: Vec::new(),
+        branch_name: "doctor-canary".to_string(),
+    };
+    let executor = OciExecutor::new(
+        canary_config.clone(),
+        std::sync::Arc::new(caduceus::infra::disk::DiskPressureGuard::from_config(
+            &canary_config,
+        )),
+    );
+    let outcome = executor.run(&spec).await;
+    let result = match outcome {
+        Ok(outcome) => match caduceus::worker::parse_result_file(&outcome.result_path, &spec.issue)
+        {
+            Ok(result) => DiagnosticCanary {
+                status: DiagnosticStatus::Pass,
+                detail: format!("production path completed with {:?} result", result.status),
+            },
+            Err(err) => DiagnosticCanary {
+                status: DiagnosticStatus::Failure,
+                detail: format!("result artifact validation failed: {err}"),
+            },
+        },
+        Err(err) => DiagnosticCanary {
+            status: DiagnosticStatus::Failure,
+            detail: format!("production path failed: {err}"),
+        },
+    };
+    let _ = std::fs::remove_dir_all(canary_root);
+    result
 }
 
 /// `caduceus worktree-gc [--older-than-days N] [--dry-run]` —

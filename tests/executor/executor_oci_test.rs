@@ -16,8 +16,9 @@ use caduceus::executor::oci::OciExecutor;
 use caduceus::executor::{Executor, ExecutorSpec};
 use caduceus::github::issue::IssueKey;
 use caduceus::infra::config::Config;
-use caduceus::infra::disk::DiskPressureGuard;
+use caduceus::infra::disk::{DiskPressureGuard, DiskSample};
 use caduceus::infra::error::CaduceusError;
+use caduceus::readiness::{assemble_report, CheckId, CheckResult, CheckStatus};
 use tempfile::TempDir;
 
 fn issue_key() -> IssueKey {
@@ -93,6 +94,7 @@ async fn oci_executor_returns_typed_error() {
             | CaduceusError::OciCliNotFound { .. }
             | CaduceusError::OciPullFailed { .. }
             | CaduceusError::OciIdentityUnsupported { .. }
+            | CaduceusError::OciReadinessUnavailable { .. }
     );
     assert!(
         is_oci_error,
@@ -119,4 +121,63 @@ async fn oci_executor_does_not_spawn_process() {
         elapsed.as_secs() < 5,
         "OciExecutor::run returned in {elapsed:?} — should be fast even on error"
     );
+}
+
+/// Disk pressure is checked before live readiness, so a breached watchdog
+/// remains the authoritative refusal and the engine is not probed.
+#[tokio::test]
+async fn oci_executor_checks_disk_pressure_before_readiness() {
+    let (cfg, _tmp) = setup();
+    let guard = Arc::new(DiskPressureGuard::from_config(&cfg));
+    guard.refresh(&[DiskSample {
+        device_id: 1,
+        free_bytes: 0,
+        representative_path: cfg.state_dir.clone(),
+    }]);
+    let executor: Arc<dyn Executor> = Arc::new(OciExecutor::new(cfg.clone(), guard));
+
+    let err = executor
+        .run(&test_spec(&cfg))
+        .await
+        .expect_err("disk pressure must refuse before readiness");
+    assert!(matches!(err, CaduceusError::OciDiskPressure { .. }));
+}
+
+/// A cached READY doctor result must not authorize dispatch when a live check
+/// currently fails.
+#[tokio::test]
+async fn oci_executor_ignores_cached_doctor_verdict() {
+    let (cfg, _tmp) = setup();
+    let checks = CheckId::ALL
+        .into_iter()
+        .map(|id| CheckResult {
+            id,
+            status: CheckStatus::Pass,
+            detail: "stale fixture".to_string(),
+            remediation: None,
+        })
+        .collect();
+    let report = assemble_report(checks);
+    caduceus::readiness::write_informational_report(&cfg.state_dir, &report)
+        .expect("write cached doctor result");
+
+    let executor: Arc<dyn Executor> = Arc::new(OciExecutor::new(
+        cfg.clone(),
+        Arc::new(DiskPressureGuard::from_config(&cfg)),
+    ));
+    let err = executor
+        .run(&test_spec(&cfg))
+        .await
+        .expect_err("live readiness must refuse despite cached READY");
+    match err {
+        CaduceusError::OciReadinessUnavailable { failed_checks } => {
+            assert!(
+                failed_checks
+                    .iter()
+                    .any(|failure| failure.check == "filesystem"),
+                "live filesystem failure should be reported"
+            );
+        }
+        other => panic!("expected live readiness refusal, got {other:?}"),
+    }
 }
