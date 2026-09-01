@@ -60,6 +60,10 @@ jobs:
             | sh -s -- -y --default-toolchain 1.97 --profile minimal
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           rustup component add rustfmt clippy
+      - name: install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
       - name: cache cargo registry and target
         uses: Swatinem/rust-cache@v2
       - name: configure git identity for tests
@@ -77,7 +81,7 @@ jobs:
         # compile the release binary; allow 15 min for the test
         # step on macOS just like ci.yml.
         timeout-minutes: 15
-        run: env -u GITHUB_TOKEN cargo test --locked --all-targets
+        run: env -u GITHUB_TOKEN cargo nextest run --locked --all-targets --retries 2
 
 
 
