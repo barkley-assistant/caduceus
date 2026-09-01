@@ -29,6 +29,7 @@ use caduceus::queue::{
     parse_queue_state, serialize_queue_state, ClaimToken, Phase, QueueEntry, QueueState,
     TicketType, QUEUE_FILE_VERSION,
 };
+use caduceus::readiness::{assemble_report, CheckId, CheckResult, CheckStatus};
 use caduceus::status::{
     build_report, build_report_from_state, live_worker_from_heartbeat, render_human, render_json,
     report, sample_heartbeat, StatusDiagnostic, STATUS_SCHEMA_VERSION,
@@ -54,9 +55,61 @@ fn empty_config(state_dir: &Path) -> Config {
 
 #[test]
 fn schema_version_is_pinned() {
-    // The 7.6.0 bump lands the `blocked_issues` field on
+    // The 7.7.0 bump lands the informational `doctor` field on
     // `StatusReport` — see `src/daemon/status.rs`.
-    assert_eq!(STATUS_SCHEMA_VERSION, "7.6.0");
+    assert_eq!(STATUS_SCHEMA_VERSION, "7.7.0");
+}
+
+#[test]
+fn status_surfaces_doctor_cache_as_informational() {
+    let dir = tempdir().expect("tempdir");
+    let cfg = empty_config(dir.path());
+    std::fs::create_dir_all(&cfg.state_dir).expect("state dir");
+    let checks = CheckId::ALL
+        .into_iter()
+        .map(|id| CheckResult {
+            id,
+            status: CheckStatus::Pass,
+            detail: "fixture".to_string(),
+            remediation: None,
+        })
+        .collect();
+    let doctor = assemble_report(checks);
+    caduceus::readiness::write_informational_report(&cfg.state_dir, &doctor)
+        .expect("write doctor report");
+    let (report, diagnostic) = build_report(&cfg.state_dir).expect("status report");
+    assert!(diagnostic.is_none());
+    let doctor = report.doctor.expect("doctor status");
+    assert_eq!(doctor.verdict, "READY");
+    assert!(doctor.informational);
+}
+
+#[test]
+fn status_ignores_doctor_cache_with_unknown_schema() {
+    let dir = tempdir().expect("tempdir");
+    let cfg = empty_config(dir.path());
+    std::fs::create_dir_all(&cfg.state_dir).expect("state dir");
+    let checks = CheckId::ALL
+        .into_iter()
+        .map(|id| CheckResult {
+            id,
+            status: CheckStatus::Pass,
+            detail: "fixture".to_string(),
+            remediation: None,
+        })
+        .collect();
+    let doctor = assemble_report(checks);
+    let mut value = serde_json::to_value(doctor).expect("serialize doctor report");
+    value["schema_version"] = serde_json::Value::String("0.0.0".to_string());
+    std::fs::write(
+        cfg.state_dir.join("doctor.json"),
+        serde_json::to_vec(&value).expect("serialize stale doctor report"),
+    )
+    .expect("write stale doctor report");
+
+    let (report, diagnostic) = build_report(&cfg.state_dir).expect("status report");
+    assert!(diagnostic.is_none());
+    assert!(report.doctor.is_none());
 }
 
 #[test]
@@ -550,7 +603,7 @@ fn human_omits_needs_attention_without_block_metadata_from_section() {
 
 #[test]
 fn json_carries_blocked_issues_array_with_entries() {
-    // The 7.6.0 schema adds a `blocked_issues` array on
+    // The 7.7.0 schema adds the informational doctor result on
     // the JSON contract. Each element carries
     // `issue_key`, `blocked_source`,
     // `blocked_recovery_hint`, and `last_error`.
@@ -602,7 +655,7 @@ fn json_carries_blocked_issues_array_with_entries() {
     assert_eq!(
         parsed["version"].as_str(),
         Some(STATUS_SCHEMA_VERSION),
-        "schema version must reflect the 7.6.0 bump"
+        "schema version must reflect the 7.7.0 bump"
     );
 }
 

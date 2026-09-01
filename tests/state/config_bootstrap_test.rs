@@ -543,12 +543,12 @@ fn raw_env_from_process_env_handles_unset_vars() {
 
 #[test]
 fn status_schema_version_bumped_to_7_6_0() {
-    // 7.6.0 lands the `blocked_issues` field on
+    // 7.7.0 lands the informational doctor result on
     // `StatusReport` for the AC5 dedicated surface; the
     // previous bump (7.5.0) added `pool_state`.
     assert_eq!(
         caduceus::status::STATUS_SCHEMA_VERSION,
-        "7.6.0",
-        "schema version should be 7.6.0 for the blocked_issues field"
+        "7.7.0",
+        "schema version should be 7.7.0 for the doctor field"
     );
 }

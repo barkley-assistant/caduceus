@@ -125,19 +125,39 @@ pub struct ProvenanceError {
     pub detail: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct VerificationRecord {
     pub status: String,
     pub detail: String,
 }
 
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
 pub struct ProvenanceTimings {
     pub probe_ms: u64,
     pub pull_ms: u64,
     pub inspect_ms: u64,
     pub verify_ms: u64,
     pub total_ms: u64,
+}
+
+/// Facts collected while acquiring and verifying an image. Readiness passes
+/// these facts to dispatch so the image is not acquired twice.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ImageAcquisition {
+    pub image: NormalizedImage,
+    pub pull_attempted: bool,
+    pub cache_hit: bool,
+    pub verification: Option<VerificationRecord>,
+    pub timings: ProvenanceTimings,
+}
+
+struct ImageAttempt {
+    result: CaduceusResult<ImageAcquisition>,
+    local_present: bool,
+    pull_attempted: bool,
+    stage: String,
+    verification: Option<VerificationRecord>,
+    timings: ProvenanceTimings,
 }
 
 /// Ensure the image is pulled, inspected, verified, and audited.
@@ -172,6 +192,67 @@ pub async fn ensure_image_with_adapter(
     run_dir: &Path,
     run_id: &str,
 ) -> CaduceusResult<NormalizedImage> {
+    let ImageAttempt {
+        result,
+        local_present,
+        pull_attempted,
+        stage,
+        verification,
+        timings,
+    } = acquire_image_attempt(&adapter, image_ref, policy, host).await;
+    let success = result.is_ok();
+    let resolved = result.as_ref().ok().map(|acquisition| &acquisition.image);
+    let record = ProvenanceRecord {
+        run_id: run_id.to_string(),
+        engine: engine.binary_name().to_string(),
+        reference: image_ref.to_string(),
+        resolved_id: resolved.map(|image| image.id.clone()),
+        repo_digests: resolved.map(|image| image.repo_digests.clone()),
+        architecture: resolved.map(|image| image.architecture.clone()),
+        variant: resolved.and_then(|image| image.variant.clone()),
+        host_arch: host.architecture.clone(),
+        host_variant: host.variant.clone(),
+        policy: policy_name(policy).to_string(),
+        pull_attempted,
+        cache_hit: local_present && policy != OciPullPolicy::Always,
+        mode: if pull_attempted { "pulled" } else { "local" }.to_string(),
+        stage: if success {
+            "acquired".to_string()
+        } else {
+            stage
+        },
+        outcome: if success { "ok" } else { "aborted" }.to_string(),
+        error: result.as_ref().err().map(|error| ProvenanceError {
+            variant: error_variant(error).to_string(),
+            detail: error.to_string(),
+        }),
+        verification,
+        timings,
+    };
+    write_provenance(run_dir, &record);
+    result.map(|acquisition| acquisition.image)
+}
+
+/// Acquire and verify an image without writing provenance. The readiness
+/// runner uses this once, then the executor records the returned facts after
+/// the per-run directory and run ID exist.
+pub async fn acquire_image_with_adapter(
+    adapter: &OciImageAdapter,
+    image_ref: &str,
+    policy: OciPullPolicy,
+    host: &HostPlatform,
+) -> CaduceusResult<ImageAcquisition> {
+    acquire_image_attempt(adapter, image_ref, policy, host)
+        .await
+        .result
+}
+
+async fn acquire_image_attempt(
+    adapter: &OciImageAdapter,
+    image_ref: &str,
+    policy: OciPullPolicy,
+    host: &HostPlatform,
+) -> ImageAttempt {
     let started = Instant::now();
     let mut stage = "presence_probe".to_string();
     let mut local_present = false;
@@ -232,42 +313,69 @@ pub async fn ensure_image_with_adapter(
             status: "passed".to_string(),
             detail: "digest+arch ok".to_string(),
         });
-        Ok(image)
+        Ok(ImageAcquisition {
+            image,
+            pull_attempted,
+            cache_hit: local_present && policy != OciPullPolicy::Always,
+            verification: verification.clone(),
+            timings: timings.clone(),
+        })
     }
     .await;
 
     timings.total_ms = elapsed_ms(started);
-    let success = result.is_ok();
-    let resolved = if success { result.as_ref().ok() } else { None };
-    let record = ProvenanceRecord {
-        run_id: run_id.to_string(),
-        engine: engine.binary_name().to_string(),
-        reference: image_ref.to_string(),
-        resolved_id: resolved.map(|image| image.id.clone()),
-        repo_digests: resolved.map(|image| image.repo_digests.clone()),
-        architecture: resolved.map(|image| image.architecture.clone()),
-        variant: resolved.and_then(|image| image.variant.clone()),
-        host_arch: host.architecture.clone(),
-        host_variant: host.variant.clone(),
-        policy: policy_name(policy).to_string(),
+    let result = result.map(|mut acquisition| {
+        acquisition.timings = timings.clone();
+        acquisition
+    });
+    ImageAttempt {
+        result,
+        local_present,
         pull_attempted,
-        cache_hit: local_present && policy != OciPullPolicy::Always,
-        mode: if pull_attempted { "pulled" } else { "local" }.to_string(),
-        stage: if success {
-            "acquired".to_string()
-        } else {
-            stage
-        },
-        outcome: if success { "ok" } else { "aborted" }.to_string(),
-        error: result.as_ref().err().map(|error| ProvenanceError {
-            variant: error_variant(error).to_string(),
-            detail: error.to_string(),
-        }),
+        stage,
         verification,
         timings,
-    };
-    write_provenance(run_dir, &record);
-    result
+    }
+}
+
+/// Record a successful acquisition performed by the live readiness gate.
+pub fn write_acquisition_provenance(
+    run_dir: &Path,
+    engine: SandboxEngine,
+    image_ref: &str,
+    policy: OciPullPolicy,
+    host: &HostPlatform,
+    run_id: &str,
+    acquisition: &ImageAcquisition,
+) {
+    let image = &acquisition.image;
+    write_provenance(
+        run_dir,
+        &ProvenanceRecord {
+            run_id: run_id.to_string(),
+            engine: engine.binary_name().to_string(),
+            reference: image_ref.to_string(),
+            resolved_id: Some(image.id.clone()),
+            repo_digests: Some(image.repo_digests.clone()),
+            architecture: Some(image.architecture.clone()),
+            variant: image.variant.clone(),
+            host_arch: host.architecture.clone(),
+            host_variant: host.variant.clone(),
+            policy: policy_name(policy).to_string(),
+            pull_attempted: acquisition.pull_attempted,
+            cache_hit: acquisition.cache_hit,
+            mode: if acquisition.pull_attempted {
+                "pulled".to_string()
+            } else {
+                "local".to_string()
+            },
+            stage: "acquired".to_string(),
+            outcome: "ok".to_string(),
+            error: None,
+            verification: acquisition.verification.clone(),
+            timings: acquisition.timings.clone(),
+        },
+    );
 }
 
 fn write_provenance(run_dir: &Path, record: &ProvenanceRecord) {

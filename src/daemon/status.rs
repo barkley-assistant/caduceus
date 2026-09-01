@@ -20,6 +20,7 @@ use serde::Serialize;
 
 use crate::github::issue::IssueKey;
 use crate::infra::error::{CaduceusError, CaduceusResult};
+use crate::readiness::{ReadinessReport, ReadinessVerdict};
 use crate::state::meta::{MetaStore, StateMeta, TickOutcome};
 use crate::state::queue::{Phase, QueueEntry, QueueState, StateStore, TicketType};
 use crate::worker::supervisor::{read_heartbeat_record, Heartbeat};
@@ -75,6 +76,38 @@ pub struct StatusReport {
     pub readiness: Option<BTreeMap<String, String>>,
     /// Pool state: "idle", "active(n)", "saturated", or "draining".
     pub pool_state: Option<String>,
+    /// Last CLI doctor result. Informational only; dispatch never reads it.
+    pub doctor: Option<DoctorStatus>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct DoctorStatus {
+    pub verdict: String,
+    pub generated_at: DateTime<Utc>,
+    pub informational: bool,
+    pub failed_checks: Vec<String>,
+}
+
+fn read_doctor_status(state_dir: &Path) -> Option<DoctorStatus> {
+    let bytes = fs::read(state_dir.join("doctor.json")).ok()?;
+    let report: ReadinessReport = serde_json::from_slice(&bytes).ok()?;
+    if report.schema_version != crate::readiness::REPORT_SCHEMA_VERSION {
+        return None;
+    }
+    Some(DoctorStatus {
+        verdict: match report.verdict {
+            ReadinessVerdict::Ready => "READY".to_string(),
+            ReadinessVerdict::Unavailable => "UNAVAILABLE".to_string(),
+        },
+        generated_at: report.generated_at,
+        informational: true,
+        failed_checks: report
+            .checks
+            .iter()
+            .filter(|check| check.status == crate::readiness::CheckStatus::Fail)
+            .map(|check| check.id.to_string())
+            .collect(),
+    })
 }
 
 /// One blocked (refuse-to-operate) entry surfaced by
@@ -118,6 +151,8 @@ pub struct LiveWorker {
 /// Schema version. Bumped when a new field is added so
 /// the `--json` consumer can detect the version.
 ///
+/// 7.7.0 — added the informational `doctor` field.
+///
 /// 7.6.0 — added `blocked_issues` field on
 /// `StatusReport` carrying dedicated `BlockedEntry`
 /// records for queue entries stuck in `NeedsAttention`
@@ -125,7 +160,7 @@ pub struct LiveWorker {
 /// is additive: the section is omitted from the human
 /// output when empty, and the JSON array is always
 /// present (empty array on a healthy state).
-pub const STATUS_SCHEMA_VERSION: &str = "7.6.0";
+pub const STATUS_SCHEMA_VERSION: &str = "7.7.0";
 
 /// Maximum number of recent errors surfaced by
 /// `StatusReport::recent_errors`.
@@ -284,6 +319,7 @@ pub fn build_report(state_dir: &Path) -> CaduceusResult<(StatusReport, Option<St
         state_corrupt,
         readiness: Some(readiness),
         pool_state: None,
+        doctor: read_doctor_status(state_dir),
     };
     Ok((report, None))
 }
@@ -336,6 +372,7 @@ fn empty_report(state_dir: &Path) -> StatusReport {
         state_corrupt: false,
         readiness: None,
         pool_state: None,
+        doctor: read_doctor_status(state_dir),
     }
 }
 
@@ -586,6 +623,13 @@ pub fn render_human(report: &StatusReport, diagnostic: Option<&StatusDiagnostic>
     if let Some(ref pool) = report.pool_state {
         out.push_str(&format!("  pool state: {pool}\n"));
     }
+    if let Some(doctor) = &report.doctor {
+        out.push_str(&format!(
+            "  doctor: {} (informational, generated {})\n",
+            doctor.verdict,
+            doctor.generated_at.to_rfc3339()
+        ));
+    }
     out.push_str("  phases:\n");
     for (label, count) in &report.phases {
         out.push_str(&format!("    {label}: {count}\n"));
@@ -734,6 +778,7 @@ pub fn build_report_from_state(
         state_corrupt: false,
         readiness: None,
         pool_state: None,
+        doctor: read_doctor_status(state_dir),
     }
 }
 

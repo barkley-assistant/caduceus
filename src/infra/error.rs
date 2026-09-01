@@ -18,6 +18,14 @@
 use std::fmt;
 use std::path::PathBuf;
 
+/// One live readiness failure included in an OCI dispatch refusal.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReadinessFailure {
+    pub check: String,
+    pub detail: String,
+    pub remediation: String,
+}
+
 /// All Caduceus errors. The variant set is normative; new errors
 /// always go through a `CaduceusError` constructor, never a panic on
 /// external data.
@@ -382,6 +390,13 @@ pub enum CaduceusError {
         reserved_bytes: u64,
     },
 
+    /// OCI dispatch was refused because one or more live readiness checks
+    /// failed. This is always built from current observations.
+    #[error("OCI readiness unavailable: {failed_checks:?}")]
+    OciReadinessUnavailable {
+        failed_checks: Vec<ReadinessFailure>,
+    },
+
     #[error("{0}")]
     Other(String),
 }
@@ -647,6 +662,20 @@ impl fmt::Debug for CaduceusError {
                 free_bytes,
                 reserved_bytes
             ),
+            CaduceusError::OciReadinessUnavailable { failed_checks } => {
+                let failures = failed_checks
+                    .iter()
+                    .map(|failure| {
+                        format!(
+                            "{}: {}; remediation: {}",
+                            failure.check,
+                            scrub(&failure.detail),
+                            scrub(&failure.remediation)
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                format!("OciReadinessUnavailable {{ failed_checks: {failures:?} }}")
+            }
             CaduceusError::Other(s) => format!("Other({})", scrub(s)),
         };
         f.write_str(&rendered)
