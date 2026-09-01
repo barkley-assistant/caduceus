@@ -35,6 +35,14 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/macos.yml'
+  schedule:
+    # Weekly cache-warm run for the macOS gate (issue #271). Sunday
+    # 06:30 UTC — adjacent to ci.yml's 06:00 slot so the two weekly
+    # runners spread load. Swatinem/rust-cache saves on job completion,
+    # so the next real push restores the cache in seconds instead of
+    # paying the 40+ minute cold-cache build. Schedule events ignore
+    # `paths:` filters by design; push/PR triggers keep theirs.
+    - cron: '30 6 * * 0'
 
 # Cancel in-progress runs on the same ref so a force-push does
 # not leave a stale runner burning macOS minutes.
