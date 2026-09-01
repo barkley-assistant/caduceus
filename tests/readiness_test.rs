@@ -171,7 +171,11 @@ async fn live_probe_reports_missing_image_as_mandatory_failure() {
     );
 }
 
-#[cfg(unix)]
+// The live probe's Platform check deliberately fails on non-Linux hosts
+// (OCI workers require Linux), so the compliant-engine happy path can
+// only reach ReadinessVerdict::Ready on Linux. Gate to target_os to keep
+// the macOS CI gate green.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn live_probe_accepts_a_compliant_fake_engine() {
     let (_dir, config, options) = ready_fixture(true, false);
@@ -189,7 +193,7 @@ async fn live_probe_accepts_a_compliant_fake_engine() {
         .all(|check| check.status == CheckStatus::Pass));
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn live_probe_allows_nonwritable_group_access_on_state_and_worktree() {
     let (_dir, config, options) = ready_fixture(true, false);
