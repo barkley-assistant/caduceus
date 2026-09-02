@@ -652,6 +652,10 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 use std::thread;
+// The only Duration/Instant consumers are linux-only tests
+// (cfg(target_os = "linux")), so macOS clippy sees this import
+// as unused. Narrow allow, matching a85021e's pattern.
+#[cfg_attr(not(target_os = "linux"), allow(unused_imports))]
 use std::time::{Duration, Instant};
 
 #[test]
