@@ -659,3 +659,75 @@ fn tempdir(label: &str) -> PathBuf {
     std::fs::create_dir_all(&dir).expect("create tempdir");
     dir
 }
+
+// -----------------------------------------------------------------------
+// Regression: shared tempdir uniqueness (issue #269)
+// -----------------------------------------------------------------------
+
+use std::collections::HashSet;
+use std::sync::Arc;
+use std::thread;
+
+#[test]
+fn shared_tempdir_paths_are_distinct_under_parallel_same_label() {
+    // Regression for issue #269: the pre-fix helpers derived
+    // uniqueness from SystemTime::as_nanos(), which collides on the
+    // coarse-clock macOS runner (~1 us) under parallel threads.
+    // The shared helper uses pid + AtomicU64 counter, so N threads
+    // x M calls with the SAME label must produce N*M distinct paths,
+    // and every path must contain the pid and a counter (never a
+    // bare nanosecond nonce).
+    const THREADS: usize = 8;
+    const PER_THREAD: usize = 100;
+    let collected: Arc<std::sync::Mutex<Vec<std::path::PathBuf>>> =
+        Arc::new(std::sync::Mutex::new(Vec::with_capacity(THREADS * PER_THREAD)));
+    let handles: Vec<_> = (0..THREADS)
+        .map(|_| {
+            let collected = Arc::clone(&collected);
+            thread::spawn(move || {
+                let mut local = Vec::with_capacity(PER_THREAD);
+                for _ in 0..PER_THREAD {
+                    // same label on every thread — the pre-fix code
+                    // would collide here on a coarse clock.
+                    let p = fixtures::tempdir("dup");
+                    local.push(p);
+                }
+                collected.lock().unwrap().extend(local);
+            })
+        })
+        .collect();
+    for h in handles {
+        h.join().expect("thread panicked");
+    }
+    let all = collected.lock().unwrap();
+    assert_eq!(all.len(), THREADS * PER_THREAD);
+    let set: HashSet<&std::path::Path> = all.iter().map(|p| p.as_path()).collect();
+    assert_eq!(
+        set.len(),
+        THREADS * PER_THREAD,
+        "tempdir paths collided under parallel same-label calls"
+    );
+    // Every path must contain the pid and the monotonic counter,
+    // never a bare nanosecond nonce. The format is
+    // caduceus-test-<label>-<pid>-<counter>.
+    let pid = std::process::id().to_string();
+    for p in all.iter() {
+        let s = p.to_string_lossy();
+        assert!(s.contains(&pid), "path missing pid: {s}");
+        // The counter is the last path component's tail after the
+        // pid. We don't pin the exact number, but we assert the
+        // component after the pid is a non-empty decimal (the
+        // counter), which rules out a bare nanosecond nonce
+        // (19 digits, no separator) and a missing counter.
+        let file = p.file_name().unwrap().to_string_lossy().into_owned();
+        let parts: Vec<&str> = file.split('-').collect();
+        // caduceus-test-<label>-<pid>-<counter>: label may itself
+        // contain '-', so check the last two are pid + counter.
+        assert_eq!(parts[parts.len() - 2], pid, "path pid slot wrong: {file}");
+        let counter_str = parts[parts.len() - 1];
+        assert!(
+            !counter_str.is_empty() && counter_str.chars().all(|c| c.is_ascii_digit()),
+            "path counter slot not a decimal: {file}"
+        );
+    }
+}
