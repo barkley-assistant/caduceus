@@ -49,6 +49,23 @@ fn main() -> ExitCode {
     // the contractually documented behaviour (the CLI contract in
     // `src/cli/mod.rs`: "Implement no-argument behavior by inspecting
     // `args_os`...").
+    //
+    // Block SIGINT/SIGTERM before any CLI work when this process is a
+    // daemon tick (`caduceus` / `caduceus run`), so a signal delivered
+    // during startup pends instead of hitting the default disposition
+    // and killing the process (issue #270). `run_blocking` installs
+    // the tokio handlers and restores the mask after registration.
+    // Other subcommands (`status`, `queue reset`, `doctor`, ...) keep
+    // their default signal behaviour, and the supervisor mode above is
+    // exempted so the worker TERM-to-KILL contract is unaffected.
+    let is_tick_invocation = std::env::args_os().nth(1).is_none_or(|arg| arg == "run");
+    if is_tick_invocation {
+        if let Err(err) = caduceus::signals::block_idle_signals() {
+            eprintln!("caduceus: {err}");
+            return ExitCode::from(1);
+        }
+    }
+
     match cli::run() {
         Ok(()) => ExitCode::from(0),
         Err(err) => {
