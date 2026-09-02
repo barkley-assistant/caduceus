@@ -11,14 +11,17 @@
 //! process environment is never touched except by the env-scoping
 //! helper (which restores every variable it touched).
 
-use std::collections::HashMap;
-use std::sync::Mutex;
-
 use caduceus::config::{
     Config, GhRunner, GhRunnerOutput, OsEnv, ResolvedToken, TokenEnv, TokenSource,
 };
 use caduceus::error::CaduceusError;
 use serial_test::serial;
+#[path = "../fixtures/mod.rs"]
+mod fixtures;
+
+use fixtures::tempdir;
+use std::collections::HashMap;
+use std::sync::Mutex;
 
 // Global env-scoping guard. Only one scoped-env test runs at a time,
 // and each scoped block records every variable it touched so they can
@@ -106,7 +109,7 @@ where
 fn explicit_config_field_wins_over_env_vars_and_gh() {
     let cfg = Config {
         github_token: Some("explicit-token".to_string()),
-        ..Config::test_defaults(&tempdir())
+        ..Config::test_defaults(&tempdir("token"))
     };
     let env = MapEnv::with(&[
         ("CADUCEUS_GITHUB_TOKEN", "env-cad"),
@@ -129,7 +132,7 @@ fn explicit_config_field_wins_over_env_vars_and_gh() {
 fn caduceus_env_wins_over_github_env_and_gh() {
     let cfg = Config {
         github_token: None,
-        ..Config::test_defaults(&tempdir())
+        ..Config::test_defaults(&tempdir("token"))
     };
     let env = MapEnv::with(&[
         ("CADUCEUS_GITHUB_TOKEN", "env-cad"),
@@ -152,7 +155,7 @@ fn caduceus_env_wins_over_github_env_and_gh() {
 fn github_env_wins_over_gh_when_caduceus_env_unset() {
     let cfg = Config {
         github_token: None,
-        ..Config::test_defaults(&tempdir())
+        ..Config::test_defaults(&tempdir("token"))
     };
     let env = MapEnv::with(&[("GITHUB_TOKEN", "env-gh")]);
     let runner = StubGh {
@@ -172,7 +175,7 @@ fn github_env_wins_over_gh_when_caduceus_env_unset() {
 fn gh_cli_used_when_no_config_or_env_set() {
     let cfg = Config {
         github_token: None,
-        ..Config::test_defaults(&tempdir())
+        ..Config::test_defaults(&tempdir("token"))
     };
     let env = MapEnv::default();
     let runner = StubGh {
@@ -194,7 +197,7 @@ fn fallback_chain_skips_blank_levels() {
     // confirm that empty env vars do not block the chain.
     let cfg = Config {
         github_token: Some(String::new()),
-        ..Config::test_defaults(&tempdir())
+        ..Config::test_defaults(&tempdir("token"))
     };
     let env = MapEnv::with(&[("CADUCEUS_GITHUB_TOKEN", "   "), ("GITHUB_TOKEN", "")]);
     let runner = StubGh {
@@ -214,7 +217,7 @@ fn fallback_chain_skips_blank_levels() {
 fn whitespace_only_explicit_field_is_treated_as_unset() {
     let cfg = Config {
         github_token: Some("   ".to_string()),
-        ..Config::test_defaults(&tempdir())
+        ..Config::test_defaults(&tempdir("token"))
     };
     let env = MapEnv::default();
     let runner = StubGh { output: Err(()) };
@@ -233,7 +236,7 @@ fn whitespace_only_explicit_field_is_treated_as_unset() {
 fn missing_gh_is_a_token_resolution_error() {
     let cfg = Config {
         github_token: None,
-        ..Config::test_defaults(&tempdir())
+        ..Config::test_defaults(&tempdir("token"))
     };
     let env = MapEnv::default();
     let runner = StubGh { output: Err(()) };
@@ -247,7 +250,7 @@ fn missing_gh_is_a_token_resolution_error() {
 fn gh_exit_nonzero_surfaces_exit_code_but_not_stderr() {
     let cfg = Config {
         github_token: None,
-        ..Config::test_defaults(&tempdir())
+        ..Config::test_defaults(&tempdir("token"))
     };
     let env = MapEnv::default();
     let runner = StubGh {
@@ -270,7 +273,7 @@ fn gh_exit_nonzero_surfaces_exit_code_but_not_stderr() {
 fn gh_empty_output_is_failure() {
     let cfg = Config {
         github_token: None,
-        ..Config::test_defaults(&tempdir())
+        ..Config::test_defaults(&tempdir("token"))
     };
     let env = MapEnv::default();
     let runner = StubGh {
@@ -294,7 +297,7 @@ fn error_text_never_includes_token_value() {
     // error message must surface only the exit code, not the value.
     let cfg = Config {
         github_token: Some(String::new()),
-        ..Config::test_defaults(&tempdir())
+        ..Config::test_defaults(&tempdir("token"))
     };
     let env = MapEnv::with(&[("CADUCEUS_GITHUB_TOKEN", ""), ("GITHUB_TOKEN", "")]);
     let runner = StubGh {
@@ -374,7 +377,7 @@ fn os_env_trims_surrounding_whitespace() {
 fn real_runner_surfaces_spawn_errors_without_leaking_command_args() {
     // Point PATH at an empty directory so ``which::which("gh")`` fails.
     scoped_env(|| {
-        let empty = tempdir().join("empty-bin");
+        let empty = tempdir("token").join("empty-bin");
         std::fs::create_dir_all(&empty).unwrap();
         std::env::set_var("PATH", &empty);
         let runner = caduceus::config::RealGhRunner;
@@ -395,15 +398,4 @@ fn resolve_or_err(cfg: Config, env: &dyn TokenEnv, runner: &dyn GhRunner) -> Cad
         Ok(token) => panic!("expected error, got token {token:?}"),
         Err(err) => err,
     }
-}
-
-fn tempdir() -> std::path::PathBuf {
-    let mut dir = std::env::temp_dir();
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    dir.push(format!("caduceus-token-test-{nonce}"));
-    std::fs::create_dir_all(&dir).expect("create tempdir");
-    dir
 }
