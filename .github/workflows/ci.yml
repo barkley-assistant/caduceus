@@ -14,6 +14,7 @@
 # - ci / rust-stable
 # - ci / python
 # - ci / planning
+# - ci / oci-live-certification
 #
 # These names appear in the branch-protection settings; do not
 # rename them without coordinating the branch-protection update.
@@ -366,3 +367,113 @@ jobs:
             echo "sentinel-read must fail when the sentinel is missing" >&2
             exit 1
           fi
+
+  oci-live-certification:
+    # Live adversarial Docker certification (issue #252): the
+    # merge-blocking security gate for executor/config/state/
+    # workflow-relevant changes. Drives the gated Rust live suite
+    # (oci_isolation_live_test.rs + oci_env_live_test.rs) through the
+    # real engine with CADUCEUS_RUN_ISOLATION_TESTS=1 and a
+    # digest-pinned reference image, using nextest --run-ignored all.
+    # Rootful Docker is the mandatory PR baseline; the rootless and
+    # Podman legs are nightly (oci-live-nightly.yml) and release
+    # certification runs all modes (release.yml).
+    #
+    # The job self-skips to SUCCESS (never `skipped`) for out-of-scope
+    # PRs via dorny/paths-filter, so a docs-only PR cannot block merge
+    # on a skipped required check.
+    name: oci-live-certification
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: filter security-relevant paths
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            security:
+              - 'src/executor/**'
+              - 'src/infra/config/**'
+              - 'src/state/oci_run*'
+              - 'src/daemon/tick/per_claim.rs'
+              - 'plugin-assets/worker-bridge.py'
+              - 'plugin-assets/worker-reference-image/**'
+              - 'tests/executor/**'
+              - 'tests/integration/oci_env_live_test.rs'
+              - '.github/workflows/**'
+      - name: skip when no security-relevant changes
+        if: steps.filter.outputs.security == 'false'
+        run: |
+          echo "no security-relevant changes in this PR; live certification reports success (not skipped) so merge is not blocked"
+      - name: install stable Rust
+        if: steps.filter.outputs.security == 'true'
+        run: |
+          set -euo pipefail
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain stable --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: install cargo-nextest
+        if: steps.filter.outputs.security == 'true'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: cache cargo registry and target
+        if: steps.filter.outputs.security == 'true'
+        uses: Swatinem/rust-cache@v2
+      - name: configure git identity for tests
+        if: steps.filter.outputs.security == 'true'
+        run: |
+          set -euo pipefail
+          git config --global user.email "ci@caduceus.local"
+          git config --global user.name "caduceus-ci"
+      - name: build reference image locally (never pushed)
+        if: steps.filter.outputs.security == 'true'
+        run: |
+          set -euo pipefail
+          docker build --pull \
+            -f plugin-assets/worker-reference-image/Containerfile \
+            -t caduceus-worker-reference:ci \
+            plugin-assets/worker-reference-image
+      - name: resolve digest-pinned references via local registry
+        if: steps.filter.outputs.security == 'true'
+        run: |
+          set -euo pipefail
+          # A locally built (never pushed) image has no RepoDigest; a
+          # throwaway local registry gives every live test the same
+          # deterministic digest-pinned reference a released image
+          # would have. localhost registries need no TLS config.
+          docker run -d -p 127.0.0.1:5000:5000 --name ci-registry registry:2
+          docker tag caduceus-worker-reference:ci \
+            127.0.0.1:5000/caduceus-worker-reference:ci
+          docker push 127.0.0.1:5000/caduceus-worker-reference:ci
+          digest="$(docker inspect --format '{{index .RepoDigests 0}}' \
+            127.0.0.1:5000/caduceus-worker-reference:ci)"
+          echo "CADUCEUS_LIVE_TEST_IMAGE=$digest" >> "$GITHUB_ENV"
+          # Image neutrality (issue #252): a second image that does
+          # NOT inherit from the reference image.
+          docker pull alpine:3.20
+          echo "CADUCEUS_LIVE_NEUTRALITY_IMAGE=$(docker inspect \
+            --format '{{index .RepoDigests 0}}' alpine:3.20)" >> "$GITHUB_ENV"
+      - name: run live certification suite
+        if: steps.filter.outputs.security == 'true'
+        timeout-minutes: 15
+        env:
+          CADUCEUS_RUN_ISOLATION_TESTS: "1"
+        run: |
+          set -euo pipefail
+          cargo nextest run --locked --all-targets --run-ignored all \
+            -E 'binary(oci_isolation_live_test) or binary(oci_env_live_test) \
+                or binary(certification_mapping_test)'
+      - name: upload diagnostics on failure
+        if: failure() && steps.filter.outputs.security == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: oci-live-diagnostics
+          path: |
+            target/nextest/ci-junit.xml
+            **/engine.log
+            **/oci-runs/**/*.log
+          if-no-files-found: ignore
+          retention-days: 14
