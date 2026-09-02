@@ -464,8 +464,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo nextest run --locked --all-targets --run-ignored all \
-            -E 'binary(oci_isolation_live_test) or binary(oci_env_live_test) \
-                or binary(certification_mapping_test)'
+            -E 'binary(oci_isolation_live_test) or binary(oci_env_live_test) or binary(certification_mapping_test)'
       - name: upload diagnostics on failure
         if: failure() && steps.filter.outputs.security == 'true'
         uses: actions/upload-artifact@v4

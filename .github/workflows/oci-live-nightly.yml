@@ -82,8 +82,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo nextest run --locked --all-targets --run-ignored all \
-            -E 'binary(oci_isolation_live_test) or binary(oci_env_live_test) \
-                or binary(certification_mapping_test)'
+            -E 'binary(oci_isolation_live_test) or binary(oci_env_live_test) or binary(certification_mapping_test)'
 
   podman:
     name: podman
@@ -139,20 +138,4 @@ jobs:
           # neutrality). Deliberately NOT a mirror of every Docker
           # hostile case (issue #252 non-goal).
           cargo nextest run --locked --all-targets --run-ignored all \
-            -E 'binary(oci_isolation_live_test) and (test(git_shadow_read_sees_only_shadow) \
-                or test(git_shadow_write_rejected) \
-                or test(git_shadow_dir_variant_is_empty_and_read_only) \
-                or test(oci_mount_enumeration_two_writable_surfaces) \
-                or test(workspace_writable_rootfs_readonly_output_writes_live) \
-                or test(capabilities_absent_no_new_privileges_live) \
-                or test(podman_keep_id_identity_canary) \
-                or test(rootful_docker_identity_canary) \
-                or test(timeout_cleans_container_live) \
-                or test(cancellation_cleans_container_live) \
-                or test(network_none_unreachable_live) \
-                or test(unrestricted_not_host_live) \
-                or test(image_neutrality_custom_unrelated_image_live) \
-                or test(host_sentinel_unreachable_live) \
-                or test(daemon_state_and_other_repos_unreachable_live) \
-                or test(runtime_socket_and_device_absent_live)) or \
-                binary(oci_env_live_test) or binary(certification_mapping_test)'
+            -E 'binary(oci_isolation_live_test) and (test(git_shadow_read_sees_only_shadow) or test(git_shadow_write_rejected) or test(git_shadow_dir_variant_is_empty_and_read_only) or test(oci_mount_enumeration_two_writable_surfaces) or test(workspace_writable_rootfs_readonly_output_writes_live) or test(capabilities_absent_no_new_privileges_live) or test(podman_keep_id_identity_canary) or test(rootful_docker_identity_canary) or test(timeout_cleans_container_live) or test(cancellation_cleans_container_live) or test(network_none_unreachable_live) or test(unrestricted_not_host_live) or test(image_neutrality_custom_unrelated_image_live) or test(host_sentinel_unreachable_live) or test(daemon_state_and_other_repos_unreachable_live) or test(runtime_socket_and_device_absent_live)) or binary(oci_env_live_test) or binary(certification_mapping_test)'
