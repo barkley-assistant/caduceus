@@ -208,11 +208,22 @@ def _run(
     The adapter never uses ``shell=True``. Errors are caught and re-raised
     as ``RuntimeError`` with a redacted message so the caller can present
     a chat-friendly diagnostic without leaking secrets.
+
+    The child env is a copy of ``os.environ`` with ``HERMES_HOME`` defaulted
+    to the adapter's ``_hermes_home()`` resolution when unset, so daemon
+    config resolution works in shells that do not export it (issue #263).
     """
+    # Inject the adapter's HERMES_HOME default when the shell does not
+    # export one (issue #263). setdefault semantics: an explicit operator
+    # override (multi-profile hosts) wins, and a deliberately-empty value
+    # still reaches the binary so the Rust guard reports it (mod.rs:1033).
+    env = dict(os.environ)
+    env.setdefault("HERMES_HOME", str(_hermes_home()))
     try:
         return subprocess.run(
             argv,
             cwd=str(cwd) if cwd else None,
+            env=env,
             capture_output=True,
             text=True,
             timeout=timeout,
