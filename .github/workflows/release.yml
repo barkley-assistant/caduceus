@@ -14,8 +14,102 @@ permissions:
   contents: write
 
 jobs:
+  certify-oci:
+    # Release certification (issue #252): the live adversarial suite
+    # runs in ALL supported modes (rootful Docker, rootless Docker,
+    # Podman Tier-2 subset) before the release binary is built. The
+    # release job depends on this job.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+
+      - name: Configure git identity for tests
+        run: |
+          set -euo pipefail
+          git config --global user.email "ci@caduceus.local"
+          git config --global user.name "caduceus-ci"
+
+      - name: certify — rootful Docker
+        run: |
+          set -euo pipefail
+          docker build --pull \
+            -f plugin-assets/worker-reference-image/Containerfile \
+            -t caduceus-worker-reference:ci \
+            plugin-assets/worker-reference-image
+          docker run -d -p 127.0.0.1:5000:5000 --name ci-registry registry:2
+          docker tag caduceus-worker-reference:ci \
+            127.0.0.1:5000/caduceus-worker-reference:ci
+          docker push 127.0.0.1:5000/caduceus-worker-reference:ci
+          digest="$(docker inspect --format '{{index .RepoDigests 0}}' \
+            127.0.0.1:5000/caduceus-worker-reference:ci)"
+          docker pull alpine:3.20
+          neutrality="$(docker inspect --format '{{index .RepoDigests 0}}' alpine:3.20)"
+          CADUCEUS_RUN_ISOLATION_TESTS=1 \
+          CADUCEUS_LIVE_TEST_IMAGE="$digest" \
+          CADUCEUS_LIVE_NEUTRALITY_IMAGE="$neutrality" \
+            cargo nextest run --locked --all-targets --run-ignored all \
+            -E 'binary(oci_isolation_live_test) or binary(oci_env_live_test) or binary(certification_mapping_test)'
+
+      - name: certify — rootless Docker
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y uidmap dbus-user-session
+          curl --proto '=https' --tlsv1.2 -sSf https://get.docker.com/rootless | sh
+          export PATH="$HOME/bin:/usr/bin:$PATH"
+          export DOCKER_HOST="unix:///run/user/$(id -u)/docker.sock"
+          docker info >/dev/null
+          docker build --pull \
+            -f plugin-assets/worker-reference-image/Containerfile \
+            -t caduceus-worker-reference:ci \
+            plugin-assets/worker-reference-image
+          docker run -d -p 127.0.0.1:5000:5000 --name ci-registry registry:2
+          docker tag caduceus-worker-reference:ci \
+            127.0.0.1:5000/caduceus-worker-reference:ci
+          docker push 127.0.0.1:5000/caduceus-worker-reference:ci
+          digest="$(docker inspect --format '{{index .RepoDigests 0}}' \
+            127.0.0.1:5000/caduceus-worker-reference:ci)"
+          docker pull alpine:3.20
+          neutrality="$(docker inspect --format '{{index .RepoDigests 0}}' alpine:3.20)"
+          CADUCEUS_RUN_ISOLATION_TESTS=1 \
+          CADUCEUS_LIVE_TEST_IMAGE="$digest" \
+          CADUCEUS_LIVE_NEUTRALITY_IMAGE="$neutrality" \
+            cargo nextest run --locked --all-targets --run-ignored all \
+            -E 'binary(oci_isolation_live_test) or binary(oci_env_live_test) or binary(certification_mapping_test)'
+
+      - name: certify — Podman Tier-2 subset
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y podman
+          podman info >/dev/null
+          podman pull busybox:1.36.1
+          digest="$(podman inspect --format '{{index .RepoDigests 0}}' busybox:1.36.1)"
+          podman pull alpine:3.20
+          neutrality="$(podman inspect --format '{{index .RepoDigests 0}}' alpine:3.20)"
+          CADUCEUS_RUN_ISOLATION_TESTS=1 \
+          CADUCEUS_LIVE_TEST_ENGINE=podman \
+          CADUCEUS_LIVE_TEST_IMAGE="$digest" \
+          CADUCEUS_LIVE_NEUTRALITY_IMAGE="$neutrality" \
+            cargo nextest run --locked --all-targets --run-ignored all \
+            -E 'binary(oci_isolation_live_test) and (test(git_shadow_read_sees_only_shadow) or test(git_shadow_write_rejected) or test(git_shadow_dir_variant_is_empty_and_read_only) or test(oci_mount_enumeration_two_writable_surfaces) or test(workspace_writable_rootfs_readonly_output_writes_live) or test(capabilities_absent_no_new_privileges_live) or test(podman_keep_id_identity_canary) or test(rootful_docker_identity_canary) or test(timeout_cleans_container_live) or test(cancellation_cleans_container_live) or test(network_none_unreachable_live) or test(unrestricted_not_host_live) or test(image_neutrality_custom_unrelated_image_live) or test(host_sentinel_unreachable_live) or test(daemon_state_and_other_repos_unreachable_live) or test(runtime_socket_and_device_absent_live)) or binary(oci_env_live_test) or binary(certification_mapping_test)'
+
   release:
     runs-on: ubuntu-latest
+    needs: certify-oci
     steps:
       - name: Checkout
         uses: actions/checkout@v4

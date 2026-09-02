@@ -615,11 +615,15 @@ async fn label_round_trip_discovers_only_this_installation() {
     assert_eq!(orphans, vec!["own-container"]);
     assert_eq!(
         oci_lifecycle::daemon_discovery_template_for_tests(),
-        r#"{{index .Config.Labels "caduceus.daemon_id"}}"#
+        r#"{{.Label "caduceus.daemon_id"}}"#
     );
     assert_eq!(
         oci_lifecycle::discovery_template_for_tests(),
         r#"{{index .Config.Labels "caduceus.run_id"}}"#
+    );
+    assert_eq!(
+        oci_lifecycle::ps_run_template_for_tests(),
+        r#"{{.Label "caduceus.run_id"}}"#
     );
 }
 

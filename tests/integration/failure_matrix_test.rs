@@ -67,10 +67,12 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------------
-// AC-10 — Re-export the canonical isolation escape tests.
+// AC-10 — the isolation boundaries are proven by the live certification
+// suite (see `tests/executor/oci_isolation_live_test.rs` and the
+// checklist mapping in `tests/executor/certification_mapping_test.rs`).
+// This thin function is the failure-matrix pointer that asserts the
+// typed boundary surface still compiles and exports the pipeline.
 // ---------------------------------------------------------------------------
-#[path = "../executor/isolation_escape_test.rs"]
-mod isolation_escape_test;
 
 // ---------------------------------------------------------------------------
 // Binary precondition.
@@ -744,28 +746,28 @@ async fn test_concurrency_fencing_circuit_injected_clock() {
 /// 7.2-AC-10 — Prove the OCI Git-less, secret, mount, network,
 /// resource, and image-policy boundaries.
 ///
-/// The canonical coverage lives in
-/// `tests/executor/isolation_escape_test.rs` (imported via
-/// `#[path]` above). Those tests are gated behind
-/// `CADUCEUS_RUN_ISOLATION_TESTS`; when the env var is not set
-/// (the CI default), they pass trivially. This thin function is
-/// the failure-matrix pointer that asserts the canonical suite
-/// compiles and re-exports its surface.
+/// The canonical coverage lives in the live certification suite
+/// `tests/executor/oci_isolation_live_test.rs`, driven by the CI
+/// `oci-live-certification` job (issue #252) — see the checklist
+/// mapping in `tests/executor/certification_mapping_test.rs`. The
+/// argv-prototype stubs this test used to re-export were deleted as
+/// vacuous-green; the typed `resolve`/`render` pipeline remains the
+/// load-bearing boundary, so this pointer asserts the surface still
+/// compiles and exports.
 #[test]
 fn test_oci_isolation_boundaries() {
-    // The canonical isolation escape tests are gated behind
-    // `CADUCEUS_RUN_ISOLATION_TESTS`. When that env var is not
-    // set the tests pass trivially; when it is set they run
-    // the real adversarial assertions. The `SandboxSpec` +
-    // `resolve`/`render` pipeline is the load-bearing boundary.
+    // The canonical live isolation tests are gated behind
+    // `CADUCEUS_RUN_ISOLATION_TESTS` and driven by the CI job; the
+    // `SandboxSpec` + `resolve`/`render` pipeline is the
+    // load-bearing boundary.
     use caduceus::executor::sandbox_spec::SandboxSpec;
     use caduceus::executor::ExecutorSpec;
 
     // Compile-time check: the surface we depend on is exported.
     let _ = std::marker::PhantomData::<SandboxSpec>;
     let _ = std::marker::PhantomData::<ExecutorSpec>;
-    // The canonical tests in `isolation_escape_test.rs` cover
-    // the five escape vectors. We do NOT duplicate them here.
+    // The live tests in `oci_isolation_live_test.rs` cover the
+    // escape vectors. We do NOT duplicate them here.
 }
 
 /// 7.2-AC-11 — Prove an unavailable Hermes `cronjob` tool returns

@@ -1,0 +1,141 @@
+# Nightly Tier-2 live certification legs (issue #252).
+#
+# The PR gate (ci.yml -> oci-live-certification) runs rootful Docker
+# only — the mandatory baseline. Rootless Docker on the stock GitHub
+# runner is fragile and Podman is a smaller compatibility gate, so
+# both run here nightly (schedule only, never on PRs) and in the
+# release certification (release.yml), where a failure is a release
+# blocker rather than a merge blocker. These jobs are NOT required
+# checks and never gate merges.
+name: oci-live-nightly
+
+on:
+  schedule:
+    # 07:30 UTC daily — off-peak for the public runner pool.
+    - cron: '30 7 * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  rootless-docker:
+    name: rootless-docker
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: install stable Rust
+        run: |
+          set -euo pipefail
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain stable --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+      - name: configure git identity for tests
+        run: |
+          set -euo pipefail
+          git config --global user.email "ci@caduceus.local"
+          git config --global user.name "caduceus-ci"
+      - name: install and start rootless Docker
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y uidmap dbus-user-session
+          # The official rootless install script; the runner user
+          # (uid 1001) gets its own dockerd under a user namespace.
+          curl --proto '=https' --tlsv1.2 -sSf https://get.docker.com/rootless | sh
+          export PATH="$HOME/bin:/usr/bin:$PATH"
+          export DOCKER_HOST="unix:///run/user/$(id -u)/docker.sock"
+          docker info >/dev/null
+          echo "DOCKER_HOST=$DOCKER_HOST" >> "$GITHUB_ENV"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+      - name: build reference image (rootless)
+        run: |
+          set -euo pipefail
+          docker build --pull \
+            -f plugin-assets/worker-reference-image/Containerfile \
+            -t caduceus-worker-reference:ci \
+            plugin-assets/worker-reference-image
+      - name: resolve digest-pinned references
+        run: |
+          set -euo pipefail
+          docker run -d -p 127.0.0.1:5000:5000 --name ci-registry registry:2
+          docker tag caduceus-worker-reference:ci \
+            127.0.0.1:5000/caduceus-worker-reference:ci
+          docker push 127.0.0.1:5000/caduceus-worker-reference:ci
+          digest="$(docker inspect --format '{{index .RepoDigests 0}}' \
+            127.0.0.1:5000/caduceus-worker-reference:ci)"
+          echo "CADUCEUS_LIVE_TEST_IMAGE=$digest" >> "$GITHUB_ENV"
+          docker pull alpine:3.20
+          echo "CADUCEUS_LIVE_NEUTRALITY_IMAGE=$(docker inspect \
+            --format '{{index .RepoDigests 0}}' alpine:3.20)" >> "$GITHUB_ENV"
+      - name: run live certification suite (rootless Docker)
+        timeout-minutes: 20
+        env:
+          CADUCEUS_RUN_ISOLATION_TESTS: "1"
+        run: |
+          set -euo pipefail
+          cargo nextest run --locked --all-targets --run-ignored all \
+            -E 'binary(oci_isolation_live_test) or binary(oci_env_live_test) or binary(certification_mapping_test)'
+
+  podman:
+    name: podman
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: install stable Rust
+        run: |
+          set -euo pipefail
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain stable --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+      - name: configure git identity for tests
+        run: |
+          set -euo pipefail
+          git config --global user.email "ci@caduceus.local"
+          git config --global user.name "caduceus-ci"
+      - name: install Podman
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y podman
+          podman info >/dev/null
+      - name: resolve digest-pinned images
+        run: |
+          set -euo pipefail
+          podman pull busybox:1.36.1
+          echo "CADUCEUS_LIVE_TEST_IMAGE=$(podman inspect \
+            --format '{{index .RepoDigests 0}}' busybox:1.36.1)" >> "$GITHUB_ENV"
+          podman pull alpine:3.20
+          echo "CADUCEUS_LIVE_NEUTRALITY_IMAGE=$(podman inspect \
+            --format '{{index .RepoDigests 0}}' alpine:3.20)" >> "$GITHUB_ENV"
+      - name: run live certification suite (Podman Tier-2 subset)
+        timeout-minutes: 20
+        env:
+          CADUCEUS_RUN_ISOLATION_TESTS: "1"
+          CADUCEUS_LIVE_TEST_ENGINE: "podman"
+        run: |
+          set -euo pipefail
+          # Tier-2 compatibility gate: the core sandbox contract only
+          # (ro rootfs, cap-drop, no-new-privileges, mounts + .git
+          # shadow + writable-surface enumeration, keep-id identity,
+          # network none + unrestricted-not-host, lifecycle
+          # timeout/cancellation cleanup, unreachability, image
+          # neutrality). Deliberately NOT a mirror of every Docker
+          # hostile case (issue #252 non-goal).
+          cargo nextest run --locked --all-targets --run-ignored all \
+            -E 'binary(oci_isolation_live_test) and (test(git_shadow_read_sees_only_shadow) or test(git_shadow_write_rejected) or test(git_shadow_dir_variant_is_empty_and_read_only) or test(oci_mount_enumeration_two_writable_surfaces) or test(workspace_writable_rootfs_readonly_output_writes_live) or test(capabilities_absent_no_new_privileges_live) or test(podman_keep_id_identity_canary) or test(rootful_docker_identity_canary) or test(timeout_cleans_container_live) or test(cancellation_cleans_container_live) or test(network_none_unreachable_live) or test(unrestricted_not_host_live) or test(image_neutrality_custom_unrelated_image_live) or test(host_sentinel_unreachable_live) or test(daemon_state_and_other_repos_unreachable_live) or test(runtime_socket_and_device_absent_live)) or binary(oci_env_live_test) or binary(certification_mapping_test)'

@@ -200,8 +200,8 @@ name = "oci_isolation_live_test"
 path = "tests/executor/oci_isolation_live_test.rs"
 
 [[test]]
-name = "isolation_escape_test"
-path = "tests/executor/isolation_escape_test.rs"
+name = "certification_mapping_test"
+path = "tests/executor/certification_mapping_test.rs"
 
 [[test]]
 name = "credential_leak_test"
@@ -214,10 +214,6 @@ path = "tests/executor/network_isolation_test.rs"
 [[test]]
 name = "resource_limit_test"
 path = "tests/executor/resource_limit_test.rs"
-
-[[test]]
-name = "cancellation_test"
-path = "tests/executor/cancellation_test.rs"
 
 [[test]]
 name = "disk_test"
