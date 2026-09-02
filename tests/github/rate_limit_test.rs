@@ -13,8 +13,6 @@
 //! remaining on 200). The header-parsing and `CadenceGate`
 //! state-machine tests are pure unit tests and need no mock.
 
-use std::path::{Path, PathBuf};
-
 use caduceus::config::Config;
 use caduceus::github::{
     poll_interval_from_headers, rate_limit_from_headers, Client, HttpCache, RateLimitInfo,
@@ -25,23 +23,14 @@ use reqwest::header::{HeaderMap, HeaderValue};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, ResponseTemplate};
 
+use fixtures::MockGitHub;
 #[path = "../fixtures/mod.rs"]
 mod fixtures;
 
-use fixtures::MockGitHub;
+use fixtures::tempdir;
+use std::path::Path;
 
 const TEST_TOKEN: &str = "ghp_testtoken_value_xyz";
-
-fn tempdir(label: &str) -> PathBuf {
-    let mut dir = std::env::temp_dir();
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    dir.push(format!("caduceus-rate-limit-test-{label}-{nonce}"));
-    std::fs::create_dir_all(&dir).expect("create tempdir");
-    dir
-}
 
 fn mock_client(gh: &MockGitHub, state_dir: &Path) -> Client {
     let mut cfg = Config::test_defaults(state_dir);

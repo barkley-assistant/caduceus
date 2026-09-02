@@ -9,27 +9,18 @@
 //!   three concurrent requests trips the rate-limit).
 //! - `Serialize` round-trip for context construction.
 
-use std::path::PathBuf;
-
 use caduceus::config::Config;
 use caduceus::github::{Client, HttpCache, ACCEPT_VALUE};
 use caduceus::issue::{fetch_issue_detail, IssueComment, IssueDetail, IssueEvent, IssueKey};
 use chrono::{TimeZone, Utc};
 use wiremock::matchers::{method, path, query_param_is_missing};
 use wiremock::{Mock, MockServer, ResponseTemplate};
+#[path = "../fixtures/mod.rs"]
+mod fixtures;
+
+use fixtures::tempdir;
 
 const TEST_TOKEN: &str = "ghp_testtoken_value_xyz";
-
-fn tempdir(label: &str) -> PathBuf {
-    let mut dir = std::env::temp_dir();
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    dir.push(format!("caduceus-issue-detail-test-{label}-{nonce}"));
-    std::fs::create_dir_all(&dir).expect("create tempdir");
-    dir
-}
 
 fn mock_client(server: &MockServer) -> (Client, Config) {
     let state_dir = tempdir("mock");
