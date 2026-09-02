@@ -1370,10 +1370,14 @@ fn timeout_cleans_container_live() {
         argv,
         None,
     );
+    // Engine-command bound: 10s, >= the 5s production default
+    // (DEFAULT_SANDBOX_KILL_TIMEOUT_SECONDS) so a cold first
+    // `docker create` on a shared CI runner (which must resolve
+    // the digest-pinned reference) cannot flake the suite.
     let timeouts = LifecycleTimeouts {
         worker_timeout: Duration::from_secs(3),
         stop_grace: Duration::from_secs(1),
-        kill_timeout: Duration::from_secs(1),
+        kill_timeout: Duration::from_secs(10),
     };
     let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
     let outcome = runtime
@@ -1427,7 +1431,7 @@ fn cancellation_cleans_container_live() {
     let timeouts = LifecycleTimeouts {
         worker_timeout: Duration::from_secs(60),
         stop_grace: Duration::from_secs(1),
-        kill_timeout: Duration::from_secs(1),
+        kill_timeout: Duration::from_secs(10),
     };
     let cancel = CancellationToken::new();
     let cancel_for_run = cancel.clone();
@@ -1590,7 +1594,7 @@ fn heartbeat_advances_during_run_live() {
     let timeouts = LifecycleTimeouts {
         worker_timeout: Duration::from_secs(60),
         stop_grace: Duration::from_secs(1),
-        kill_timeout: Duration::from_secs(1),
+        kill_timeout: Duration::from_secs(10),
     };
     let heartbeat_path = fx
         .cfg
