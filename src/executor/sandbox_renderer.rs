@@ -37,8 +37,16 @@ pub const OCI_RUN_LABEL: &str = "caduceus.run_id";
 pub const OCI_ISSUE_LABEL: &str = "caduceus.issue_id";
 /// Quoted because Docker/Podman Go templates parse dotted label keys as
 /// field paths rather than literal map keys.
-pub const OCI_DAEMON_ID_DISCOVERY_TEMPLATE: &str =
-    r#"{{index .Config.Labels "caduceus.daemon_id"}}"#;
+///
+/// Two template families exist because `docker ps` and `docker inspect`
+/// expose different template contexts: `docker ps --format` has no
+/// `.Config` field and reads labels via the `.Label "key"` function,
+/// while `docker inspect --format` templates against the full container
+/// JSON and reads labels through `.Config.Labels` (the `.Label` function
+/// is not available there).
+pub const OCI_DAEMON_ID_DISCOVERY_TEMPLATE: &str = r#"{{.Label "caduceus.daemon_id"}}"#;
+pub const OCI_RUN_ID_PS_TEMPLATE: &str = r#"{{.Label "caduceus.run_id"}}"#;
+/// Inspect-style template: valid for `docker inspect --format`.
 pub const OCI_RUN_ID_DISCOVERY_TEMPLATE: &str = r#"{{index .Config.Labels "caduceus.run_id"}}"#;
 
 /// Render the identity labels in their canonical order.

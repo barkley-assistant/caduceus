@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 use crate::executor::oci_env_file::OciEnvFile;
 use crate::executor::sandbox_renderer::{
     OCI_DAEMON_ID_DISCOVERY_TEMPLATE, OCI_DAEMON_LABEL, OCI_RUN_ID_DISCOVERY_TEMPLATE,
-    OCI_RUN_LABEL,
+    OCI_RUN_ID_PS_TEMPLATE, OCI_RUN_LABEL,
 };
 use crate::executor::sandbox_spec::{SandboxEngine, SandboxSpec};
 use crate::infra::config::Config;
@@ -726,7 +726,7 @@ async fn list_labeled_containers(
         "--filter".to_string(),
         format!("label={OCI_DAEMON_LABEL}={daemon_id}"),
         "--format".to_string(),
-        format!("{{{{.ID}}}}\t{OCI_DAEMON_ID_DISCOVERY_TEMPLATE}\t{OCI_RUN_ID_DISCOVERY_TEMPLATE}"),
+        format!("{{{{.ID}}}}\t{OCI_DAEMON_ID_DISCOVERY_TEMPLATE}\t{OCI_RUN_ID_PS_TEMPLATE}"),
     ];
     let ids = bounded_command(&ps, Duration::from_secs(30), "ps").await?;
     let mut result = Vec::new();
@@ -787,6 +787,11 @@ pub fn parse_exit_code_for_tests(output: &str) -> i32 {
 #[doc(hidden)]
 pub fn discovery_template_for_tests() -> &'static str {
     OCI_RUN_ID_DISCOVERY_TEMPLATE
+}
+
+#[doc(hidden)]
+pub fn ps_run_template_for_tests() -> &'static str {
+    OCI_RUN_ID_PS_TEMPLATE
 }
 
 #[doc(hidden)]
