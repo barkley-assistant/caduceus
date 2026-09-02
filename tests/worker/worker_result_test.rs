@@ -4,12 +4,6 @@
 //! construct bytes in memory so the schema assertions stay
 //! fast and deterministic.
 
-use std::collections::BTreeMap;
-use std::fs::{self, OpenOptions};
-use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
-use std::path::PathBuf;
-
 use caduceus::error::CaduceusError;
 use caduceus::issue::IssueKey;
 use caduceus::worker::{
@@ -17,6 +11,15 @@ use caduceus::worker::{
     WorkerStatus, MAX_ARTIFACTS, MAX_ARTIFACT_KEY_LEN, MAX_PULL_REQUEST_TITLE_CHARS,
     MAX_RESULT_FILE_BYTES, MAX_SUMMARY_BYTES,
 };
+#[path = "../fixtures/mod.rs"]
+mod fixtures;
+
+use fixtures::tempdir;
+use std::collections::BTreeMap;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::PathBuf;
 
 fn sample_issue() -> IssueKey {
     IssueKey {
@@ -24,17 +27,6 @@ fn sample_issue() -> IssueKey {
         repo: "repo".to_string(),
         number: 1,
     }
-}
-
-fn tempdir(label: &str) -> PathBuf {
-    let mut dir = std::env::temp_dir();
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    dir.push(format!("caduceus-worker-test-{label}-{nonce}"));
-    fs::create_dir_all(&dir).expect("create tempdir");
-    dir
 }
 
 fn write_file(path: &PathBuf, body: &[u8]) {

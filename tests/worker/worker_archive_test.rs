@@ -9,14 +9,16 @@
 //! * Worker exit 0 + no result file → file-not-found error
 //! * Signaled exit bypasses the nonzero check
 
-use std::fs;
-use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
-
 use caduceus::error::CaduceusError;
 use caduceus::finalize::archive_worker_result;
 use caduceus::issue::IssueKey;
 use caduceus::worker::parse_result_file;
+#[path = "../fixtures/mod.rs"]
+mod fixtures;
+
+use fixtures::tempdir;
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
 
 fn sample_issue() -> IssueKey {
     IssueKey {
@@ -24,17 +26,6 @@ fn sample_issue() -> IssueKey {
         repo: "repo".to_string(),
         number: 1,
     }
-}
-
-fn tempdir(label: &str) -> PathBuf {
-    let mut dir = std::env::temp_dir();
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    dir.push(format!("caduceus-archive-test-{label}-{nonce}"));
-    fs::create_dir_all(&dir).expect("create tempdir");
-    dir
 }
 
 fn minimal_result_json() -> &'static str {

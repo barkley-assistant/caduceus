@@ -12,9 +12,16 @@
 //! * The supervisor protocol is versioned and length-bounded.
 //! * The hidden command never appears in `--help`.
 
+use caduceus::config::Config;
+use caduceus::issue::IssueKey;
+use caduceus::worker_supervisor::{
+    clear_heartbeat, encode_frame, open_transcript, read_heartbeat, write_heartbeat, ControlFrame,
+    WorkerRunPaths, PROTOCOL_VERSION,
+};
 #[path = "../fixtures/mod.rs"]
 mod fixtures;
 
+use fixtures::tempdir;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
@@ -23,24 +30,6 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
-
-use caduceus::config::Config;
-use caduceus::issue::IssueKey;
-use caduceus::worker_supervisor::{
-    clear_heartbeat, encode_frame, open_transcript, read_heartbeat, write_heartbeat, ControlFrame,
-    WorkerRunPaths, PROTOCOL_VERSION,
-};
-
-fn tempdir(label: &str) -> PathBuf {
-    let mut dir = std::env::temp_dir();
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    dir.push(format!("caduceus-supervisor-test-{label}-{nonce}"));
-    fs::create_dir_all(&dir).expect("create tempdir");
-    dir
-}
 
 fn write_script(path: &PathBuf, body: &str) {
     fs::write(path, body).expect("write script");

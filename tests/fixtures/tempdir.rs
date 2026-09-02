@@ -7,6 +7,7 @@
 //! collides on the coarse-clock macOS runner (~1 us resolution): two
 //! parallel tests observe the same nanosecond, produce the same path,
 //! and race on the same directory (proven torn git trees in PR #254).
+#![allow(dead_code)] // not every test binary that includes fixtures uses both fns
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
