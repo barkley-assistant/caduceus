@@ -3,12 +3,6 @@
 //! quarantine path, the rate-limit observer merge semantics, and
 //! diagnostic coalescing.
 
-use std::fs::{self, OpenOptions};
-use std::io::Write;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::thread;
-
 use chrono::{Duration, TimeZone, Utc};
 
 use caduceus::error::CaduceusError;
@@ -17,17 +11,15 @@ use caduceus::meta::{
     append_diagnostic, load, save, MetaStore, RateLimitObservation, RateLimitObserver, StateMeta,
     TickOutcome, META_VERSION,
 };
+#[path = "../fixtures/mod.rs"]
+mod fixtures;
 
-fn tempdir(label: &str) -> PathBuf {
-    let mut dir = std::env::temp_dir();
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    dir.push(format!("caduceus-meta-test-{label}-{nonce}"));
-    fs::create_dir_all(&dir).expect("create tempdir");
-    dir
-}
+use fixtures::tempdir;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::thread;
 
 fn sample_key() -> IssueKey {
     IssueKey {

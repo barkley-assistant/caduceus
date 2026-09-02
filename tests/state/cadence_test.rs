@@ -8,22 +8,13 @@
 //!   early second tick is recorded as a `Cadence` outcome and
 //!   writes no HTTP traffic on the second invocation.
 
-use std::path::PathBuf;
-
 use caduceus::config::Config;
 use caduceus::meta::{CadenceDecision, CadenceGate, TickOutcome};
 use chrono::{Duration, Utc};
+#[path = "../fixtures/mod.rs"]
+mod fixtures;
 
-fn tempdir(label: &str) -> PathBuf {
-    let mut dir = std::env::temp_dir();
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    dir.push(format!("caduceus-cadence-test-{label}-{nonce}"));
-    std::fs::create_dir_all(&dir).expect("create tempdir");
-    dir
-}
+use fixtures::tempdir;
 
 // Cadence across two process-equivalent clients
 

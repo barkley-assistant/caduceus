@@ -1,26 +1,17 @@
 //! Unit-level tests for the `migrate-state --to-sqlite` path.
 
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::thread;
-
 use caduceus::migrate_to_sqlite::{migrate_to_sqlite, LockPolicy, SqliteMigrationOutcome};
 use caduceus::queue::DaemonLock;
 use caduceus::queue::STATE_FILENAME;
 use caduceus::store;
 use rusqlite::params;
+#[path = "../fixtures/mod.rs"]
+mod fixtures;
 
-fn tempdir(label: &str) -> PathBuf {
-    let mut dir = std::env::temp_dir();
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    dir.push(format!("caduceus-migrate-test-{label}-{nonce}"));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).expect("create tempdir");
-    dir
-}
+use fixtures::tempdir;
+use std::fs;
+use std::path::Path;
+use std::thread;
 
 #[test]
 fn migrate_with_acquire_rejects_concurrent_daemon_lock() {

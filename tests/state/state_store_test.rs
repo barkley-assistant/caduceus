@@ -16,13 +16,6 @@
 // green without weakening any assertion.
 #![allow(unused_variables, unused_imports, clippy::unnecessary_min_or_max)]
 
-use std::collections::BTreeMap;
-use std::fs::{self, OpenOptions};
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Barrier};
-use std::thread;
-
 use chrono::Utc;
 
 use caduceus::error::CaduceusError;
@@ -31,17 +24,16 @@ use caduceus::queue::{
     parse_queue_state, serialize_queue_state, ClaimToken, EnqueueOutcome, FinalizationCheckpoint,
     FinalizationStage, Phase, QueueEntry, QueueState, StateStore, TicketType, QUEUE_FILE_VERSION,
 };
+#[path = "../fixtures/mod.rs"]
+mod fixtures;
 
-fn tempdir(label: &str) -> PathBuf {
-    let mut dir = std::env::temp_dir();
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    dir.push(format!("caduceus-state-test-{label}-{nonce}"));
-    fs::create_dir_all(&dir).expect("create tempdir");
-    dir
-}
+use fixtures::tempdir;
+use std::collections::BTreeMap;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::path::Path;
+use std::sync::{Arc, Barrier};
+use std::thread;
 
 fn key(owner: &str, repo: &str, number: u64) -> IssueKey {
     IssueKey {

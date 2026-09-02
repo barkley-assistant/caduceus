@@ -3,23 +3,14 @@
 //! without mutating the host process environment beyond the
 //! ``CADUCEUS_DRY_RUN`` variable (serialised under ``ENV_LOCK``).
 
-use std::path::PathBuf;
+use caduceus::config::Config;
+#[path = "../fixtures/mod.rs"]
+mod fixtures;
+
+use fixtures::tempdir;
 use std::sync::Mutex;
 
-use caduceus::config::Config;
-
 static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-fn tempdir(label: &str) -> PathBuf {
-    let mut dir = std::env::temp_dir();
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    dir.push(format!("caduceus-resolution-test-{label}-{nonce}"));
-    std::fs::create_dir_all(&dir).expect("create tempdir");
-    dir
-}
 
 fn write(path: &std::path::Path, body: &str) {
     if let Some(parent) = path.parent() {

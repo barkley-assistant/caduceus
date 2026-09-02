@@ -2,27 +2,19 @@
 //! `PATH` (built explicitly so the host's real `/usr/bin` cannot
 //! accidentally satisfy a check).
 
-use std::path::{Path, PathBuf};
-use std::sync::Mutex;
-
 use caduceus::config::Config;
 use caduceus::validate::{
     check_bridge_readable, first_unwritable_parent, is_executable_file, preflight,
     process_groups_supported, resolve_executable, which_in, CheckOutcome,
 };
+#[path = "../fixtures/mod.rs"]
+mod fixtures;
+
+use fixtures::tempdir;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-fn tempdir(label: &str) -> PathBuf {
-    let mut dir = std::env::temp_dir();
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    dir.push(format!("caduceus-validate-test-{label}-{nonce}"));
-    std::fs::create_dir_all(&dir).expect("create tempdir");
-    dir
-}
 
 fn write_executable(path: &Path, body: &str) {
     std::fs::write(path, body).expect("write executable body");

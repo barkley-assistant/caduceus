@@ -18,11 +18,6 @@
 
 #![allow(unused_variables, unused_imports)]
 
-use std::collections::BTreeMap;
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-
 use chrono::Utc;
 
 use caduceus::queue::{
@@ -30,17 +25,14 @@ use caduceus::queue::{
     TicketType, QUEUE_FILE_VERSION,
 };
 use caduceus::{IssueKey, StateStore as _};
+#[path = "../fixtures/mod.rs"]
+mod fixtures;
 
-fn tempdir(label: &str) -> PathBuf {
-    let mut dir = std::env::temp_dir();
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    dir.push(format!("caduceus-queue-reset-test-{label}-{nonce}"));
-    fs::create_dir_all(&dir).expect("create tempdir");
-    dir
-}
+use fixtures::tempdir;
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::Path;
+use std::process::{Command, Stdio};
 
 fn key(owner: &str, repo: &str, number: u64) -> IssueKey {
     IssueKey {

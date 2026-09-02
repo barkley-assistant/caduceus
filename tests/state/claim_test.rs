@@ -11,13 +11,6 @@
 
 #![allow(unused_variables, unused_imports, clippy::unnecessary_min_or_max)]
 
-use std::collections::BTreeMap;
-use std::fs;
-use std::path::PathBuf;
-use std::sync::{Arc, Barrier};
-use std::thread;
-use std::time::Duration;
-
 use chrono::Utc;
 
 use caduceus::queue::{
@@ -25,17 +18,16 @@ use caduceus::queue::{
     CLAIM_FILE_VERSION, QUEUE_FILE_VERSION,
 };
 use caduceus::IssueKey;
+#[path = "../fixtures/mod.rs"]
+mod fixtures;
 
-fn tempdir(label: &str) -> PathBuf {
-    let mut dir = std::env::temp_dir();
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    dir.push(format!("caduceus-claim-test-{label}-{nonce}"));
-    fs::create_dir_all(&dir).expect("create tempdir");
-    dir
-}
+use fixtures::tempdir;
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::PathBuf;
+use std::sync::{Arc, Barrier};
+use std::thread;
+use std::time::Duration;
 
 fn key(owner: &str, repo: &str, number: u64) -> IssueKey {
     IssueKey {

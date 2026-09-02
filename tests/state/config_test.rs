@@ -4,12 +4,15 @@
 //! env-aware resolution chain is the responsibility of Task 1.3 —
 //! end of the loader.
 
-use std::path::Path;
-
 use caduceus::config::{
     expand_leading_tilde, is_valid_repo_slug, Config, LoadContext, RawConfig, RawEnv,
     DEFAULT_API_BASE, DEFAULT_TICKET_LABEL_CODE, DEFAULT_TICKET_LABEL_INVESTIGATION,
 };
+#[path = "../fixtures/mod.rs"]
+mod fixtures;
+
+use fixtures::tempdir;
+use std::path::Path;
 
 fn ctx(root: &Path) -> LoadContext {
     LoadContext {
@@ -806,14 +809,3 @@ fn discovery_max_pages_zero_rejected() {
 }
 
 // Test helpers
-
-fn tempdir(label: &str) -> std::path::PathBuf {
-    let mut dir = std::env::temp_dir();
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    dir.push(format!("caduceus-config-test-{label}-{nonce}"));
-    std::fs::create_dir_all(&dir).expect("create tempdir");
-    dir
-}
