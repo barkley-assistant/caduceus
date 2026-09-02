@@ -13,12 +13,6 @@
 //! would — asserting exactly one commit, one branch, one PR, one
 //! comment.
 
-use std::collections::BTreeMap;
-use std::fs;
-use std::path::Path;
-use std::process::Command;
-use std::sync::Arc;
-
 use caduceus::config::{Config, LoadContext, RawConfig};
 use caduceus::daemon::tick::resume::{resume_from_checkpoint, ResumeAction};
 use caduceus::finalize::voice::generate_operation_id;
@@ -40,24 +34,19 @@ use serde_json::json;
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, ResponseTemplate};
 
+use fixtures::MockGitHub;
 #[path = "../fixtures/mod.rs"]
 mod fixtures;
 
-use fixtures::MockGitHub;
+use fixtures::tempdir;
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::Path;
+use std::process::Command;
+use std::sync::Arc;
 
 const TEST_TOKEN: &str = "ghp_testtoken_value_xyz";
 const EXPECTED_PR_NUMBER: u64 = 4242;
-
-fn tempdir(label: &str) -> std::path::PathBuf {
-    let mut dir = std::env::temp_dir();
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    dir.push(format!("caduceus-code-pre-pr-{label}-{nonce}"));
-    std::fs::create_dir_all(&dir).expect("create tempdir");
-    dir
-}
 
 fn empty_config(state_dir: &Path) -> Config {
     let raw = RawConfig {
