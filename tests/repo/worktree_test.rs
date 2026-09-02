@@ -2,24 +2,16 @@
 //!
 //! Tests cover: lifecycle, failure reuse refused, cleanup.
 
-use std::path::Path;
-use std::process::Command;
-
 use caduceus::config::Config;
 use caduceus::repo::BareMirror;
 use caduceus::worktree::GitRunner;
 use caduceus::RepoWorktree;
+#[path = "../fixtures/mod.rs"]
+mod fixtures;
 
-fn tempdir(label: &str) -> std::path::PathBuf {
-    let mut dir = std::env::temp_dir();
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    dir.push(format!("caduceus-worktree-test-{label}-{nonce}"));
-    std::fs::create_dir_all(&dir).expect("create tempdir");
-    dir
-}
+use fixtures::tempdir;
+use std::path::Path;
+use std::process::Command;
 
 fn run_command(cmd: &mut Command) {
     let output = cmd.output().expect("spawn command");

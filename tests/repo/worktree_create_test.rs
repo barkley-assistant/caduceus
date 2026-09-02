@@ -23,16 +23,19 @@
 
 #![allow(unused_variables)]
 
-use std::fs;
-use std::panic::AssertUnwindSafe;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-
 use tokio::runtime::Runtime;
 
 use caduceus::config::Config;
 use caduceus::issue::IssueKey;
 use caduceus::worktree::{create as create_worktree, GitRunner, RepositoryInfo, Worktree};
+#[path = "../fixtures/mod.rs"]
+mod fixtures;
+
+use fixtures::tempdir;
+use std::fs;
+use std::panic::AssertUnwindSafe;
+use std::path::Path;
+use std::process::Command;
 
 /// Serialises the two .lock-env-var tests so the global
 /// `_CADUCEUS_TEST_PANIC_IN_CREATE_LOCKED` flag cannot leak between them.
@@ -40,17 +43,6 @@ static LOCK_TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Unique tempdir per call so parallel test invocations don't
 /// trample each other.
-fn tempdir(label: &str) -> PathBuf {
-    let mut dir = std::env::temp_dir();
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    dir.push(format!("caduceus-worktree-create-{label}-{nonce}"));
-    fs::create_dir_all(&dir).expect("create tempdir");
-    dir
-}
-
 /// Build a config rooted at *root*.
 fn config_for(root: &Path, api_base: &str) -> Config {
     let mut cfg = Config::test_defaults(root);

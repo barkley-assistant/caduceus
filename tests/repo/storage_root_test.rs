@@ -1,16 +1,14 @@
 //! Integration tests for `repo::Storage` — symlink rejection, mode validation.
 
 use caduceus::repo::Storage;
+#[path = "../fixtures/mod.rs"]
+mod fixtures;
+
+use fixtures::tempdir;
 
 #[test]
 fn symlink_storage_root_rejected() {
-    let tmp = std::env::temp_dir().join(format!(
-        "caduceus-storage-test-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let tmp = tempdir("storage");
     let _ = std::fs::remove_dir_all(&tmp);
     std::fs::create_dir_all(&tmp).unwrap();
     let real_dir = tmp.join("real");
@@ -33,13 +31,7 @@ fn symlink_storage_root_rejected() {
 
 #[test]
 fn valid_directory_accepted() {
-    let tmp = std::env::temp_dir().join(format!(
-        "caduceus-storage-accept-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let tmp = tempdir("storage-accept");
     let _ = std::fs::remove_dir_all(&tmp);
     std::fs::create_dir_all(&tmp).unwrap();
 
@@ -55,13 +47,7 @@ fn valid_directory_accepted() {
 fn ensure_dirs_creates_subdirectories() {
     use std::os::unix::fs::PermissionsExt;
 
-    let tmp = std::env::temp_dir().join(format!(
-        "caduceus-ensure-dirs-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let tmp = tempdir("ensure-dirs");
     let _ = std::fs::remove_dir_all(&tmp);
 
     let storage = Storage::new(tmp.clone());
@@ -97,13 +83,7 @@ fn ensure_dirs_creates_subdirectories() {
 
 #[test]
 fn ensure_dirs_is_idempotent() {
-    let tmp = std::env::temp_dir().join(format!(
-        "caduceus-idempotent-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let tmp = tempdir("idempotent");
     let _ = std::fs::remove_dir_all(&tmp);
 
     let storage = Storage::new(tmp.clone());

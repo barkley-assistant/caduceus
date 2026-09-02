@@ -7,27 +7,19 @@
 //! - Page-cap error (>20 pages)
 //! - Rate-limit on page two
 
-use std::path::{Path, PathBuf};
-
 use caduceus::config::Config;
 use caduceus::error::CaduceusError;
 use caduceus::github::{Client, HttpCache};
 use caduceus::poll::{discover_watched_repos, next_url_from_link_header, MAX_PAGES_PER_ENDPOINT};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
+#[path = "../fixtures/mod.rs"]
+mod fixtures;
+
+use fixtures::tempdir;
+use std::path::Path;
 
 const TEST_TOKEN: &str = "ghp_testtoken_value_xyz";
-
-fn tempdir(label: &str) -> PathBuf {
-    let mut dir = std::env::temp_dir();
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    dir.push(format!("caduceus-repo-poll-test-{label}-{nonce}"));
-    std::fs::create_dir_all(&dir).expect("create tempdir");
-    dir
-}
 
 fn configured_client(state_dir: &Path, watched: &[&str]) -> (Client, Config) {
     let cfg = {
