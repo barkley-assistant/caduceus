@@ -3,20 +3,16 @@
 //!
 //! These tests verify that secret credentials and resolved
 //! `pass_env` values never leak through argv, log output, `Debug`
-//! output, or signal handling.
-//!
-//! Transport tests use the daemon-private env-file transport
-//! (`OciEnvFile`) and the pure-function `redact`/`scrub` helpers;
-//! engine-dependent scenarios are gated behind
-//! `CADUCEUS_RUN_ISOLATION_TESTS`.
+//! output, or the environment-file transport. The env-file
+//! transport and the pure-function `redact`/`scrub` helpers are
+//! exercised directly; the live engine env contract lives in the
+//! gated suite (`tests/integration/oci_env_live_test.rs`).
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use caduceus::executor::oci_env_file::OciEnvFile;
 use caduceus::executor::sandbox_spec::{resolve_with_env, SandboxSpec};
-use caduceus::executor::ExecutorSpec;
-use caduceus::github::issue::IssueKey;
 use caduceus::infra::config::Config;
 use caduceus::infra::logging;
 
@@ -25,22 +21,6 @@ mod support;
 fn test_cfg() -> Config {
     let tmp = tempfile::tempdir().expect("tempdir");
     Config::test_defaults(tmp.path())
-}
-
-fn test_spec(run_id: &str) -> ExecutorSpec {
-    ExecutorSpec {
-        self_exe: PathBuf::from("/usr/bin/caduceus"),
-        issue: IssueKey::parse("owner/repo#1").expect("valid key"),
-        worktree: PathBuf::from("/tmp/worktree"),
-        run_id: run_id.to_string(),
-        context_json: r#"{"x":1}"#.to_string(),
-        worker_command: vec!["python3".to_string(), "bridge.py".to_string()],
-        cancellation: tokio_util::sync::CancellationToken::new(),
-        issue_title: "title".to_string(),
-        issue_body: "body".to_string(),
-        labels: Vec::new(),
-        branch_name: "automation/issue-1".to_string(),
-    }
 }
 
 // leak_via_argv — resolved env values must never appear in argv; the
@@ -195,18 +175,45 @@ fn leak_via_log() {
     }
 }
 
-// leak_via_signal — signal delivery must not expose secret values
+// missing_pass_env_aborts_pre_create — an approved-but-absent
+// pass_env name must fail resolution with a typed error BEFORE any
+// `docker create` (I9 frozen semantics: never warn-and-skip).
+//
+// The daemon snapshot is authoritative: a config that requests
+// `pass_env = ["CADUCEUS_LIVE_PASS_ENV_CANARY"]` but whose daemon
+// environment does not contain that name must abort pre-create.
 
 #[test]
-#[cfg_attr(not(env = "CADUCEUS_RUN_ISOLATION_TESTS"), ignore)]
-fn leak_via_signal() {
-    let _cfg = test_cfg();
-    let spec = test_spec("leak-via-signal");
+fn missing_pass_env_aborts_pre_create() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut cfg = Config::test_defaults(tmp.path());
+    cfg.sandbox
+        .as_mut()
+        .expect("sandbox")
+        .pass_env
+        .push("CADUCEUS_LIVE_PASS_ENV_CANARY".to_string());
+    let worktree = cfg
+        .workdir_base
+        .join("owner")
+        .join("repo")
+        .join("missing-pass-env");
+    let runtime = support::runtime_facts(&cfg, "missing-pass-env", &worktree);
+    // The daemon snapshot does NOT carry the requested name.
+    let parent: BTreeMap<std::ffi::OsString, std::ffi::OsString> = BTreeMap::new();
 
-    // Verify the spec doesn't contain secret values in its exposed fields
-    let spec_debug = format!("{spec:?}");
+    let err = resolve_with_env(
+        cfg.sandbox(),
+        &runtime,
+        &support::executor_spec(&runtime),
+        &parent,
+    )
+    .expect_err("missing pass_env name must abort pre-create");
+
+    let rendered = format!("{err:?}");
     assert!(
-        !spec_debug.contains("ghp_secret"),
-        "spec Debug must not contain secret values: {spec_debug}"
+        rendered.contains("CADUCEUS_LIVE_PASS_ENV_CANARY"),
+        "the refusal must name the missing variable: {rendered}"
     );
+    // The refusal is a typed error, not a silent success.
+    assert!(matches!(err, caduceus::CaduceusError::Config(_)));
 }

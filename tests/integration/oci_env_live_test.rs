@@ -46,9 +46,18 @@ fn engine_binary(engine: SandboxEngine) -> String {
 /// CI runners and exists in most runners locally; Docker is preferred
 /// over Podman for the Nondeterministic Nondeterministic image layer
 /// because Docker layering exists in most runners). Returns `None`
-/// when neither is usable — the caller skips with a notice.
+/// when neither is usable — the caller skips with a notice. The
+/// `CADUCEUS_LIVE_TEST_ENGINE` env var (docker|podman) forces a
+/// specific engine so the nightly Podman leg runs against Podman even
+/// on runners that also have Docker.
 fn detect_engine() -> Option<SandboxEngine> {
-    for engine in [SandboxEngine::Docker, SandboxEngine::Podman] {
+    let forced = std::env::var("CADUCEUS_LIVE_TEST_ENGINE").ok();
+    let order: &[SandboxEngine] = match forced.as_deref() {
+        Some("podman") => &[SandboxEngine::Podman],
+        Some("docker") => &[SandboxEngine::Docker],
+        _ => &[SandboxEngine::Docker, SandboxEngine::Podman],
+    };
+    for &engine in order {
         let out = Command::new(engine_binary(engine))
             .args(["info", "--format", "{{.ServerVersion}}"])
             .output();

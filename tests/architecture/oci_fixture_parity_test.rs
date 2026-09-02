@@ -30,11 +30,15 @@ const FIXTURE_IMAGE_DIR: &str = "tests/fixtures/oci-fixture-image";
 const CADUCEUS_ENV_SCRIPT: &str = "plugin-assets/worker-reference-image/scripts/caduceus-env.sh";
 
 /// The only test files allowed to reference the reference image: the
-/// new smoke, parity, and independence files.
+/// new smoke, parity, independence files, and the live OCI
+/// certification suite (issue #252), whose whole purpose is certifying
+/// the real reference image (and any digest-pinned image) against the
+/// sandbox boundaries.
 const ALLOWED_REFERENCE_REFERENCING_TESTS: &[&str] = &[
     "tests/oci_reference_image_smoke_test.rs",
     "tests/architecture/oci_fixture_parity_test.rs",
     "tests/architecture/oci_independence_test.rs",
+    "tests/executor/oci_isolation_live_test.rs",
 ];
 
 fn repo_root() -> PathBuf {
