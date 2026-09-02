@@ -44,6 +44,16 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
   This is a host-level mitigation — `/workspace` remains a host bind mount
   with no per-container byte quota.
 
+### Fixed
+
+- **Status commands in non-Hermes shells.** `hermes caduceus status` (and
+  every adapter subcommand shelling out to the daemon binary) no longer
+  fails with `no configuration source found` in shells that do not export
+  `HERMES_HOME`. The adapter now injects its computed default into the
+  child environment only when the variable is unset; explicit overrides
+  (multi-profile hosts) are preserved and a deliberately-empty value
+  still reaches the binary's guard. Closes #263.
+
 ## [1.0.0] - 2026-08-08
 
 ### Added
