@@ -12,10 +12,14 @@ use caduceus::queue::{
 use caduceus::worktree::{create as create_worktree, GitRunner, RepositoryInfo};
 use caduceus::{CaduceusError, IssueKey};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
+use tempfile::TempDir;
+#[path = "../fixtures/mod.rs"]
+mod fixtures;
+
+use fixtures::tempdir;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
-use tempfile::TempDir;
 
 fn cfg() -> Config {
     Config::test_defaults(std::path::Path::new("/tmp"))
@@ -729,14 +733,7 @@ fn finish_needs_attention_emits_stable_terminal_block_event() {
     // `caduceus.terminal_block` callsite is cached as never-enabled and
     // this test's event is silently dropped before reaching its capture
     // subscriber (empty capture under `--test-threads>=2`).
-    let root = std::env::temp_dir().join(format!(
-        "caduceus-167-capture-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&root).expect("create tempdir");
+    let root = tempdir("167-capture");
     let log_path = root.join("capture.json");
     let file = std::fs::OpenOptions::new()
         .create(true)

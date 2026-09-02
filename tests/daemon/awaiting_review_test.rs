@@ -4,19 +4,6 @@
 //! causes `enqueue_summaries` to propagate that error rather than
 //! silently swallowing it.
 
-use std::path::PathBuf;
-
-fn tempdir(label: &str) -> PathBuf {
-    let mut dir = std::env::temp_dir();
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    dir.push(format!("caduceus-awaiting-review-test-{label}-{nonce}"));
-    std::fs::create_dir_all(&dir).expect("create tempdir");
-    dir
-}
-
 #[tokio::test]
 async fn enqueue_summaries_propagates_state_error() {
     let state_dir = tempdir("enqueue-error");
@@ -67,12 +54,14 @@ use caduceus::state::meta::TickOutcome;
 use caduceus::state::queue::{FinalizationCheckpoint, FinalizationStage};
 use caduceus::{queue::TicketType, CaduceusError};
 use serde_json::json;
-use std::sync::Arc;
 
+use fixtures::MockGitHub;
 #[path = "../fixtures/mod.rs"]
 mod fixtures;
 
-use fixtures::MockGitHub;
+use fixtures::tempdir;
+use std::path::PathBuf;
+use std::sync::Arc;
 
 #[test]
 fn exit_code_for_outcome_table() {
