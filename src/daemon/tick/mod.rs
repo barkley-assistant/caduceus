@@ -65,6 +65,13 @@ use tokio::task::JoinSet;
 /// rate-limited / cancelled outcomes; 1 for configuration,
 /// corruption, invariant, or unrecovered pipeline failures.
 pub fn run() -> CaduceusResult<u8> {
+    // Block SIGINT/SIGTERM before any config / logging work so a
+    // signal delivered during startup pends instead of hitting the
+    // default disposition and killing the process (issue #270).
+    // Idempotent; `run_blocking` blocks again and installs the
+    // handlers / restores the mask.
+    signals::block_idle_signals()
+        .map_err(|err| CaduceusError::Other(format!("block idle signals: {err}")))?;
     let cfg = Config::load()?;
     let log_path = cfg.log_path.clone();
     let _log_guard = logging::init(&log_path)?;
@@ -80,6 +87,19 @@ pub fn run() -> CaduceusResult<u8> {
 /// cancels the in-flight work and the orchestrator returns
 /// `TickOutcome::Cancelled` / exit 0.
 pub fn run_blocking(cfg: Config) -> CaduceusResult<TickOutcome> {
+    // Block SIGINT/SIGTERM before the runtime spawns its worker
+    // threads (issue #270). Every worker thread inherits the blocked
+    // mask and restores its own mask via the `on_thread_start` hook
+    // below once `install_idle_handlers` has installed the tokio
+    // handlers; the orchestrator thread restores its mask right after
+    // the eager registration inside `block_on`. This closes the
+    // pre-registration default-disposition window (a blocked signal
+    // pends and is delivered to the installed handler on unblock,
+    // never to the default disposition) and guarantees handler
+    // installation precedes the tick arm. Idempotent with the block in
+    // [`run`] / `main`.
+    signals::block_idle_signals()
+        .map_err(|err| CaduceusError::Other(format!("block idle signals: {err}")))?;
     // A multi-threaded runtime is required so the sync finalize
     // helpers (commit / push / status) can drive their async git
     // operations via `tokio::task::block_in_place` + `Handle::block_on`.
@@ -89,6 +109,14 @@ pub fn run_blocking(cfg: Config) -> CaduceusResult<TickOutcome> {
     // `block_in_place`, not to per-tick concurrency.
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
+        .on_thread_start(|| {
+            // Workers inherit the blocked SIGINT/SIGTERM mask from the
+            // orchestrator thread. Wait for the tokio handlers, then
+            // restore this worker's mask so worker subprocesses never
+            // inherit a blocked SIGTERM (supervisor TERM-to-KILL
+            // contract).
+            crate::daemon::signals::unblock_worker_after_handlers_installed();
+        })
         .build()
         .map_err(|err| CaduceusError::Other(format!("build tokio runtime: {err}")))?;
     let cancellation = CancellationToken::new();
@@ -112,6 +140,22 @@ pub fn run_blocking(cfg: Config) -> CaduceusResult<TickOutcome> {
         ),
     );
     rt.block_on(async move {
+        // Wake the runtime workers even if registration fails or the
+        // closure panics, so `Runtime::drop` never deadlocks on them.
+        let _wake_workers = signals::WakeWorkersGuard;
+        // Eagerly register both signal streams BEFORE the select! arms
+        // are polled, so the tick arm is never polled with handlers
+        // uninstalled. Registration is synchronous (tokio
+        // `signal_enable` → `signal_hook_registry::register`), so once
+        // this returns the OS-level handlers exist.
+        let (int_stream, term_stream) = signals::install_idle_handlers()
+            .map_err(|err| CaduceusError::Other(format!("install idle signal handlers: {err}")))?;
+        // Restore this thread's mask immediately after registration —
+        // a signal that was pending during the blocked window is now
+        // delivered to the installed handler (graceful cancel), and
+        // the second-signal escalation path stays fully unblocked.
+        signals::unblock_idle_signals()
+            .map_err(|err| CaduceusError::Other(format!("unblock idle signals: {err}")))?;
         tokio::select! {
         outcome = run_with_config(cfg, Arc::clone(&pool), cancellation.clone()) => outcome,
         // The signal listener's first signal drains the worker
@@ -120,7 +164,7 @@ pub fn run_blocking(cfg: Config) -> CaduceusResult<TickOutcome> {
         // The listener itself continues to await a possible
         // second signal so the orchestrator can escalate to
         // immediate kill.
-        res = signals::listen(pool, cancellation.clone()) => {
+        res = signals::listen_on(pool, cancellation.clone(), int_stream, term_stream) => {
         match res {
         Ok(()) => Ok(TickOutcome::Cancelled),
         Err(err) => Err(CaduceusError::Other(format!(

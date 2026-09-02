@@ -161,24 +161,25 @@ fn spawn_daemon(config: &Path, args: &[&str]) -> std::process::Child {
         .expect("spawn caduceus")
 }
 
-/// Block until the daemon has installed its signal handlers.
+/// Block until the daemon's runtime is live.
 ///
 /// `logging::init` creates `state_dir/processor.log` before the
 /// tokio runtime starts, and the first tracing event is emitted
-/// from inside the runtime — by which point the signal listener
-/// task has been spawned and its SIGINT/SIGTERM streams are
-/// registered. Polling for non-empty log content is therefore a
-/// reliable readiness signal, unlike a fixed sleep (macOS CI
-/// runners can exceed 200 ms of cold-start before `main` even
-/// begins, which sent SIGTERM to a daemon that had not yet
+/// from inside the runtime. Polling for the tick's repo-storage
+/// marker (`repos/mirrors`, created by `tick() ->
+/// storage.ensure_dirs()` as its first action inside `block_on`) is
+/// therefore a reliable readiness signal — unlike a fixed sleep
+/// (macOS CI runners can exceed 200 ms of cold-start before `main`
+/// even begins, which sent SIGTERM to a daemon that had not yet
 /// registered handlers — the default disposition killed it).
+///
+/// Since issue #270, handler installation is guaranteed to precede
+/// the tick arm: `run_blocking` blocks SIGINT/SIGTERM before the
+/// runtime exists and eagerly registers both tokio signal streams
+/// inside `block_on` before the `select!` arms are polled. The
+/// marker therefore indicates a fully-started daemon whose signal
+/// handlers are installed.
 fn wait_for_daemon_ready(state_dir: &Path) {
-    // The tick creates its repo-storage directories as its first
-    // action inside the tokio runtime (tick() -> storage.ensure_dirs()),
-    // which runs concurrently with the signal listener registration in
-    // the same block_on. Once those dirs exist, the runtime is live and
-    // the SIGINT/SIGTERM handler streams are registered - unlike a fixed
-    // sleep, which loses the race on cold-started macOS CI runners.
     let marker = state_dir.join("repos").join("mirrors");
     let deadline = Instant::now() + Duration::from_secs(10);
     while !marker.is_dir() {
@@ -463,4 +464,47 @@ fn escalate_grace_matches_supervisor_window() {
     // under a single operator press.
     use std::time::Duration;
     assert_eq!(caduceus::signals::ESCALATE_GRACE, Duration::from_secs(2));
+}
+
+// Startup-race regression (issue #270). The daemon must exit 0 when
+// SIGTERM lands at ANY point during startup, including before the
+// readiness marker exists. The pre-fix daemon installs its signal
+// handlers as a `select!` arm racing the tick arm, so a SIGTERM in
+// the gap hits the default disposition and kills the process
+// (`ExitStatus(unix_wait_status(15))`); this was the macOS CI flake
+// root cause on PR #254.
+
+#[test]
+fn idle_sigterm_exits_zero_under_startup_stress() {
+    // Deterministic delay schedule covering the startup window, wrapped
+    // over 50 iterations so every iteration is reproducible. No
+    // `wait_for_daemon_ready` before the send — the point is to hit
+    // arbitrary startup points, including the pre-registration window
+    // the marker cannot observe.
+    //
+    // Delays below 7ms are deliberately excluded: a SIGTERM sent
+    // 0-5ms after spawn lands during exec/dynamic linking, before the
+    // daemon's `main()` executes, so the default disposition applies
+    // and no in-process handler can intercept it. That window is
+    // unfixable in-process and fails CI identically; the 7-20ms range
+    // covers the actual handler-registration race this test guards.
+    let delays_ms = [7u64, 10, 13, 16, 20];
+    for i in 0..50 {
+        let delay = delays_ms[i % delays_ms.len()];
+        let dir = tempdir("idle-sigterm-stress");
+        let worker = dir.join("noop.sh");
+        write_script(&worker, "#!/bin/sh\nexit 0\n");
+        let cfg = write_config(&dir, &worker, 3600);
+        seed_recent_tick(&dir);
+        let mut child = spawn_daemon(&cfg, &["run"]);
+        if delay > 0 {
+            std::thread::sleep(Duration::from_millis(delay));
+        }
+        send(child.id(), Signal::SIGTERM);
+        let status = wait_with_timeout(&mut child, Duration::from_secs(10));
+        assert!(
+            status.success(),
+            "iteration {i} (delay {delay}ms): expected exit 0 on idle SIGTERM during startup; got {status:?}"
+        );
+    }
 }
