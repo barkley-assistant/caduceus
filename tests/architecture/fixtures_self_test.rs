@@ -16,16 +16,6 @@
 
 #![allow(clippy::needless_return)]
 
-#[path = "../fixtures/mod.rs"]
-mod fixtures;
-
-use std::fs;
-use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
-#[cfg_attr(not(target_os = "linux"), allow(unused_imports))]
-use std::time::{Duration, Instant};
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use serde_json::json;
 
 #[cfg(target_os = "linux")]
@@ -649,38 +639,36 @@ fn ac04_release_binary_runs_with_no_user_secrets() {
 // Helpers
 // -----------------------------------------------------------------------
 
-fn tempdir(label: &str) -> PathBuf {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let mut dir = std::env::temp_dir();
-    dir.push(format!("caduceus-fixture-self-test-{label}-{nonce}"));
-    std::fs::create_dir_all(&dir).expect("create tempdir");
-    dir
-}
-
 // -----------------------------------------------------------------------
 // Regression: shared tempdir uniqueness (issue #269)
 // -----------------------------------------------------------------------
 
+#[path = "../fixtures/mod.rs"]
+mod fixtures;
+
+use fixtures::tempdir;
 use std::collections::HashSet;
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 use std::thread;
+use std::time::{Duration, Instant};
 
 #[test]
 fn shared_tempdir_paths_are_distinct_under_parallel_same_label() {
     // Regression for issue #269: the pre-fix helpers derived
-    // uniqueness from SystemTime::as_nanos(), which collides on the
-    // coarse-clock macOS runner (~1 us) under parallel threads.
+    // uniqueness from the wall clock (SystemTime nanoseconds), which
+    // collides on the coarse-clock macOS runner (~1 us) under
+    // parallel threads.
     // The shared helper uses pid + AtomicU64 counter, so N threads
     // x M calls with the SAME label must produce N*M distinct paths,
     // and every path must contain the pid and a counter (never a
     // bare nanosecond nonce).
     const THREADS: usize = 8;
     const PER_THREAD: usize = 100;
-    let collected: Arc<std::sync::Mutex<Vec<std::path::PathBuf>>> =
-        Arc::new(std::sync::Mutex::new(Vec::with_capacity(THREADS * PER_THREAD)));
+    let collected: Arc<std::sync::Mutex<Vec<std::path::PathBuf>>> = Arc::new(
+        std::sync::Mutex::new(Vec::with_capacity(THREADS * PER_THREAD)),
+    );
     let handles: Vec<_> = (0..THREADS)
         .map(|_| {
             let collected = Arc::clone(&collected);

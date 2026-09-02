@@ -6,26 +6,17 @@
 //! lock guard covers the migration I/O, then kills the child and
 //! verifies the exit signal semantics.
 
+use caduceus::queue::DaemonLock;
+#[path = "fixtures/mod.rs"]
+mod fixtures;
+
+use fixtures::tempdir;
 use std::fs;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
-
-use caduceus::queue::DaemonLock;
-
-fn tempdir(label: &str) -> PathBuf {
-    let mut dir = std::env::temp_dir();
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    dir.push(format!("caduceus-migrate-race-{label}-{nonce}"));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).expect("create tempdir");
-    dir
-}
 
 fn caduceus_binary() -> PathBuf {
     let mut exe = std::env::current_exe().expect("current exe");
