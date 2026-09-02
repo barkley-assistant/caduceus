@@ -19,9 +19,6 @@
 
 #![allow(unused_imports)]
 
-use std::path::{Path, PathBuf};
-use std::time::Duration;
-
 use caduceus::config::Config;
 use caduceus::error::CaduceusError;
 use caduceus::github::{
@@ -31,10 +28,13 @@ use caduceus::github::{
 use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Match, Mock, Request, ResponseTemplate};
 
+use fixtures::MockGitHub;
 #[path = "../fixtures/mod.rs"]
 mod fixtures;
 
-use fixtures::MockGitHub;
+use fixtures::tempdir;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// Custom matcher that requires the request to NOT carry the named
 /// header. Used to build stateful mocks that branch on header
@@ -50,17 +50,6 @@ impl Match for NoHeader {
 // Fixtures
 
 const TEST_TOKEN: &str = "ghp_testtoken_value_xyz";
-
-fn tempdir(label: &str) -> PathBuf {
-    let mut dir = std::env::temp_dir();
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    dir.push(format!("caduceus-http-client-test-{label}-{nonce}"));
-    std::fs::create_dir_all(&dir).expect("create tempdir");
-    dir
-}
 
 fn test_config(state_dir: &Path, api_base: &str, token: Option<&str>) -> Config {
     let mut cfg = Config::test_defaults(state_dir);

@@ -10,27 +10,19 @@
 
 #![allow(unused_variables)]
 
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-
 use caduceus::config::Config;
 use caduceus::issue::IssueKey;
 use caduceus::worktree::{create as create_worktree, GitRunner, RepositoryInfo, Worktree};
 use filetime::{set_file_mtime, FileTime};
+#[path = "../fixtures/mod.rs"]
+mod fixtures;
+
+use fixtures::tempdir;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 const HAPPY_RUN_ID: &str = "01H9Z3Y4G8W2J7N5K1QXV0F8P3";
-
-fn tempdir(label: &str) -> PathBuf {
-    let mut dir = std::env::temp_dir();
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    dir.push(format!("caduceus-worktree-retry-{label}-{nonce}"));
-    fs::create_dir_all(&dir).expect("create tempdir");
-    dir
-}
 
 fn config_for(root: &Path, api_base: &str) -> Config {
     let mut cfg = Config::test_defaults(root);

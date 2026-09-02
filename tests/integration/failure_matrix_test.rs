@@ -34,19 +34,10 @@
 
 #![allow(unused_imports, unused_variables)]
 
-use std::collections::BTreeMap;
-use std::fs;
-use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
-
 use chrono::Utc;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-#[path = "../fixtures/mod.rs"]
-mod fixtures;
 use fixtures::{LocalOrigin, MockGitHub};
 
 #[path = "../fixtures/failure-matrix-stubs/mod.rs"]
@@ -64,6 +55,16 @@ use caduceus::queue::{
     QUEUE_FILE_VERSION,
 };
 use caduceus::{CaduceusError, CircuitStore, FakeClock, IssueKey, Pool, StateStore};
+#[path = "../fixtures/mod.rs"]
+mod fixtures;
+
+use fixtures::tempdir;
+use std::collections::BTreeMap;
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------------
 // AC-10 — Re-export the canonical isolation escape tests.
@@ -94,17 +95,6 @@ fn require_daemon_binary() -> PathBuf {
 // ---------------------------------------------------------------------------
 // Fixture: tempdir helper.
 // ---------------------------------------------------------------------------
-
-fn tempdir(label: &str) -> PathBuf {
-    let mut dir = std::env::temp_dir();
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    dir.push(format!("caduceus-fm-{label}-{nonce}"));
-    fs::create_dir_all(&dir).expect("create tempdir");
-    dir
-}
 
 // ---------------------------------------------------------------------------
 // Fixture: WorkerScript.

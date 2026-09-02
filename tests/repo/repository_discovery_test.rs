@@ -23,33 +23,25 @@
 
 #![allow(unused_variables, unused_imports)]
 
-use std::ffi::OsStr;
-use std::fs;
-use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::Duration;
-
 use caduceus::config::Config;
 use caduceus::error::CaduceusError;
 use caduceus::issue::IssueKey;
 use caduceus::worktree::{
     find_main_clone, parse_origin, validate_origin_host, GitOutput, GitRunner, RepositoryInfo,
 };
+#[path = "../fixtures/mod.rs"]
+mod fixtures;
+
+use fixtures::tempdir;
+use std::ffi::OsStr;
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
+use std::process::Command;
+use std::time::Duration;
 
 /// Build a temporary directory with a unique name so parallel
 /// test invocations don't collide.
-fn tempdir(label: &str) -> PathBuf {
-    let mut dir = std::env::temp_dir();
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    dir.push(format!("caduceus-repo-discovery-{label}-{nonce}"));
-    fs::create_dir_all(&dir).expect("create tempdir");
-    dir
-}
-
 /// Default config rooted at *root*; the daemon's pre-flight
 /// checks aren't exercised here so we skip the worker command.
 fn config_for(root: &Path, api_base: &str) -> Config {

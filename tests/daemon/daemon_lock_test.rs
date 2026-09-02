@@ -14,25 +14,16 @@
 
 #![allow(unused_variables, unused_imports)]
 
+use caduceus::DaemonLock;
+#[path = "../fixtures/mod.rs"]
+mod fixtures;
+
+use fixtures::tempdir;
 use std::fs;
-use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::{Duration, Instant};
-
-use caduceus::DaemonLock;
-
-fn tempdir(label: &str) -> PathBuf {
-    let mut dir = std::env::temp_dir();
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    dir.push(format!("caduceus-daemon-lock-test-{label}-{nonce}"));
-    fs::create_dir_all(&dir).expect("create tempdir");
-    dir
-}
 
 // Single-process behaviour
 

@@ -29,6 +29,8 @@ mod github;
 mod process_tree;
 #[cfg(test)]
 mod release_binary;
+#[cfg(test)]
+mod tempdir;
 
 #[cfg(test)]
 #[allow(unused_imports)]
@@ -54,3 +56,6 @@ pub use process_tree::{assert_no_survivors, snapshot_subtree, ProcessTree};
 #[cfg(test)]
 #[allow(unused_imports)]
 pub use release_binary::{ReleaseBinary, RunSupervisorArgs};
+#[cfg(test)]
+#[allow(unused_imports)]
+pub use tempdir::{tempdir, tempdir_owned};

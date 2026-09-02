@@ -11,27 +11,19 @@
 //! * `Config::from_raw` rejects `discovery_max_pages = 0`.
 //! * `Config::test_defaults` sets `discovery_max_pages = 20`.
 
-use std::path::{Path, PathBuf};
-
 use caduceus::config::{
     Config, LoadContext, RawConfig, DEFAULT_DISCOVERY_MAX_PAGES, DEFAULT_TICKET_LABEL_CODE,
 };
 use caduceus::github::{Client, HttpCache};
 use wiremock::matchers::{method, path};
 use wiremock::{Match, Mock, Request, ResponseTemplate};
+#[path = "../fixtures/mod.rs"]
+mod fixtures;
+
+use fixtures::tempdir;
+use std::path::Path;
 
 // Helpers
-
-fn tempdir(label: &str) -> PathBuf {
-    let mut dir = std::env::temp_dir();
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    dir.push(format!("caduceus-pagination-test-{label}-{nonce}"));
-    std::fs::create_dir_all(&dir).expect("create tempdir");
-    dir
-}
 
 fn test_config(state_dir: &Path, api_base: &str, max_pages: u32) -> Config {
     let mut cfg = Config::test_defaults(state_dir);

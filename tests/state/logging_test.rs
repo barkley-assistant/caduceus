@@ -13,23 +13,15 @@
 //!   `tracing::subscriber::with_default` and never touches the
 //!   global default.
 
+use caduceus::logging::{build_test_subscriber, init, init_for_test, is_initialised, redact};
+#[path = "../fixtures/mod.rs"]
+mod fixtures;
+
+use fixtures::tempdir;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use caduceus::logging::{build_test_subscriber, init, init_for_test, is_initialised, redact};
-
 static INIT_LOCK: Mutex<()> = Mutex::new(());
-
-fn tempdir(label: &str) -> PathBuf {
-    let mut dir = std::env::temp_dir();
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    dir.push(format!("caduceus-logging-test-{label}-{nonce}"));
-    std::fs::create_dir_all(&dir).expect("create tempdir");
-    dir
-}
 
 fn read_file(path: &PathBuf) -> String {
     std::fs::read_to_string(path).expect("read log file")

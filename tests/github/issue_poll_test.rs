@@ -15,8 +15,6 @@
 //! `NoHeader` inversion, so they drop down to the underlying
 //! wiremock `MockServer` via [`fixtures::MockGitHub::server`].
 
-use std::path::PathBuf;
-
 use caduceus::config::Config;
 use caduceus::github::{Client, HttpCache};
 use caduceus::issue::IssueKey;
@@ -28,25 +26,15 @@ use caduceus::queue::TicketType;
 use wiremock::matchers::{method, path, query_param_is_missing};
 use wiremock::{Match, Mock, Request, ResponseTemplate};
 
+use fixtures::MockGitHub;
 #[path = "../fixtures/mod.rs"]
 mod fixtures;
 
-use fixtures::MockGitHub;
+use fixtures::tempdir;
 
 const TEST_TOKEN: &str = "ghp_testtoken_value_xyz";
 const CODE_LABEL: &str = "🤖 auto-fix";
 const INVESTIGATION_LABEL: &str = "🤖 auto-fix-investigate";
-
-fn tempdir(label: &str) -> PathBuf {
-    let mut dir = std::env::temp_dir();
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    dir.push(format!("caduceus-issue-poll-test-{label}-{nonce}"));
-    std::fs::create_dir_all(&dir).expect("create tempdir");
-    dir
-}
 
 fn mock_client(gh: &MockGitHub) -> (Client, Config) {
     let state_dir = tempdir("mock");

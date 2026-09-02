@@ -2,25 +2,16 @@
 //! and metadata, preserves the originals as backups, and writes the
 //! `state_backend` config flag.
 
-use std::fs;
-use std::path::{Path, PathBuf};
-
 use caduceus::config::Config;
 use caduceus::meta::{MetaStore, TickOutcome};
 use caduceus::migrate_to_sqlite::{migrate_to_sqlite, LockPolicy, SqliteMigrationOutcome};
 use caduceus::queue::StateStore;
+#[path = "fixtures/mod.rs"]
+mod fixtures;
 
-fn tempdir(label: &str) -> PathBuf {
-    let mut dir = std::env::temp_dir();
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    dir.push(format!("caduceus-migrate-integration-{label}-{nonce}"));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).expect("create tempdir");
-    dir
-}
+use fixtures::tempdir;
+use std::fs;
+use std::path::Path;
 
 fn write_json_state(state_dir: &Path) {
     fs::write(

@@ -30,9 +30,6 @@
 //! exist solely to exercise the import path and never talk to
 //! GitHub.
 
-use std::fs;
-use std::path::{Path, PathBuf};
-
 use caduceus::error::CaduceusError;
 use caduceus::issue::IssueKey;
 use caduceus::migrate::{run as migrate_run, MigrationOutcome};
@@ -41,6 +38,12 @@ use caduceus::queue::{
 };
 use chrono::{TimeZone, Utc};
 use tempfile::TempDir;
+#[path = "../fixtures/mod.rs"]
+mod fixtures;
+
+use fixtures::tempdir_owned;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 /// Legacy v0 state entry. The migration path accepts this shape
 /// and produces a current-schema [`caduceus::queue::QueueEntry`]
@@ -61,19 +64,6 @@ struct LegacyEntryV0 {
 #[derive(serde::Serialize, serde::Deserialize)]
 struct LegacyStateV0 {
     entries: Vec<LegacyEntryV0>,
-}
-
-fn tempdir(label: &str) -> TempDir {
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let path = std::env::temp_dir().join(format!(
-        "caduceus-migration-test-{label}-{nonce}-{}",
-        std::process::id()
-    ));
-    fs::create_dir_all(&path).expect("create tempdir");
-    TempDir::new_in(path).expect("TempDir new_in")
 }
 
 fn open_state(path: &Path) -> QueueState {
@@ -104,7 +94,7 @@ fn backup_path(state_dir: &Path) -> PathBuf {
 
 #[test]
 fn empty_legacy_state_imports_empty_current_state_and_is_idempotent() {
-    let dir = tempdir("empty");
+    let dir = tempdir_owned("empty");
     let state_dir = state_dir_setup(&dir);
     let from = dir.path().join("legacy.json");
     fs::write(
@@ -134,7 +124,7 @@ fn empty_legacy_state_imports_empty_current_state_and_is_idempotent() {
 
 #[test]
 fn legacy_state_with_queued_and_failed_entries_imports_to_current_schema() {
-    let dir = tempdir("queued-failed");
+    let dir = tempdir_owned("queued-failed");
     let state_dir = state_dir_setup(&dir);
     let from = dir.path().join("legacy.json");
     let legacy = LegacyStateV0 {
@@ -182,7 +172,7 @@ fn legacy_state_with_queued_and_failed_entries_imports_to_current_schema() {
 
 #[test]
 fn dry_run_does_not_touch_state_file() {
-    let dir = tempdir("dry-run");
+    let dir = tempdir_owned("dry-run");
     let state_dir = state_dir_setup(&dir);
     let from = dir.path().join("legacy.json");
     let legacy = LegacyStateV0 {
@@ -206,7 +196,7 @@ fn dry_run_does_not_touch_state_file() {
 
 #[test]
 fn malformed_legacy_input_does_not_overwrite_existing_state() {
-    let dir = tempdir("malformed");
+    let dir = tempdir_owned("malformed");
     let state_dir = state_dir_setup(&dir);
     // Pre-seed a valid v1 state under the daemon's path.
     let store = StateStore::open(&state_dir).expect("open store");
@@ -229,7 +219,7 @@ fn malformed_legacy_input_does_not_overwrite_existing_state() {
 
 #[test]
 fn duplicate_legacy_entries_are_reported_and_skipped() {
-    let dir = tempdir("duplicates");
+    let dir = tempdir_owned("duplicates");
     let state_dir = state_dir_setup(&dir);
     let from = dir.path().join("legacy.json");
     // Two legacy entries with the same repo/number.
@@ -264,7 +254,7 @@ fn duplicate_legacy_entries_are_reported_and_skipped() {
 
 #[test]
 fn already_current_state_is_idempotent_no_op() {
-    let dir = tempdir("already-current");
+    let dir = tempdir_owned("already-current");
     let state_dir = state_dir_setup(&dir);
     // Pre-seed a v1 state file.
     let mut state = QueueState::empty();
@@ -304,7 +294,7 @@ fn already_current_state_is_idempotent_no_op() {
 
 #[test]
 fn migration_is_atomic_and_leaves_a_backup() {
-    let dir = tempdir("atomic-backup");
+    let dir = tempdir_owned("atomic-backup");
     let state_dir = state_dir_setup(&dir);
     let from = dir.path().join("legacy.json");
     let legacy = LegacyStateV0 {
@@ -335,7 +325,7 @@ fn migration_is_atomic_and_leaves_a_backup() {
 
 #[test]
 fn recovery_validates_supplied_file_under_daemon_lock_and_clears_marker() {
-    let dir = tempdir("recovery");
+    let dir = tempdir_owned("recovery");
     let state_dir = state_dir_setup(&dir);
 
     // Pretend a corrupt state.json + marker file are present.
@@ -396,7 +386,7 @@ fn recovery_validates_supplied_file_under_daemon_lock_and_clears_marker() {
 
 #[test]
 fn recovery_refuses_to_install_malformed_repaired_file() {
-    let dir = tempdir("recovery-malformed");
+    let dir = tempdir_owned("recovery-malformed");
     let state_dir = state_dir_setup(&dir);
     let active = state_dir.join("state.json");
     fs::write(&active, b"original corrupt").unwrap();
@@ -424,7 +414,7 @@ fn recovery_refuses_when_corrupt_original_cannot_be_archived() {
     // writable. We make the state dir read-only after planting
     // the corrupt file; recovery should refuse before any rename
     // touches the active file.
-    let dir = tempdir("recovery-no-archive");
+    let dir = tempdir_owned("recovery-no-archive");
     let state_dir = state_dir_setup(&dir);
     let active = state_dir.join("state.json");
     fs::write(&active, b"original corrupt").unwrap();

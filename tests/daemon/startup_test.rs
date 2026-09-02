@@ -1,21 +1,12 @@
 //! Integration tests for daemon startup — storage tree init, idempotent restart.
 
-use std::path::Path;
-
 use caduceus::config::Config;
 use caduceus::repo::Storage;
+#[path = "../fixtures/mod.rs"]
+mod fixtures;
 
-fn tempdir(label: &str) -> std::path::PathBuf {
-    let mut dir = std::env::temp_dir();
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    dir.push(format!("caduceus-startup-test-{label}-{nonce}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("create tempdir");
-    dir
-}
+use fixtures::tempdir;
+use std::path::Path;
 
 #[test]
 fn startup_creates_storage_tree_when_missing() {

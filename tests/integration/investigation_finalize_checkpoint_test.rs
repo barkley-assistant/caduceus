@@ -8,10 +8,6 @@
 //! that a crash after the comment does not duplicate it on recovery
 //! (the idempotent `run_id` marker suppresses the re-post).
 
-use std::collections::BTreeMap;
-use std::path::Path;
-use std::sync::Arc;
-
 use caduceus::config::{Config, LoadContext, RawConfig};
 use caduceus::finalize::{
     post_investigation_comment_and_finalize, FinalizeContext, FinalizeRequest,
@@ -29,23 +25,16 @@ use serde_json::json;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, ResponseTemplate};
 
+use fixtures::MockGitHub;
 #[path = "../fixtures/mod.rs"]
 mod fixtures;
 
-use fixtures::MockGitHub;
+use fixtures::tempdir;
+use std::collections::BTreeMap;
+use std::path::Path;
+use std::sync::Arc;
 
 const TEST_TOKEN: &str = "ghp_testtoken_value_xyz";
-
-fn tempdir(label: &str) -> std::path::PathBuf {
-    let mut dir = std::env::temp_dir();
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    dir.push(format!("caduceus-investigation-finalize-{label}-{nonce}"));
-    std::fs::create_dir_all(&dir).expect("create tempdir");
-    dir
-}
 
 fn empty_config(state_dir: &Path) -> Config {
     let raw = RawConfig {

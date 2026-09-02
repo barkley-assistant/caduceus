@@ -154,6 +154,10 @@ impl SignalAction {
     }
 }
 
+/// NOTE: as_nanos() here is a process-id nonce for script
+/// filenames, NOT a tempdir path uniqueness source — see the
+/// issue #269 plan (.hermes/plans/tempdir-uniqueness.md).
+/// Do not "fix" this as part of a tempdir-uniqueness sweep.
 fn rand_id() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()

@@ -23,14 +23,6 @@
 
 #![allow(unused_imports)]
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
-use std::io::{Read, Write};
-use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
-
 use chrono::{DateTime, Utc};
 use nix::sys::signal::{kill, Signal};
 use nix::unistd::Pid;
@@ -40,6 +32,17 @@ use caduceus::queue::{
     serialize_queue_state, Phase, QueueEntry, QueueState, TicketType, QUEUE_FILE_VERSION,
 };
 use caduceus::IssueKey;
+#[path = "../fixtures/mod.rs"]
+mod fixtures;
+
+use fixtures::tempdir;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::io::{Read, Write};
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 /// Find the `caduceus` binary as a sibling of the test
 /// binary. The test binary is the test executable, not the
@@ -56,17 +59,6 @@ fn find_self_exe() -> PathBuf {
             panic!("could not find caduceus binary in target/debug");
         }
     }
-}
-
-fn tempdir(label: &str) -> PathBuf {
-    let mut dir = std::env::temp_dir();
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    dir.push(format!("caduceus-signal-test-{label}-{nonce}"));
-    fs::create_dir_all(&dir).expect("create tempdir");
-    dir
 }
 
 fn write_script(path: &PathBuf, body: &str) {

@@ -22,32 +22,22 @@
 
 #![allow(unused_variables)]
 
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-
-#[cfg(unix)]
-use std::os::unix::fs::symlink;
-
 use caduceus::config::Config;
 use caduceus::issue::IssueKey;
 use caduceus::worktree::{
     create as create_worktree, remove as remove_worktree, GitRunner, RepositoryInfo, Worktree,
 };
+#[path = "../fixtures/mod.rs"]
+mod fixtures;
+
+use fixtures::tempdir;
+use std::fs;
+use std::os::unix::fs::symlink;
+use std::path::Path;
+use std::process::Command;
 
 /// Unique tempdir per call so parallel test invocations don't
 /// trample each other.
-fn tempdir(label: &str) -> PathBuf {
-    let mut dir = std::env::temp_dir();
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    dir.push(format!("caduceus-worktree-remove-{label}-{nonce}"));
-    fs::create_dir_all(&dir).expect("create tempdir");
-    dir
-}
-
 fn config_for(root: &Path, api_base: &str) -> Config {
     let mut cfg = Config::test_defaults(root);
     cfg.api_base = api_base.to_string();

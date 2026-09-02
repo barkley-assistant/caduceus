@@ -7,14 +7,17 @@
 //! the daemon into the supervisor CLI and then into the worker
 //! subprocess.
 
-use std::collections::BTreeMap;
-use std::ffi::{OsStr, OsString};
-use std::fs;
-use std::path::{Path, PathBuf};
-
 use caduceus::issue::IssueKey;
 use caduceus::worker::sanitized_env;
 use caduceus::worker::SanitizedEnvInputs;
+#[path = "../fixtures/mod.rs"]
+mod fixtures;
+
+use fixtures::tempdir;
+use std::collections::BTreeMap;
+use std::ffi::{OsStr, OsString};
+use std::fs;
+use std::path::Path;
 
 fn empty_env() -> BTreeMap<OsString, OsString> {
     BTreeMap::new()
@@ -25,17 +28,6 @@ fn env_with(pairs: &[(&str, &str)]) -> BTreeMap<OsString, OsString> {
         .iter()
         .map(|(k, v)| (OsString::from(*k), OsString::from(*v)))
         .collect()
-}
-
-fn tempdir(label: &str) -> PathBuf {
-    let mut dir = std::env::temp_dir();
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    dir.push(format!("caduceus-supervisor-env-test-{label}-{nonce}"));
-    fs::create_dir_all(&dir).expect("create tempdir");
-    dir
 }
 
 fn sample_inputs(worktree: &Path) -> SanitizedEnvInputs {

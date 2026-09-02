@@ -15,27 +15,16 @@
 
 #![cfg(target_os = "linux")]
 
-#[path = "../fixtures/mod.rs"]
-mod fixtures;
-
-use std::fs;
-use std::path::PathBuf;
-
 use caduceus::github::issue::IssueKey;
 use caduceus::infra::config::Config;
 use caduceus::worker_supervisor::supervise;
 use tokio_util::sync::CancellationToken;
+#[path = "../fixtures/mod.rs"]
+mod fixtures;
 
-fn tempdir(label: &str) -> PathBuf {
-    let mut dir = std::env::temp_dir();
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    dir.push(format!("caduceus-transcript-owner-{label}-{nonce}"));
-    fs::create_dir_all(&dir).expect("create tempdir");
-    dir
-}
+use fixtures::tempdir;
+use std::fs;
+use std::path::PathBuf;
 
 fn find_self_exe() -> PathBuf {
     fixtures::ReleaseBinary::locate()

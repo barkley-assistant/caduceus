@@ -10,17 +10,10 @@ use caduceus::queue::{
     QUEUE_FILE_VERSION,
 };
 use chrono::{TimeZone, Utc};
+#[path = "../fixtures/mod.rs"]
+mod fixtures;
 
-fn tempdir(label: &str) -> std::path::PathBuf {
-    let mut dir = std::env::temp_dir();
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    dir.push(format!("caduceus-queue-test-{label}-{nonce}"));
-    std::fs::create_dir_all(&dir).expect("create tempdir");
-    dir
-}
+use fixtures::tempdir;
 
 fn sample_key() -> IssueKey {
     IssueKey {

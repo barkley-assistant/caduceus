@@ -11,11 +11,6 @@
 //! - **4.3-AC-05** — `AwaitingReview` phase round-trips through
 //!   serialization correctly.
 
-use std::collections::BTreeMap;
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-
 use caduceus::state::queue::{
     parse_queue_state, serialize_queue_state, Phase, QueueEntry, QueueState, StateStore,
     TicketType, QUEUE_FILE_VERSION,
@@ -24,22 +19,15 @@ use chrono::{TimeZone, Utc};
 
 use caduceus::github::issue::IssueKey;
 use caduceus::runtime::audit::refuse_auto_merge;
+#[path = "../fixtures/mod.rs"]
+mod fixtures;
+
+use fixtures::tempdir;
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::Path;
 
 // Helpers
-
-static COUNTER: AtomicU64 = AtomicU64::new(0);
-
-fn scratch_dir(label: &str) -> PathBuf {
-    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let dir = std::env::temp_dir().join(format!(
-        "review-lifecycle-{label}-{}-{}",
-        std::process::id(),
-        n
-    ));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).expect("create scratch dir");
-    dir
-}
 
 fn sample_key() -> IssueKey {
     IssueKey {
@@ -88,7 +76,7 @@ fn seed_entry(store: &StateStore, phase: Phase) {
 
 #[test]
 fn complete_awaiting_review_sets_awaiting_review_phase() {
-    let dir = scratch_dir("ac01");
+    let dir = tempdir("ac01");
     let store = make_store(&dir);
     seed_entry(&store, Phase::InProgress);
 
@@ -128,7 +116,7 @@ fn refuse_auto_merge_returns_error() {
 
 #[test]
 fn route_to_needs_attention_from_awaiting_review() {
-    let dir = scratch_dir("ac03");
+    let dir = tempdir("ac03");
     let store = make_store(&dir);
     seed_entry(&store, Phase::AwaitingReview);
 
@@ -158,7 +146,7 @@ fn route_to_needs_attention_from_awaiting_review() {
 
 #[test]
 fn reprocess_entry_refuses_awaiting_review() {
-    let dir = scratch_dir("ac04");
+    let dir = tempdir("ac04");
     let store = make_store(&dir);
     seed_entry(&store, Phase::AwaitingReview);
 

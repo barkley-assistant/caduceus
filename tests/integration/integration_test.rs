@@ -38,14 +38,6 @@
 
 #![allow(unused_imports, unused_variables)]
 
-use std::collections::BTreeMap;
-use std::fs;
-use std::io::Read;
-use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
-
 use chrono::Utc;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -55,21 +47,21 @@ use caduceus::queue::{
     parse_queue_state, serialize_queue_state, Phase, QueueEntry, QueueState, TicketType,
     QUEUE_FILE_VERSION,
 };
+#[path = "../fixtures/mod.rs"]
+mod fixtures;
+
+use fixtures::tempdir;
+use std::collections::BTreeMap;
+use std::fs;
+use std::io::Read;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------------
 // Fixture: tempdir helper.
 // ---------------------------------------------------------------------------
-
-fn tempdir(label: &str) -> PathBuf {
-    let mut dir = std::env::temp_dir();
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    dir.push(format!("caduceus-integration-test-{label}-{nonce}"));
-    fs::create_dir_all(&dir).expect("create tempdir");
-    dir
-}
 
 // ---------------------------------------------------------------------------
 // Fixture: WiremockServer.

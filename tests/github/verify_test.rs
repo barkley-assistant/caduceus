@@ -16,21 +16,14 @@ use caduceus::queue::TicketType;
 use caduceus::verify::{SkipReason, VerifyOutcome};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
+#[path = "../fixtures/mod.rs"]
+mod fixtures;
+
+use fixtures::tempdir;
 
 const TEST_TOKEN: &str = "ghp_testtoken_value_xyz";
 const CODE_LABEL: &str = "🤖 auto-fix";
 const INVESTIGATION_LABEL: &str = "🤖 auto-fix-investigate";
-
-fn tempdir(label: &str) -> std::path::PathBuf {
-    let mut dir = std::env::temp_dir();
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    dir.push(format!("caduceus-verify-test-{label}-{nonce}"));
-    std::fs::create_dir_all(&dir).expect("create tempdir");
-    dir
-}
 
 fn mock_client_with_repos(server: &MockServer) -> (Client, Config) {
     let state_dir = tempdir("mock");

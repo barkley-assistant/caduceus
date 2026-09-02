@@ -3,11 +3,13 @@
 //! a stub `TokenEnv` (so tests do not mutate the process environment)
 //! and a stub `GhRunner` where needed.
 
-use std::collections::HashMap;
-use std::path::PathBuf;
-
 use caduceus::config::{Config, GhRunner, GhRunnerOutput, TokenEnv};
 use serial_test::serial;
+#[path = "../fixtures/mod.rs"]
+mod fixtures;
+
+use fixtures::tempdir;
+use std::collections::HashMap;
 
 #[derive(Default)]
 struct MapEnv {
@@ -46,17 +48,6 @@ impl GhRunner for StubGh {
             )),
         }
     }
-}
-
-fn tempdir(label: &str) -> PathBuf {
-    let mut dir = std::env::temp_dir();
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    dir.push(format!("caduceus-load-token-test-{label}-{nonce}"));
-    std::fs::create_dir_all(&dir).expect("create tempdir");
-    dir
 }
 
 fn write(path: &std::path::Path, body: &str) {

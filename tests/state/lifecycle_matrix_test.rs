@@ -13,11 +13,6 @@
 //! AwaitingReview → NeedsAttention with a diagnostic reason;
 //! closed-without-merge and merged-PR states are mutually exclusive.
 
-use std::collections::BTreeMap;
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-
 use caduceus::state::queue::{
     serialize_queue_state, Phase, QueueEntry, QueueState, StateStore, TicketType,
     QUEUE_FILE_VERSION,
@@ -26,22 +21,15 @@ use chrono::{TimeZone, Utc};
 
 use caduceus::github::issue::IssueKey;
 use caduceus::runtime::audit::refuse_auto_merge;
+#[path = "../fixtures/mod.rs"]
+mod fixtures;
+
+use fixtures::tempdir;
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::Path;
 
 // Helpers
-
-static COUNTER: AtomicU64 = AtomicU64::new(0);
-
-fn scratch_dir(label: &str) -> PathBuf {
-    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let dir = std::env::temp_dir().join(format!(
-        "lifecycle-matrix-{label}-{}-{}",
-        std::process::id(),
-        n
-    ));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).expect("create scratch dir");
-    dir
-}
 
 fn sample_key() -> IssueKey {
     IssueKey {
@@ -90,7 +78,7 @@ fn seed_entry(store: &StateStore, phase: Phase) {
 
 #[test]
 fn resolve_awaiting_review_as_done_transitions_to_done() {
-    let dir = scratch_dir("ac02-merge");
+    let dir = tempdir("ac02-merge");
     let store = make_store(&dir);
     seed_entry(&store, Phase::AwaitingReview);
 
@@ -112,7 +100,7 @@ fn resolve_awaiting_review_as_done_transitions_to_done() {
 
 #[test]
 fn route_to_needs_attention_transitions_to_needs_attention() {
-    let dir = scratch_dir("ac02-needs-attn");
+    let dir = tempdir("ac02-needs-attn");
     let store = make_store(&dir);
     seed_entry(&store, Phase::AwaitingReview);
 
@@ -146,7 +134,7 @@ fn route_to_needs_attention_transitions_to_needs_attention() {
 
 #[test]
 fn reopen_then_merge_flow() {
-    let dir = scratch_dir("ac02-reopen");
+    let dir = tempdir("ac02-reopen");
     let store = make_store(&dir);
     seed_entry(&store, Phase::NeedsAttention);
 
@@ -193,7 +181,7 @@ fn reopen_then_merge_flow() {
 
 #[test]
 fn reprocess_entry_refuses_awaiting_review() {
-    let dir = scratch_dir("ac02-reprocess");
+    let dir = tempdir("ac02-reprocess");
     let store = make_store(&dir);
     seed_entry(&store, Phase::AwaitingReview);
 
