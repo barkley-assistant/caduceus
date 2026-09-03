@@ -187,16 +187,12 @@ fn live_fixture_with(
     // Digest-pinned image override for hosts with a pre-pulled image;
     // defaults to the test_defaults placeholder (fine for pure argv
     // assertions, but a live `create` needs a resolvable digest).
-    // `CADUCEUS_LIVE_NEUTRALITY_IMAGE` wins when both are set: the
-    // image-neutrality certification test runs a deliberately
-    // unrelated image while every other test uses the reference.
-    if let Ok(image) = std::env::var("CADUCEUS_LIVE_NEUTRALITY_IMAGE") {
-        assert!(
-            image.contains("@sha256:"),
-            "CADUCEUS_LIVE_NEUTRALITY_IMAGE must be digest-pinned, got: {image}"
-        );
-        cfg.sandbox.as_mut().expect("sandbox").image = image;
-    } else if let Ok(image) = std::env::var("CADUCEUS_LIVE_TEST_IMAGE") {
+    // `CADUCEUS_LIVE_TEST_IMAGE` is the global reference every live
+    // test runs against. Only the image-neutrality certification test
+    // (`image_neutrality_custom_unrelated_image_live`) overrides its
+    // own sandbox image with `CADUCEUS_LIVE_NEUTRALITY_IMAGE` via the
+    // `adjust` hook below.
+    if let Ok(image) = std::env::var("CADUCEUS_LIVE_TEST_IMAGE") {
         assert!(
             image.contains("@sha256:"),
             "CADUCEUS_LIVE_TEST_IMAGE must be digest-pinned, got: {image}"
@@ -316,9 +312,17 @@ fn run_container(fx: &LiveFixture) -> (i64, String) {
         ])
         .output();
     if let Ok(out) = inspected {
-        if let Ok(recorded) = String::from_utf8_lossy(&out.stdout).trim().parse::<i64>() {
-            if recorded != 0 || code == 0 {
-                code = recorded;
+        // The format string emits three space-separated fields
+        // (`ExitCode OOMKilled Status`); only the first is the exit
+        // code, so split before parsing.
+        if let Some(first) = String::from_utf8_lossy(&out.stdout)
+            .split_whitespace()
+            .next()
+        {
+            if let Ok(recorded) = first.parse::<i64>() {
+                if recorded != 0 || code == 0 {
+                    code = recorded;
+                }
             }
         }
     }
@@ -1719,10 +1723,23 @@ fn wrong_digest_rejected_before_execution_live() {
 #[test]
 #[cfg_attr(not(env = "CADUCEUS_RUN_ISOLATION_TESTS"), ignore)]
 fn image_neutrality_custom_unrelated_image_live() {
+    // This test is the ONLY consumer of the neutrality override: it
+    // reads `CADUCEUS_LIVE_NEUTRALITY_IMAGE` explicitly and scopes it
+    // to its own sandbox config, while the shared `live_fixture_with`
+    // helper uses `CADUCEUS_LIVE_TEST_IMAGE` for every other test.
+    let neutrality = std::env::var("CADUCEUS_LIVE_NEUTRALITY_IMAGE")
+        .expect("CADUCEUS_LIVE_NEUTRALITY_IMAGE required for the image-neutrality certification");
+    assert!(
+        neutrality.contains("@sha256:"),
+        "CADUCEUS_LIVE_NEUTRALITY_IMAGE must be digest-pinned, got: {neutrality}"
+    );
     let reference = std::env::var("CADUCEUS_LIVE_TEST_IMAGE").unwrap_or_default();
-    let fx = live_fixture(
+    let fx = live_fixture_with(
         GitShadowKind::File,
         "echo neutrality-ok; id -u > /workspace/neutrality-canary; exit 0",
+        |cfg| {
+            cfg.sandbox.as_mut().expect("sandbox").image = neutrality.clone();
+        },
     );
     let used = fx.cfg.sandbox().image.clone();
     if !reference.is_empty() {
