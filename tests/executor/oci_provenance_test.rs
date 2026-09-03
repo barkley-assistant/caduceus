@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
@@ -34,7 +35,15 @@ fn fake_engine(root: &Path, local_present: bool, inspect_json: &str, pull_fails:
         pull_body = pull_body,
         inspect_json = inspect_json,
     );
-    std::fs::write(&binary, script).expect("write fake OCI executable");
+    let mut file = std::fs::File::create(&binary).expect("create fake OCI executable");
+    file.write_all(script.as_bytes())
+        .expect("write fake OCI executable");
+    // Flush the script to disk before returning: the adapter execs the
+    // binary immediately after this helper returns, and a write that is
+    // still in flight can make the exec fail with ETXTBSY ("text file
+    // busy") on some filesystems. fsync closes the write->exec window.
+    file.sync_all().expect("fsync fake OCI executable");
+    drop(file);
     std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755))
         .expect("make fake OCI executable");
     binary
