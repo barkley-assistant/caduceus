@@ -82,6 +82,10 @@ impl LocalOrigin {
         .expect("hash-object utf8")
         .trim()
         .to_string();
+        assert!(
+                !tree_oid.is_empty(),
+                "git hash-object returned an empty tree OID — the empty-rev path must never reach commit-tree"
+            );
         let commit_oid = String::from_utf8(
             run_output(Command::new("git").current_dir(&bare).args([
                 "commit-tree",
@@ -94,6 +98,10 @@ impl LocalOrigin {
         .expect("commit-tree utf8")
         .trim()
         .to_string();
+        assert!(
+            !commit_oid.is_empty(),
+            "git commit-tree returned an empty commit OID"
+        );
         run(Command::new("git").current_dir(&bare).args([
             "update-ref",
             "refs/heads/main",
@@ -267,9 +275,15 @@ fn run(cmd: &mut Command) {
 }
 
 fn run_output(cmd: &mut Command) -> std::process::Output {
-    cmd.stdin(Stdio::null())
+    let output = cmd
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
-        .expect("git spawn")
+        .expect("git spawn");
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        panic!("git command failed ({}): {stderr}", output.status);
+    }
+    output
 }
