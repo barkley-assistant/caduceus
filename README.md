@@ -543,49 +543,16 @@ envelope; the queue commands emit `schema: "queue/1.0"` and
 ```text
 caduceus run                          # run a single tick (default)
 caduceus status [--json]              # report daemon state
-caduceus doctor [--json] [--skip-canary] [--canary-image IMG]
-              [--canary-command CMD]  # live OCI readiness check
-caduceus worktree-gc [--older-than-days N] [--dry-run]
-                                      # sweep stale worktrees
+caduceus doctor [...]                 # live OCI readiness check
+caduceus worktree-gc [...]            # sweep stale worktrees
 caduceus queue <action>               # manage the work queue
-caduceus migrate-state --from <path> [--dry-run]
-caduceus migrate-state --to-sqlite [--dry-run]
-                                      # migrate legacy / SQLite state
+                                      # (show, reset, reprocess, remove)
+caduceus migrate-state [...]          # migrate legacy JSON in, or to SQLite
 caduceus setup [--dry-run]            # generate minimal non-secret config
 ```
 
-The `queue` subcommand has four actions:
-
-```text
-caduceus queue show [<owner/repo#n>] [--json]
-                                      # list entries, or print full
-                                      # detail incl. the finalization
-                                      # checkpoint
-caduceus queue reset <owner/repo#n> [--dry-run] [--json]
-              [--force-finalization-reset]
-                                      # return a Failed/Skipped entry
-                                      # to Queued
-caduceus queue reprocess <owner/repo#n> [--dry-run]
-                                      # new generation, immediately
-                                      # claimable
-caduceus queue remove <owner/repo#n> [--dry-run] [--force] [--json]
-                                      # drop a queue entry entirely
-```
-
-`queue remove` drops only the queue entry. The worktree, claim file,
-remote branch, and pull request are left for the reaper /
-`worktree-gc` and are never touched under any flag. By default it
-refuses `InProgress`, `AwaitingReview`, and `Done` entries;
-`--force` relaxes the phase guard only — an entry with a live claim
-file is always refused. If the trigger label is still on the issue,
-the next poll re-enqueues a fresh entry; that is documented
-behaviour, not a bug. `queue show` is read-only: it snapshots under
-the shared state lock, never writes, and does not take the daemon
-lock, so it is safe to run alongside a live tick.
-
-`worktree-gc` operates under the daemon lock (so it never races a
-tick), defaults to an `--older-than-days 30` threshold, and
-`--dry-run` reports eligible worktrees without removing them.
+Every flag, default, exit code, and the `hermes caduceus` wrapper
+surface is documented in the [CLI reference](docs/cli.md).
 
 ## The Operator's Manual
 
@@ -611,6 +578,9 @@ front door; the manual is in the
   the common failure modes with the actual error text
   and the actual fix.
 - [faq](https://github.com/barkley-assistant/caduceus/wiki/FAQ) — short.
+- [cli reference](docs/cli.md) — every `caduceus` subcommand and
+  flag, exit codes, and the `hermes caduceus` wrapper surface
+  (in-repo page).
 
 ### Transcripts
 
