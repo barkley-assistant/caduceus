@@ -7,8 +7,10 @@
 //! ultimately delegates to `caduceus::tick::run_blocking`.
 
 use std::ffi::OsString;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use chrono::Utc;
 use clap::{Parser, Subcommand};
 
 use caduceus::config::{Config, SetupAction};
@@ -16,11 +18,20 @@ use caduceus::error::{CaduceusError, CaduceusResult};
 use caduceus::executor::oci::OciExecutor;
 use caduceus::executor::{Executor, ExecutorSpec};
 use caduceus::issue::IssueKey;
-use caduceus::queue::StateStore;
+use caduceus::queue::{
+    display_digest, Phase, QueueEntry, QueueState, RemoveOutcome, StateStore, TicketType,
+};
 use caduceus::readiness::{self, DiagnosticCanary, DiagnosticStatus, ReadinessVerdict};
 use caduceus::DaemonLock;
 
 static GIT_AUTHOR_WARNED: AtomicBool = AtomicBool::new(false);
+
+/// Schema version of the `queue` JSON envelope emitted by
+/// `queue show`, `queue reset --json`, and `queue remove --json`.
+/// Bumped when the envelope shape changes so consumers can detect
+/// the version. Distinct from `STATUS_SCHEMA_VERSION` — the queue
+/// and status schemas version independently.
+const QUEUE_SCHEMA_VERSION: &str = "queue/1.0";
 
 /// Caduceus v1.0.0: poll GitHub, queue one unit of work per tick, finalise
 /// code or investigation results.
@@ -111,6 +122,9 @@ pub enum QueueAction {
         /// Print the planned change without applying it.
         #[arg(long, default_value_t = false)]
         dry_run: bool,
+        /// Print machine-readable JSON instead of the human summary.
+        #[arg(long, default_value_t = false)]
+        json: bool,
         /// Drop the persisted `FinalizationCheckpoint` along with
         /// the run-tracking fields. By default the checkpoint is
         /// preserved so a follow-up tick resumes from the saved
@@ -130,6 +144,36 @@ pub enum QueueAction {
         /// Print the planned change without applying it.
         #[arg(long, default_value_t = false)]
         dry_run: bool,
+    },
+    /// List queue entries, or print full detail for one entry.
+    Show {
+        /// Optional `owner/repo#number` identifier; when omitted
+        /// every entry is listed as a table.
+        issue: Option<String>,
+        /// Print machine-readable JSON instead of the human summary.
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+    /// Remove a queue entry entirely.
+    ///
+    /// Drops only the queue entry: the worktree, claim file, remote
+    /// branch, and PR are left for the reaper / `worktree-gc` and
+    /// are never touched. Refuses `InProgress`, `AwaitingReview`,
+    /// and `Done` by default; `--force` relaxes the phase guard only
+    /// (an active claim file is always refused).
+    Remove {
+        /// `owner/repo#number` identifier (validated by `issue::IssueKey`).
+        issue: String,
+        /// Print the planned change without applying it.
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
+        /// Print machine-readable JSON instead of the human summary.
+        #[arg(long, default_value_t = false)]
+        json: bool,
+        /// Relax the phase guard (allow `InProgress`, `AwaitingReview`,
+        /// `Done`). The active-claim-file guard is never relaxable.
+        #[arg(long, default_value_t = false)]
+        force: bool,
     },
 }
 
@@ -157,12 +201,25 @@ pub fn run() -> CaduceusResult<()> {
                 QueueAction::Reset {
                     issue,
                     dry_run,
+                    json,
                     force_finalization_reset,
                 },
-        }) => run_queue_reset(&issue, dry_run, force_finalization_reset),
+        }) => run_queue_reset(&issue, dry_run, json, force_finalization_reset),
         Some(Command::Queue {
             action: QueueAction::Reprocess { issue, dry_run },
         }) => run_queue_reprocess(&issue, dry_run),
+        Some(Command::Queue {
+            action: QueueAction::Show { issue, json },
+        }) => run_queue_show(issue.as_deref(), json),
+        Some(Command::Queue {
+            action:
+                QueueAction::Remove {
+                    issue,
+                    dry_run,
+                    json,
+                    force,
+                },
+        }) => run_queue_remove(&issue, dry_run, force, json),
         Some(Command::WorktreeGc {
             older_than_days,
             dry_run,
@@ -510,6 +567,7 @@ fn run_worktree_gc(older_than_days: u64, dry_run: bool) -> CaduceusResult<()> {
 fn run_queue_reset(
     issue: &str,
     dry_run: bool,
+    json: bool,
     force_finalization_reset: bool,
 ) -> CaduceusResult<()> {
     let key = IssueKey::parse(issue)?;
@@ -517,10 +575,7 @@ fn run_queue_reset(
     // back to the canonical resolution chain otherwise. The cron
     // tick uses `Config::load`, but a CLI reset typically runs
     // from a script that already has the config path in env.
-    let config = match std::env::var_os("CADUCEUS_CONFIG") {
-        Some(path) => Config::load_from(std::path::Path::new(&path))?,
-        None => Config::load()?,
-    };
+    let config = resolve_queue_config()?;
     let state_dir = config.state_dir.clone();
     if dry_run {
         // Dry-run: read-only. Don't take the daemon lock — we
@@ -533,6 +588,19 @@ fn run_queue_reset(
             stderr: format!("no entry for {}", key.display_key()),
         })?;
         let checkpoint = store.finalization_for(&key)?;
+        if json {
+            print_queue_json(
+                &state_dir,
+                serde_json::json!({
+                    "action": "reset",
+                    "dry_run": true,
+                    "key": key.display_key(),
+                    "cleared_finalization": force_finalization_reset,
+                    "dropped_checkpoint": checkpoint,
+                }),
+            )?;
+            return Ok(());
+        }
         println!(
             "would reset {} (phase={:?}, attempts={}, last_error={:?}, last_run_id={:?})",
             key.display_key(),
@@ -571,6 +639,10 @@ fn run_queue_reset(
     };
     let store = StateStore::open(&state_dir)?;
     let outcome = store.reset_entry(&key, force_finalization_reset)?;
+    if json {
+        print_queue_json(&state_dir, serde_json::to_value(&outcome)?)?;
+        return Ok(());
+    }
     println!("reset {} to Queued", key.display_key());
     if let Some(check) = outcome.dropped_checkpoint.as_ref() {
         eprintln!(
@@ -587,6 +659,280 @@ fn run_queue_reset(
         );
     }
     Ok(())
+}
+
+/// `caduceus queue show [<issue>] [--json]` — read-only inspection
+/// of the queue. The list form renders every entry as a table in
+/// `BTreeMap` (lexical) order; the detail form renders one entry
+/// including its finalization checkpoint. Both forms support
+/// `--json` with the versioned queue envelope. `show` never takes
+/// the daemon lock and never writes state.
+fn run_queue_show(issue: Option<&str>, json: bool) -> CaduceusResult<()> {
+    let config = resolve_queue_config()?;
+    let state_dir = config.state_dir.clone();
+    let store = StateStore::open(&state_dir)?;
+    let snap = store.snapshot()?;
+    match issue {
+        None => {
+            if json {
+                let entries: Vec<&QueueEntry> = snap.entries.values().collect();
+                print_queue_json(&state_dir, serde_json::json!({ "entries": entries }))?;
+            } else {
+                println!("{}", render_queue_table(&snap));
+            }
+        }
+        Some(issue_text) => {
+            let key = IssueKey::parse(issue_text)?;
+            match snap.entry(&key) {
+                Some(entry) => {
+                    if json {
+                        print_queue_json(&state_dir, serde_json::to_value(entry)?)?;
+                    } else {
+                        println!("{}", render_entry_detail(entry));
+                    }
+                }
+                None => {
+                    let err = CaduceusError::Queue {
+                        context: "show",
+                        stderr: format!("no entry for {}", key.display_key()),
+                    };
+                    if json {
+                        print_queue_json_with_diagnostic(
+                            &state_dir,
+                            serde_json::Value::Null,
+                            Some("no_entry"),
+                        )?;
+                    }
+                    return Err(err);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `caduceus queue remove <issue> [--dry-run] [--force] [--json]` —
+/// drop a queue entry entirely. Only the queue entry is removed:
+/// the worktree, claim file, remote branch, and PR are left for the
+/// reaper / `worktree-gc` and are never touched. `--force` relaxes
+/// the phase guard only; an active claim file is always refused.
+/// The live path takes the daemon lock so a concurrent tick cannot
+/// run while state is mutated; the dry-run path is read-only and
+/// never takes the lock.
+fn run_queue_remove(issue: &str, dry_run: bool, force: bool, json: bool) -> CaduceusResult<()> {
+    let key = IssueKey::parse(issue)
+        .map_err(|e| CaduceusError::Config(format!("invalid issue key: {e}")))?;
+    let config = resolve_queue_config()?;
+    let state_dir = config.state_dir.clone();
+    if dry_run {
+        // Dry-run: read-only. Don't take the daemon lock — we
+        // still need to load the state to report what would
+        // change, but we never write.
+        let store = StateStore::open(&state_dir)?;
+        let snap = store.snapshot()?;
+        let entry = snap.entry(&key).ok_or_else(|| CaduceusError::Queue {
+            context: "remove",
+            stderr: format!("no entry for {}", key.display_key()),
+        })?;
+        // Mirror the live guards so a dry-run surfaces the same
+        // refusal the operator would hit on the real remove.
+        if !force {
+            match entry.phase {
+                Phase::InProgress | Phase::AwaitingReview | Phase::Done => {
+                    return Err(CaduceusError::Queue {
+                        context: "remove",
+                        stderr: format!(
+                            "refusing to remove entry {}: phase is {:?}; use --force to override",
+                            key.display_key(),
+                            entry.phase
+                        ),
+                    });
+                }
+                _ => {}
+            }
+        }
+        let digest = display_digest(&key.display_key());
+        let claim_path = store.claims_dir().join(format!("{digest}.claim"));
+        if claim_path.is_file() {
+            return Err(CaduceusError::Queue {
+                context: "remove",
+                stderr: format!(
+                    "refusing to remove entry {}: active claim file exists",
+                    key.display_key()
+                ),
+            });
+        }
+        let outcome = RemoveOutcome {
+            key: key.display_key(),
+            phase: entry.phase.as_str().to_string(),
+            dropped_checkpoint: entry.finalization.clone(),
+        };
+        if json {
+            print_queue_json(&state_dir, serde_json::to_value(&outcome)?)?;
+        } else {
+            println!("would remove {} (phase={})", outcome.key, outcome.phase);
+            if outcome.dropped_checkpoint.is_some() {
+                println!("  finalization checkpoint would be dropped");
+            }
+        }
+        return Ok(());
+    }
+    // Live path: take the daemon lock first so a concurrent tick
+    // can't run while we're mutating state. Then take the
+    // state.lock (acquired inside `StateStore::remove_entry`).
+    let _daemon = match DaemonLock::try_acquire(&state_dir)? {
+        Some(lock) => lock,
+        None => {
+            eprintln!(
+                "caduceus: another tick holds {}/daemon.lock; refusing to remove",
+                state_dir.display()
+            );
+            return Err(CaduceusError::Queue {
+                context: "remove",
+                stderr: "another tick is in progress; refusing to remove".to_string(),
+            });
+        }
+    };
+    let store = StateStore::open(&state_dir)?;
+    let outcome = store.remove_entry(&key, force)?;
+    if json {
+        print_queue_json(&state_dir, serde_json::to_value(&outcome)?)?;
+        return Ok(());
+    }
+    println!("removed {}", outcome.key);
+    if let Some(check) = outcome.dropped_checkpoint.as_ref() {
+        eprintln!(
+            "warning: dropped finalization checkpoint branch={:?} run_id={:?} stage={:?} pr_url={:?} pr_number={:?} commit_oid={:?}",
+            check.branch_name,
+            check.run_id,
+            check.stage,
+            check.pr_url,
+            check.pr_number,
+            check.commit_oid
+        );
+        eprintln!(
+            "warning: the remote branch and PR were NOT deleted; reconcile manually if appropriate"
+        );
+    }
+    Ok(())
+}
+
+/// Resolve the queue CLI config through `$CADUCEUS_CONFIG` first,
+/// then the canonical chain — the same resolution every queue
+/// subcommand uses.
+fn resolve_queue_config() -> CaduceusResult<Config> {
+    match std::env::var_os("CADUCEUS_CONFIG") {
+        Some(path) => Config::load_from(Path::new(&path)),
+        None => Config::load(),
+    }
+}
+
+/// Print a versioned `queue/1.0` JSON envelope to stdout.
+fn print_queue_json(state_dir: &Path, payload: serde_json::Value) -> CaduceusResult<()> {
+    print_queue_json_with_diagnostic(state_dir, payload, None)
+}
+
+/// Print a versioned `queue/1.0` JSON envelope with an optional
+/// top-level `diagnostic` string, mirroring the `status --json`
+/// envelope convention.
+fn print_queue_json_with_diagnostic(
+    state_dir: &Path,
+    payload: serde_json::Value,
+    diagnostic: Option<&str>,
+) -> CaduceusResult<()> {
+    let envelope = serde_json::json!({
+        "app_version": env!("CARGO_PKG_VERSION"),
+        "schema": QUEUE_SCHEMA_VERSION,
+        "state_dir": state_dir.display().to_string(),
+        "diagnostic": diagnostic,
+        "payload": payload,
+    });
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&envelope).map_err(|err| {
+            CaduceusError::Other(format!("serialise queue JSON envelope: {err}"))
+        })?
+    );
+    Ok(())
+}
+
+/// Stable snake_case label for a ticket type (independent of the
+/// serde rename attribute on [`TicketType`]).
+fn ticket_type_label(ticket_type: TicketType) -> &'static str {
+    match ticket_type {
+        TicketType::Code => "code",
+        TicketType::Investigation => "investigation",
+    }
+}
+
+/// Render the human list table for `queue show`. Columns: key,
+/// phase, ticket type, attempts, generation, and age (seconds since
+/// `updated_at`). Entries iterate in `BTreeMap` lexical order.
+fn render_queue_table(state: &QueueState) -> String {
+    if state.entries.is_empty() {
+        return "queue: no entries".to_string();
+    }
+    let now = Utc::now();
+    let mut out = String::from("key\tphase\tticket\tattempts\tgeneration\tage\n");
+    for entry in state.entries.values() {
+        let age = (now - entry.updated_at).num_seconds().max(0);
+        out.push_str(&format!(
+            "{}\t{}\t{}\t{}\t{}\t{}s\n",
+            entry.key.display_key(),
+            entry.phase.as_str(),
+            ticket_type_label(entry.ticket_type),
+            entry.attempts,
+            entry.generation,
+            age,
+        ));
+    }
+    out
+}
+
+/// Render the human detail view for `queue show <key>`, including
+/// the finalization checkpoint (branch, run id, stage, PR).
+fn render_entry_detail(entry: &QueueEntry) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("entry {}\n", entry.key.display_key()));
+    out.push_str(&format!("  phase: {}\n", entry.phase.as_str()));
+    out.push_str(&format!(
+        "  ticket_type: {}\n",
+        ticket_type_label(entry.ticket_type)
+    ));
+    out.push_str(&format!("  attempts: {}\n", entry.attempts));
+    out.push_str(&format!("  last_error: {:?}\n", entry.last_error));
+    out.push_str(&format!("  last_run_id: {:?}\n", entry.last_run_id));
+    out.push_str(&format!("  next_attempt_at: {:?}\n", entry.next_attempt_at));
+    out.push_str(&format!("  queued_at: {}\n", entry.queued_at.to_rfc3339()));
+    out.push_str(&format!(
+        "  updated_at: {}\n",
+        entry.updated_at.to_rfc3339()
+    ));
+    out.push_str(&format!("  generation: {}\n", entry.generation));
+    out.push_str(&format!("  blocked_source: {:?}\n", entry.blocked_source));
+    out.push_str(&format!(
+        "  blocked_recovery_hint: {:?}\n",
+        entry.blocked_recovery_hint
+    ));
+    match entry.finalization.as_ref() {
+        Some(check) => {
+            out.push_str("  finalization:\n");
+            out.push_str(&format!("    run_id: {}\n", check.run_id));
+            out.push_str(&format!("    branch_name: {}\n", check.branch_name));
+            out.push_str(&format!(
+                "    result_path: {}\n",
+                check.result_path.display()
+            ));
+            out.push_str(&format!("    stage: {}\n", check.stage.as_str()));
+            out.push_str(&format!("    commit_oid: {:?}\n", check.commit_oid));
+            out.push_str(&format!("    pr_number: {:?}\n", check.pr_number));
+            out.push_str(&format!("    pr_url: {:?}\n", check.pr_url));
+        }
+        None => {
+            out.push_str("  finalization: none\n");
+        }
+    }
+    out
 }
 
 /// `caduceus queue reprocess <issue>` — create a new generation

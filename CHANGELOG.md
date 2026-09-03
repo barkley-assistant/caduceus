@@ -27,6 +27,16 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
 
 ### Added
 
+- **Queue inspection and removal CLI.** `caduceus queue show
+  [<owner/repo#n>] [--json]` lists every entry as a human table (or
+  full detail including the finalization checkpoint) with a versioned
+  `queue/1.0` JSON envelope; `caduceus queue remove <owner/repo#n>
+  [--dry-run] [--force] [--json]` drops a queue entry entirely —
+  refusing `InProgress` / `AwaitingReview` / `Done` by default and an
+  active claim file always, never touching the worktree, claim file,
+  remote branch, or PR. The `hermes caduceus` wrapper now passes
+  `queue`, `worktree-gc`, and `migrate-state` through to the binary
+  and forwards `--json` on `status`. Closes #265.
 - **Hardened per-run OCI baseline** (non-weakenable, both engines):
   `--memory-swap` pinned equal to `--memory` (no swap doubling), bounded
   engine logs (`--log-opt max-size=10m max-file=3`), explicit resolve-time

@@ -48,13 +48,18 @@ When triggered, this skill should:
    resolves this relative to `$HERMES_HOME` (default `~/.hermes`).
 5. **If something is broken**: tail `<state_dir>/processor.log` and
    `<state_dir>/runs/<run-id>.log` for the affected run. For a terminal
-   failed/skipped entry, show `caduceus queue reset OWNER/REPO#N
-   --dry-run` before proposing the real reset; never edit state files
-   directly.
+   failed/skipped entry, show `caduceus queue show OWNER/REPO#N` to
+   inspect the entry and checkpoint, then `caduceus queue reset
+   OWNER/REPO#N --dry-run` before proposing the real reset; never edit
+   state files directly.
 6. **If the user asks about a stuck `Failed` issue**: explain that
    failed entries are not auto-reset. Removing and re-adding the
    trigger label does not bypass the per-issue retry budget; the
    operator must run `caduceus queue reset OWNER/REPO#N [--dry-run]`.
+   If the operator wants to drop the entry entirely instead of
+   retrying, `caduceus queue remove OWNER/REPO#N [--dry-run]` deletes
+   only the queue entry (never the remote branch/PR, worktree, or
+   claim file).
 7. **If the user asks about dry-run behavior**: explain that
    `CADUCEUS_DRY_RUN=1` performs polling, claim, prompt creation, worker
    execution, and result validation but performs **no** commit, push,
@@ -125,10 +130,21 @@ rename and are never silently truncated:
 - **Corrupt `state_meta.json`** → same behavior. Exit 1, file preserved.
 - **Stale heartbeat** (>90s old) → reaped on the next tick after
   `stale_run_hours` elapses.
-- **Stuck issue** → `caduceus queue reset OWNER/REPO#N [--dry-run]`.
-  The reset requires the daemon's whole-tick lock and refuses to drop
-  an entry with an open PR unless `--force-finalization-reset` is
-  supplied and confirmed in dry-run output.
+- **Stuck issue** → inspect first with `caduceus queue show` (list
+  form) or `caduceus queue show OWNER/REPO#N` (full detail including
+  the finalization checkpoint), then recover with
+  `caduceus queue reset OWNER/REPO#N [--dry-run]`. The reset requires
+  the daemon's whole-tick lock and refuses to drop an entry with an
+  open PR unless `--force-finalization-reset` is supplied and
+  confirmed in dry-run output.
+- **Drop an entry entirely** → `caduceus queue remove OWNER/REPO#N
+  [--dry-run] [--force]`. Remove deletes only the queue entry; the
+  worktree, claim file, remote branch, and PR are left for the reaper
+  / `worktree-gc` and are never touched. `InProgress`,
+  `AwaitingReview`, and `Done` are refused by default; `--force`
+  relaxes the phase guard only — an entry with a live claim file is
+  always refused. If the trigger label is still on the issue, the
+  next poll re-enqueues a fresh entry.
 - **Never edit state files directly.** Manual intervention is not a
   supported path; the daemon's lock + atomic-write discipline only
   holds for the programmatic API.

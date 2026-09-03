@@ -23,11 +23,14 @@ plugin compatibility contract:
    chat-safe diagnostic explaining how to run ``hermes caduceus setup``.
 3. ``ctx.register_cli_command(name="caduceus", ...)`` for the
    ``hermes caduceus <subcommand>`` family, with subcommands
-   ``setup``, ``doctor``, ``status``, ``cron-install``, and ``cron-remove``.
+   ``setup``, ``doctor``, ``status``, ``cron-install``, ``cron-remove``,
+   and the pass-through ``queue``, ``worktree-gc``, and ``migrate-state``
+   (trailing args are forwarded verbatim to the ``caduceus`` binary).
 """
 
 from __future__ import annotations
 
+import argparse
 import fcntl
 import json
 import os
@@ -38,7 +41,7 @@ import sys
 from collections import namedtuple
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, Iterable, List, Optional, Union
 
 
 # ---------------------------------------------------------------------------
@@ -369,13 +372,55 @@ def _format_status_for_chat(payload: Dict[str, Any]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# CLI command: hermes caduceus <setup|doctor|status|cron-install|cron-remove>
+# CLI command: hermes caduceus
+#   <setup|doctor|status|cron-install|cron-remove|queue|worktree-gc|migrate-state>
 # ---------------------------------------------------------------------------
+
+
+class _PassthroughParser(argparse.ArgumentParser):
+    """Subparser that forwards its full trailing argv verbatim.
+
+    The Hermes CLI parses plugin subcommands strictly, so a
+    pass-through subcommand whose first token is a flag (e.g.
+    ``hermes caduceus worktree-gc --older-than-days 7``) would abort
+    with ``unrecognized arguments`` under plain argparse. This parser
+    swallows every trailing token into the ``passthrough_attr``
+    namespace field and returns no leftovers; the dispatch function
+    then forwards those tokens verbatim to the ``caduceus`` binary.
+    The clap parser remains the single source of truth for the flag
+    contract — the wrapper never re-encodes it.
+    """
+
+    def __init__(self, *args, passthrough_attr: str | None = None, **kwargs):
+        self._passthrough_attr = passthrough_attr
+        super().__init__(*args, **kwargs)
+
+    # The override is intentionally narrower than the typeshed
+    # overloads: the Hermes CLI always calls the subparser with
+    # ``namespace=None`` (typeshed's first overload), and the
+    # pass-through capture never needs a pre-seeded namespace.
+    def parse_known_args(  # type: ignore[override]
+        self,
+        args: Optional[Iterable[str]] = None,
+        namespace: None = None,
+    ) -> tuple[argparse.Namespace, List[str]]:
+        if self._passthrough_attr is not None:
+            ns = argparse.Namespace()
+            tokens = list(args) if args is not None else []
+            setattr(ns, self._passthrough_attr, tokens)
+            return ns, []
+        # The Hermes CLI always calls the subparser with
+        # ``namespace=None`` (the typeshed first overload); keep the
+        # annotated contract tight so a stray namespace cannot bypass
+        # the pass-through capture.
+        return super().parse_known_args(args, namespace)
 
 
 def _register_caduceus_cli(subparser: Any) -> None:
     """Wire the ``hermes caduceus`` argparse tree."""
-    subs = subparser.add_subparsers(dest="caduceus_command", required=True)
+    subs = subparser.add_subparsers(
+        dest="caduceus_command", required=True, parser_class=_PassthroughParser
+    )
 
     setup = subs.add_parser(
         "setup",
@@ -397,9 +442,47 @@ def _register_caduceus_cli(subparser: Any) -> None:
         help="Print internal detail and structured category (human debugging only).",
     )
 
-    subs.add_parser(
+    status = subs.add_parser(
         "status",
         help="Run `caduceus status` and print the result.",
+    )
+    status.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the machine-readable JSON status report.",
+    )
+
+    queue = subs.add_parser(
+        "queue",
+        help="Manage the work queue (show, reset, reprocess, remove).",
+        passthrough_attr="queue_args",
+    )
+    # Pass-through: every trailing token is forwarded verbatim to the
+    # binary; clap is the single source of truth for the flag contract.
+    queue.add_argument(
+        "queue_args",
+        nargs=argparse.REMAINDER,
+        help="Subcommand and flags forwarded to the caduceus binary.",
+    )
+
+    subs.add_parser(
+        "worktree-gc",
+        help="Garbage-collect stale worktrees (flags forwarded to the binary).",
+        passthrough_attr="worktree_gc_args",
+    ).add_argument(
+        "worktree_gc_args",
+        nargs=argparse.REMAINDER,
+        help="Flags forwarded to the caduceus binary.",
+    )
+
+    subs.add_parser(
+        "migrate-state",
+        help="Migrate daemon state (flags forwarded to the binary).",
+        passthrough_attr="migrate_state_args",
+    ).add_argument(
+        "migrate_state_args",
+        nargs=argparse.REMAINDER,
+        help="Flags forwarded to the caduceus binary.",
     )
 
     cron_install = subs.add_parser(
@@ -437,7 +520,13 @@ def _caduceus_cli_command(args: Any) -> int:
     if sub == "doctor":
         return _cli_doctor(verbose=getattr(args, "verbose", False))
     if sub == "status":
-        return _cli_status()
+        return _cli_status(json=getattr(args, "json", False))
+    if sub == "queue":
+        return _cli_passthrough("queue", getattr(args, "queue_args", []))
+    if sub == "worktree-gc":
+        return _cli_passthrough("worktree-gc", getattr(args, "worktree_gc_args", []))
+    if sub == "migrate-state":
+        return _cli_passthrough("migrate-state", getattr(args, "migrate_state_args", []))
     if sub == "cron-install":
         return _cli_cron_install(
             dry_run=getattr(args, "dry_run", False),
@@ -982,7 +1071,36 @@ def _cli_doctor(verbose: bool = False) -> int:
     return max_severity
 
 
-def _cli_status() -> int:
+def _cli_status(*, json: bool = False) -> int:
+    binary = _binary_path()
+    if not binary.is_file():
+        print(
+            "caduceus: binary not built — run `hermes caduceus setup`",
+            file=sys.stderr,
+        )
+        return 1
+    argv = [str(binary), "status"]
+    if json:
+        argv.append("--json")
+    proc = _run(
+        argv,
+        cwd=_plugin_root(),
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
+    )
+    if proc.stdout:
+        sys.stdout.write(proc.stdout)
+    if proc.stderr:
+        sys.stderr.write(proc.stderr)
+    return proc.returncode
+
+
+def _cli_passthrough(subcommand: str, forwarded: List[str]) -> int:
+    """Run ``caduceus <subcommand> [forwarded...]`` and propagate the exit code.
+
+    *forwarded* is the verbatim trailing argv the operator typed after
+    the subcommand keyword; the wrapper never re-encodes flags — the
+    clap parser in the binary is the single source of truth.
+    """
     binary = _binary_path()
     if not binary.is_file():
         print(
@@ -991,7 +1109,7 @@ def _cli_status() -> int:
         )
         return 1
     proc = _run(
-        [str(binary), "status"],
+        [str(binary), subcommand, *forwarded],
         cwd=_plugin_root(),
         timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
