@@ -27,6 +27,12 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
 
 ### Added
 
+- **CLI reference page.** `docs/cli.md` documents every `caduceus`
+  subcommand and flag, exit codes, JSON envelope versions, locking and
+  refusal semantics, and the `hermes caduceus` wrapper surface; the
+  README CLI section and the Operator's Manual index link to it. The
+  plugin skill now covers all four queue actions including `queue
+  reprocess`. Closes #264.
 - **Queue inspection and removal CLI.** `caduceus queue show
   [<owner/repo#n>] [--json]` lists every entry as a human table (or
   full detail including the finalization checkpoint) with a versioned

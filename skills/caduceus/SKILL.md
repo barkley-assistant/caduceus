@@ -50,12 +50,20 @@ When triggered, this skill should:
    `<state_dir>/runs/<run-id>.log` for the affected run. For a terminal
    failed/skipped entry, show `caduceus queue show OWNER/REPO#N` to
    inspect the entry and checkpoint, then `caduceus queue reset
-   OWNER/REPO#N --dry-run` before proposing the real reset; never edit
-   state files directly.
+   OWNER/REPO#N [--dry-run]` before proposing the real reset; never edit
+   state files directly. If the root cause is fixed and the operator
+   wants a fresh run, `caduceus queue reprocess
+   OWNER/REPO#N [--dry-run]` creates a new generation and makes the
+   entry immediately claimable.
 6. **If the user asks about a stuck `Failed` issue**: explain that
    failed entries are not auto-reset. Removing and re-adding the
    trigger label does not bypass the per-issue retry budget; the
    operator must run `caduceus queue reset OWNER/REPO#N [--dry-run]`.
+   If instead a brand-new generation is wanted (for example the fix
+   landed elsewhere and the issue should be re-run), `caduceus
+   queue reprocess OWNER/REPO#N [--dry-run]` increments the
+   generation counter and moves the entry back to `Queued` with no
+   backoff, immediately claimable; it refuses only `AwaitingReview`.
    If the operator wants to drop the entry entirely instead of
    retrying, `caduceus queue remove OWNER/REPO#N [--dry-run]` deletes
    only the queue entry (never the remote branch/PR, worktree, or
@@ -136,7 +144,12 @@ rename and are never silently truncated:
   `caduceus queue reset OWNER/REPO#N [--dry-run]`. The reset requires
   the daemon's whole-tick lock and refuses to drop an entry with an
   open PR unless `--force-finalization-reset` is supplied and
-  confirmed in dry-run output.
+  confirmed in dry-run output. To start a fresh generation instead
+  (reopen, or fast-track a retry once the root cause is fixed),
+  `caduceus queue reprocess OWNER/REPO#N [--dry-run]` increments
+  the generation counter and moves a terminal entry back to
+  `Queued`, immediately claimable on the next tick; it refuses
+  only `AwaitingReview`.
 - **Drop an entry entirely** → `caduceus queue remove OWNER/REPO#N
   [--dry-run] [--force]`. Remove deletes only the queue entry; the
   worktree, claim file, remote branch, and PR are left for the reaper
