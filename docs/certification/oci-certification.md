@@ -83,7 +83,12 @@ skip-not-fail when the host engine does not match their mode.
   digest-pinned reference image (local registry push of the built
   reference image) plus a non-reference neutrality image (alpine),
   and runs `cargo nextest run --run-ignored all` over the two live
-  binaries and the mapping self-check.
+  binaries and the mapping self-check. Every live test runs against
+  the reference image (`CADUCEUS_LIVE_TEST_IMAGE` is the shared
+  default); only
+  `image_neutrality_custom_unrelated_image_live` reads
+  `CADUCEUS_LIVE_NEUTRALITY_IMAGE` and overrides its own sandbox
+  image with it.
 - **Nightly (not merge-gating):** `oci-live-nightly.yml` — rootless
   Docker and Podman Tier-2, 07:30 UTC daily.
 - **Release:** `release.yml` runs all three modes in the

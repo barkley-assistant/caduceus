@@ -37,3 +37,15 @@ platform = "x86_64-unknown-linux-gnu"
 [profile.nightly]
 inherits = "default"
 default-filter = "all()"
+
+# CI profile used by the oci-live-certification job (ci.yml, issue
+# #252). Inherits `default` (120s slow-timeout + canary filter) and
+# emits a JUnit report so the upload-diagnostics-on-failure artifact
+# step has a real file to upload (the report lands at
+# target/nextest/ci/junit.xml). This nextest version has no
+# `--junit-xml` CLI flag; JUnit output is config-driven only.
+[profile.ci]
+inherits = "default"
+
+[profile.ci.junit]
+path = "junit.xml"

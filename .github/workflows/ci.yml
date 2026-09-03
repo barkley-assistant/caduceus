@@ -463,7 +463,7 @@ jobs:
           CADUCEUS_RUN_ISOLATION_TESTS: "1"
         run: |
           set -euo pipefail
-          cargo nextest run --locked --all-targets --run-ignored all \
+          cargo nextest run --locked --all-targets --run-ignored all --profile ci \
             -E 'binary(oci_isolation_live_test) or binary(oci_env_live_test) or binary(certification_mapping_test)'
       - name: upload diagnostics on failure
         if: failure() && steps.filter.outputs.security == 'true'
@@ -471,7 +471,7 @@ jobs:
         with:
           name: oci-live-diagnostics
           path: |
-            target/nextest/ci-junit.xml
+            target/nextest/ci/junit.xml
             **/engine.log
             **/oci-runs/**/*.log
           if-no-files-found: ignore

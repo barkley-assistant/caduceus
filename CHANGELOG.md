@@ -46,6 +46,18 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
 
 ### Fixed
 
+- **Live OCI certification suite: image precedence and exit-code
+  readback (issue #252).** The shared live-test fixture now applies
+  `CADUCEUS_LIVE_TEST_IMAGE` (the reference image) to every test;
+  only `image_neutrality_custom_unrelated_image_live` reads
+  `CADUCEUS_LIVE_NEUTRALITY_IMAGE` and scopes it to its own sandbox,
+  so CI legs no longer run the bulk of the adversarial suite against
+  alpine. `run_container` parses the first space-separated field of
+  `docker inspect` (not the whole three-field string), restoring the
+  authoritative exit-code readback for OOM/cancellation/timeout
+  assertions. The `oci-live-certification` job also runs under a new
+  `ci` nextest profile with a JUnit emitter, so the failure-diagnostics
+  artifact is real.
 - **Status commands in non-Hermes shells.** `hermes caduceus status` (and
   every adapter subcommand shelling out to the daemon binary) no longer
   fails with `no configuration source found` in shells that do not export
