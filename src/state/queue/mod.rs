@@ -96,6 +96,25 @@ pub enum Phase {
     NeedsAttention,
 }
 
+impl Phase {
+    /// Stable snake_case label for the phase. Independent of the
+    /// serde `rename_all` attribute so CLI JSON envelopes and the
+    /// human table keep a stable string form even if the serde
+    /// representation of [`Phase`] ever changes.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::InProgress => "in_progress",
+            Self::Previewed => "previewed",
+            Self::AwaitingReview => "awaiting_review",
+            Self::Done => "done",
+            Self::Failed => "failed",
+            Self::Skipped => "skipped",
+            Self::NeedsAttention => "needs_attention",
+        }
+    }
+}
+
 /// Ticket kind selected by the trigger label.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -251,9 +270,27 @@ pub struct ClaimedEntry {
 /// a warning so the operator can reconcile the branch / PR
 /// manually. `cleared_finalization` is `true` when the
 /// `--force-finalization-reset` flag was supplied.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub struct ResetOutcome {
     pub cleared_finalization: bool,
+    pub dropped_checkpoint: Option<FinalizationCheckpoint>,
+}
+
+/// Result of [`StateStore::remove_entry`]. The caller (the
+/// `caduceus queue remove` CLI) renders the dropped checkpoint as
+/// a warning so the operator can reconcile the branch / PR
+/// manually. `phase` is the phase before removal as a stable
+/// snake_case string, deliberately decoupled from the serde
+/// `rename_all` attribute on [`Phase`].
+#[derive(Clone, Debug, Serialize)]
+pub struct RemoveOutcome {
+    /// Lowercase display key of the removed entry.
+    pub key: String,
+    /// Phase of the entry before removal (snake_case string).
+    pub phase: String,
+    /// Finalization checkpoint that was on the entry, if any. The
+    /// checkpoint is dropped with the entry; the remote branch and
+    /// PR are never touched.
     pub dropped_checkpoint: Option<FinalizationCheckpoint>,
 }
 

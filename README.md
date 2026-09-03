@@ -532,6 +532,61 @@ If a config key is not named there, it is not part of the public contract
 surface; the daemon ignores it, which is the honest answer to
 "why does my custom key do nothing?"
 
+## CLI reference
+
+The `caduceus` binary exposes seven top-level commands. A bare
+`caduceus` invocation is rewritten to `caduceus run` so the cron
+contract (silent on success) holds. `--json` output uses a versioned
+envelope; the queue commands emit `schema: "queue/1.0"` and
+`status` emits its own `version`.
+
+```text
+caduceus run                          # run a single tick (default)
+caduceus status [--json]              # report daemon state
+caduceus doctor [--json] [--skip-canary] [--canary-image IMG]
+              [--canary-command CMD]  # live OCI readiness check
+caduceus worktree-gc [--older-than-days N] [--dry-run]
+                                      # sweep stale worktrees
+caduceus queue <action>               # manage the work queue
+caduceus migrate-state --from <path> [--dry-run]
+caduceus migrate-state --to-sqlite [--dry-run]
+                                      # migrate legacy / SQLite state
+caduceus setup [--dry-run]            # generate minimal non-secret config
+```
+
+The `queue` subcommand has four actions:
+
+```text
+caduceus queue show [<owner/repo#n>] [--json]
+                                      # list entries, or print full
+                                      # detail incl. the finalization
+                                      # checkpoint
+caduceus queue reset <owner/repo#n> [--dry-run] [--json]
+              [--force-finalization-reset]
+                                      # return a Failed/Skipped entry
+                                      # to Queued
+caduceus queue reprocess <owner/repo#n> [--dry-run]
+                                      # new generation, immediately
+                                      # claimable
+caduceus queue remove <owner/repo#n> [--dry-run] [--force] [--json]
+                                      # drop a queue entry entirely
+```
+
+`queue remove` drops only the queue entry. The worktree, claim file,
+remote branch, and pull request are left for the reaper /
+`worktree-gc` and are never touched under any flag. By default it
+refuses `InProgress`, `AwaitingReview`, and `Done` entries;
+`--force` relaxes the phase guard only — an entry with a live claim
+file is always refused. If the trigger label is still on the issue,
+the next poll re-enqueues a fresh entry; that is documented
+behaviour, not a bug. `queue show` is read-only: it snapshots under
+the shared state lock, never writes, and does not take the daemon
+lock, so it is safe to run alongside a live tick.
+
+`worktree-gc` operates under the daemon lock (so it never races a
+tick), defaults to an `--older-than-days 30` threshold, and
+`--dry-run` reports eligible worktrees without removing them.
+
 ## The Operator's Manual
 
 Moved out of the README on purpose. The README is the
@@ -684,10 +739,12 @@ state in place. Follow the supported recovery process in
 
 ### Retrying failed work
 
-Use the queue command to retry a failed item:
+Use the queue commands to inspect and retry a failed item:
 
 ```text
 caduceus status
+caduceus queue show                    # see every entry and its phase
+caduceus queue show owner/repo#number  # full detail incl. checkpoint
 caduceus queue reset owner/repo#number --dry-run
 caduceus queue reset owner/repo#number
 ```
@@ -697,6 +754,27 @@ so a later tick can resume safely. `--force-finalization-reset`
 discards that checkpoint after warning about the affected
 branch and pull request; it never deletes remote branches
 or pull requests.
+
+`caduceus queue reprocess owner/repo#number` bumps the generation
+and clears `next_attempt_at`, making the entry immediately claimable
+on the next tick — use it to fast-track a retry after the root cause
+is fixed.
+
+To drop an entry entirely instead of retrying it:
+
+```text
+caduceus queue remove owner/repo#number --dry-run
+caduceus queue remove owner/repo#number
+```
+
+`queue remove` deletes only the queue entry; the worktree, claim
+file, remote branch, and PR are left for the reaper / `worktree-gc`
+and are never touched. `InProgress`, `AwaitingReview`, and `Done`
+entries are refused by default; `--force` relaxes that phase guard
+only, and an entry with a live claim file is always refused. If the
+trigger label is still on the issue, the next poll re-enqueues a
+fresh entry — remove the label first if you want the issue to stay
+out of the queue.
 
 ### Installation changes and removal
 

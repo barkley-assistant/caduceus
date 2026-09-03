@@ -2,7 +2,7 @@ use super::{
     acquire_next_locked, atomic_write, claim_mismatch, display_digest, into_lock_error,
     matches_token, parse_queue_state, serialize_queue_state, sync_dir, unlink_claim_best_effort,
     update_claim_worktree, ClaimToken, ClaimedEntry, Connection, EnqueueOutcome,
-    FinalizationCheckpoint, Phase, QueueEntry, QueueState, ResetOutcome, StateStore,
+    FinalizationCheckpoint, Phase, QueueEntry, QueueState, RemoveOutcome, ResetOutcome, StateStore,
     StateStoreBackend, TicketType, CLAIMS_DIRNAME, QUEUE_FILE_VERSION, STATE_FILENAME,
     STATE_LOCK_FILENAME,
 };
@@ -680,6 +680,94 @@ impl StateStore {
             entry.updated_at = Utc::now();
             store.persist(&state)?;
             Ok(())
+        })
+    }
+
+    /// Operator-driven removal of a queue entry.
+    ///
+    /// The entry is dropped from the queue entirely. The worktree,
+    /// claim file (if any), remote branch, and pull request are
+    /// intentionally NOT touched — they are left for the reaper /
+    /// `worktree-gc`, and the remote state is never modified under
+    /// any flag.
+    ///
+    /// Phase guard: by default (`force = false`) an entry in
+    /// `InProgress`, `AwaitingReview`, or `Done` is refused because
+    /// those phases represent live or externally-visible work.
+    /// `force = true` relaxes ONLY the phase guard.
+    ///
+    /// Active-claim guard: the claim-file check is NEVER relaxable —
+    /// an entry with a live claim file is refused even with `force`.
+    /// If a future change elsewhere relaxes the claim-file invariant
+    /// (e.g. makes the claim file optional during a tick), this
+    /// method must be updated in lockstep, because a concurrent tick
+    /// could otherwise have an in-flight worker for the removed
+    /// entry.
+    ///
+    /// Returns [`RemoveOutcome`] carrying the removed display key,
+    /// the phase before removal (stable snake_case string), and the
+    /// finalization checkpoint that was dropped with the entry so
+    /// the caller can surface the branch / PR to the operator.
+    pub fn remove_entry(&self, key: &IssueKey, force: bool) -> CaduceusResult<RemoveOutcome> {
+        self.with_exclusive(|store| {
+            let mut state = store.load_validated()?;
+            // Compare by display_key (lowercase) rather than
+            // the raw IssueKey — the on-disk map key is
+            // lowercased on every write, and an operator who
+            // types `OWNER/Repo#1` should still find the entry.
+            let target = key.display_key();
+            let entry = state
+                .entries
+                .values_mut()
+                .find(|e| e.key.display_key() == target)
+                .ok_or_else(|| CaduceusError::Queue {
+                    context: "remove",
+                    stderr: format!("no entry for {target}"),
+                })?;
+            // Phase guard. `--force` relaxes ONLY this guard; the
+            // active-claim guard below is never relaxable.
+            if !force {
+                match entry.phase {
+                    Phase::InProgress | Phase::AwaitingReview | Phase::Done => {
+                        return Err(CaduceusError::Queue {
+                            context: "remove",
+                            stderr: format!(
+                                "refusing to remove entry {}: phase is {:?}; use --force to override",
+                                key.display_key(),
+                                entry.phase
+                            ),
+                        });
+                    }
+                    _ => {}
+                }
+            }
+            // Refuse if an active claim file exists. The reaper
+            // would clean it up on the next tick, but an active
+            // claim indicates a live worker and the operator
+            // must not silently invalidate it. Unlike the phase
+            // guard, this check is not relaxable.
+            let digest = display_digest(&key.display_key());
+            let claim_path = store.claims_dir.join(format!("{digest}.claim"));
+            if claim_path.is_file() {
+                return Err(CaduceusError::Queue {
+                    context: "remove",
+                    stderr: format!(
+                        "refusing to remove entry {}: active claim file exists",
+                        key.display_key()
+                    ),
+                });
+            }
+            // Capture the outcome before the entry is dropped so
+            // the caller can report the phase and any checkpoint
+            // (the remote branch / PR are never deleted).
+            let outcome = RemoveOutcome {
+                key: target.clone(),
+                phase: entry.phase.as_str().to_string(),
+                dropped_checkpoint: entry.finalization.clone(),
+            };
+            state.entries.remove(&target);
+            store.persist(&state)?;
+            Ok(outcome)
         })
     }
 

@@ -34,7 +34,16 @@ def test_cli_command_is_registered(adapter, fake_ctx: FakePluginContext) -> None
     assert parser is not None
     # Help text references the canonical subcommands.
     help_text = parser.format_help()
-    for sub in ("setup", "doctor", "status", "cron-install", "cron-remove"):
+    for sub in (
+        "setup",
+        "doctor",
+        "status",
+        "cron-install",
+        "cron-remove",
+        "queue",
+        "worktree-gc",
+        "migrate-state",
+    ):
         assert sub in help_text, f"missing subcommand {sub} in help"
 
 

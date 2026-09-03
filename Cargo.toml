@@ -396,6 +396,14 @@ name = "queue_reset_cli_test"
 path = "tests/state/queue_reset_cli_test.rs"
 
 [[test]]
+name = "queue_show_test"
+path = "tests/state/queue_show_test.rs"
+
+[[test]]
+name = "queue_remove_test"
+path = "tests/state/queue_remove_test.rs"
+
+[[test]]
 name = "reaper_test"
 path = "tests/state/reaper_test.rs"
 
