@@ -59,6 +59,7 @@ def fake_env(tmp_path: Path) -> dict:
     prompt = worktree / "worker-prompt.md"
     prompt.write_text("# Caduceus prompt\n\nRun the workflow per the spec.", encoding="utf-8")
     return {
+        "HERMES_HOME": str(tmp_path / "hermes-home"),
         "CADUCEUS_ISSUE_NUMBER": "42",
         "CADUCEUS_ISSUE_TITLE": "Test issue with spaces and unicode ✨",
         "CADUCEUS_ISSUE_BODY": "Body with newline\nand quote \" marks.",
@@ -476,6 +477,8 @@ def _make_worktree_with_prompt(tmp_path: Path) -> Path:
 
 def _build_env(tmp_path: Path, **overrides: str) -> dict:
     env = {
+        "HERMES_HOME": str(tmp_path / "hermes-home"),
+        "PATH": os.environ.get("PATH") or os.defpath,
         "CADUCEUS_ISSUE_NUMBER": "42",
         "CADUCEUS_ISSUE_TITLE": "issue with spaces ✨",
         "CADUCEUS_ISSUE_BODY": "line one\nline two 🚀",
