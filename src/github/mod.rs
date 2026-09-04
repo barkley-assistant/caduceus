@@ -4,6 +4,7 @@
 //! - [`client`] — the HTTP client, ETag cache, and rate-limit parsing.
 //! - [`issue`] — `IssueKey`, `IssueDetail`, and the fetch helper.
 //! - [`poll`] — repository discovery, label polling, merge outcomes.
+//! - [`pr`] — pull-request wire model, list/fetch, comment create/update.
 //! - [`verify`] — second-pass label verification before claiming.
 
 pub mod client;
@@ -11,6 +12,7 @@ pub mod issue;
 pub mod link_header;
 pub mod merge_detect;
 pub mod poll;
+pub mod pr;
 pub mod verify;
 
 // Explicit re-exports of every public symbol from each leaf module.
@@ -30,5 +32,9 @@ pub use crate::github::merge_detect::{poll_pr_merge_status, MergeStatus};
 pub use crate::github::poll::{
     discover_watched_repos, poll_code, IssuePollDiagnostic, IssuePollOutcome,
     IssueSummary as PollIssueSummary,
+};
+pub use crate::github::pr::{
+    create_pr_comment, fetch_pull_request, list_pull_requests, update_pr_comment,
+    PullRequestBranch, PullRequestDetail, PullRequestRepo,
 };
 pub use crate::github::verify::{verify_trigger, SkipReason, VerifyOutcome};
