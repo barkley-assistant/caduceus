@@ -28,6 +28,7 @@
 //! status/review presence, line/path semantics (#305) — executor
 //! targets (#346), CLI (#318).
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::infra::error::{CaduceusError, CaduceusResult};
@@ -140,6 +141,80 @@ pub struct ReviewTarget {
     /// admission and persisted here (DAR §2.1). Frozen context: all
     /// later diff computation and CLI display reuse this value.
     pub merge_base: String,
+}
+
+// ---------------------------------------------------------------------------
+// Per-PR current state
+// ---------------------------------------------------------------------------
+
+/// Publication FSM stage for the sticky PR comment (DAR §9.1):
+/// `Pending → Publishing → Published | FailedRetryable`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[serde(deny_unknown_fields)]
+pub enum PublicationState {
+    Pending,
+    Publishing,
+    Published,
+    FailedRetryable,
+}
+
+/// Per-`(repo, pr)` durable current-state pointer (DAR §3).
+///
+/// This is a *current pointer*, not history: per-run history is the
+/// append-only, per-`review_run_id` store (#295, DAR §4.3).
+///
+/// **No execution `attempt_count` here** — the queue entry owns
+/// execution attempts; `publication_attempt_count` owns publication
+/// retries; a third counter has no consumer (DAR §3).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
+pub struct ReviewState {
+    pub repository: RepositoryId,
+    pub pull_request: u64,
+    /// Head SHA of the last completed (published or suppressed) review.
+    pub last_reviewed_head_sha: Option<String>,
+    pub last_verdict: Option<Verdict>,
+    pub last_reviewed_at: Option<DateTime<Utc>>,
+    /// Authoritative id of the sticky PR comment; marker search is the
+    /// fallback (DAR §9.2).
+    pub sticky_comment_id: Option<u64>,
+    /// Run id of the most recent review run (opaque daemon string;
+    /// 64-byte cap mirrors `validate_run_id`).
+    pub last_run_id: Option<String>,
+    /// Monotonic per-`(repo, pr)` generation, assigned at admission —
+    /// the stale-publication guard (DAR §9.4): an older generation may
+    /// persist its historical result but must never update the PR's
+    /// current presentation.
+    pub review_generation: u64,
+    pub publication_state: PublicationState,
+    /// Publication retries — NEVER the worker attempt counter.
+    pub publication_attempt_count: u32,
+    pub next_publish_at: Option<DateTime<Utc>>,
+    pub last_publish_error: Option<String>,
+}
+
+impl ReviewState {
+    /// Fresh state for a PR entering the review pipeline: `Pending`
+    /// publication, zero counters, no observations yet. `#295`'s store
+    /// calls this at admission.
+    pub fn new(repository: RepositoryId, pull_request: u64, review_generation: u64) -> Self {
+        Self {
+            repository,
+            pull_request,
+            last_reviewed_head_sha: None,
+            last_verdict: None,
+            last_reviewed_at: None,
+            sticky_comment_id: None,
+            last_run_id: None,
+            review_generation,
+            publication_state: PublicationState::Pending,
+            publication_attempt_count: 0,
+            next_publish_at: None,
+            last_publish_error: None,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -335,6 +410,42 @@ pub fn validate_review_target(target: &ReviewTarget) -> CaduceusResult<()> {
         "merge_base",
         &target.merge_base,
         MAX_SHA_BYTES,
+    )?;
+    Ok(())
+}
+
+/// Cap validation for a [`ReviewState`] (the store calls this on
+/// load, #295).
+pub fn validate_review_state(state: &ReviewState) -> CaduceusResult<()> {
+    required_string(
+        "review state",
+        "repository.owner",
+        &state.repository.owner,
+        MAX_REPO_COMPONENT_BYTES,
+    )?;
+    required_string(
+        "review state",
+        "repository.repo",
+        &state.repository.repo,
+        MAX_REPO_COMPONENT_BYTES,
+    )?;
+    optional_string(
+        "review state",
+        "last_reviewed_head_sha",
+        &state.last_reviewed_head_sha,
+        MAX_SHA_BYTES,
+    )?;
+    optional_string(
+        "review state",
+        "last_run_id",
+        &state.last_run_id,
+        MAX_RUN_ID_BYTES,
+    )?;
+    optional_string(
+        "review state",
+        "last_publish_error",
+        &state.last_publish_error,
+        MAX_PUBLISH_ERROR_BYTES,
     )?;
     Ok(())
 }

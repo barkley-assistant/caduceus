@@ -11,10 +11,12 @@
 //! - AC6 — caps declared and enforced at parse time.
 
 use caduceus::review::{
-    parse_review_result, validate_review_target, ExecutionStatus, Finding, RepositoryId, Review,
-    ReviewResult, ReviewTarget, Severity, Verdict, MAX_FINDINGS, MAX_FINDING_BODY_BYTES,
-    MAX_FINDING_PATH_BYTES, MAX_FINDING_REMEDIATION_BYTES, MAX_FINDING_TITLE_BYTES, MAX_REF_BYTES,
-    MAX_REPO_COMPONENT_BYTES, MAX_REVIEW_SUMMARY_BYTES, MAX_SHA_BYTES, REVIEW_SCHEMA_VERSION,
+    parse_review_result, validate_review_state, validate_review_target, ExecutionStatus, Finding,
+    PublicationState, RepositoryId, Review, ReviewResult, ReviewState, ReviewTarget, Severity,
+    Verdict, MAX_FINDINGS, MAX_FINDING_BODY_BYTES, MAX_FINDING_PATH_BYTES,
+    MAX_FINDING_REMEDIATION_BYTES, MAX_FINDING_TITLE_BYTES, MAX_PUBLISH_ERROR_BYTES, MAX_REF_BYTES,
+    MAX_REPO_COMPONENT_BYTES, MAX_REVIEW_SUMMARY_BYTES, MAX_RUN_ID_BYTES, MAX_SHA_BYTES,
+    REVIEW_SCHEMA_VERSION,
 };
 use serde_json::json;
 
@@ -63,6 +65,23 @@ fn result_with_findings(findings: Vec<Finding>) -> ReviewResult {
     }
 }
 
+fn sample_state_json() -> serde_json::Value {
+    json!({
+        "repository": {"owner": "barkley-assistant", "repo": "caduceus"},
+        "pull_request": 42,
+        "last_reviewed_head_sha": null,
+        "last_verdict": null,
+        "last_reviewed_at": null,
+        "sticky_comment_id": null,
+        "last_run_id": null,
+        "review_generation": 7,
+        "publication_state": "pending",
+        "publication_attempt_count": 0,
+        "next_publish_at": null,
+        "last_publish_error": null
+    })
+}
+
 // -----------------------------------------------------------------------
 // AC1 — round-trips + deny_unknown_fields
 // -----------------------------------------------------------------------
@@ -109,46 +128,6 @@ fn review_target_rejects_unknown_fields() {
     assert!(serde_json::from_str::<ReviewTarget>(&doc.to_string()).is_err());
 }
 
-// -----------------------------------------------------------------------
-// AC6 — caps at parse time
-// -----------------------------------------------------------------------
-
-#[test]
-fn review_target_caps_enforced() {
-    // At limit passes.
-    validate_review_target(&sample_target()).unwrap();
-
-    let cases: [(&str, usize); 4] = [
-        ("head_sha", MAX_SHA_BYTES + 1),
-        ("base_ref", MAX_REF_BYTES + 1),
-        ("owner", MAX_REPO_COMPONENT_BYTES + 1),
-        ("repo", MAX_REPO_COMPONENT_BYTES + 1),
-    ];
-    for (field, over_len) in cases {
-        let mut target = sample_target();
-        match field {
-            "head_sha" => target.head_sha = "a".repeat(over_len),
-            "base_ref" => target.base_ref = "b".repeat(over_len),
-            "owner" => target.repository.owner = "o".repeat(over_len),
-            "repo" => target.repository.repo = "r".repeat(over_len),
-            _ => unreachable!(),
-        }
-        assert!(
-            validate_review_target(&target).is_err(),
-            "{field} over limit accepted"
-        );
-    }
-
-    // Empty identity strings are malformed.
-    let mut empty = sample_target();
-    empty.head_sha = String::new();
-    assert!(validate_review_target(&empty).is_err());
-}
-
-// -----------------------------------------------------------------------
-// AC1 — round-trips + deny_unknown_fields (result contract)
-// -----------------------------------------------------------------------
-
 #[test]
 fn review_result_round_trip_pins_wire_shape() {
     let result = ReviewResult {
@@ -189,6 +168,59 @@ fn finding_and_review_reject_unknown_fields() {
     });
     review_doc["score"] = json!(0.9);
     assert!(serde_json::from_str::<Review>(&review_doc.to_string()).is_err());
+}
+
+#[test]
+fn review_state_round_trip_and_rejects_unknown_fields() {
+    let state: ReviewState = serde_json::from_str(&sample_state_json().to_string()).unwrap();
+    assert_eq!(state.review_generation, 7);
+    assert_eq!(state.publication_state, PublicationState::Pending);
+    let json = serde_json::to_string(&state).unwrap();
+    // snake_case on the wire (AC5 surface for PublicationState).
+    assert!(json.contains(r#""publication_state":"pending""#));
+    let back: ReviewState = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, state);
+
+    let mut bad = sample_state_json();
+    bad["unexpected"] = json!(true);
+    assert!(serde_json::from_str::<ReviewState>(&bad.to_string()).is_err());
+}
+
+// -----------------------------------------------------------------------
+// AC3 — no attempt_count; field set
+// -----------------------------------------------------------------------
+
+#[test]
+fn review_state_rejects_attempt_count_field() {
+    // The queue owns execution attempts; a serialized `attempt_count`
+    // on ReviewState must be an UNKNOWN field, not a tolerated one.
+    let mut doc = sample_state_json();
+    doc["attempt_count"] = json!(3);
+    assert!(serde_json::from_str::<ReviewState>(&doc.to_string()).is_err());
+}
+
+#[test]
+fn review_state_option_fields_default_to_none_when_missing() {
+    // Pin serde's Option-missing semantics so a future required-Option
+    // regression is caught.
+    let mut doc = sample_state_json();
+    doc.as_object_mut().unwrap().remove("last_publish_error");
+    doc.as_object_mut().unwrap().remove("next_publish_at");
+    let state: ReviewState = serde_json::from_str(&doc.to_string()).unwrap();
+    assert!(state.last_publish_error.is_none());
+    assert!(state.next_publish_at.is_none());
+}
+
+#[test]
+fn review_state_new_starts_pending_with_zero_counters() {
+    let state = ReviewState::new(sample_repository(), 42, 3);
+    assert_eq!(state.publication_state, PublicationState::Pending);
+    assert_eq!(state.publication_attempt_count, 0);
+    assert_eq!(state.review_generation, 3);
+    assert!(state.last_run_id.is_none());
+    assert!(state.sticky_comment_id.is_none());
+    assert!(state.last_reviewed_head_sha.is_none());
+    assert!(state.last_publish_error.is_none());
 }
 
 // -----------------------------------------------------------------------
@@ -332,8 +364,34 @@ fn execution_status_serializes_snake_case_and_rejects_unknown() {
     }
 }
 
+#[test]
+fn publication_state_serializes_snake_case_and_rejects_unknown() {
+    assert_eq!(
+        serde_json::to_string(&PublicationState::Pending).unwrap(),
+        "\"pending\""
+    );
+    assert_eq!(
+        serde_json::to_string(&PublicationState::Publishing).unwrap(),
+        "\"publishing\""
+    );
+    assert_eq!(
+        serde_json::to_string(&PublicationState::Published).unwrap(),
+        "\"published\""
+    );
+    assert_eq!(
+        serde_json::to_string(&PublicationState::FailedRetryable).unwrap(),
+        "\"failed_retryable\""
+    );
+    for bad in ["failed", "FailedRetryable", "failed-retryable", "retryable"] {
+        assert!(
+            serde_json::from_str::<PublicationState>(&format!("\"{bad}\"")).is_err(),
+            "accepted {bad:?}"
+        );
+    }
+}
+
 // -----------------------------------------------------------------------
-// AC6 — caps at parse time (result contract)
+// AC6 — caps at parse time
 // -----------------------------------------------------------------------
 
 #[test]
@@ -424,4 +482,55 @@ fn parse_rejects_empty_required_strings() {
     let mut empty_summary = result_with_findings(vec![]);
     empty_summary.review.as_mut().unwrap().summary = String::new();
     assert!(parse_review_result(&serde_json::to_string(&empty_summary).unwrap()).is_err());
+}
+
+#[test]
+fn review_target_caps_enforced() {
+    // At limit passes.
+    validate_review_target(&sample_target()).unwrap();
+
+    let cases: [(&str, usize); 4] = [
+        ("head_sha", MAX_SHA_BYTES + 1),
+        ("base_ref", MAX_REF_BYTES + 1),
+        ("owner", MAX_REPO_COMPONENT_BYTES + 1),
+        ("repo", MAX_REPO_COMPONENT_BYTES + 1),
+    ];
+    for (field, over_len) in cases {
+        let mut target = sample_target();
+        match field {
+            "head_sha" => target.head_sha = "a".repeat(over_len),
+            "base_ref" => target.base_ref = "b".repeat(over_len),
+            "owner" => target.repository.owner = "o".repeat(over_len),
+            "repo" => target.repository.repo = "r".repeat(over_len),
+            _ => unreachable!(),
+        }
+        assert!(
+            validate_review_target(&target).is_err(),
+            "{field} over limit accepted"
+        );
+    }
+
+    // Empty identity strings are malformed.
+    let mut empty = sample_target();
+    empty.head_sha = String::new();
+    assert!(validate_review_target(&empty).is_err());
+}
+
+#[test]
+fn review_state_caps_enforced() {
+    let mut base: ReviewState = serde_json::from_str(&sample_state_json().to_string()).unwrap();
+
+    base.last_run_id = Some("r".repeat(MAX_RUN_ID_BYTES));
+    base.last_publish_error = Some("e".repeat(MAX_PUBLISH_ERROR_BYTES));
+    validate_review_state(&base).unwrap();
+
+    base.last_run_id = Some("r".repeat(MAX_RUN_ID_BYTES + 1));
+    assert!(validate_review_state(&base).is_err());
+
+    base.last_run_id = Some("r".repeat(MAX_RUN_ID_BYTES));
+    base.last_publish_error = Some("e".repeat(MAX_PUBLISH_ERROR_BYTES + 1));
+    assert!(validate_review_state(&base).is_err());
+
+    base.last_publish_error = Some(String::new());
+    assert!(validate_review_state(&base).is_err());
 }
