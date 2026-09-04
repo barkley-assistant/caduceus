@@ -428,6 +428,10 @@ name = "review_lifecycle_test"
 path = "tests/state/review_lifecycle_test.rs"
 
 [[test]]
+name = "review_domain_test"
+path = "tests/review/review_domain_test.rs"
+
+[[test]]
 name = "state_store_test"
 path = "tests/state/state_store_test.rs"
 

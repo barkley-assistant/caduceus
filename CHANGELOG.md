@@ -59,6 +59,14 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
   `OciDiskPressure` error until the reserve recovers (256 MiB hysteresis).
   This is a host-level mitigation — `/workspace` remains a host bind mount
   with no per-container byte quota.
+- **Auto Review domain types.** `caduceus::review` now defines the
+  Phase-1 review domain model — `ReviewTarget` (immutable
+  `(repository, PR, head SHA)` identity with persisted merge-base
+  context), `ReviewState` (per-PR current pointer with the monotonic
+  `review_generation` publication guard), and the
+  `ReviewResult`/`Review`/`Finding` worker contract with strict serde,
+  snake_case enums, and parse-time field caps. Foundation for the Auto
+  Review epic (#290); no behaviour change yet. Closes #292.
 
 ### Fixed
 
