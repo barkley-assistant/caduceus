@@ -143,6 +143,89 @@ pub struct ReviewTarget {
 }
 
 // ---------------------------------------------------------------------------
+// Per-run result contract
+// ---------------------------------------------------------------------------
+
+/// Review severity — drives verdict consistency (#305) and deterministic
+/// renderer consumption order (blocking → warnings → suggestions,
+/// DAR §9.2).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[serde(deny_unknown_fields)]
+pub enum Severity {
+    Blocking,
+    Warning,
+    Suggestion,
+}
+
+/// Did the code pass the review? Drives **publication only** — never
+/// retry (DAR §8).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[serde(deny_unknown_fields)]
+pub enum Verdict {
+    Pass,
+    Fail,
+}
+
+/// Did the review *execute*? Drives **retry** — never publication
+/// (DAR §8). A failed code review is never `Failure`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[serde(deny_unknown_fields)]
+pub enum ExecutionStatus {
+    Success,
+    Failure,
+}
+
+/// One review finding. Ordering inside `Review.findings` is the
+/// persisted order and is load-bearing: byte-identical re-publication
+/// depends on it (DAR §3, §9.2). Nothing in this module sorts findings.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
+pub struct Finding {
+    pub severity: Severity,
+    pub title: String,
+    pub body: String,
+    /// Repo-relative file path, when the finding is positional.
+    pub path: Option<String>,
+    /// 1-based line number within `path`, when positional.
+    pub line: Option<u32>,
+    pub remediation: Option<String>,
+}
+
+/// The review payload of a successful run.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
+pub struct Review {
+    pub verdict: Verdict,
+    pub summary: String,
+    /// Ordered findings; order is preserved verbatim through
+    /// serialization (determinism requirement, DAR §3).
+    pub findings: Vec<Finding>,
+}
+
+/// Per-run structured review result — the canonical,
+/// presentation-independent document the worker harness produces and
+/// the daemon persists as an opaque version-tagged history blob
+/// (DAR §4.3). The PR comment is presentation derived from this; never
+/// the reverse.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
+pub struct ReviewResult {
+    /// Document schema version; must equal [`REVIEW_SCHEMA_VERSION`].
+    pub schema_version: u32,
+    /// Did the review execute? Drives retry (DAR §8).
+    pub status: ExecutionStatus,
+    /// Present iff `status == Success` (the iff-rule itself is #305's
+    /// validator; here it is shape + caps only).
+    pub review: Option<Review>,
+}
+
+// ---------------------------------------------------------------------------
 // Parse-time contracts (caps + schema version + non-empty)
 // ---------------------------------------------------------------------------
 
@@ -158,6 +241,73 @@ fn required_string(scope: &str, field: &str, value: &str, max: usize) -> Caduceu
             "{scope}: {field} exceeds limit of {max} bytes (got {})",
             value.len()
         )));
+    }
+    Ok(())
+}
+
+/// Optional string: absent is fine; present must be non-empty and
+/// within `max` bytes.
+fn optional_string(
+    scope: &str,
+    field: &str,
+    value: &Option<String>,
+    max: usize,
+) -> CaduceusResult<()> {
+    match value {
+        Some(value) => required_string(scope, field, value, max),
+        None => Ok(()),
+    }
+}
+
+/// Parse and validate a `ReviewResult` document (the v1 parser).
+///
+/// Strict at every layer: unknown fields rejected by serde, schema
+/// version must equal [`REVIEW_SCHEMA_VERSION`], and all worker-facing
+/// caps below are enforced. Verdict/severity consistency and the
+/// status↔review presence rule are #305's validator, not this parse.
+pub fn parse_review_result(json: &str) -> CaduceusResult<ReviewResult> {
+    let result: ReviewResult = serde_json::from_str(json).map_err(|err| {
+        CaduceusError::Config(format!("review result: malformed document: {err}"))
+    })?;
+    if result.schema_version != REVIEW_SCHEMA_VERSION {
+        return Err(CaduceusError::Config(format!(
+            "review result: schema_version {} is not supported (this daemon accepts \
+             {REVIEW_SCHEMA_VERSION})",
+            result.schema_version
+        )));
+    }
+    validate_review_result(&result)?;
+    Ok(result)
+}
+
+/// Cap validation for a [`ReviewResult`] (exposed so #305's full
+/// validator can compose it).
+pub fn validate_review_result(result: &ReviewResult) -> CaduceusResult<()> {
+    if let Some(review) = &result.review {
+        required_string(
+            "review result",
+            "summary",
+            &review.summary,
+            MAX_REVIEW_SUMMARY_BYTES,
+        )?;
+        if review.findings.len() > MAX_FINDINGS {
+            return Err(CaduceusError::Config(format!(
+                "review result: findings exceed limit of {MAX_FINDINGS} entries (got {})",
+                review.findings.len()
+            )));
+        }
+        for (idx, finding) in review.findings.iter().enumerate() {
+            let scope = format!("review result: finding[{idx}]");
+            required_string(&scope, "title", &finding.title, MAX_FINDING_TITLE_BYTES)?;
+            required_string(&scope, "body", &finding.body, MAX_FINDING_BODY_BYTES)?;
+            optional_string(&scope, "path", &finding.path, MAX_FINDING_PATH_BYTES)?;
+            optional_string(
+                &scope,
+                "remediation",
+                &finding.remediation,
+                MAX_FINDING_REMEDIATION_BYTES,
+            )?;
+        }
     }
     Ok(())
 }
