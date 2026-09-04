@@ -146,6 +146,12 @@ pub fn classify_error(err: &CaduceusError) -> FailureClass {
         CaduceusError::Http(_) => FailureClass::Infrastructure,
         CaduceusError::GitHubApi { .. } => FailureClass::Infrastructure,
         CaduceusError::Git { .. } => FailureClass::Infrastructure,
+        // Unavailable head SHA: a remote-side condition that resolves
+        // itself (the successor SHA is admitted by the next poll,
+        // DAR §8.1) — classified as infrastructure so it does not
+        // count against the worker retry budget. #339 owns the actual
+        // skip routing and matches on the variant before this default.
+        CaduceusError::HeadShaUnavailable { .. } => FailureClass::Infrastructure,
         CaduceusError::Push { .. } => FailureClass::Infrastructure,
         CaduceusError::PushCollision { .. } => FailureClass::Infrastructure,
         CaduceusError::Worktree { context, .. }
