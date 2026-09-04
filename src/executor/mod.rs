@@ -69,7 +69,7 @@ pub struct ExecutorSpec {
     pub issue_title: String,
     /// Issue body (UTF-8, NUL-free, may contain newlines).
     pub issue_body: String,
-    /// Label names (e.g. `["🤖 auto-fix"]`).
+    /// Label names (e.g. `["autofix"]`).
     pub labels: Vec<String>,
     /// Daemon-owned expected branch name.
     pub branch_name: String,
