@@ -354,7 +354,7 @@ async fn merged_to_done_removes_label_once() {
     .await;
     gh.mount_status(
         "DELETE",
-        "/repos/owner/repo/issues/1/labels/%F0%9F%A4%96%20auto-fix",
+        "/repos/owner/repo/issues/1/labels/autofix",
         204,
         json!({}),
     )
