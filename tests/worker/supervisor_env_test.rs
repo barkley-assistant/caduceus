@@ -39,7 +39,7 @@ fn sample_inputs(worktree: &Path) -> SanitizedEnvInputs {
         },
         issue_title: "Issue title".to_string(),
         issue_body: "Issue body".to_string(),
-        labels: vec!["🤖 auto-fix".to_string()],
+        labels: vec!["autofix".to_string()],
         worktree_path: worktree.to_path_buf(),
         run_id: "RUN75".to_string(),
         branch_name: "automation/issue-75-run75".to_string(),
@@ -136,7 +136,7 @@ fn supervisor_command_validates_labels_json() {
     let worktree = tempdir("labels_json");
     fs::create_dir_all(&worktree).expect("worktree dir");
     let mut inputs = sample_inputs(&worktree);
-    inputs.labels = vec!["🤖 auto-fix".to_string()];
+    inputs.labels = vec!["autofix".to_string()];
     let env = sanitized_env(&empty_env(), &inputs).expect("sanitized env");
 
     let raw = env
@@ -145,5 +145,5 @@ fn supervisor_command_validates_labels_json() {
         .to_str()
         .expect("labels json utf-8");
     let parsed: Vec<String> = serde_json::from_str(raw).expect("valid JSON array of strings");
-    assert_eq!(parsed, vec!["🤖 auto-fix".to_string()]);
+    assert_eq!(parsed, vec!["autofix".to_string()]);
 }

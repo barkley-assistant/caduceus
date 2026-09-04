@@ -13,7 +13,7 @@ async fn default_label_delete_hits_encoded_path_and_succeeds_on_204() {
     let gh = MockGitHub::start().await;
     gh.mount_status(
         "DELETE",
-        "/repos/o/r/issues/1/labels/%F0%9F%A4%96%20auto-fix",
+        "/repos/o/r/issues/1/labels/autofix",
         204,
         json!({}),
     )
@@ -21,7 +21,7 @@ async fn default_label_delete_hits_encoded_path_and_succeeds_on_204() {
 
     let client = Client::new(gh.uri().as_str());
     let response = client
-        .remove_issue_label("o", "r", 1, "🤖 auto-fix")
+        .remove_issue_label("o", "r", 1, "autofix")
         .await
         .expect("204 succeeds");
     assert_eq!(response.status, 204);
@@ -30,7 +30,7 @@ async fn default_label_delete_hits_encoded_path_and_succeeds_on_204() {
     assert_eq!(counts.delete, 1, "expected exactly one DELETE");
     let path_counts = gh.path_counts();
     assert_eq!(
-        path_counts.get("/repos/o/r/issues/1/labels/%F0%9F%A4%96%20auto-fix"),
+        path_counts.get("/repos/o/r/issues/1/labels/autofix"),
         Some(&1)
     );
 }
@@ -64,14 +64,14 @@ async fn label_not_found_returns_err() {
     let gh = MockGitHub::start().await;
     gh.mount_status(
         "DELETE",
-        "/repos/o/r/issues/1/labels/%F0%9F%A4%96%20auto-fix",
+        "/repos/o/r/issues/1/labels/autofix",
         404,
         json!({ "message": "Not Found" }),
     )
     .await;
 
     let client = Client::new(gh.uri().as_str());
-    let result = client.remove_issue_label("o", "r", 1, "🤖 auto-fix").await;
+    let result = client.remove_issue_label("o", "r", 1, "autofix").await;
     assert!(result.is_err(), "404 must surface as an Err");
 }
 

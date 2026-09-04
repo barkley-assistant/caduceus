@@ -475,9 +475,9 @@ separation.
 3. Create the two labels in each repo:
 
    ```bash
-   gh label create "🤖 auto-fix" --repo OWNER/REPO --color 7C3AED \
+   gh label create "autofix" --repo OWNER/REPO --color 7C3AED \
      --description "Triggers Caduceus code automation"
-   gh label create "🤖 auto-fix-investigate" --repo OWNER/REPO \
+   gh label create "autofix-investigate" --repo OWNER/REPO \
      --color 7C3AED --description "Triggers Caduceus investigation summary"
    ```
 
@@ -521,10 +521,16 @@ short version with the opinions attached.
   the operator can override per environment. Lower it if you
   want; do not set it to zero and expect a polite daemon.
 - `ticket_label_code` — the GitHub label that triggers a
-  code-fixing run (default `🤖 auto-fix`). The investigation
+  code-fixing run (default `autofix`). The investigation
   label is `ticket_label_investigation` (default
-  `🤖 auto-fix-investigation`). The two labels are created in
-  step 3 of the 60-second orientation above.
+  `autofix-investigate`). The two labels are created in
+  step 3 of the 60-second orientation above. Legacy emoji
+  config values (`🤖 auto-fix`, `🤖 auto-fix-investigate`,
+  and the previously-documented `🤖 auto-fix-investigation`) are
+  translated to the canonical labels at read time with a one-time
+  warning; update the config file and re-label open issues to the
+  canonical names after upgrading, because the daemon only polls the
+  canonical labels.
 
 Everything else lives in
 [configuration](https://github.com/barkley-assistant/caduceus/wiki/Configuration).

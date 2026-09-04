@@ -72,7 +72,7 @@ def fake_env(tmp_path: Path) -> dict:
         ),
         "CADUCEUS_WORKTREE_PATH": str(worktree),
         "CADUCEUS_RUN_ID": "01J0X0X0X0X0X0X0X0X0X0X0X",
-        "CADUCEUS_ISSUE_LABELS_JSON": json.dumps(["🤖 auto-fix", "good first issue"]),
+        "CADUCEUS_ISSUE_LABELS_JSON": json.dumps(["autofix", "good first issue"]),
         "CADUCEUS_BRANCH_NAME": "automation/issue-42-01j0x0x0x0x0x0x0x0x0x0x",
         "CADUCEUS_RESULT_PATH": str(worktree / "worker-result.json"),
     }
@@ -130,14 +130,14 @@ class TestReadRequiredEnv:
 
 class TestParseLabels:
     def test_arrays_of_strings_parse(self, bridge_module):
-        result = bridge_module.parse_labels(json.dumps(["🤖 auto-fix", "bug"]))
-        assert result == ["🤖 auto-fix", "bug"]
+        result = bridge_module.parse_labels(json.dumps(["autofix", "bug"]))
+        assert result == ["autofix", "bug"]
 
     def test_empty_array_parses_to_empty_list(self, bridge_module):
         assert bridge_module.parse_labels("[]") == []
 
     def test_unicode_labels_round_trip(self, bridge_module):
-        labels = ["🤖 auto-fix", "🚀 ship-it", "ñ"]
+        labels = ["autofix", "🚀 ship-it", "ñ"]
         assert bridge_module.parse_labels(json.dumps(labels)) == labels
 
     def test_non_string_element_rejected(self, bridge_module, capsys):
@@ -207,7 +207,7 @@ class TestInvokeHarness:
             worktree=worktree,
             prompt_file=prompt,
             run_id="abc",
-            labels=("🤖 auto-fix",),
+            labels=("autofix",),
             branch_name="automation/issue-1-abc",
         )
         assert rc == 0
@@ -373,7 +373,7 @@ class TestMain:
         assert captured, "invoke_harness should have been called"
         assert captured["args"]["run_id"] == fake_env["CADUCEUS_RUN_ID"]
         assert captured["args"]["branch_name"] == fake_env["CADUCEUS_BRANCH_NAME"]
-        assert captured["args"]["labels"] == ["🤖 auto-fix", "good first issue"]
+        assert captured["args"]["labels"] == ["autofix", "good first issue"]
 
     def test_bridge_missing_env_exits_2(self, bridge_module, fake_env):
         """A completely missing env block still exits 2 on the first
@@ -486,7 +486,7 @@ def _build_env(tmp_path: Path, **overrides: str) -> dict:
         "CADUCEUS_CONTEXT_JSON": json.dumps({"run_id": "abc"}),
         "CADUCEUS_WORKTREE_PATH": str(tmp_path),
         "CADUCEUS_RUN_ID": "01J0X0X0X0X0X0X0X0X0X0X0X",
-        "CADUCEUS_ISSUE_LABELS_JSON": json.dumps(["🤖 auto-fix", "good first issue"]),
+        "CADUCEUS_ISSUE_LABELS_JSON": json.dumps(["autofix", "good first issue"]),
         "CADUCEUS_BRANCH_NAME": "automation/issue-42-01j0x0x0x0x0x0x0x0x0x0x",
         "CADUCEUS_RESULT_PATH": str(tmp_path / "worker-result.json"),
     }
@@ -859,7 +859,7 @@ class TestNewContract:
         assert observed["prompt"] == str((worktree / "worker-prompt.md").resolve())
         assert observed["run_id"] == env["CADUCEUS_RUN_ID"]
         assert observed["branch"] == env["CADUCEUS_BRANCH_NAME"]
-        assert observed["labels"] == ["🤖 auto-fix", "good first issue"]
+        assert observed["labels"] == ["autofix", "good first issue"]
         assert observed["issue"] == {
             "repo": env["CADUCEUS_ISSUE_REPO"],
             "number": 42,

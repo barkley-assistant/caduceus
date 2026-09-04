@@ -87,7 +87,7 @@ const BUILD_TIMEOUT: Duration = Duration::from_secs(420);
 const OWNER: &str = "owner";
 const REPO: &str = "repo";
 const ISSUE_NUMBER: u64 = 47;
-const CODE_LABEL: &str = "🤖 auto-fix";
+const CODE_LABEL: &str = "autofix";
 
 // ---------------------------------------------------------------------------
 // Harness: hermes binary gate (REQ-02).
@@ -346,7 +346,7 @@ fn write_config(
         worker.display()
     ));
     yaml.push_str(&format!("  ticket_label_code: \"{}\"\n", CODE_LABEL));
-    yaml.push_str("  ticket_label_investigation: \"🤖 auto-fix-investigate\"\n");
+    yaml.push_str("  ticket_label_investigation: \"autofix-investigate\"\n");
     yaml.push_str(&format!("  dry_run: {}\n", dry_run));
     yaml.push_str("  reduced_containment_acknowledged: true\n");
     fs::write(config_path, yaml).expect("write canary config");

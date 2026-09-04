@@ -445,9 +445,10 @@ fn diagnostic_key(diag: &IssuePollDiagnostic) -> String {
 
 /// UTF-8 percent-encoding for label values. GitHub's `/issues`
 /// `labels=` query parameter must be URL-encoded even when the
-/// label contains only ASCII; emoji-laden labels (the documented
-/// default `🤖 auto-fix`) MUST round-trip through a UTF-8
-/// percent-encoded form.
+/// label contains only ASCII; arbitrary operator labels (which may
+/// still be non-ASCII, e.g. emoji) MUST round-trip through a UTF-8
+/// percent-encoded form. The default trigger labels are plain ASCII
+/// (`autofix` / `autofix-investigate`) and encode to themselves.
 pub fn url_encode_label(label: &str) -> String {
     let mut out = String::with_capacity(label.len());
     for byte in label.as_bytes() {

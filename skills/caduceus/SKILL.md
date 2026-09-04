@@ -94,9 +94,9 @@ is used.
 The same bridge contract serves both. The bridge forwards labels via
 `CADUCEUS_ISSUE_LABELS_JSON` and the harness decides how to branch.
 
-- **Code ticket** (`🤖 auto-fix`): worker success → commit + push + open
+- **Code ticket** (`autofix`): worker success → commit + push + open
   PR + post completion comment + close issue.
-- **Investigation ticket** (`🤖 auto-fix-investigate`): worker success
+- **Investigation ticket** (`autofix-investigate`): worker success
   → post findings comment + remove trigger label + leave issue open.
   No commit, no push, no PR, no close.
 

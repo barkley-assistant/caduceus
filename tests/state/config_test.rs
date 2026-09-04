@@ -500,6 +500,85 @@ fn duplicate_trigger_labels_are_rejected() {
     assert!(msg.contains("must differ"), "got: {msg}");
 }
 
+// Legacy emoji label translation (DAR §12)
+//
+// `from_raw` translates explicit legacy emoji trigger-label values to
+// the canonical labels at read time (docs/architecture/auto-review.md
+// §12), emitting a one-time warn. Exact match only; deliberate
+// non-legacy values pass through untouched.
+
+#[test]
+fn from_raw_translates_legacy_emoji_code_label() {
+    let root = tempdir("legacy-code");
+    let yaml = r#"
+        ticket_label_code: "🤖 auto-fix"
+        worker_command: ["python3", "bridge.py"]
+        reduced_containment_acknowledged: true
+        "#;
+    let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
+    let cfg = Config::from_raw(raw, &ctx(&root)).expect("config validates");
+    assert_eq!(cfg.ticket_label_code, "autofix");
+}
+
+#[test]
+fn from_raw_translates_legacy_emoji_investigation_label() {
+    let root = tempdir("legacy-inv");
+    let yaml = r#"
+        ticket_label_investigation: "🤖 auto-fix-investigate"
+        worker_command: ["python3", "bridge.py"]
+        reduced_containment_acknowledged: true
+        "#;
+    let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
+    let cfg = Config::from_raw(raw, &ctx(&root)).expect("config validates");
+    assert_eq!(cfg.ticket_label_investigation, "autofix-investigate");
+}
+
+#[test]
+fn from_raw_translates_readme_phantom_investigation_label() {
+    // README v1.0.0 documented "🤖 auto-fix-investigation"; it was never
+    // the code default. Operators following the README set it; it must
+    // translate (it was a dead label under the old defaults too).
+    let root = tempdir("legacy-phantom");
+    let yaml = r#"
+        ticket_label_investigation: "🤖 auto-fix-investigation"
+        worker_command: ["python3", "bridge.py"]
+        reduced_containment_acknowledged: true
+        "#;
+    let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
+    let cfg = Config::from_raw(raw, &ctx(&root)).expect("config validates");
+    assert_eq!(cfg.ticket_label_investigation, "autofix-investigate");
+}
+
+#[test]
+fn from_raw_does_not_translate_plain_auto_fix_hyphen() {
+    // "auto-fix" (no emoji) was never a default; operators who set it
+    // chose it deliberately. It must pass through untouched.
+    let root = tempdir("plain-hyphen");
+    let yaml = r#"
+        ticket_label_code: "auto-fix"
+        worker_command: ["python3", "bridge.py"]
+        reduced_containment_acknowledged: true
+        "#;
+    let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
+    let cfg = Config::from_raw(raw, &ctx(&root)).expect("config validates");
+    assert_eq!(cfg.ticket_label_code, "auto-fix");
+}
+
+#[test]
+fn from_raw_does_not_translate_arbitrary_custom_label() {
+    let root = tempdir("custom-label");
+    let yaml = r#"
+        ticket_label_code: "custom-triage"
+        ticket_label_investigation: "custom-investigate"
+        worker_command: ["python3", "bridge.py"]
+        reduced_containment_acknowledged: true
+        "#;
+    let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
+    let cfg = Config::from_raw(raw, &ctx(&root)).expect("config validates");
+    assert_eq!(cfg.ticket_label_code, "custom-triage");
+    assert_eq!(cfg.ticket_label_investigation, "custom-investigate");
+}
+
 // Deny unknown fields
 
 #[test]

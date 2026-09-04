@@ -67,7 +67,7 @@ fn sample_cmd(worker_command: Vec<String>) -> std::process::Command {
         1024,
         "Test PR title",
         "Test PR body",
-        &["🤖 auto-fix".to_string()],
+        &["autofix".to_string()],
         "automation/issue-99",
     )
 }

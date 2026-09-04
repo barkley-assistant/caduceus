@@ -313,7 +313,7 @@ fn unicode_in_comments_and_labels() {
         body: "héllo wörld — τεκστ".to_string(),
         created_at: Utc.with_ymd_and_hms(2024, 6, 1, 12, 0, 0).unwrap(),
     });
-    detail.labels = vec!["🤖 auto-fix".to_string()];
+    detail.labels = vec!["autofix".to_string()];
     let ctx = build_context(BuildInputs {
         config: &empty_config(),
         detail: &detail,
@@ -321,7 +321,7 @@ fn unicode_in_comments_and_labels() {
     .expect("build");
     let s = encode_context(&ctx).expect("encode");
     assert!(s.contains("héllo"));
-    assert!(s.contains("🤖"));
+    assert!(s.contains("autofix"));
 }
 
 #[test]

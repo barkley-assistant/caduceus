@@ -73,7 +73,7 @@ async fn complete_parse_returns_typed_detail() {
         .respond_with(ResponseTemplate::new(200).set_body_json(issue_body(
             "Fix login",
             "Login is broken when...",
-            &["bug", "🤖 auto-fix"],
+            &["bug", "autofix"],
         )))
         .expect(1)
         .mount(&server)
@@ -96,7 +96,7 @@ async fn complete_parse_returns_typed_detail() {
                 "labeled",
                 "octocat",
                 "2026-07-13T11:00:00Z",
-                Some("🤖 auto-fix")
+                Some("autofix")
             )])),
         )
         .expect(1)
@@ -112,13 +112,13 @@ async fn complete_parse_returns_typed_detail() {
     assert_eq!(detail.body, "Login is broken when...");
     assert_eq!(
         detail.labels,
-        vec!["bug".to_string(), "🤖 auto-fix".to_string()]
+        vec!["bug".to_string(), "autofix".to_string()]
     );
     assert_eq!(detail.comments.len(), 2);
     assert!(detail
         .events
         .iter()
-        .any(|e| e.kind == "labeled" && e.label_name.as_deref() == Some("🤖 auto-fix")));
+        .any(|e| e.kind == "labeled" && e.label_name.as_deref() == Some("autofix")));
 }
 
 // Null body / user tolerance

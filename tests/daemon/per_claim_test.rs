@@ -46,7 +46,7 @@ const TICK_TIMEOUT: Duration = Duration::from_secs(60);
 const OWNER: &str = "owner";
 const REPO: &str = "repo";
 const ISSUE_NUMBER: u64 = 86;
-const CODE_LABEL: &str = "🤖 auto-fix";
+const CODE_LABEL: &str = "autofix";
 const EXPECTED_PR_NUMBER: u64 = 117;
 
 // ---------------------------------------------------------------------------
@@ -131,7 +131,7 @@ fn write_config(
         worker.display()
     ));
     yaml.push_str(&format!("  ticket_label_code: \"{}\"\n", CODE_LABEL));
-    yaml.push_str("  ticket_label_investigation: \"🤖 auto-fix-investigate\"\n");
+    yaml.push_str("  ticket_label_investigation: \"autofix-investigate\"\n");
     yaml.push_str("  dry_run: false\n");
     yaml.push_str("  reduced_containment_acknowledged: true\n");
     yaml.push_str(&format!("  max_retries_per_issue: {max_retries}\n"));
