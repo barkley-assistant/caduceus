@@ -33,8 +33,8 @@ mod fixtures;
 use fixtures::tempdir;
 
 const TEST_TOKEN: &str = "ghp_testtoken_value_xyz";
-const CODE_LABEL: &str = "🤖 auto-fix";
-const INVESTIGATION_LABEL: &str = "🤖 auto-fix-investigate";
+const CODE_LABEL: &str = "autofix";
+const INVESTIGATION_LABEL: &str = "autofix-investigate";
 
 fn mock_client(gh: &MockGitHub) -> (Client, Config) {
     let state_dir = tempdir("mock");
@@ -105,10 +105,7 @@ async fn code_label_query_carries_percent_encoded_value() {
 
     let received = gh.server().received_requests().await.expect("received");
     let url = received[0].url.as_str();
-    assert!(
-        url.contains("%F0%9F%A4%96%20auto-fix"),
-        "expected percent-encoded label in {url}"
-    );
+    assert!(url.contains("autofix"), "expected plain label in {url}");
     assert!(
         !url.contains("🤖"),
         "raw emoji should not appear in the URL: {url}"
@@ -344,7 +341,7 @@ async fn malformed_number_is_diagnosed() {
 async fn pagination_in_code_poll_follows_link_header() {
     let gh = MockGitHub::start().await;
     let next_url = format!(
-        "{}/repos/octocat/hello-world/issues?per_page=100&page=2&labels=%F0%9F%A4%96%20auto-fix&state=open&sort=updated&direction=desc",
+        "{}/repos/octocat/hello-world/issues?per_page=100&page=2&labels=autofix&state=open&sort=updated&direction=desc",
         gh.uri()
     );
     let link_header = format!("<{next_url}>; rel=\"next\"");
@@ -450,7 +447,7 @@ async fn events_api_fields_are_ignored() {
         {
             "number": 7,
             "title": "Fix login",
-            "labels": [{"name": "🤖 auto-fix"}],
+            "labels": [{"name": "autofix"}],
             "updated_at": "2026-07-13T12:00:00Z",
             "event": "labeled",
             "performed_via_github_app": null,

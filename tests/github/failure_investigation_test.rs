@@ -260,7 +260,7 @@ async fn investigation_fresh_post() {
     let issue = make_issue();
     let ctx = make_context(&cfg, &issue, "run-inv");
     let wr = make_worker_result(true);
-    let outcome = post_investigation_comment(&ctx, &client, &wr, "🤖 auto-fix-investigate")
+    let outcome = post_investigation_comment(&ctx, &client, &wr, "autofix-investigate")
         .await
         .expect("post");
     assert!(outcome.comment_posted);
@@ -290,7 +290,7 @@ async fn investigation_existing_marker_skips_post() {
     let issue = make_issue();
     let ctx = make_context(&cfg, &issue, "run-reuse");
     let wr = make_worker_result(true);
-    let outcome = post_investigation_comment(&ctx, &client, &wr, "🤖 auto-fix-investigate")
+    let outcome = post_investigation_comment(&ctx, &client, &wr, "autofix-investigate")
         .await
         .expect("post");
     assert!(!outcome.comment_posted);

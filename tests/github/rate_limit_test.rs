@@ -131,7 +131,7 @@ async fn four_twenty_nine_mid_pagination_short_circuits_poll() {
     // Page 1 returns 200 with rate-limit headers still allowing
     // more requests.
     let next_url = format!(
-        "{}/repos/octocat/hello-world/issues?per_page=100&page=2&labels=auto-fix&state=open&sort=updated&direction=desc",
+        "{}/repos/octocat/hello-world/issues?per_page=100&page=2&labels=autofix&state=open&sort=updated&direction=desc",
         gh.uri()
     );
     let link_header = format!("<{next_url}>; rel=\"next\"");
@@ -163,7 +163,7 @@ async fn four_twenty_nine_mid_pagination_short_circuits_poll() {
     let state_dir = tempdir("429");
     let client = mock_client(&gh, &state_dir);
     let mut cfg = Config::test_defaults(&state_dir);
-    cfg.ticket_label_code = "auto-fix".to_string();
+    cfg.ticket_label_code = "autofix".to_string();
     cfg.watched_repos = vec!["octocat/hello-world".to_string()];
 
     let result = caduceus::poll::poll_code(&client, &cfg, &cfg.watched_repos).await;

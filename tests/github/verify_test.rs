@@ -22,8 +22,8 @@ mod fixtures;
 use fixtures::tempdir;
 
 const TEST_TOKEN: &str = "ghp_testtoken_value_xyz";
-const CODE_LABEL: &str = "🤖 auto-fix";
-const INVESTIGATION_LABEL: &str = "🤖 auto-fix-investigate";
+const CODE_LABEL: &str = "autofix";
+const INVESTIGATION_LABEL: &str = "autofix-investigate";
 
 fn mock_client_with_repos(server: &MockServer) -> (Client, Config) {
     let state_dir = tempdir("mock");
