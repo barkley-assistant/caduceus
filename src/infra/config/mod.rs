@@ -55,8 +55,48 @@ pub const DEFAULT_ARCHIVE_ON_RETRY: bool = false;
 pub const DEFAULT_ATTIC_RETENTION_DAYS: u64 = 30;
 pub const DEFAULT_MAX_RETRIES_PER_ISSUE: u32 = 3;
 pub const DEFAULT_RETRY_BACKOFF_SECONDS: u64 = 300;
-pub const DEFAULT_TICKET_LABEL_CODE: &str = "🤖 auto-fix";
-pub const DEFAULT_TICKET_LABEL_INVESTIGATION: &str = "🤖 auto-fix-investigate";
+pub const DEFAULT_TICKET_LABEL_CODE: &str = "autofix";
+pub const DEFAULT_TICKET_LABEL_INVESTIGATION: &str = "autofix-investigate";
+
+/// Legacy emoji trigger-label values accepted at config-read time.
+/// Exact match only; no trimming, no case-folding. A value in this map
+/// is translated to its canonical replacement and a one-time notice is
+/// emitted. See docs/architecture/auto-review.md §12.
+pub const LEGACY_TICKET_LABEL_TRANSLATIONS: &[(&str, &str)] = &[
+    ("🤖 auto-fix", "autofix"),
+    ("🤖 auto-fix-investigate", "autofix-investigate"),
+    // README-documented phantom: never the code default, but the
+    // project's own docs told operators to type it for four years.
+    ("🤖 auto-fix-investigation", "autofix-investigate"),
+];
+
+/// Translate explicitly-configured legacy emoji trigger labels to the
+/// canonical names at read time (DAR §12). Exact match only; any other
+/// value passes through untouched. Emits a one-time warn per translated
+/// field so operators know to update their config file.
+fn translate_legacy_ticket_labels(code: &mut String, investigation: &mut String) {
+    for (legacy, canonical) in LEGACY_TICKET_LABEL_TRANSLATIONS {
+        if code.as_str() == *legacy {
+            tracing::warn!(
+                from = legacy,
+                to = canonical,
+                "legacy emoji ticket_label_code translated at read time; \
+                 update the config file to the canonical label"
+            );
+            *code = canonical.to_string();
+        }
+        if investigation.as_str() == *legacy {
+            tracing::warn!(
+                from = legacy,
+                to = canonical,
+                "legacy emoji ticket_label_investigation translated at read time; \
+                 update the config file to the canonical label"
+            );
+            *investigation = canonical.to_string();
+        }
+    }
+}
+
 pub const DEFAULT_API_BASE: &str = "https://api.github.com";
 pub const DEFAULT_WORKER_PARALLELISM: u32 = 1;
 /// Multiplier applied to `worker_parallelism` to derive the default
@@ -699,18 +739,24 @@ impl Config {
             errors.push("retry_backoff_seconds must be > 0".to_string());
         }
 
-        let ticket_label_code = raw
+        let mut ticket_label_code = raw
             .ticket_label_code
             .unwrap_or_else(|| DEFAULT_TICKET_LABEL_CODE.to_string());
         if ticket_label_code.trim().is_empty() {
             errors.push("ticket_label_code must not be empty".to_string());
         }
-        let ticket_label_investigation = raw
+        let mut ticket_label_investigation = raw
             .ticket_label_investigation
             .unwrap_or_else(|| DEFAULT_TICKET_LABEL_INVESTIGATION.to_string());
         if ticket_label_investigation.trim().is_empty() {
             errors.push("ticket_label_investigation must not be empty".to_string());
         }
+        // Translate legacy emoji trigger labels to canonical values at
+        // read time (DAR §12). Exact match only; non-legacy values pass
+        // through untouched. Emits a one-time warn per translated field.
+        // Runs after the empty checks and before the must-differ check so
+        // the canonical pair is what the operator must fix.
+        translate_legacy_ticket_labels(&mut ticket_label_code, &mut ticket_label_investigation);
         if ticket_label_code == ticket_label_investigation {
             errors.push(format!(
             "ticket_label_code and ticket_label_investigation must differ (got {ticket_label_code:?})"
