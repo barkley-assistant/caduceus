@@ -180,6 +180,71 @@ impl BareMirror {
         Ok(output.stdout.trim().to_string())
     }
 
+    /// Fetch a specific commit SHA into the mirror (SHA-anchored).
+    ///
+    /// This is the `#297` primitive: a same-repo PR head SHA is fetched
+    /// via `git fetch origin <sha>`, which makes the commit object
+    /// available in the mirror's object store without creating any branch
+    /// or remote-tracking ref. The SHA is then checkout-able by
+    /// `Worktree::create` via `git worktree add --detach <sha>`.
+    ///
+    /// **Idempotent:** re-fetching an already-present SHA is a safe no-op
+    /// (git fetch of a present SHA succeeds without contacting the
+    /// remote's ref availability). Safe to call before worktree
+    /// materialisation (#299).
+    ///
+    /// **Reject-on-unavailable-SHA:** if the SHA is absent from both the
+    /// remote and the local mirror (force-push + GC between discovery and
+    /// execution), returns `CaduceusError::HeadShaUnavailable`. This is
+    /// the structured error the skip route (#339) matches on.
+    pub async fn fetch_sha(&self, runner: &GitRunner, sha: &str) -> CaduceusResult<()> {
+        let output = runner
+            .run_args(
+                "mirror-fetch-sha",
+                ["-C", &self.path.to_string_lossy(), "fetch", "origin", sha],
+            )
+            .await?;
+
+        if output.cancelled {
+            return Err(CaduceusError::Cancelled);
+        }
+        if output.timed_out || output.status != Some(0) {
+            // Fetch failed. Distinguish "SHA genuinely unavailable" from
+            // a transient fetch error on an already-present SHA. A local
+            // cat-file presence check is deterministic and avoids
+            // transport-dependent stderr string parsing.
+            if self.sha_present(runner, sha).await? {
+                // SHA is already in the mirror's object store — the
+                // fetch failure is transient (e.g. remote flaked). The
+                // SHA is usable for checkout.
+                return Ok(());
+            }
+            return Err(CaduceusError::HeadShaUnavailable {
+                sha: sha.to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Check whether a commit SHA is present in the mirror's object
+    /// store. Uses `git cat-file -e <sha>^{commit}` (local, no network).
+    async fn sha_present(&self, runner: &GitRunner, sha: &str) -> CaduceusResult<bool> {
+        let output = runner
+            .run_args(
+                "mirror-cat-file",
+                [
+                    "-C",
+                    &self.path.to_string_lossy(),
+                    "cat-file",
+                    "-e",
+                    &format!("{sha}^{{commit}}"),
+                ],
+            )
+            .await?;
+        // cat-file -e exits 0 if the object exists, 1 if not.
+        Ok(output.status == Some(0))
+    }
+
     /// Expose the mirror path.
     pub fn path(&self) -> &Path {
         &self.path

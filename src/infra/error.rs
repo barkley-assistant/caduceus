@@ -61,6 +61,13 @@ pub enum CaduceusError {
         stderr: String,
     },
 
+    /// A PR head SHA is unavailable in both the remote and the local
+    /// mirror (force-push + GC between discovery and execution). The
+    /// review is self-resolving — the successor SHA is admitted by the
+    /// next poll (DAR §8.1). Distinct skip route, not NeedsAttention.
+    #[error("head SHA unavailable: {sha}")]
+    HeadShaUnavailable { sha: String },
+
     /// GitHub API returned a non-success status.
     #[error("GitHub API status {status}: {message}")]
     GitHubApi { status: u16, message: String },
@@ -421,6 +428,9 @@ impl fmt::Debug for CaduceusError {
                     operation,
                     scrub(stderr)
                 )
+            }
+            CaduceusError::HeadShaUnavailable { sha } => {
+                format!("HeadShaUnavailable {{ sha: {} }}", scrub(sha))
             }
             CaduceusError::GitHubApi { status, message } => format!(
                 "GitHubApi {{ status: {status}, message: {} }}",
