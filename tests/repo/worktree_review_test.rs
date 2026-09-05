@@ -440,3 +440,47 @@ async fn review_worktree_reuse_refused() {
         "got: {err:?}"
     );
 }
+
+// AC5 (first half): remove leaves no refs, no registrations, no
+// directory — but the per-repo review parent stays (reaper territory).
+#[tokio::test]
+async fn review_worktree_remove_leaves_no_artefacts() {
+    let root = tempdir("rv-remove");
+    let remote_dir = root.join("remote.git");
+    let (a, b) = init_bare_remote_with_feature(&remote_dir);
+    let cfg = review_config(&root);
+    let runner = GitRunner::new(&cfg);
+    let mirror = ensure_mirror(&runner, &cfg, &remote_dir, "rvrepo").await;
+
+    let target = target_for("rvrepo", 12, &b, &a, &a);
+    let wt = RepoReviewWorktree::create_review(&runner, &mirror, "run-remove-1", &target)
+        .await
+        .expect("create_review");
+
+    let refs_before = sorted_show_refs(&mirror.path);
+    RepoReviewWorktree::remove(&runner, &wt)
+        .await
+        .expect("remove");
+    assert!(!wt.path.exists(), "worktree directory must be gone");
+
+    assert_eq!(
+        sorted_show_refs(&mirror.path),
+        refs_before,
+        "remove must not change refs (none were ever created)"
+    );
+
+    let list = git_out(&mirror.path, &["worktree", "list", "--porcelain"]);
+    assert!(
+        !list.contains(&wt.path.to_string_lossy().to_string()),
+        "worktree registration must be gone"
+    );
+
+    // The per-repo review parent survives — sweeping it is the
+    // reaper's job, not remove's.
+    let parent = wt
+        .path
+        .parent()
+        .expect("review dir has a parent")
+        .to_path_buf();
+    assert!(parent.is_dir(), "per-repo review dir must remain");
+}
