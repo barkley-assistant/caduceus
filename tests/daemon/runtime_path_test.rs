@@ -26,23 +26,14 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use caduceus::fixtures::{CANONICAL_WORKER_ENV_VARS, CANONICAL_WORKER_ENV_VARS_ISSUE_PATH};
+
 //
 // The bridge's REQUIRED_ENV_VARS tuple must exactly match the
-// Python source and compares the two sets.
-
-/// All CADUCEUS_* env vars the daemon exports per RUN-001.
-const DAEMON_ENV_VARS: &[&str] = &[
-    "CADUCEUS_ISSUE_NUMBER",
-    "CADUCEUS_ISSUE_TITLE",
-    "CADUCEUS_ISSUE_BODY",
-    "CADUCEUS_ISSUE_REPO",
-    "CADUCEUS_ISSUE_LABELS_JSON",
-    "CADUCEUS_WORKTREE_PATH",
-    "CADUCEUS_RUN_ID",
-    "CADUCEUS_CONTEXT_JSON",
-    "CADUCEUS_BRANCH_NAME",
-    "CADUCEUS_RESULT_PATH",
-];
+// Python source and compares the two sets. Post-#346 the bridge
+// REQUIRED_ENV_VARS is the full union across both target paths
+// (DAR §6.1), while a single daemon run emits the per-path subset;
+// the issue-path fixture pins the exact 10-name emission set.
 
 #[test]
 fn bridge_required_env_matches_daemon_contract() {
@@ -84,20 +75,27 @@ fn bridge_required_env_matches_daemon_contract() {
         })
         .collect();
 
-    let daemon_set: BTreeSet<&str> = DAEMON_ENV_VARS.iter().copied().collect();
+    // The bridge REQUIRED_ENV_VARS is the canonical union across both
+    // target paths (DAR §6.1) — every name the daemon may emit.
+    let canonical_set: BTreeSet<String> = CANONICAL_WORKER_ENV_VARS
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
     let bridge_set: BTreeSet<String> = bridge_vars.iter().cloned().collect();
-
     assert_eq!(
-        daemon_set.len(),
-        bridge_set.len(),
-        "env var count mismatch: daemon={} bridge={}",
-        daemon_set.len(),
-        bridge_set.len()
+        bridge_set, canonical_set,
+        "bridge REQUIRED_ENV_VARS must equal CANONICAL_WORKER_ENV_VARS (the union)"
     );
 
+    // The daemon's issue-path emission set is exactly the historical
+    // 10-name contract and is covered by the bridge's union.
+    let daemon_set: BTreeSet<String> = CANONICAL_WORKER_ENV_VARS_ISSUE_PATH
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
     for var in &daemon_set {
         assert!(
-            bridge_set.contains(*var),
+            bridge_set.contains(var),
             "daemon exports {var} but bridge does not expect it"
         );
     }
