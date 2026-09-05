@@ -84,6 +84,19 @@ the frozen `head_sha`; it is never recomputed from a re-resolved base.
 (`git merge-base` already runs through the hardened GitRunner for ancestor
 checks; the review diff computation reuses it.)
 
+### 2.3 Checkout model (#299)
+
+The review worktree is materialised as a **detached HEAD at the exact frozen
+`head_sha`**, created against the daemon-owned bare mirror
+(`git worktree add --detach <path> <head_sha>` after the `#297` SHA-anchored
+fetch). No issue-dispatch branch is created — review worktrees are
+non-pushable by construction (no `refs/heads/*` artefact ever exists). The
+worktree lives at `<repo_storage_root>/worktrees/review/<owner>/<repo>/<run_id>/`
+and carries a `review-worktree.json` sidecar persisting `base_sha`, `base_ref`,
+and the admission-computed `merge_base` (frozen context, §2.1); the review diff
+is always `git diff <merge_base> <head_sha>` (§2.2). Stale review worktrees are
+reclaimed by the review reaper (`worktree-gc` / tick step 3.5).
+
 ---
 
 ## 3. Domain model
