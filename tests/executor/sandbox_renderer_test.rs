@@ -29,16 +29,19 @@ fn executor_spec_for(
 ) -> caduceus::executor::ExecutorSpec {
     caduceus::executor::ExecutorSpec {
         self_exe: PathBuf::from("/proc/self/exe"),
-        issue: runtime.issue.clone(),
+        target: caduceus::executor::WorkTarget::Issue(caduceus::executor::IssueWorkTarget {
+            key: caduceus::github::issue::IssueKey::parse(&runtime.target)
+                .expect("fixture target parses as issue key"),
+            title: "Fix login bug".to_string(),
+            body: "Steps to reproduce".to_string(),
+            labels: vec!["bug".to_string()],
+            branch_name: "caduceus/owner/repo#1".to_string(),
+        }),
         worktree: runtime.worktree.clone(),
         run_id: runtime.run_id.clone(),
         context_json: "{}".to_string(),
         worker_command: runtime.worker_command.clone(),
         cancellation: tokio_util::sync::CancellationToken::new(),
-        issue_title: "Fix login bug".to_string(),
-        issue_body: "Steps to reproduce".to_string(),
-        labels: vec!["bug".to_string()],
-        branch_name: "caduceus/owner/repo#1".to_string(),
     }
 }
 
@@ -62,7 +65,7 @@ fn fixture_with(
     let output = cfg.state_dir.join("oci-runs").join(run_id).join("output");
     let runtime = caduceus::executor::sandbox_spec::RuntimeFacts {
         run_id: run_id.to_string(),
-        issue: caduceus::github::issue::IssueKey::parse("owner/repo#1").expect("valid key"),
+        target: "owner/repo#1".to_string(),
         worker_command: vec!["python3".to_string(), "bridge.py".to_string()],
         worktree: worktree.clone(),
         output_dir: output.clone(),
@@ -1044,6 +1047,100 @@ fn renderer_has_no_side_effect_imports() {
         assert!(
             !source.contains(forbidden),
             "sandbox_renderer.rs must not {forbidden}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PR-target `-e` fallback (DAR §6.1, D5)
+// ---------------------------------------------------------------------------
+
+/// The `-e` fallback list mirrors the resolved target: a PR-target
+/// spec (detected via `CADUCEUS_WORK_TARGET=pr` in its environment)
+/// renders only the PR-shaped fallbacks — never `CADUCEUS_ISSUE_*` /
+/// `CADUCEUS_ISSUE_ID` / `CADUCEUS_BRANCH_NAME`.
+#[test]
+fn pr_target_e_fallback_renders_pr_vars_and_no_issue_vars() {
+    let root = Path::new(ROOT);
+    let cfg = Config::test_defaults(root);
+    let worktree = root
+        .join("workdirs")
+        .join("owner")
+        .join("repo")
+        .join("run-pr-9");
+    let runtime = caduceus::executor::sandbox_spec::RuntimeFacts {
+        run_id: "run-pr-9".to_string(),
+        target: "owner/repo#pr/9".to_string(),
+        worker_command: vec!["python3".to_string(), "bridge.py".to_string()],
+        worktree: worktree.clone(),
+        output_dir: cfg
+            .state_dir
+            .join("oci-runs")
+            .join("run-pr-9")
+            .join("output"),
+        daemon_id: "test-daemon".to_string(),
+        workdir_base: root.join("workdirs"),
+        state_dir: cfg.state_dir.clone(),
+        worktree_uid: 4242,
+        worktree_gid: 4242,
+        engine_mode: EngineMode::Rootful,
+        git_shadow_kind: GitShadowKind::File,
+        git_shadow_host: cfg
+            .state_dir
+            .join("oci-runs")
+            .join("run-pr-9")
+            .join("git-shadow"),
+    };
+    let spec_input = caduceus::executor::ExecutorSpec {
+        self_exe: PathBuf::from("/proc/self/exe"),
+        target: caduceus::executor::WorkTarget::PullRequest(caduceus::review::ReviewTarget {
+            repository: caduceus::review::RepositoryId {
+                owner: "owner".to_string(),
+                repo: "repo".to_string(),
+            },
+            pull_request: 9,
+            head_sha: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef".to_string(),
+            base_sha: "cafebabecafebabecafebabecafebabecafebabe".to_string(),
+            base_ref: "main".to_string(),
+            merge_base: "abcdef01abcdef01abcdef01abcdef01abcdef01".to_string(),
+        }),
+        worktree: worktree.clone(),
+        run_id: "run-pr-9".to_string(),
+        context_json: "{}".to_string(),
+        worker_command: vec!["python3".to_string(), "bridge.py".to_string()],
+        cancellation: tokio_util::sync::CancellationToken::new(),
+    };
+    let resolved = caduceus::executor::sandbox_spec::resolve(cfg.sandbox(), &runtime, &spec_input)
+        .expect("pr spec must resolve");
+    // Render WITHOUT env files — the `-e` fallback surface (no
+    // production caller, but the mode mirror must hold here too).
+    let argv = render_with_env_files(&resolved, SandboxEngine::Docker, &[]);
+
+    let has = |needle: &str| argv.iter().any(|arg| arg.contains(needle));
+    for expected in [
+        "CADUCEUS_WORK_TARGET=pr",
+        "CADUCEUS_PR_NUMBER=9",
+        "CADUCEUS_PR_REPO=owner/repo",
+        "CADUCEUS_PR_BASE_SHA=cafebabecafebabecafebabecafebabecafebabe",
+        "CADUCEUS_PR_HEAD_SHA=deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+        "CADUCEUS_CONTEXT_JSON={}",
+        "CADUCEUS_WORKTREE_PATH=/workspace",
+        "CADUCEUS_RESULT_PATH=/output/worker-result.json",
+    ] {
+        assert!(has(expected), "PR fallback must carry {expected}: {argv:?}");
+    }
+    for forbidden in [
+        "CADUCEUS_ISSUE_ID",
+        "CADUCEUS_ISSUE_NUMBER",
+        "CADUCEUS_ISSUE_REPO",
+        "CADUCEUS_ISSUE_TITLE",
+        "CADUCEUS_ISSUE_BODY",
+        "CADUCEUS_ISSUE_LABELS_JSON",
+        "CADUCEUS_BRANCH_NAME",
+    ] {
+        assert!(
+            !has(forbidden),
+            "PR fallback must not carry {forbidden}: {argv:?}"
         );
     }
 }

@@ -36,15 +36,17 @@ pub fn failing_worker_script_body() -> &'static str {
 pub fn spec_for_stage(run_id: &str, worker_script: PathBuf) -> ExecutorSpec {
     ExecutorSpec {
         self_exe: PathBuf::from("/usr/bin/caduceus"),
-        issue: IssueKey::parse("owner/repo#1").expect("valid key"),
+        target: caduceus::executor::WorkTarget::Issue(caduceus::executor::IssueWorkTarget {
+            key: IssueKey::parse("owner/repo#1").expect("valid key"),
+            title: "title".to_string(),
+            body: "body".to_string(),
+            labels: Vec::new(),
+            branch_name: "automation/issue-1".to_string(),
+        }),
         worktree: PathBuf::from("/tmp/worktree"),
         run_id: run_id.to_string(),
         context_json: r#"{"stage":"fail"}"#.to_string(),
         worker_command: vec![worker_script.to_string_lossy().to_string()],
         cancellation: tokio_util::sync::CancellationToken::new(),
-        issue_title: "title".to_string(),
-        issue_body: "body".to_string(),
-        labels: Vec::new(),
-        branch_name: "automation/issue-1".to_string(),
     }
 }

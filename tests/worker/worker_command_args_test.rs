@@ -7,7 +7,10 @@
 
 use std::path::PathBuf;
 
+use caduceus::executor::{IssueWorkTarget, WorkTarget};
 use caduceus::issue::IssueKey;
+use caduceus::review::RepositoryId;
+use caduceus::review::ReviewTarget;
 use caduceus::worker_supervisor::build_supervisor_command;
 
 /// Helper: parse the `Debug` representation of a `Command` into
@@ -54,21 +57,51 @@ fn sample_cmd(worker_command: Vec<String>) -> std::process::Command {
         &PathBuf::from("/usr/bin/caduceus"),
         &PathBuf::from("/tmp/worktree"),
         "run-99",
-        &IssueKey {
-            owner: "o".into(),
-            repo: "r".into(),
-            number: 99,
-        },
+        &WorkTarget::Issue(IssueWorkTarget {
+            key: IssueKey {
+                owner: "o".into(),
+                repo: "r".into(),
+                number: 99,
+            },
+            title: "Test PR title".to_string(),
+            body: "Test PR body".to_string(),
+            labels: vec!["autofix".to_string()],
+            branch_name: "automation/issue-99".to_string(),
+        }),
         r#"{"key":"val"}"#,
         &worker_command,
         &PathBuf::from("/tmp/transcript.log"),
         &PathBuf::from("/tmp/heartbeat.log"),
         3600,
         1024,
-        "Test PR title",
-        "Test PR body",
-        &["autofix".to_string()],
-        "automation/issue-99",
+    )
+}
+
+/// PR-target argv (DAR §6.1): exactly one `--pr-target-json` flag
+/// carrying the serialized `ReviewTarget`, no `--issue`-shaped flags.
+fn sample_pr_cmd(worker_command: Vec<String>) -> std::process::Command {
+    let pr = ReviewTarget {
+        repository: RepositoryId {
+            owner: "o".to_string(),
+            repo: "r".to_string(),
+        },
+        pull_request: 42,
+        head_sha: "abc123".to_string(),
+        base_sha: "def456".to_string(),
+        base_ref: "main".to_string(),
+        merge_base: "def456".to_string(),
+    };
+    build_supervisor_command(
+        &PathBuf::from("/usr/bin/caduceus"),
+        &PathBuf::from("/tmp/worktree"),
+        "run-pr-42",
+        &WorkTarget::PullRequest(pr),
+        r#"{"key":"val"}"#,
+        &worker_command,
+        &PathBuf::from("/tmp/transcript.log"),
+        &PathBuf::from("/tmp/heartbeat.log"),
+        3600,
+        1024,
     )
 }
 
@@ -149,5 +182,68 @@ fn build_supervisor_command_preserves_multi_arg_worker_command() {
         worker_args,
         vec!["python3", "script.py", "--config", "dev.toml"],
         "Worker args must appear exactly as provided, with no extra `--` tokens"
+    );
+}
+
+// ── PR-target argv (DAR §6.1) ─────────────────────────────────
+
+#[test]
+fn pr_target_argv_carries_one_pr_flag_and_no_issue_flags() {
+    let worker_command = vec!["cargo".to_string(), "test".to_string()];
+    let cmd = sample_pr_cmd(worker_command);
+    let args: Vec<String> = cmd
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+
+    // The PR flag sits immediately after `--run-id` (DAR §6.1).
+    let run_id_pos = args.iter().position(|a| a == "--run-id").unwrap();
+    assert_eq!(args[run_id_pos + 1], "run-pr-42");
+    assert_eq!(args[run_id_pos + 2], "--pr-target-json");
+    let pr_json: caduceus::review::ReviewTarget =
+        serde_json::from_str(&args[run_id_pos + 3]).expect("pr json parses");
+    assert_eq!(pr_json.repository.owner, "o");
+    assert_eq!(pr_json.repository.repo, "r");
+    assert_eq!(pr_json.pull_request, 42);
+    assert_eq!(pr_json.head_sha, "abc123");
+    assert_eq!(pr_json.base_sha, "def456");
+    assert_eq!(pr_json.base_ref, "main");
+    assert_eq!(pr_json.merge_base, "def456");
+
+    // No `--issue`-shaped flags on the PR path.
+    for flag in [
+        "--issue",
+        "--issue-title",
+        "--issue-body",
+        "--issue-labels-json",
+        "--branch-name",
+    ] {
+        assert!(
+            !args.contains(&flag.to_string()),
+            "PR argv must not contain {flag}: {args:?}"
+        );
+    }
+    // Exactly one `--` separator, worker command after it.
+    let sep_pos = args.iter().position(|a| a == "--").unwrap();
+    assert_eq!(args[sep_pos + 1], "cargo");
+    assert_eq!(args[sep_pos + 2], "test");
+}
+
+#[test]
+fn issue_target_argv_still_carries_issue_flags_and_no_pr_flag() {
+    let cmd = sample_cmd(vec!["cargo".to_string(), "test".to_string()]);
+    let args: Vec<String> = cmd
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+
+    assert!(args.contains(&"--issue".to_string()));
+    assert!(args.contains(&"--issue-title".to_string()));
+    assert!(args.contains(&"--issue-body".to_string()));
+    assert!(args.contains(&"--issue-labels-json".to_string()));
+    assert!(args.contains(&"--branch-name".to_string()));
+    assert!(
+        !args.contains(&"--pr-target-json".to_string()),
+        "Issue argv must not contain --pr-target-json: {args:?}"
     );
 }

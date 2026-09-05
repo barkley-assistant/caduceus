@@ -270,8 +270,7 @@ fn fresh_heartbeat_surfaces_live_worker() {
     let runs_dir = cfg.state_dir.join("runs");
     std::fs::create_dir_all(&runs_dir).expect("runs dir");
     let now = Utc::now();
-    let issue = IssueKey::parse("owner/repo#1").expect("key");
-    let record = sample_heartbeat("RUN-LIVE", issue.clone(), now);
+    let record = sample_heartbeat("RUN-LIVE", "owner/repo#1", now);
     let hb_path = runs_dir.join("RUN-LIVE.heartbeat");
     write_heartbeat_record(&record, &hb_path).expect("write");
     let (report, _) = build_report(&cfg.state_dir).expect("report");
@@ -292,14 +291,13 @@ fn stale_heartbeat_surfaces_with_stale_marker() {
     // A heartbeat written 120 seconds ago is stale per
     // the 90s contract window.
     let now = Utc::now();
-    let issue = IssueKey::parse("owner/repo#1").expect("key");
     let record = Heartbeat {
         version: HEARTBEAT_FILE_VERSION,
         run_id: "RUN-STALE".to_string(),
         pid: std::process::id(),
         started_at: now - chrono::Duration::seconds(120),
         updated_at: now - chrono::Duration::seconds(120),
-        issue_key: issue,
+        target: "owner/repo#1".to_string(),
         transcript_path: PathBuf::from("/tmp/runs/RUN-STALE.log"),
     };
     let hb_path = runs_dir.join("RUN-STALE.heartbeat");
@@ -314,14 +312,13 @@ fn future_heartbeat_does_not_panic() {
     // A heartbeat whose updated_at is in the future is
     // surfaced as "fresh" with saturating age 0 (no panic).
     let now = Utc::now();
-    let issue = IssueKey::parse("owner/repo#1").expect("key");
     let record = Heartbeat {
         version: HEARTBEAT_FILE_VERSION,
         run_id: "RUN-FUTURE".to_string(),
         pid: std::process::id(),
         started_at: now + chrono::Duration::seconds(10),
         updated_at: now + chrono::Duration::seconds(10),
-        issue_key: issue,
+        target: "owner/repo#1".to_string(),
         transcript_path: PathBuf::from("/tmp/runs/RUN-FUTURE.log"),
     };
     let worker = live_worker_from_heartbeat(&record, now);
@@ -353,8 +350,7 @@ fn symlink_heartbeat_is_rejected() {
     // path. The reporter must skip the symlink itself
     // even though its target is a valid record.
     let target = runs_dir.join("target.bin");
-    let issue = IssueKey::parse("owner/repo#1").expect("key");
-    let record = sample_heartbeat("RUN-SYMLINK", issue, Utc::now());
+    let record = sample_heartbeat("RUN-SYMLINK", "owner/repo#1", Utc::now());
     write_heartbeat_record(&record, &target).expect("write");
     let link = runs_dir.join("RUN-SYMLINK.heartbeat");
     std::os::unix::fs::symlink(&target, &link).expect("symlink");
@@ -756,8 +752,7 @@ fn render_human_includes_transcript_for_live_workers() {
     let runs_dir = cfg.state_dir.join("runs");
     std::fs::create_dir_all(&runs_dir).expect("runs dir");
     let now = Utc::now();
-    let issue = IssueKey::parse("owner/repo#1").expect("key");
-    let record = sample_heartbeat("RUN-LIVE", issue, now);
+    let record = sample_heartbeat("RUN-LIVE", "owner/repo#1", now);
     let hb_path = runs_dir.join("RUN-LIVE.heartbeat");
     write_heartbeat_record(&record, &hb_path).expect("write");
     let (report, diag) = build_report(&cfg.state_dir).expect("report");

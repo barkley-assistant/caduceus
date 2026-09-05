@@ -69,7 +69,7 @@ fn heartbeat_write_rejects_trailing_symlink() {
         pid: std::process::id(),
         started_at: now,
         updated_at: now,
-        issue_key: sample_issue(),
+        target: "owner/repo#1".to_string(),
         transcript_path: PathBuf::from("/tmp"),
     };
 

@@ -56,11 +56,16 @@ pub const CANONICAL_CONFIG_KEYS: &[&str] = &[
     "worker_timeout_seconds",
 ];
 
-/// Canonical worker environment variable names exported by the daemon
-/// for every worker invocation. Each name is mirrored in the Python
-/// bridge's `REQUIRED_ENV_VARS` tuple. The contract requires the daemon
-/// to set every one of these; if the bridge ever needs a new field
-/// the listing here is the contract bump.
+/// Canonical worker environment variable names exported by the daemon.
+/// This is the full **union** across both target paths (DAR §6.1):
+/// the 10 historical issue-path names plus `CADUCEUS_WORK_TARGET` and
+/// the four `CADUCEUS_PR_*` names. Each name is mirrored in the Python
+/// bridge's `REQUIRED_ENV_VARS` tuple (set equality,
+/// `docs_contract_test`). The exact per-path emission sets are pinned
+/// by [`CANONICAL_WORKER_ENV_VARS_ISSUE_PATH`] and
+/// [`CANONICAL_WORKER_ENV_VARS_PR_PATH`]; the union exists so the
+/// bridge keeps a single required-name list while the per-path
+/// fixtures assert byte-for-byte emission.
 pub const CANONICAL_WORKER_ENV_VARS: &[&str] = &[
     "CADUCEUS_BRANCH_NAME",
     "CADUCEUS_CONTEXT_JSON",
@@ -72,6 +77,45 @@ pub const CANONICAL_WORKER_ENV_VARS: &[&str] = &[
     "CADUCEUS_RUN_ID",
     "CADUCEUS_WORKTREE_PATH",
     "CADUCEUS_RESULT_PATH",
+    "CADUCEUS_WORK_TARGET",
+    "CADUCEUS_PR_BASE_SHA",
+    "CADUCEUS_PR_HEAD_SHA",
+    "CADUCEUS_PR_NUMBER",
+    "CADUCEUS_PR_REPO",
+];
+
+/// Exact `CADUCEUS_*` set emitted for an **issue-target** run — the
+/// byte-for-byte v0.1 contract (no `CADUCEUS_WORK_TARGET`, no
+/// `CADUCEUS_PR_*`). `sanitized_env`'s issue arm and the OCI issue
+/// arm both emit exactly this set.
+pub const CANONICAL_WORKER_ENV_VARS_ISSUE_PATH: &[&str] = &[
+    "CADUCEUS_BRANCH_NAME",
+    "CADUCEUS_CONTEXT_JSON",
+    "CADUCEUS_ISSUE_BODY",
+    "CADUCEUS_ISSUE_LABELS_JSON",
+    "CADUCEUS_ISSUE_NUMBER",
+    "CADUCEUS_ISSUE_REPO",
+    "CADUCEUS_ISSUE_TITLE",
+    "CADUCEUS_RUN_ID",
+    "CADUCEUS_WORKTREE_PATH",
+    "CADUCEUS_RESULT_PATH",
+];
+
+/// Exact `CADUCEUS_*` set emitted for a **PR-target** run (DAR §6.1):
+/// the `pr` mode marker plus the four `CADUCEUS_PR_*` values and the
+/// shared run/context/worktree/result vars. No `CADUCEUS_ISSUE_*`, no
+/// `CADUCEUS_ISSUE_ID` (an OCI-only issue-path compat var), no
+/// `CADUCEUS_BRANCH_NAME`.
+pub const CANONICAL_WORKER_ENV_VARS_PR_PATH: &[&str] = &[
+    "CADUCEUS_CONTEXT_JSON",
+    "CADUCEUS_PR_BASE_SHA",
+    "CADUCEUS_PR_HEAD_SHA",
+    "CADUCEUS_PR_NUMBER",
+    "CADUCEUS_PR_REPO",
+    "CADUCEUS_RESULT_PATH",
+    "CADUCEUS_RUN_ID",
+    "CADUCEUS_WORKTREE_PATH",
+    "CADUCEUS_WORK_TARGET",
 ];
 
 /// Default allowlist for the worker environment (the worker-result

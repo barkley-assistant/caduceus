@@ -10,7 +10,6 @@ use std::pin::Pin;
 use tokio_util::sync::CancellationToken;
 
 use crate::executor::{Executor, ExecutorOutcome, ExecutorSpec};
-use crate::github::issue::IssueKey;
 use crate::infra::config::Config;
 use crate::infra::error::CaduceusResult;
 use crate::worker::supervisor::supervise;
@@ -37,31 +36,22 @@ impl Executor for TrustedHostExecutor {
     ) -> Pin<Box<dyn Future<Output = CaduceusResult<ExecutorOutcome>> + Send + 'a>> {
         let self_exe: &'a Path = &spec.self_exe;
         let cfg: &'a Config = &self.cfg;
-        let issue: &'a IssueKey = &spec.issue;
         let worktree: &'a Path = &spec.worktree;
         let run_id: &'a str = &spec.run_id;
         let context_json: &'a str = &spec.context_json;
         let worker_command: &'a [String] = &spec.worker_command;
         let cancellation: CancellationToken = spec.cancellation.clone();
-        let issue_title: &'a str = &spec.issue_title;
-        let issue_body: &'a str = &spec.issue_body;
-        let labels: &'a [String] = &spec.labels;
-        let branch_name: &'a str = &spec.branch_name;
 
         Box::pin(async move {
             let outcome = supervise(
                 self_exe,
                 cfg,
-                issue,
+                &spec.target,
                 worktree,
                 run_id,
                 context_json,
                 worker_command,
                 cancellation,
-                issue_title,
-                issue_body,
-                labels,
-                branch_name,
             )
             .await?;
             Ok(ExecutorOutcome {

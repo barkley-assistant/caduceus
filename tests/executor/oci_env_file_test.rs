@@ -347,16 +347,18 @@ async fn create_failure_leaves_no_env_file() {
     let cfg = Config::test_defaults(tmp.path());
     let spec = ExecutorSpec {
         self_exe: PathBuf::from("/proc/self/exe"),
-        issue: IssueKey::parse("owner/repo#1").expect("valid key"),
+        target: caduceus::executor::WorkTarget::Issue(caduceus::executor::IssueWorkTarget {
+            key: IssueKey::parse("owner/repo#1").expect("valid key"),
+            title: "t".to_string(),
+            body: "b".to_string(),
+            labels: Vec::new(),
+            branch_name: "b".to_string(),
+        }),
         worktree: tmp.path().join("worktree"),
         run_id: "run-guard".to_string(),
         context_json: "{}".to_string(),
         worker_command: vec!["python3".to_string(), "bridge.py".to_string()],
         cancellation: CancellationToken::new(),
-        issue_title: "t".to_string(),
-        issue_body: "b".to_string(),
-        labels: Vec::new(),
-        branch_name: "b".to_string(),
     };
     let argv = vec![
         "docker".to_string(),
@@ -379,8 +381,7 @@ async fn create_failure_leaves_no_env_file() {
         state,
         cfg.state_dir.clone(),
         facts.daemon_id,
-        spec.issue.clone(),
-        spec.issue.display_key(),
+        spec.target.display(),
         "test-command-sha".to_string(),
         argv,
         Some(env_file),

@@ -45,7 +45,14 @@ When triggered, this skill should:
    legacy path. To verify the active path, run
    `ls ~/.hermes/caduceus/`: a `harness.py` file means the new
    contract; only `worker-bridge.py` means the legacy path. The parent
-   resolves this relative to `$HERMES_HOME` (default `~/.hermes`).
+   resolves this relative to `$HERMES_HOME` (default `~/.hermes`). The
+   bridge is target-neutral: a PR review run exports
+   `CADUCEUS_WORK_TARGET=pr` plus the `CADUCEUS_PR_*` vars, resolves
+   only the mode-correct result path, and never synthesizes a result
+   (no result file = execution failure). Re-seed the user-owned bridge
+   (`hermes caduceus setup`) before enabling review runs — an
+   un-updated copy fails closed on a PR env while issue-path runs keep
+   working unchanged.
 5. **If something is broken**: tail `<state_dir>/processor.log` and
    `<state_dir>/runs/<run-id>.log` for the affected run. For a terminal
    failed/skipped entry, show `caduceus queue show OWNER/REPO#N` to

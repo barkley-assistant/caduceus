@@ -243,16 +243,18 @@ pub(crate) async fn run_claim(
     let worker_command = cfg.worker_command.clone();
     let spec = crate::executor::ExecutorSpec {
         self_exe,
-        issue: claimed.entry.key.clone(),
+        target: crate::executor::WorkTarget::Issue(crate::executor::IssueWorkTarget {
+            key: claimed.entry.key.clone(),
+            title: issue.title.clone(),
+            body: issue.body.clone(),
+            labels: issue.labels.clone(),
+            branch_name: worktree.branch_name.clone(),
+        }),
         worktree: worktree.path.clone(),
         run_id: run_id.clone(),
         context_json: context_json.clone(),
         worker_command,
         cancellation: cancellation.clone(),
-        issue_title: issue.title.clone(),
-        issue_body: issue.body.clone(),
-        labels: issue.labels.clone(),
-        branch_name: worktree.branch_name.clone(),
     };
     let exec_outcome = match services.executor.run(&spec).await {
         Ok(o) => o,

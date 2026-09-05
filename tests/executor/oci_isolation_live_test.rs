@@ -88,16 +88,19 @@ fn executor_spec_for(
 ) -> caduceus::executor::ExecutorSpec {
     caduceus::executor::ExecutorSpec {
         self_exe: PathBuf::from("/proc/self/exe"),
-        issue: runtime.issue.clone(),
+        target: caduceus::executor::WorkTarget::Issue(caduceus::executor::IssueWorkTarget {
+            key: caduceus::github::issue::IssueKey::parse(&runtime.target)
+                .expect("fixture target parses as issue key"),
+            title: "Fix login bug".to_string(),
+            body: "Steps to reproduce".to_string(),
+            labels: vec!["bug".to_string()],
+            branch_name: "caduceus/owner/repo#1".to_string(),
+        }),
         worktree: runtime.worktree.clone(),
         run_id: runtime.run_id.clone(),
         context_json: "{}".to_string(),
         worker_command: runtime.worker_command.clone(),
         cancellation: tokio_util::sync::CancellationToken::new(),
-        issue_title: "Fix login bug".to_string(),
-        issue_body: "Steps to reproduce".to_string(),
-        labels: vec!["bug".to_string()],
-        branch_name: "caduceus/owner/repo#1".to_string(),
     }
 }
 
@@ -214,7 +217,7 @@ fn live_fixture_with(
 
     let runtime = caduceus::executor::sandbox_spec::RuntimeFacts {
         run_id: run_id.to_string(),
-        issue: caduceus::github::issue::IssueKey::parse("owner/repo#1").expect("valid key"),
+        target: "owner/repo#1".to_string(),
         worker_command: vec![
             "sh".to_string(),
             "-c".to_string(),
@@ -831,20 +834,22 @@ fn disk_pressure_watchdog_terminates_in_flight_and_refuses_new_dispatch() {
     let result = run.block_on(async move {
         let spec = caduceus::executor::ExecutorSpec {
             self_exe: std::path::PathBuf::from("/proc/self/exe"),
-            issue: caduceus::github::issue::IssueKey::parse("owner/repo#1").expect("valid key"),
+            target: caduceus::executor::WorkTarget::Issue(caduceus::executor::IssueWorkTarget {
+                key: caduceus::github::issue::IssueKey::parse("owner/repo#1").expect("valid key"),
+                title: "t".to_string(),
+                body: "b".to_string(),
+                labels: Vec::new(),
+                branch_name: "b".to_string(),
+            }),
             worktree: std::path::PathBuf::from("/tmp/worktree"),
             run_id: run_id.clone(),
             context_json: "{}".to_string(),
             worker_command: vec!["sleep".to_string(), "3600".to_string()],
             cancellation: CancellationToken::new(),
-            issue_title: "t".to_string(),
-            issue_body: "b".to_string(),
-            labels: Vec::new(),
-            branch_name: "b".to_string(),
         };
         let runtime = caduceus::executor::sandbox_spec::RuntimeFacts {
             run_id: run_id.clone(),
-            issue: spec.issue.clone(),
+            target: spec.target.display(),
             worker_command: spec.worker_command.clone(),
             worktree: worktree.clone(),
             output_dir: fx_cfg
@@ -868,8 +873,7 @@ fn disk_pressure_watchdog_terminates_in_flight_and_refuses_new_dispatch() {
             state,
             fx_cfg.state_dir.clone(),
             runtime.daemon_id,
-            spec.issue.clone(),
-            spec.issue.display_key(),
+            spec.target.display(),
             "live-test-command-sha".to_string(),
             argv,
             None,
@@ -1368,8 +1372,7 @@ fn timeout_cleans_container_live() {
         Arc::clone(&state),
         fx.cfg.state_dir.clone(),
         "live-test-daemon".to_string(),
-        harness.spec_exec.issue.clone(),
-        harness.spec_exec.issue.display_key(),
+        harness.spec_exec.target.display(),
         "live-command-sha".to_string(),
         argv,
         None,
@@ -1426,8 +1429,7 @@ fn cancellation_cleans_container_live() {
         Arc::clone(&state),
         fx.cfg.state_dir.clone(),
         "live-test-daemon".to_string(),
-        harness.spec_exec.issue.clone(),
-        harness.spec_exec.issue.display_key(),
+        harness.spec_exec.target.display(),
         "live-command-sha".to_string(),
         argv,
         None,
@@ -1530,7 +1532,7 @@ fn crash_restart_orphan_reconcile_live() {
             created_at: now.clone(),
             updated_at: now,
             daemon_id: "live-test-daemon".to_string(),
-            issue_id: harness.spec_exec.issue.display_key(),
+            issue_id: harness.spec_exec.target.display(),
             worker_command_sha256: "live-command-sha".to_string(),
         })
         .expect("insert row");
@@ -1589,8 +1591,7 @@ fn heartbeat_advances_during_run_live() {
         Arc::clone(&state),
         fx.cfg.state_dir.clone(),
         "live-test-daemon".to_string(),
-        harness.spec_exec.issue.clone(),
-        harness.spec_exec.issue.display_key(),
+        harness.spec_exec.target.display(),
         "live-command-sha".to_string(),
         argv,
         None,
@@ -1875,7 +1876,7 @@ struct LifecycleHarness {
 fn lifecycle_harness(fx: &LiveFixture, worker_command: Vec<String>) -> LifecycleHarness {
     let runtime = caduceus::executor::sandbox_spec::RuntimeFacts {
         run_id: fx.run_id.clone(),
-        issue: caduceus::github::issue::IssueKey::parse("owner/repo#1").expect("valid key"),
+        target: "owner/repo#1".to_string(),
         worker_command: worker_command.clone(),
         worktree: fx.worktree.clone(),
         output_dir: fx
@@ -1899,16 +1900,19 @@ fn lifecycle_harness(fx: &LiveFixture, worker_command: Vec<String>) -> Lifecycle
     };
     let spec_exec = caduceus::executor::ExecutorSpec {
         self_exe: std::path::PathBuf::from("/proc/self/exe"),
-        issue: runtime.issue.clone(),
+        target: caduceus::executor::WorkTarget::Issue(caduceus::executor::IssueWorkTarget {
+            key: caduceus::github::issue::IssueKey::parse(&runtime.target)
+                .expect("fixture target parses as issue key"),
+            title: "title".to_string(),
+            body: "body".to_string(),
+            labels: vec!["bug".to_string()],
+            branch_name: "caduceus/owner/repo#1".to_string(),
+        }),
         worktree: fx.worktree.clone(),
         run_id: fx.run_id.clone(),
         context_json: "{}".to_string(),
         worker_command,
         cancellation: CancellationToken::new(),
-        issue_title: "title".to_string(),
-        issue_body: "body".to_string(),
-        labels: vec!["bug".to_string()],
-        branch_name: "caduceus/owner/repo#1".to_string(),
     };
     let spec = resolve(fx.cfg.sandbox(), &runtime, &spec_exec).expect("sandbox must resolve");
     LifecycleHarness { spec, spec_exec }

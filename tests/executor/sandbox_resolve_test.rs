@@ -313,19 +313,21 @@ fn resolves_full_canonical_environment_with_container_paths() {
     let (cfg, worktree) = base();
     let mut runtime = runtime_for(&cfg, &worktree);
     runtime.run_id = "run-100".to_string();
-    runtime.issue = IssueKey::parse("octocat/hello#42").expect("valid key");
+    runtime.target = "octocat/hello#42".to_string();
     let spec_input = caduceus::executor::ExecutorSpec {
         self_exe: PathBuf::from("/proc/self/exe"),
-        issue: runtime.issue.clone(),
+        target: caduceus::executor::WorkTarget::Issue(caduceus::executor::IssueWorkTarget {
+            key: IssueKey::parse(&runtime.target).expect("fixture target parses as issue key"),
+            title: "A title".to_string(),
+            body: "A body\nwith newline".to_string(),
+            labels: vec!["p1".to_string(), "p2".to_string()],
+            branch_name: "caduceus/octocat/hello#42".to_string(),
+        }),
         worktree: worktree.clone(),
         run_id: "run-100".to_string(),
         context_json: "{\"context\":true}".to_string(),
         worker_command: vec!["python3".to_string(), "bridge.py".to_string()],
         cancellation: tokio_util::sync::CancellationToken::new(),
-        issue_title: "A title".to_string(),
-        issue_body: "A body\nwith newline".to_string(),
-        labels: vec!["p1".to_string(), "p2".to_string()],
-        branch_name: "caduceus/octocat/hello#42".to_string(),
     };
     let resolved = resolve(cfg.sandbox(), &runtime, &spec_input).expect("must resolve");
     let env = resolved.environment();
@@ -392,16 +394,18 @@ fn multi_line_issue_text_resolves_to_single_line_env_file() {
     let runtime = runtime_for(&cfg, &worktree);
     let spec_input = caduceus::executor::ExecutorSpec {
         self_exe: PathBuf::from("/proc/self/exe"),
-        issue: runtime.issue.clone(),
+        target: caduceus::executor::WorkTarget::Issue(caduceus::executor::IssueWorkTarget {
+            key: IssueKey::parse(&runtime.target).expect("fixture target parses as issue key"),
+            title: "A title\nwith lines\r\nand CR".to_string(),
+            body: "A body\r\nwith CRLF\nand LF".to_string(),
+            labels: vec!["p1".to_string()],
+            branch_name: "caduceus/owner/repo#1".to_string(),
+        }),
         worktree: worktree.clone(),
         run_id: "run-101".to_string(),
         context_json: "{}".to_string(),
         worker_command: vec!["python3".to_string(), "bridge.py".to_string()],
         cancellation: tokio_util::sync::CancellationToken::new(),
-        issue_title: "A title\nwith lines\r\nand CR".to_string(),
-        issue_body: "A body\r\nwith CRLF\nand LF".to_string(),
-        labels: vec!["p1".to_string()],
-        branch_name: "caduceus/owner/repo#1".to_string(),
     };
     let resolved = resolve(cfg.sandbox(), &runtime, &spec_input).expect(
         "multi-line issue title/body must resolve (newline-normalized, \
@@ -441,7 +445,7 @@ fn resolves_labels_in_fixed_order() {
     let (cfg, worktree) = base();
     let mut runtime = runtime_for(&cfg, &worktree);
     runtime.run_id = "run-007".to_string();
-    runtime.issue = IssueKey::parse("owner/repo#7").expect("valid key");
+    runtime.target = "owner/repo#7".to_string();
     runtime.daemon_id = "daemon-42".to_string();
     let spec =
         resolve(cfg.sandbox(), &runtime, &support::executor_spec(&runtime)).expect("must resolve");
@@ -730,5 +734,105 @@ fn escalation_validator_is_reachable_through_resolve() {
             Err(CaduceusError::OciMountConflict { ref detail }) if detail.contains("socket")
         ),
         "resolve must run the escalation validator; got: {result:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// PR-target resolution (DAR §6.1, D5)
+// ---------------------------------------------------------------------------
+
+/// A PR review target mirroring the D2 env contract: `pr` mode marker
+/// plus the four `CADUCEUS_PR_*` values, container-side worktree and
+/// result paths, and NO `CADUCEUS_ISSUE_*` / `CADUCEUS_ISSUE_ID` /
+/// `CADUCEUS_BRANCH_NAME` variables. The `caduceus.issue_id` label
+/// carries the PR display identity `owner/repo#pr/9`.
+#[test]
+fn pr_target_resolves_to_pr_contract_environment_and_display_label() {
+    let (cfg, worktree) = base();
+    let mut runtime = runtime_for(&cfg, &worktree);
+    runtime.run_id = "run-pr-9".to_string();
+    runtime.target = "owner/repo#pr/9".to_string();
+    let spec_input = caduceus::executor::ExecutorSpec {
+        self_exe: PathBuf::from("/proc/self/exe"),
+        target: caduceus::executor::WorkTarget::PullRequest(caduceus::review::ReviewTarget {
+            repository: caduceus::review::RepositoryId {
+                owner: "owner".to_string(),
+                repo: "repo".to_string(),
+            },
+            pull_request: 9,
+            head_sha: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef".to_string(),
+            base_sha: "cafebabecafebabecafebabecafebabecafebabe".to_string(),
+            base_ref: "main".to_string(),
+            merge_base: "abcdef01abcdef01abcdef01abcdef01abcdef01".to_string(),
+        }),
+        worktree: worktree.clone(),
+        run_id: "run-pr-9".to_string(),
+        context_json: "{\"context\":true}".to_string(),
+        worker_command: vec!["python3".to_string(), "bridge.py".to_string()],
+        cancellation: tokio_util::sync::CancellationToken::new(),
+    };
+    let resolved = resolve(cfg.sandbox(), &runtime, &spec_input).expect("must resolve");
+    let env = resolved.environment();
+
+    // The full PR set: mode marker + four PR vars + the four shared
+    // vars, all with container-side paths. No issue-shaped variable.
+    let expected: &[(&str, String)] = &[
+        ("CADUCEUS_CONTEXT_JSON", "{\"context\":true}".to_string()),
+        (
+            "CADUCEUS_PR_BASE_SHA",
+            "cafebabecafebabecafebabecafebabecafebabe".to_string(),
+        ),
+        (
+            "CADUCEUS_PR_HEAD_SHA",
+            "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef".to_string(),
+        ),
+        ("CADUCEUS_PR_NUMBER", "9".to_string()),
+        ("CADUCEUS_PR_REPO", "owner/repo".to_string()),
+        (
+            "CADUCEUS_RESULT_PATH",
+            "/output/worker-result.json".to_string(),
+        ),
+        ("CADUCEUS_RUN_ID", "run-pr-9".to_string()),
+        ("CADUCEUS_WORKTREE_PATH", "/workspace".to_string()),
+        ("CADUCEUS_WORK_TARGET", "pr".to_string()),
+        ("HOME", "/tmp".to_string()),
+        ("TMPDIR", "/tmp".to_string()),
+    ];
+    assert_eq!(
+        env.len(),
+        expected.len(),
+        "exactly the PR set plus compat; got: {env:?}"
+    );
+    for (entry, (key, value)) in env.iter().zip(expected.iter()) {
+        assert_eq!(entry.0, *key);
+        assert_eq!(&entry.1, value);
+    }
+    for forbidden in [
+        "CADUCEUS_ISSUE_ID",
+        "CADUCEUS_ISSUE_NUMBER",
+        "CADUCEUS_ISSUE_REPO",
+        "CADUCEUS_ISSUE_TITLE",
+        "CADUCEUS_ISSUE_BODY",
+        "CADUCEUS_ISSUE_LABELS_JSON",
+        "CADUCEUS_BRANCH_NAME",
+    ] {
+        assert!(
+            !env.iter().any(|(k, _)| k == forbidden),
+            "PR env must not contain {forbidden}: {env:?}"
+        );
+    }
+
+    // The label carries the display identity (D5) — same
+    // `caduceus.issue_id` key, PR display value.
+    assert_eq!(
+        resolved.labels(),
+        &[
+            ("caduceus.daemon_id".to_string(), "test-daemon".to_string()),
+            ("caduceus.run_id".to_string(), "run-pr-9".to_string()),
+            (
+                "caduceus.issue_id".to_string(),
+                "owner/repo#pr/9".to_string()
+            ),
+        ]
     );
 }
