@@ -1,5 +1,5 @@
 //! "Issue identity and queue schema" and the contract that a future
-//! queue-file version produces a `StateCorrupt`-style error rather
+//! queue-file version produces a `StoreVersionUnsupported` error rather
 //! than best-effort parsing.
 
 use caduceus::config::Config;
@@ -245,15 +245,22 @@ fn queue_state_with_future_version_is_rejected() {
     let bad = r#"{"version":999,"entries":{}}"#;
     let err = parse_queue_state(bad).expect_err("future version");
     match err {
-        CaduceusError::StateCorrupt { message, .. } => {
-            assert!(
-                message.contains("unsupported queue state version"),
-                "got: {message}"
-            );
-            assert!(message.contains("999"), "got: {message}");
-            assert!(message.contains("expected 1"), "got: {message}");
+        CaduceusError::StoreVersionUnsupported {
+            backend,
+            found,
+            supported,
+            ref guidance,
+            ..
+        } => {
+            assert_eq!(backend, "json", "got: {err:?}");
+            assert_eq!(found, 999, "got: {err:?}");
+            assert_eq!(supported, 1, "got: {err:?}");
+            assert!(guidance.contains("NEWER"), "got: {guidance}");
+            let text = err.to_string();
+            assert!(text.contains("999"), "got: {text}");
+            assert!(text.contains("supports up to 1"), "got: {text}");
         }
-        other => panic!("expected StateCorrupt; got: {other:?}"),
+        other => panic!("expected StoreVersionUnsupported; got: {other:?}"),
     }
 }
 
@@ -261,9 +268,21 @@ fn queue_state_with_future_version_is_rejected() {
 fn queue_state_with_version_zero_is_rejected() {
     let bad = r#"{"version":0,"entries":{}}"#;
     let err = parse_queue_state(bad).expect_err("version 0");
-    let msg = format!("{err:?}");
-    assert!(msg.contains("StateCorrupt"), "got: {msg}");
-    assert!(msg.contains("unsupported"), "got: {msg}");
+    match err {
+        CaduceusError::StoreVersionUnsupported {
+            backend,
+            found,
+            supported,
+            ref guidance,
+            ..
+        } => {
+            assert_eq!(backend, "json", "got: {err:?}");
+            assert_eq!(found, 0, "got: {err:?}");
+            assert_eq!(supported, 1, "got: {err:?}");
+            assert!(guidance.contains("OLDER"), "got: {guidance}");
+        }
+        other => panic!("expected StoreVersionUnsupported; got: {other:?}"),
+    }
 }
 
 // Map key / entry invariant

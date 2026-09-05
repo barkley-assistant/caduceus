@@ -52,7 +52,7 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
 use crate::github::issue::IssueKey;
-use crate::infra::error::{CaduceusError, CaduceusResult};
+use crate::infra::error::{store_version_guidance, CaduceusError, CaduceusResult};
 
 /// Canonical queue-file schema version. Bumping it is a breaking
 /// change — the daemon refuses any other value. Tested by
@@ -377,13 +377,26 @@ pub fn parse_queue_state(text: &str) -> CaduceusResult<QueueState> {
             path: PathBuf::from("<queue-state>"),
             message: format!("queue state JSON parse: {err}"),
         })?;
-    if state.version != QUEUE_FILE_VERSION {
-        return Err(CaduceusError::StateCorrupt {
+    if state.version > QUEUE_FILE_VERSION {
+        return Err(CaduceusError::StoreVersionUnsupported {
+            backend: "json",
             path: PathBuf::from("<queue-state>"),
-            message: format!(
-                "unsupported queue state version: got {}, expected {}",
-                state.version, QUEUE_FILE_VERSION
-            ),
+            found: state.version as i64,
+            supported: QUEUE_FILE_VERSION as i64,
+            guidance: store_version_guidance(true),
+        });
+    }
+    if state.version < QUEUE_FILE_VERSION {
+        // Dormant until #295 bumps the envelope and lands the JSON
+        // migration step: an older file has no JSON migration
+        // machinery yet, so the branch exists now so the bump is
+        // one-line.
+        return Err(CaduceusError::StoreVersionUnsupported {
+            backend: "json",
+            path: PathBuf::from("<queue-state>"),
+            found: state.version as i64,
+            supported: QUEUE_FILE_VERSION as i64,
+            guidance: store_version_guidance(false),
         });
     }
     // Every map key must be the lowercase display form of its
