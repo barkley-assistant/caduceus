@@ -74,6 +74,12 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
   metadata sidecar with the frozen `base_sha` / `base_ref` /
   `merge_base` for merge-base (three-dot) diffing. A review reaper
   reclaims stale entries via `worktree-gc` / the tick. Closes #299.
+- **Phase-1 fork gate for PR discovery.** Fork PRs — and PRs whose head
+  repository cannot be identified, such as deleted head branches — are
+  skipped before admission with a structured
+  `review_skipped_fork_unsupported` event. The gate is unconditional:
+  there is no configuration to enable fork review in Phase 1. Closes
+  #316.
 
 ### Fixed
 

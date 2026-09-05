@@ -8,6 +8,7 @@
 //! - [`verify`] — second-pass label verification before claiming.
 
 pub mod client;
+pub mod fork_gate;
 pub mod issue;
 pub mod link_header;
 pub mod merge_detect;
@@ -26,6 +27,9 @@ pub use crate::github::client::{
     IssueSummary, PullRequest, RateLimitInfo, Response, VoiceChannel, ACCEPT_VALUE,
     GITHUB_API_VERSION_HEADER, GITHUB_API_VERSION_VALUE, MAX_BODY_BYTES, MAX_REDIRECTS,
     USER_AGENT_PREFIX,
+};
+pub use crate::github::fork_gate::{
+    classify_fork, emit_fork_gate_skip, ForkStatus, FORK_SKIP_EVENT,
 };
 pub use crate::github::issue::{IssueComment, IssueDetail, IssueEvent, IssueKey};
 pub use crate::github::merge_detect::{poll_pr_merge_status, MergeStatus};

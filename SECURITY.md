@@ -33,3 +33,10 @@ do not edit daemon-owned state files directly.
 The public-comment filter is a security-relevant control. Report any bypass
 that exposes internal tools, credentials, or other sensitive information through
 the private contact above.
+
+Fork pull requests are not reviewed in Phase 1. Discovery skips them
+unconditionally — there is no configuration to enable fork review —
+because the daemon's single-origin mirror cannot check out fork SHAs.
+Skips are recorded as structured `review_skipped_fork_unsupported`
+events (including PRs whose head repository is gone), so the exclusion
+is auditable rather than silent.
