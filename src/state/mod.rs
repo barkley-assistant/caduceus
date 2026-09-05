@@ -21,6 +21,7 @@ pub mod migrate_to_sqlite;
 pub mod oci_run;
 pub mod queue;
 pub mod retention;
+pub mod review;
 pub mod store;
 
 // Explicit re-exports of the queue's canonical surface — these are
@@ -30,6 +31,15 @@ pub use crate::state::queue::{
     parse_queue_state, serialize_queue_state, ClaimFileBody, ClaimToken, ClaimedEntry, DaemonLock,
     EnqueueOutcome, FinalizationCheckpoint, FinalizationStage, Phase, QueueEntry, QueueState,
     ResetOutcome, StateStore, TicketType,
+};
+
+// Explicit re-exports of the review stores' canonical surface (#295).
+pub use crate::state::review::{
+    parse_review_history, parse_review_queue_state, parse_review_state_map, review_claim_digest,
+    review_queue_key, review_state_key, serialize_review_history, serialize_review_queue_state,
+    serialize_review_state_map, ClaimedReview, ReviewClaimToken, ReviewEnqueueOutcome,
+    ReviewHistoryFile, ReviewHistoryRow, ReviewPhase, ReviewQueueEntry, ReviewQueueState,
+    ReviewStateMap, ReviewStore,
 };
 
 pub use crate::state::checkpoints::{

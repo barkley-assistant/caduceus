@@ -101,6 +101,28 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
   runs resolve only the mode-correct result path and never synthesise
   a legacy result (missing result file = execution failure). Closes
   #346.
+- **Review persistence stores with atomic v8 activation.** Three
+  sibling review-era stores land under BOTH state backends: the
+  sibling review queue (entries keyed by the canonical
+  `owner/repo#pr@head_sha` form of a persisted `ReviewTarget`
+  including `merge_base`, with the issue queue's claim lifecycle
+  mirrored into a separate `review-claims/` directory), the
+  per-`(repo, pr)` `ReviewState` store (all DAR §3 fields including
+  the monotonic `review_generation`, upserted with a never-regress
+  CAS guard), and the append-only `review_history` (identity =
+  `review_run_id`, unique per completed run; the
+  `(repo, pr, head_sha)` tuple is deliberately NOT unique and the
+  verbatim version-tagged `ReviewResult` JSON blob is the canonical
+  durable result). The store envelope activates atomically:
+  `SCHEMA_VERSION` 7→8 (new `review_queue_entries` / `review_state` /
+  `review_history` tables + indexes, structural `v7→v8` migration
+  step) and the JSON `state.json` envelope 1→2 with an in-place
+  accept-and-upgrade of v1 files — a pre-#295 binary hard-fails on
+  review-era state on both backends. Same-SHA dedup is a read path
+  (`last_reviewed_head_sha` + active-queue check), never a history
+  uniqueness constraint. Known follow-up (owned by the Auto Review
+  epic): `migrate-state --to-sqlite` does not carry the JSON review
+  sidecar files across a backend switch. Closes #295.
 
 ### Fixed
 

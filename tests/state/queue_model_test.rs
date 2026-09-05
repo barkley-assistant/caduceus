@@ -208,11 +208,18 @@ fn queue_state_round_trip_preserves_timestamps_as_rfc3339_utc() {
 
 #[test]
 fn queue_state_rejects_unknown_field() {
+    // A v1 (pre-#295) document must remain strictly validated after
+    // the in-place envelope upgrade: unknown fields still rejected.
     let bad = r#"{"version":1,"entries":{},"rogue":"leak"}"#;
     let err = parse_queue_state(bad).expect_err("deny_unknown_fields");
     let msg = format!("{err:?}");
     assert!(msg.contains("StateCorrupt"), "got: {msg}");
     assert!(msg.contains("queue state JSON parse"), "got: {msg}");
+
+    let bad_current = r#"{"version":2,"entries":{},"rogue":"leak"}"#;
+    let err = parse_queue_state(bad_current).expect_err("deny_unknown_fields");
+    let msg = format!("{err:?}");
+    assert!(msg.contains("StateCorrupt"), "got: {msg}");
 }
 
 #[test]
@@ -232,7 +239,7 @@ fn queue_entry_rejects_unknown_field() {
 
 #[test]
 fn queue_state_missing_required_field_is_corrupt() {
-    let bad = r#"{"version":1}"#;
+    let bad = r#"{"version":2}"#;
     let err = parse_queue_state(bad).expect_err("missing entries");
     let msg = format!("{err:?}");
     assert!(msg.contains("StateCorrupt"), "got: {msg}");
@@ -254,11 +261,11 @@ fn queue_state_with_future_version_is_rejected() {
         } => {
             assert_eq!(backend, "json", "got: {err:?}");
             assert_eq!(found, 999, "got: {err:?}");
-            assert_eq!(supported, 1, "got: {err:?}");
+            assert_eq!(supported, 2, "got: {err:?}");
             assert!(guidance.contains("NEWER"), "got: {guidance}");
             let text = err.to_string();
             assert!(text.contains("999"), "got: {text}");
-            assert!(text.contains("supports up to 1"), "got: {text}");
+            assert!(text.contains("supports up to 2"), "got: {text}");
         }
         other => panic!("expected StoreVersionUnsupported; got: {other:?}"),
     }
@@ -266,6 +273,8 @@ fn queue_state_with_future_version_is_rejected() {
 
 #[test]
 fn queue_state_with_version_zero_is_rejected() {
+    // Version 0 predates the v1-born review-era files and remains
+    // rejected (guidance OLDER).
     let bad = r#"{"version":0,"entries":{}}"#;
     let err = parse_queue_state(bad).expect_err("version 0");
     match err {
@@ -278,7 +287,7 @@ fn queue_state_with_version_zero_is_rejected() {
         } => {
             assert_eq!(backend, "json", "got: {err:?}");
             assert_eq!(found, 0, "got: {err:?}");
-            assert_eq!(supported, 1, "got: {err:?}");
+            assert_eq!(supported, 2, "got: {err:?}");
             assert!(guidance.contains("OLDER"), "got: {guidance}");
         }
         other => panic!("expected StoreVersionUnsupported; got: {other:?}"),
@@ -293,7 +302,7 @@ fn queue_state_rejects_mismatched_map_key() {
     // entry key is the canonical lowercase form.
     let entry_json = r#"{"key":{"owner":"BarkleyAssistant","repo":"sandbox","number":42},"phase":"queued","ticket_type":"code","attempts":0,"last_error":null,"last_run_id":null,"next_attempt_at":null,"finalization":null,"queued_at":"2026-07-13T14:00:00Z","updated_at":"2026-07-13T14:00:00Z","generation":1}"#;
     let bad =
-        format!(r#"{{"version":1,"entries":{{"BarkleyAssistant/sandbox#42":{entry_json}}}}}"#);
+        format!(r#"{{"version":2,"entries":{{"BarkleyAssistant/sandbox#42":{entry_json}}}}}"#);
     let err = parse_queue_state(&bad).expect_err("map key mismatch");
     let msg = format!("{err:?}");
     assert!(msg.contains("StateCorrupt"), "got: {msg}");
@@ -309,7 +318,7 @@ fn queue_state_empty_is_constructable() {
     assert!(empty.entries.is_empty());
 
     let rendered = serialize_queue_state(&empty).expect("empty serialises");
-    assert_eq!(rendered, "{\"version\":1,\"entries\":{}}");
+    assert_eq!(rendered, "{\"version\":2,\"entries\":{}}");
 }
 
 #[test]

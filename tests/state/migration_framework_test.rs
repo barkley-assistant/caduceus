@@ -9,8 +9,10 @@
 //!   guidance for both backends.
 //! - AC3 — per-type `schema_version` plumbing rejects unknown
 //!   review-typed versions with a dedicated, matchable variant.
-//! - AC4 — no live version flip: `SCHEMA_VERSION` stays 7 and
-//!   `QUEUE_FILE_VERSION` stays 1; the registry ships no v7→v8 entry.
+//! - AC4 (superseded by #295) — the live version flip: #295 bumps
+//!   `SCHEMA_VERSION` to 8 and `QUEUE_FILE_VERSION` to 2 atomically
+//!   with the review structures, so `no_live_version_flip` now PINS
+//!   the post-#295 values and the registry's last step is 7→8.
 //!
 //! The harness builders (`harness::sqlite_store_at_version`,
 //! `harness::json_state_at_version`) take a path and are the shape
@@ -133,6 +135,13 @@ mod harness {
         if version >= 5 {
             sql.push_str("CREATE TABLE oci_runs (run_id TEXT PRIMARY KEY, container_id TEXT, state TEXT NOT NULL, engine TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, daemon_id TEXT NOT NULL, issue_id TEXT NOT NULL, worker_command_sha256 TEXT NOT NULL);");
         }
+        // The review-era tables land at v8; a v7-era store (the real
+        // pre-#295 shape) must NOT carry them.
+        if version >= 8 {
+            sql.push_str("CREATE TABLE review_queue_entries (review_key TEXT PRIMARY KEY, owner TEXT NOT NULL, repo TEXT NOT NULL, pull_request INTEGER NOT NULL, head_sha TEXT NOT NULL, base_sha TEXT NOT NULL, base_ref TEXT NOT NULL, merge_base TEXT NOT NULL, phase TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, last_run_id TEXT, next_attempt_at TEXT, queued_at TEXT NOT NULL, updated_at TEXT NOT NULL, review_generation INTEGER NOT NULL DEFAULT 1);");
+            sql.push_str("CREATE TABLE review_state (owner TEXT NOT NULL, repo TEXT NOT NULL, pull_request INTEGER NOT NULL, last_reviewed_head_sha TEXT, last_verdict TEXT, last_reviewed_at TEXT, sticky_comment_id INTEGER, last_run_id TEXT, review_generation INTEGER NOT NULL DEFAULT 1, publication_state TEXT NOT NULL DEFAULT 'pending', publication_attempt_count INTEGER NOT NULL DEFAULT 0, next_publish_at TEXT, last_publish_error TEXT, PRIMARY KEY (owner, repo, pull_request));");
+            sql.push_str("CREATE TABLE review_history (review_run_id TEXT PRIMARY KEY, owner TEXT NOT NULL, repo TEXT NOT NULL, pull_request INTEGER NOT NULL, head_sha TEXT NOT NULL, review_generation INTEGER NOT NULL, completed_at TEXT NOT NULL, result_json TEXT NOT NULL);");
+        }
         sql
     }
 
@@ -177,6 +186,9 @@ fn assert_current_tables(path: &Path) {
         "circuit_state",
         "leases",
         "oci_runs",
+        "review_queue_entries",
+        "review_state",
+        "review_history",
     ] {
         assert!(
             tables.contains(&table.to_string()),
@@ -223,7 +235,7 @@ fn schema_version_row_count(path: &Path) -> i64 {
 
 #[test]
 fn chain_runs_from_each_older_era_to_current() {
-    for version in [1i64, 2, 3, 4, 5] {
+    for version in [1i64, 2, 3, 4, 5, 7] {
         let dir = harness::temp_dir(&format!("chain-v{version}"));
         let path = harness::sqlite_store_at_version(&dir, version);
         let conn = open(&path).unwrap_or_else(|e| panic!("open v{version} store: {e}"));
@@ -338,9 +350,10 @@ fn unknown_sqlite_version_is_rejected_with_guidance() {
 #[test]
 fn json_future_version_is_rejected_with_guidance() {
     let dir = harness::temp_dir("json-future");
-    let path = harness::json_state_at_version(&dir, 2);
+    // v2 is CURRENT since #295; the future version is 3.
+    let path = harness::json_state_at_version(&dir, 3);
     let text = fs::read_to_string(&path).expect("read state.json");
-    let err = parse_queue_state(&text).expect_err("v2 rejected");
+    let err = parse_queue_state(&text).expect_err("v3 rejected");
     match err {
         CaduceusError::StoreVersionUnsupported {
             backend,
@@ -350,7 +363,7 @@ fn json_future_version_is_rejected_with_guidance() {
             ..
         } => {
             assert_eq!(backend, "json", "got: {err:?}");
-            assert_eq!(found, 2, "got: {err:?}");
+            assert_eq!(found, 3, "got: {err:?}");
             assert_eq!(supported, QUEUE_FILE_VERSION as i64, "got: {err:?}");
             assert!(guidance.contains("NEWER"), "got: {guidance}");
         }
@@ -387,9 +400,9 @@ fn json_older_version_is_rejected_with_guidance() {
 fn json_store_open_hard_fails_on_future_envelope() {
     // The real disk-load path hard-fails the whole store open (startup
     // hard-fail), not best-effort parse.
-    let dir = harness::temp_dir("json-v2-file");
-    let path = harness::json_state_at_version(&dir, 2);
-    let err = StateStore::open(&dir).expect_err("open of a v2 store must hard-fail");
+    let dir = harness::temp_dir("json-v3-file");
+    let path = harness::json_state_at_version(&dir, 3);
+    let err = StateStore::open(&dir).expect_err("open of a v3 store must hard-fail");
     match err {
         CaduceusError::StoreVersionUnsupported { backend, .. } => {
             assert_eq!(backend, "json", "got: {err:?}");
@@ -401,12 +414,22 @@ fn json_store_open_hard_fails_on_future_envelope() {
 }
 
 #[test]
-fn json_v1_parses_and_missing_file_yields_empty_v1() {
+fn json_v1_parses_and_missing_file_yields_empty_current() {
+    // v1 is an OLDER version since #295: the in-place migration reads
+    // it as the current envelope.
     let parsed = parse_queue_state(r#"{"version":1,"entries":{}}"#).expect("v1 parses");
     assert_eq!(parsed.version, QUEUE_FILE_VERSION);
     assert!(parsed.entries.is_empty());
 
-    // Missing state.json → empty v1 envelope (existing behaviour).
+    // A v1 file carrying a real entry upgrades too.
+    let with_entry = parse_queue_state(
+        r#"{"version":1,"entries":{"owner/repo#1":{"key":{"owner":"owner","repo":"repo","number":1},"phase":"queued","ticket_type":"code","attempts":0,"last_error":null,"last_run_id":null,"next_attempt_at":null,"finalization":null,"queued_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","generation":1}}}"#,
+    )
+    .expect("v1 with entry parses");
+    assert_eq!(with_entry.version, QUEUE_FILE_VERSION);
+    assert_eq!(with_entry.entries.len(), 1);
+
+    // Missing state.json → empty current envelope (existing behaviour).
     let dir = harness::temp_dir("json-missing");
     let store = StateStore::open(&dir).expect("open store");
     let snap = store.snapshot().expect("snapshot empty dir");
@@ -452,7 +475,7 @@ fn review_schema_version_plumbing_rejects_unknown_versions() {
 // -----------------------------------------------------------------------
 
 #[test]
-fn registry_is_wellformed_and_ceiling_is_one_below_current() {
+fn registry_is_wellformed_and_chain_reaches_current() {
     assert_registry_wellformed().expect("registry invariants hold");
 
     let chain = sqlite_migration_chain();
@@ -463,7 +486,14 @@ fn registry_is_wellformed_and_ceiling_is_one_below_current() {
     for i in 1..chain.len() {
         let (from, _, _) = chain[i];
         let (prev_from, prev_to, _) = chain[i - 1];
-        assert_eq!(from, prev_to, "chain must be contiguous at step {i}");
+        // Contiguity holds except across the sanctioned stale-boundary
+        // break: v6 is reinitialise-only, so v7 arrives with no
+        // registry entry (the 6→7 era change carried none).
+        let across_stale_boundary =
+            prev_to == STALE_SCHEMA_VERSION && from == STALE_SCHEMA_VERSION + 1;
+        if !across_stale_boundary {
+            assert_eq!(from, prev_to, "chain must be contiguous at step {i}");
+        }
         assert!(
             from > prev_from,
             "chain must be strictly increasing at step {i}"
@@ -477,19 +507,22 @@ fn registry_is_wellformed_and_ceiling_is_one_below_current() {
     }
     let (_, last_to, _) = chain.last().expect("non-empty chain");
     assert_eq!(
-        *last_to,
-        SCHEMA_VERSION - 1,
-        "no v7→v8 entry ships in this change (AC4's structural assertion)"
+        *last_to, SCHEMA_VERSION,
+        "the chain's last step must reach the current schema version"
     );
-    assert!(*last_to < SCHEMA_VERSION);
+    assert!(
+        chain.iter().any(|&(from, to, _)| from == 7 && to == 8),
+        "the v7→v8 review-era step (#295) must exist in the registry"
+    );
 }
 
 #[test]
 fn no_live_version_flip() {
-    // AC4: the store still reports v7 and the pre-review JSON envelope
-    // version; #295 bumps both atomically with the review structures.
-    assert_eq!(SCHEMA_VERSION, 7);
-    assert_eq!(QUEUE_FILE_VERSION, 1);
+    // #295 flipped the store envelope atomically with the review
+    // structures: SQLite v8, JSON v2. This pin keeps the two bumps
+    // from drifting apart (or reverting) independently.
+    assert_eq!(SCHEMA_VERSION, 8);
+    assert_eq!(QUEUE_FILE_VERSION, 2);
 }
 
 // -----------------------------------------------------------------------

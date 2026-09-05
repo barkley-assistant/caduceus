@@ -34,7 +34,8 @@ use caduceus::error::CaduceusError;
 use caduceus::issue::IssueKey;
 use caduceus::migrate::{run as migrate_run, MigrationOutcome};
 use caduceus::queue::{
-    parse_queue_state, serialize_queue_state, DaemonLock, Phase, QueueEntry, QueueState, StateStore,
+    parse_queue_state, serialize_queue_state, DaemonLock, Phase, QueueEntry, QueueState,
+    StateStore, QUEUE_FILE_VERSION,
 };
 use chrono::{TimeZone, Utc};
 use tempfile::TempDir;
@@ -111,7 +112,7 @@ fn empty_legacy_state_imports_empty_current_state_and_is_idempotent() {
     let state_path = state_dir.join("state.json");
     assert!(state_path.exists());
     let snap = open_state(&state_path);
-    assert_eq!(snap.version, 1);
+    assert_eq!(snap.version, QUEUE_FILE_VERSION);
     assert!(snap.entries.is_empty());
     // Backup was written alongside.
     assert!(backup_path(&state_dir).exists());
@@ -320,7 +321,7 @@ fn migration_is_atomic_and_leaves_a_backup() {
     // Backup was renamed from the *prior* content. Since the
     // state dir started empty, the backup is a copy of the
     // newly-imported state (it must still parse as v1).
-    assert_eq!(backup_state.version, 1);
+    assert_eq!(backup_state.version, QUEUE_FILE_VERSION);
 }
 
 #[test]

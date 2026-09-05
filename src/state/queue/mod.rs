@@ -55,9 +55,21 @@ use crate::github::issue::IssueKey;
 use crate::infra::error::{store_version_guidance, CaduceusError, CaduceusResult};
 
 /// Canonical queue-file schema version. Bumping it is a breaking
-/// change — the daemon refuses any other value. Tested by
+/// change — the daemon refuses any NEWER value. Tested by
 /// [`tests/state/queue_model_test.rs`].
-pub const QUEUE_FILE_VERSION: u32 = 1;
+///
+/// ## v2 (#295, the review-era activation)
+///
+/// The envelope bump landed atomically with the review-era stores
+/// (`crate::state::review`): a pre-#295 binary
+/// (`QUEUE_FILE_VERSION = 1`) hard-fails on a v2 `state.json` with
+/// `StoreVersionUnsupported` (guidance NEWER), which is the
+/// atomic-rejection property. The issue-queue entry shape is
+/// unchanged by #295 — review data lives in sibling files — so
+/// post-#295 binaries accept v1 files via an in-place
+/// accept-and-upgrade in [`parse_queue_state`] (read as v2; the
+/// envelope is rewritten to v2 on the next mutation).
+pub const QUEUE_FILE_VERSION: u32 = 2;
 
 /// Name of the queue state file inside `<state_dir>`.
 pub const STATE_FILENAME: &str = "state.json";
@@ -371,33 +383,53 @@ pub struct ClaimFileBody {
 /// canonical reader; production code that loads from disk calls
 /// this after reading the file. Tests drive it directly so they
 /// don't need a temp file for every schema assertion.
+///
+/// Version handling: a NEWER envelope (`version >
+/// [`QUEUE_FILE_VERSION`]) is a hard
+/// [`CaduceusError::StoreVersionUnsupported`] with upgrade guidance.
+/// A v1 envelope (pre-#295) is accepted in place — the issue-entry
+/// shape is identical, so the document is upgraded to v2 by the
+/// parse itself; the file on disk is NOT rewritten by the parse
+/// (parse is pure) and the next mutating operation persists it at
+/// v2.
 pub fn parse_queue_state(text: &str) -> CaduceusResult<QueueState> {
-    let state: QueueState =
+    const SCOPE: &str = "<queue-state>";
+    let mut state: QueueState =
         serde_json::from_str(text).map_err(|err| CaduceusError::StateCorrupt {
-            path: PathBuf::from("<queue-state>"),
+            path: PathBuf::from(SCOPE),
             message: format!("queue state JSON parse: {err}"),
         })?;
     if state.version > QUEUE_FILE_VERSION {
         return Err(CaduceusError::StoreVersionUnsupported {
             backend: "json",
-            path: PathBuf::from("<queue-state>"),
+            path: PathBuf::from(SCOPE),
             found: state.version as i64,
             supported: QUEUE_FILE_VERSION as i64,
             guidance: store_version_guidance(true),
         });
     }
     if state.version < QUEUE_FILE_VERSION {
-        // Dormant until #295 bumps the envelope and lands the JSON
-        // migration step: an older file has no JSON migration
-        // machinery yet, so the branch exists now so the bump is
-        // one-line.
-        return Err(CaduceusError::StoreVersionUnsupported {
-            backend: "json",
-            path: PathBuf::from("<queue-state>"),
-            found: state.version as i64,
-            supported: QUEUE_FILE_VERSION as i64,
-            guidance: store_version_guidance(false),
-        });
+        // In-place accept-and-upgrade: v1 (the pre-#295 envelope) is
+        // semantically identical to v2 — the issue-queue entry shape
+        // is unchanged and review data lives in sibling files. The
+        // strict serde parse above already rejected any unknown
+        // field, so the upgrade is a pure envelope rewrite. Anything
+        // OLDER than v1 was never a real envelope and stays rejected.
+        if state.version != 1 {
+            return Err(CaduceusError::StoreVersionUnsupported {
+                backend: "json",
+                path: PathBuf::from(SCOPE),
+                found: state.version as i64,
+                supported: QUEUE_FILE_VERSION as i64,
+                guidance: store_version_guidance(false),
+            });
+        }
+        tracing::debug!(
+            found = state.version,
+            supported = QUEUE_FILE_VERSION,
+            "state.json carries a pre-#295 envelope; upgrading in place (rewritten on next mutation)"
+        );
+        state.version = QUEUE_FILE_VERSION;
     }
     // Every map key must be the lowercase display form of its
     // entry's IssueKey; this catches the "matched casing" case

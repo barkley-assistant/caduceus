@@ -61,17 +61,23 @@ use crate::infra::error::{store_version_guidance, CaduceusError, CaduceusResult}
 ///   migration: v6 state must be reinitialised rather than being read
 ///   with different lifecycle semantics.
 ///
-/// ## v8 (not yet live — armed by #295)
+/// ## v8
 ///
-/// - The review-era structures activate as v8 atomically with #295 in
-///   ONE commit: append a `Migration { from: 7, to: 8, label:
-///   "review-era structures", apply: m_v7_v8 }` entry to
-///   `SQLITE_MIGRATIONS`, bump `SCHEMA_VERSION` to 8, bump
-///   `QUEUE_FILE_VERSION` to 2 (with the JSON migration step), and add
-///   the v8 review tables to the schema DDL. `assert_registry_wellformed`
-///   rejects any step whose `to` exceeds `SCHEMA_VERSION`, so the
-///   registry entry and the version bump cannot land separately.
-pub const SCHEMA_VERSION: i64 = 7;
+/// - The review-era structures activate atomically with #295: three
+///   new tables created via `SCHEMA_SQL` — `review_queue_entries`
+///   (sibling review queue keyed by the canonical `ReviewTarget`
+///   queue key), `review_state` (per-`(repo, pr)` current pointer
+///   with the monotonic `review_generation`), and `review_history`
+///   (append-only, identity = `review_run_id`; the
+///   `(repo, pr, head_sha)` tuple is deliberately NOT unique) — plus
+///   their lookup indexes. The v7→v8 migration step is structural
+///   only (`m_v2_v3` precedent): no pre-v8 review data can exist.
+///   The JSON-side counterpart of this activation is the
+///   `state.json` envelope bump to `QUEUE_FILE_VERSION = 2` (with an
+///   in-place accept-and-upgrade of v1 files) plus three new v1-born
+///   review sidecar files (`review_queue.json`, `review_state.json`,
+///   `review_history.json`); see `crate::state::review`.
+pub const SCHEMA_VERSION: i64 = 8;
 
 /// The last schema version that is deliberately rejected instead of
 /// migrated. Keeping this explicit prevents a future schema bump from
@@ -164,6 +170,58 @@ CREATE TABLE IF NOT EXISTS oci_runs (
 CREATE INDEX IF NOT EXISTS idx_oci_runs_container_id ON oci_runs(container_id);
 CREATE INDEX IF NOT EXISTS idx_oci_runs_daemon_id ON oci_runs(daemon_id);
 CREATE INDEX IF NOT EXISTS idx_oci_runs_state ON oci_runs(state);
+
+CREATE TABLE IF NOT EXISTS review_queue_entries (
+    review_key   TEXT PRIMARY KEY,
+    owner        TEXT NOT NULL,
+    repo         TEXT NOT NULL,
+    pull_request INTEGER NOT NULL,
+    head_sha     TEXT NOT NULL,
+    base_sha     TEXT NOT NULL,
+    base_ref     TEXT NOT NULL,
+    merge_base   TEXT NOT NULL,
+    phase        TEXT NOT NULL,
+    attempts     INTEGER NOT NULL DEFAULT 0,
+    last_error   TEXT,
+    last_run_id  TEXT,
+    next_attempt_at TEXT,
+    queued_at    TEXT NOT NULL,
+    updated_at   TEXT NOT NULL,
+    review_generation INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_review_queue_repo ON review_queue_entries(owner, repo, pull_request);
+CREATE INDEX IF NOT EXISTS idx_review_queue_phase ON review_queue_entries(phase);
+
+CREATE TABLE IF NOT EXISTS review_state (
+    owner        TEXT NOT NULL,
+    repo         TEXT NOT NULL,
+    pull_request INTEGER NOT NULL,
+    last_reviewed_head_sha TEXT,
+    last_verdict TEXT,
+    last_reviewed_at TEXT,
+    sticky_comment_id INTEGER,
+    last_run_id  TEXT,
+    review_generation INTEGER NOT NULL DEFAULT 1,
+    publication_state TEXT NOT NULL DEFAULT 'pending',
+    publication_attempt_count INTEGER NOT NULL DEFAULT 0,
+    next_publish_at TEXT,
+    last_publish_error TEXT,
+    PRIMARY KEY (owner, repo, pull_request)
+);
+
+CREATE TABLE IF NOT EXISTS review_history (
+    review_run_id TEXT PRIMARY KEY,
+    owner        TEXT NOT NULL,
+    repo         TEXT NOT NULL,
+    pull_request INTEGER NOT NULL,
+    head_sha     TEXT NOT NULL,
+    review_generation INTEGER NOT NULL,
+    completed_at TEXT NOT NULL,
+    result_json  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_review_history_repo ON review_history(owner, repo, pull_request);
+CREATE INDEX IF NOT EXISTS idx_review_history_pr ON review_history(pull_request);
+CREATE INDEX IF NOT EXISTS idx_review_history_head_sha ON review_history(owner, repo, pull_request, head_sha);
 ";
 
 // Open / initialise.
@@ -356,10 +414,10 @@ pub(crate) struct Migration {
 
 /// The declarative migration chain (D1/D4).
 ///
-/// The chain deliberately ends at v6: v6 is the stale-reinitialise
-/// boundary ([`STALE_SCHEMA_VERSION`]) and v8 does not exist yet — #295
-/// arms v7→v8 by appending one entry + bumping [`SCHEMA_VERSION`] in
-/// the same commit.
+/// The chain ends at the current [`SCHEMA_VERSION`]: v6 is the
+/// stale-reinitialise boundary ([`STALE_SCHEMA_VERSION`]) and the
+/// v7→v8 review-era step (#295) is structural only — the three
+/// review tables are created by `apply_schema` via `SCHEMA_SQL`.
 const SQLITE_MIGRATIONS: &[Migration] = &[
     Migration {
         from: 1,
@@ -391,15 +449,21 @@ const SQLITE_MIGRATIONS: &[Migration] = &[
         label: "queue_entries blocked columns",
         apply: m_v5_v6,
     },
+    Migration {
+        from: 7,
+        to: 8,
+        label: "review-era structures",
+        apply: m_v7_v8,
+    },
 ];
 
 /// Validate the registry's chain invariants (D1/D4): steps are strictly
-/// increasing and contiguous (`from[i] == to[i-1]`), the chain starts
-/// at v1, no step migrates FROM the stale boundary
-/// [`STALE_SCHEMA_VERSION`], and no step's `to` exceeds
-/// [`SCHEMA_VERSION`]. The last clause makes arming v8 (a
-/// `from: 7, to: 8` entry) impossible without bumping
-/// [`SCHEMA_VERSION`] in the same change (#295).
+/// increasing, the chain starts at v1, no step migrates FROM the stale
+/// boundary [`STALE_SCHEMA_VERSION`], and no step's `to` exceeds
+/// [`SCHEMA_VERSION`]. Contiguity is required across consecutive steps
+/// EXCEPT across the stale boundary: v6 is reinitialise-only by policy,
+/// so a step starting at v7 (after the deliberate 6→7 era break, which
+/// carries no registry entry) is a sanctioned discontinuity, not a gap.
 pub fn assert_registry_wellformed() -> CaduceusResult<()> {
     let steps = SQLITE_MIGRATIONS;
     if steps.is_empty() {
@@ -433,12 +497,20 @@ pub fn assert_registry_wellformed() -> CaduceusResult<()> {
             )));
         }
         if i > 0 && step.from != steps[i - 1].to {
-            return Err(CaduceusError::Other(format!(
-                "migration registry gap at step {i} ({}): starts at v{} but previous step ends at v{}",
-                step.label,
-                step.from,
-                steps[i - 1].to
-            )));
+            // The v6 boundary is the sanctioned discontinuity: v6 is
+            // reinitialise-only and v7 arrived as a policy era change
+            // with no registry entry, so a step starting at v7 after a
+            // chain that ended at v6 is well-formed.
+            let across_stale_boundary =
+                steps[i - 1].to == STALE_SCHEMA_VERSION && step.from == STALE_SCHEMA_VERSION + 1;
+            if !across_stale_boundary {
+                return Err(CaduceusError::Other(format!(
+                    "migration registry gap at step {i} ({}): starts at v{} but previous step ends at v{}",
+                    step.label,
+                    step.from,
+                    steps[i - 1].to
+                )));
+            }
         }
     }
     Ok(())
@@ -535,6 +607,20 @@ fn m_v5_v6(tx: &Transaction) -> CaduceusResult<()> {
          ALTER TABLE queue_entries ADD COLUMN blocked_recovery_hint TEXT;",
     )
     .map_err(|e| CaduceusError::Other(format!("v5→v6 ALTER queue_entries: {e}")))?;
+    Ok(())
+}
+
+/// Migrate from schema v7 to v8. The three review-era tables
+/// (`review_queue_entries`, `review_state`, `review_history`) and
+/// their indexes are created by `apply_schema` via `SCHEMA_SQL`, so
+/// this is a structural no-op that exists for the migration wiring
+/// convention (`m_v2_v3` precedent). No data transform: there is no
+/// pre-v8 review data by construction.
+fn m_v7_v8(tx: &Transaction) -> CaduceusResult<()> {
+    // The review tables are created by `apply_schema` via
+    // `SCHEMA_SQL`. No ALTER TABLE / data statements are needed for
+    // v7→v8.
+    let _ = tx;
     Ok(())
 }
 
