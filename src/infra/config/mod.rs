@@ -790,6 +790,19 @@ impl Config {
         if ticket_label_code.trim().is_empty() {
             errors.push("ticket_label_code must not be empty".to_string());
         }
+        // `ticket_label_investigation` is DEPRECATED in release N (DAR §12):
+        // Investigation remains admitted (warning only), but the config key
+        // is on the N+1 removal path. Warn once per config load when the
+        // operator explicitly set it; the default (`autofix-investigate`)
+        // resolves silently — its deprecation surfaces per-admission (#329).
+        if raw.ticket_label_investigation.is_some() {
+            tracing::warn!(
+                value = %raw.ticket_label_investigation.as_deref().unwrap_or_default(),
+                "ticket_label_investigation is deprecated and will be removed in a \
+                 future release; migrate to auto_review (docs/architecture/\
+                 auto-review.md §12)"
+            );
+        }
         let mut ticket_label_investigation = raw
             .ticket_label_investigation
             .unwrap_or_else(|| DEFAULT_TICKET_LABEL_INVESTIGATION.to_string());
@@ -877,6 +890,17 @@ impl Config {
             enabled: raw_ar.enabled.unwrap_or(false),
             draft_pull_requests: raw_ar.draft_pull_requests.unwrap_or(false),
         });
+        if let Some(ar) = &auto_review {
+            if ar.enabled && matches!(executor_mode, crate::executor::ExecutorKind::TrustedHost) {
+                errors.push(
+                    "auto_review.enabled requires OCI execution: set executor_mode: oci \
+                     and provide a valid sandbox: section (digest-pinned image). \
+                     TrustedHost offers no containment for reviewing untrusted PR \
+                     content. Run `caduceus doctor` or see the configuration docs"
+                        .to_string(),
+                );
+            }
+        }
 
         // dry_run is resolved by the env overlay. The raw
         // layer may carry a YAML-supplied hint here for tests; we

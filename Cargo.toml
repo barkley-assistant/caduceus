@@ -332,6 +332,10 @@ name = "sandbox_config_test"
 path = "tests/infra/config/sandbox_config_test.rs"
 
 [[test]]
+name = "auto_review_config_test"
+path = "tests/infra/config/auto_review_config_test.rs"
+
+[[test]]
 name = "sandbox_pass_env_test"
 path = "tests/config/sandbox_pass_env_test.rs"
 
