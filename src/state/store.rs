@@ -20,7 +20,7 @@ use std::path::Path;
 
 use rusqlite::{params, Connection, Transaction};
 
-use crate::infra::error::{CaduceusError, CaduceusResult};
+use crate::infra::error::{store_version_guidance, CaduceusError, CaduceusResult};
 
 /// Current schema version. Bumping it is a breaking change — the
 /// store refuses to open a database with a *higher* version.
@@ -60,6 +60,17 @@ use crate::infra::error::{CaduceusError, CaduceusResult};
 ///   supported state contract. There is intentionally no v6 -> v7
 ///   migration: v6 state must be reinitialised rather than being read
 ///   with different lifecycle semantics.
+///
+/// ## v8 (not yet live — armed by #295)
+///
+/// - The review-era structures activate as v8 atomically with #295 in
+///   ONE commit: append a `Migration { from: 7, to: 8, label:
+///   "review-era structures", apply: m_v7_v8 }` entry to
+///   `SQLITE_MIGRATIONS`, bump `SCHEMA_VERSION` to 8, bump
+///   `QUEUE_FILE_VERSION` to 2 (with the JSON migration step), and add
+///   the v8 review tables to the schema DDL. `assert_registry_wellformed`
+///   rejects any step whose `to` exceeds `SCHEMA_VERSION`, so the
+///   registry entry and the version bump cannot land separately.
 pub const SCHEMA_VERSION: i64 = 7;
 
 /// The last schema version that is deliberately rejected instead of
@@ -163,8 +174,11 @@ CREATE INDEX IF NOT EXISTS idx_oci_runs_state ON oci_runs(state);
 ///
 /// - Equal to [`SCHEMA_VERSION`] → open, apply any missing tables.
 /// - Higher than [`SCHEMA_VERSION`] → reject with
-///   [`CaduceusError::StateCorrupt`] (future schema, must upgrade).
-/// - Lower → migration is performed (future task).
+///   [`CaduceusError::StoreVersionUnsupported`] (future schema, must
+///   upgrade or reinitialise).
+/// - Equal to [`STALE_SCHEMA_VERSION`] → reject with
+///   [`CaduceusError::StateCorrupt`] (stale v6, must reinitialise).
+/// - Lower → run the migration chain ([`SQLITE_MIGRATIONS`]).
 ///
 /// The connection uses WAL mode for concurrent reads and is created
 /// with `PRAGMA journal_mode=WAL`.
@@ -209,30 +223,47 @@ pub fn open(path: &Path) -> CaduceusResult<Connection> {
             })?;
 
         if existing_version > SCHEMA_VERSION {
-            return Err(CaduceusError::StateCorrupt {
+            return Err(CaduceusError::StoreVersionUnsupported {
+                backend: "sqlite",
                 path: db_path,
-                message: format!(
-                    "SQLite store has schema v{existing_version} but this daemon only supports v{SCHEMA_VERSION} — upgrade required"
-                ),
+                found: existing_version,
+                supported: SCHEMA_VERSION,
+                guidance: store_version_guidance(true),
             });
         }
 
         if existing_version == STALE_SCHEMA_VERSION {
             return Err(CaduceusError::StateCorrupt {
                 path: db_path,
-                message: "SQLite store has stale schema v6; v6 state is not migrated and must be reinitialized with fresh state".to_string(),
+                message: format!(
+                    "SQLite store has stale schema v6; v6 state is not migrated and must be reinitialized with fresh state. {}",
+                    store_version_guidance(false)
+                ),
             });
         }
 
         if existing_version < SCHEMA_VERSION {
-            // Run migration from existing_version to SCHEMA_VERSION.
-            migrate_v1_to_v2(&conn, &db_path, existing_version)?;
-            migrate_v2_to_v3(&conn, &db_path, existing_version)?;
-            migrate_v3_to_v4(&conn, &db_path, existing_version)?;
-            migrate_v4_to_v5(&conn, &db_path, existing_version)?;
-            migrate_v5_to_v6(&conn, &db_path, existing_version)?;
-            apply_schema(&conn, &db_path)?;
-            record_version(&conn, &db_path)?;
+            // Run the migration chain from existing_version toward
+            // SCHEMA_VERSION. A step fires iff the store's current
+            // version equals the step's `from`; one transaction + one
+            // schema_version row write per step keeps the chain
+            // idempotent and crash-resumable (D2).
+            let mut current = existing_version;
+            for step in SQLITE_MIGRATIONS {
+                if current == step.from {
+                    run_migration_step(&conn, &db_path, step)?;
+                    current = step.to;
+                }
+            }
+            if current < SCHEMA_VERSION {
+                tracing::warn!(
+                    from = current,
+                    to = SCHEMA_VERSION,
+                    "migration registry gap: chain reaches v{current}, below SCHEMA_VERSION v{SCHEMA_VERSION}; applying schema and recording the current version"
+                );
+                apply_schema(&conn, &db_path)?;
+                record_version(&conn, &db_path)?;
+            }
         }
 
         // Ensure missing tables are created (idempotent).
@@ -303,81 +334,207 @@ fn record_version_in_tx(tx: &Transaction, db_path: &Path) -> CaduceusResult<()> 
     Ok(())
 }
 
-/// Migrate from schema v1 to v2 by adding the `operation_id` and
-/// `remote_marker` columns to the `checkpoints` table. Both columns
-/// are nullable so existing rows get NULL defaults.
-fn migrate_v1_to_v2(conn: &Connection, db_path: &Path, from_version: i64) -> CaduceusResult<()> {
-    if from_version >= 2 {
-        return Ok(());
+/// One structural migration step in the SQLite chain (DAR §4.4).
+///
+/// The chain is declarative data: a step fires iff the store's current
+/// `schema_version` equals `from`, runs inside ONE transaction, and
+/// writes `to` to the `schema_version` row in that same transaction.
+/// Structural-only — a step whose behaviour depends on which binary
+/// opens the store is a version-semantics violation.
+pub(crate) struct Migration {
+    /// Version this step takes the store FROM (must equal the current
+    /// `schema_version` row when it fires).
+    pub from: i64,
+    /// Version this step takes the store TO (written to the
+    /// `schema_version` row in the same transaction as the DDL).
+    pub to: i64,
+    /// Human label used in logs and the test harness.
+    pub label: &'static str,
+    /// Structural DDL / data transform, executed inside one transaction.
+    pub apply: fn(&Transaction) -> CaduceusResult<()>,
+}
+
+/// The declarative migration chain (D1/D4).
+///
+/// The chain deliberately ends at v6: v6 is the stale-reinitialise
+/// boundary ([`STALE_SCHEMA_VERSION`]) and v8 does not exist yet — #295
+/// arms v7→v8 by appending one entry + bumping [`SCHEMA_VERSION`] in
+/// the same commit.
+const SQLITE_MIGRATIONS: &[Migration] = &[
+    Migration {
+        from: 1,
+        to: 2,
+        label: "checkpoints operation columns",
+        apply: m_v1_v2,
+    },
+    Migration {
+        from: 2,
+        to: 3,
+        label: "leases table (apply_schema)",
+        apply: m_v2_v3,
+    },
+    Migration {
+        from: 3,
+        to: 4,
+        label: "circuit_state replaces circuit_breakers",
+        apply: m_v3_v4,
+    },
+    Migration {
+        from: 4,
+        to: 5,
+        label: "oci_runs table (apply_schema)",
+        apply: m_v4_v5,
+    },
+    Migration {
+        from: 5,
+        to: 6,
+        label: "queue_entries blocked columns",
+        apply: m_v5_v6,
+    },
+];
+
+/// Validate the registry's chain invariants (D1/D4): steps are strictly
+/// increasing and contiguous (`from[i] == to[i-1]`), the chain starts
+/// at v1, no step migrates FROM the stale boundary
+/// [`STALE_SCHEMA_VERSION`], and no step's `to` exceeds
+/// [`SCHEMA_VERSION`]. The last clause makes arming v8 (a
+/// `from: 7, to: 8` entry) impossible without bumping
+/// [`SCHEMA_VERSION`] in the same change (#295).
+pub fn assert_registry_wellformed() -> CaduceusResult<()> {
+    let steps = SQLITE_MIGRATIONS;
+    if steps.is_empty() {
+        return Err(CaduceusError::Other(
+            "migration registry must not be empty".to_string(),
+        ));
     }
-    conn.execute_batch(
-        "ALTER TABLE checkpoints ADD COLUMN operation_id TEXT;
-         ALTER TABLE checkpoints ADD COLUMN remote_marker TEXT;",
+    if steps[0].from != 1 {
+        return Err(CaduceusError::Other(format!(
+            "migration registry must start at v1, found v{}",
+            steps[0].from
+        )));
+    }
+    for (i, step) in steps.iter().enumerate() {
+        if step.from >= step.to {
+            return Err(CaduceusError::Other(format!(
+                "migration registry step {i} ({}) is not upward: v{} → v{}",
+                step.label, step.from, step.to
+            )));
+        }
+        if step.from == STALE_SCHEMA_VERSION {
+            return Err(CaduceusError::Other(format!(
+                "migration registry step {i} ({}) would migrate the stale v{STALE_SCHEMA_VERSION} boundary, which is reinitialise-only by policy",
+                step.label
+            )));
+        }
+        if step.to > SCHEMA_VERSION {
+            return Err(CaduceusError::Other(format!(
+                "migration registry step {i} ({}) targets v{} above SCHEMA_VERSION v{SCHEMA_VERSION}; bump SCHEMA_VERSION in the same change",
+                step.label, step.to
+            )));
+        }
+        if i > 0 && step.from != steps[i - 1].to {
+            return Err(CaduceusError::Other(format!(
+                "migration registry gap at step {i} ({}): starts at v{} but previous step ends at v{}",
+                step.label,
+                step.from,
+                steps[i - 1].to
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Expose the migration registry as `(from, to, label)` triples so
+/// tests (and #295/#327) can assert chain invariants and iterate the
+/// chain without reaching into the registry internals.
+pub fn sqlite_migration_chain() -> Vec<(i64, i64, &'static str)> {
+    SQLITE_MIGRATIONS
+        .iter()
+        .map(|migration| (migration.from, migration.to, migration.label))
+        .collect()
+}
+
+/// Execute one registry step inside its own transaction, then write the
+/// step's target version into `schema_version` in the same transaction
+/// (D2: one step = one transaction = one visible version bump). A crash
+/// between steps leaves the store at the last committed version; the
+/// next open re-enters the chain from there.
+fn run_migration_step(conn: &Connection, db_path: &Path, step: &Migration) -> CaduceusResult<()> {
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| CaduceusError::StateCorrupt {
+            path: db_path.to_path_buf(),
+            message: format!("cannot start migration transaction ({}): {e}", step.label),
+        })?;
+    (step.apply)(&tx).map_err(|e| CaduceusError::StateCorrupt {
+        path: db_path.to_path_buf(),
+        message: format!("{} migration failed: {e}", step.label),
+    })?;
+    let now = chrono::Utc::now().to_rfc3339();
+    tx.execute(
+        "INSERT INTO schema_version (version, migrated_at) VALUES (?1, ?2)",
+        params![step.to, now],
     )
     .map_err(|e| CaduceusError::StateCorrupt {
         path: db_path.to_path_buf(),
-        message: format!("v1→v2 migration failed: {e}"),
+        message: format!("cannot record schema version {}: {e}", step.to),
     })?;
+    tx.commit().map_err(|e| CaduceusError::StateCorrupt {
+        path: db_path.to_path_buf(),
+        message: format!("cannot commit migration transaction ({}): {e}", step.label),
+    })?;
+    Ok(())
+}
+
+/// Migrate from schema v1 to v2 by adding the `operation_id` and
+/// `remote_marker` columns to the `checkpoints` table. Both columns
+/// are nullable so existing rows get NULL defaults.
+fn m_v1_v2(tx: &Transaction) -> CaduceusResult<()> {
+    tx.execute_batch(
+        "ALTER TABLE checkpoints ADD COLUMN operation_id TEXT;
+         ALTER TABLE checkpoints ADD COLUMN remote_marker TEXT;",
+    )
+    .map_err(|e| CaduceusError::Other(format!("v1→v2 ALTER checkpoints: {e}")))?;
     Ok(())
 }
 
 /// Migrate from schema v2 to v3. The `leases` table is created by
 /// `apply_schema`, so this is a no-op migration that exists for
 /// the migration wiring convention.
-fn migrate_v2_to_v3(conn: &Connection, db_path: &Path, from_version: i64) -> CaduceusResult<()> {
-    if from_version >= 3 {
-        return Ok(());
-    }
+fn m_v2_v3(tx: &Transaction) -> CaduceusResult<()> {
     // The `leases` table is created by `apply_schema` via `SCHEMA_SQL`.
     // No ALTER TABLE statements are needed for v2→v3.
-    let _ = conn;
-    let _ = db_path;
+    let _ = tx;
     Ok(())
 }
 
 /// Migrate from schema v3 to v4. Drops the dead `circuit_breakers`
 /// table and creates the new `circuit_state` table via `apply_schema`.
-fn migrate_v3_to_v4(conn: &Connection, db_path: &Path, from_version: i64) -> CaduceusResult<()> {
-    if from_version >= 4 {
-        return Ok(());
-    }
-    conn.execute_batch("DROP TABLE IF EXISTS circuit_breakers;")
-        .map_err(|e| CaduceusError::StateCorrupt {
-            path: db_path.to_path_buf(),
-            message: format!("v3→v4 migration failed: {e}"),
-        })?;
+fn m_v3_v4(tx: &Transaction) -> CaduceusResult<()> {
+    tx.execute_batch("DROP TABLE IF EXISTS circuit_breakers;")
+        .map_err(|e| CaduceusError::Other(format!("v3→v4 DROP circuit_breakers: {e}")))?;
     Ok(())
 }
 
 /// Migrate from schema v4 to v5. The `oci_runs` table is created by
 /// `apply_schema`, so this is a no-op migration that exists for the
 /// migration wiring convention.
-fn migrate_v4_to_v5(conn: &Connection, db_path: &Path, from_version: i64) -> CaduceusResult<()> {
-    if from_version >= 5 {
-        return Ok(());
-    }
+fn m_v4_v5(tx: &Transaction) -> CaduceusResult<()> {
     // The `oci_runs` table is created by `apply_schema` via `SCHEMA_SQL`.
     // No ALTER TABLE statements are needed for v4→v5.
-    let _ = conn;
-    let _ = db_path;
+    let _ = tx;
     Ok(())
 }
 
 /// Migrate from schema v5 to v6 by adding `blocked_source` and
 /// `blocked_recovery_hint` columns to `queue_entries`. Both columns
 /// are nullable so existing rows get NULL defaults.
-fn migrate_v5_to_v6(conn: &Connection, db_path: &Path, from_version: i64) -> CaduceusResult<()> {
-    if from_version >= 6 {
-        return Ok(());
-    }
-    conn.execute_batch(
+fn m_v5_v6(tx: &Transaction) -> CaduceusResult<()> {
+    tx.execute_batch(
         "ALTER TABLE queue_entries ADD COLUMN blocked_source TEXT;
          ALTER TABLE queue_entries ADD COLUMN blocked_recovery_hint TEXT;",
     )
-    .map_err(|e| CaduceusError::StateCorrupt {
-        path: db_path.to_path_buf(),
-        message: format!("v5→v6 migration failed: {e}"),
-    })?;
+    .map_err(|e| CaduceusError::Other(format!("v5→v6 ALTER queue_entries: {e}")))?;
     Ok(())
 }
 

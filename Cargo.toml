@@ -372,6 +372,10 @@ name = "migration_test"
 path = "tests/state/migration_test.rs"
 
 [[test]]
+name = "migration_framework_test"
+path = "tests/state/migration_framework_test.rs"
+
+[[test]]
 name = "migrate_recover_sqlite_test"
 path = "tests/state/migrate_recover_sqlite_test.rs"
 

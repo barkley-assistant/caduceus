@@ -345,14 +345,20 @@ pub fn parse_review_result(json: &str) -> CaduceusResult<ReviewResult> {
         CaduceusError::Config(format!("review result: malformed document: {err}"))
     })?;
     if result.schema_version != REVIEW_SCHEMA_VERSION {
-        return Err(CaduceusError::Config(format!(
-            "review result: schema_version {} is not supported (this daemon accepts \
-             {REVIEW_SCHEMA_VERSION})",
-            result.schema_version
-        )));
+        return Err(CaduceusError::ReviewSchemaVersion {
+            found: result.schema_version,
+            supported: REVIEW_SCHEMA_VERSION,
+        });
     }
     validate_review_result(&result)?;
     Ok(result)
+}
+
+/// Would a document with this `schema_version` be accepted by this
+/// daemon? Plumbing for the worker-result layer (#305 composes this
+/// into the full validator; DAR §4.3, §8).
+pub fn review_schema_version_supported(v: u32) -> bool {
+    v == REVIEW_SCHEMA_VERSION
 }
 
 /// Cap validation for a [`ReviewResult`] (exposed so #305's full

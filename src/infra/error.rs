@@ -140,6 +140,31 @@ pub enum CaduceusError {
     #[error("corrupt state file at {}: {message}", path.display())]
     StateCorrupt { path: PathBuf, message: String },
 
+    /// The on-disk store (SQLite or JSON) carries a version this daemon
+    /// does not know. Startup hard-fail; the operator must upgrade or
+    /// reinitialise. Distinct from `StateCorrupt` (damaged data) — the
+    /// data may be perfectly valid for a newer/older daemon.
+    #[error(
+        "store version unsupported: {backend} store at {path} has version {found}; this daemon supports up to {supported}. {guidance}"
+    )]
+    StoreVersionUnsupported {
+        backend: &'static str,
+        path: PathBuf,
+        found: i64,
+        supported: i64,
+        guidance: String,
+    },
+
+    /// A worker result document carries a `schema_version` this daemon
+    /// does not know. Distinct from `StoreVersionUnsupported`: this is
+    /// a worker-result rejection, not a store-open failure. The
+    /// worker-result layer classifies it as an execution failure
+    /// (#305 composes the full validator; DAR §4.3, §8).
+    #[error(
+        "review result: schema_version {found} is not supported (this daemon accepts {supported})"
+    )]
+    ReviewSchemaVersion { found: u32, supported: u32 },
+
     /// Reconciliation of an external side effect failed: the
     /// remote marker disagrees with the local checkpoint. The
     /// operator must inspect the run and resolve the conflict.
@@ -411,6 +436,24 @@ pub enum CaduceusError {
 /// Canonical `Result` alias used everywhere in the daemon.
 pub type CaduceusResult<T> = Result<T, CaduceusError>;
 
+/// Operator instructions for [`CaduceusError::StoreVersionUnsupported`]
+/// (DAR §4.2). Single source for both backends and both directions so
+/// the wording cannot drift from the tests that assert on it.
+pub fn store_version_guidance(newer_file: bool) -> String {
+    if newer_file {
+        "this state was written by a NEWER caduceus: upgrade the daemon \
+         (git pull && cargo install --path .) or move the state directory \
+         aside and reinitialise; see \
+         https://github.com/barkley-assistant/caduceus/wiki/State-Recovery"
+            .to_string()
+    } else {
+        "this state was written by an OLDER caduceus: upgrade the daemon \
+         to this version or newer and restart; see \
+         https://github.com/barkley-assistant/caduceus/wiki/State-Recovery"
+            .to_string()
+    }
+}
+
 impl fmt::Debug for CaduceusError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Render via Display, scrubbed through the redaction helper.
@@ -478,6 +521,24 @@ impl fmt::Debug for CaduceusError {
                 "StateCorrupt {{ path: {:?}, message: {} }}",
                 path,
                 scrub(message)
+            ),
+            CaduceusError::StoreVersionUnsupported {
+                backend,
+                path,
+                found,
+                supported,
+                guidance,
+            } => format!(
+                "StoreVersionUnsupported {{ backend: {:?}, path: {:?}, found: {}, supported: {}, guidance: {} }}",
+                backend,
+                path,
+                found,
+                supported,
+                scrub(guidance)
+            ),
+            CaduceusError::ReviewSchemaVersion { found, supported } => format!(
+                "ReviewSchemaVersion {{ found: {}, supported: {} }}",
+                found, supported
             ),
             CaduceusError::ReconciliationFailed { stage, details } => format!(
                 "ReconciliationFailed {{ stage: {:?}, details: {} }}",

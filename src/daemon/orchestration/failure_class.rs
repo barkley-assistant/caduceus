@@ -165,6 +165,7 @@ pub fn classify_error(err: &CaduceusError) -> FailureClass {
         }
         CaduceusError::Queue { .. } => FailureClass::Infrastructure,
         CaduceusError::StateCorrupt { .. } => FailureClass::Infrastructure,
+        CaduceusError::StoreVersionUnsupported { .. } => FailureClass::Infrastructure,
         CaduceusError::ReconciliationFailed { .. } => FailureClass::Infrastructure,
         CaduceusError::ConflictingMarker { .. } => FailureClass::Worker,
         CaduceusError::Config(_) => FailureClass::Infrastructure,
@@ -229,6 +230,10 @@ pub fn classify_error(err: &CaduceusError) -> FailureClass {
         // result validation land here. Voice rejections and
         // content-shape failures are worker-attributable.
         CaduceusError::Other(_) => FailureClass::Worker,
+        // Unknown review-typed schema_version on a worker result: the
+        // document did not execute — worker-attributable (DAR §8; the
+        // wire into ExecutionStatus is #305's).
+        CaduceusError::ReviewSchemaVersion { .. } => FailureClass::Worker,
 
         // IO and JSON errors during state mutation are
         // infrastructure.
