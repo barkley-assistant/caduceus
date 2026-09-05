@@ -588,6 +588,10 @@ name = "pr_wire_test"
 path = "tests/github/pr_wire_test.rs"
 
 [[test]]
+name = "fork_gate_test"
+path = "tests/github/fork_gate_test.rs"
+
+[[test]]
 name = "prompt_test"
 path = "tests/github/prompt_test.rs"
 
