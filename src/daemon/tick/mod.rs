@@ -393,6 +393,22 @@ pub async fn tick(
                         tracing::warn!(error = %err, "auto worktree gc failed; continuing tick")
                     }
                 }
+                // Review worktree sweep (#299): same lock, same
+                // best-effort log-and-continue contract.
+                let review_runner = GitRunner::new(&cfg);
+                match crate::repo::review_worktree::gc_review_worktrees(
+                    &cfg,
+                    &review_runner,
+                    cfg.worktree_gc_older_than_days,
+                    false,
+                )
+                .await
+                {
+                    Ok(removed) => info!(removed, "review worktree gc completed"),
+                    Err(err) => {
+                        tracing::warn!(error = %err, "review worktree gc failed; continuing tick")
+                    }
+                }
             }
             Ok(None) => info!("auto worktree gc skipped; daemon lock is contended"),
             Err(err) => {

@@ -545,10 +545,21 @@ fn run_worktree_gc(older_than_days: u64, dry_run: bool) -> CaduceusResult<()> {
             stderr: format!("build tokio runtime: {err}"),
         })?;
     let removed = rt.block_on(caduceus::worktree::gc(&config, older_than_days, dry_run))?;
+    let review_removed = {
+        let runner = caduceus::worktree::GitRunner::new(&config);
+        rt.block_on(caduceus::repo::review_worktree::gc_review_worktrees(
+            &config,
+            &runner,
+            older_than_days,
+            dry_run,
+        ))?
+    };
     if dry_run {
         println!("caduceus worktree-gc: dry-run complete; 0 worktrees removed (use without --dry-run to apply)");
     } else {
-        println!("caduceus worktree-gc: removed {removed} worktree(s)");
+        println!(
+            "caduceus worktree-gc: removed {removed} worktree(s) and {review_removed} review worktree(s)"
+        );
     }
     Ok(())
 }

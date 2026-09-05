@@ -30,8 +30,9 @@ pub struct Worktree {
 }
 
 /// Run ID validation: only ASCII alphanumeric, underscore, dash;
-/// non-empty; max 64 chars.
-fn validate_run_id(run_id: &str) -> CaduceusResult<()> {
+/// non-empty; max 64 chars. Shared with `review_worktree` (one
+/// definition — the review path validates run ids with the same rule).
+pub(crate) fn validate_run_id(run_id: &str) -> CaduceusResult<()> {
     if run_id.is_empty() {
         return Err(CaduceusError::Worktree {
             context: "repo-create",

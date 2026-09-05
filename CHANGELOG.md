@@ -67,6 +67,13 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
   `ReviewResult`/`Review`/`Finding` worker contract with strict serde,
   snake_case enums, and parse-time field caps. Foundation for the Auto
   Review epic (#290); no behaviour change yet. Closes #292.
+- **Review worktree mode.** Review worktrees are materialised as
+  disposable, non-pushable detached-HEAD checkouts at the exact PR
+  head SHA against the daemon-owned bare mirror — no issue-dispatch
+  branch artefact — carrying a versioned `review-worktree.json`
+  metadata sidecar with the frozen `base_sha` / `base_ref` /
+  `merge_base` for merge-base (three-dot) diffing. A review reaper
+  reclaims stale entries via `worktree-gc` / the tick. Closes #299.
 
 ### Fixed
 

@@ -91,6 +91,7 @@ pub use crate::daemon::orchestration::{
 };
 pub use crate::github::issue::{IssueDetail, IssueKey};
 pub use crate::infra::error::{CaduceusError, CaduceusResult};
+pub use crate::repo::review_worktree::ReviewWorktree as RepoReviewWorktree;
 pub use crate::repo::worktree::Worktree as RepoWorktree;
 pub use crate::scheduler::{Admission, CircuitStore, Pool, PoolState};
 pub use crate::state::queue::{
