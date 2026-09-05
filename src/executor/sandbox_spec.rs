@@ -22,7 +22,6 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::executor::ExecutorSpec;
-use crate::github::issue::IssueKey;
 use crate::infra::config::{SandboxConfig, SandboxNetwork};
 use crate::infra::error::{CaduceusError, CaduceusResult};
 use crate::worker::worker_contract::{

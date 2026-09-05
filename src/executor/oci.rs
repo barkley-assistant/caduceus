@@ -25,7 +25,7 @@ use crate::executor::{
 };
 use crate::infra::config::Config;
 use crate::infra::disk::DiskPressureGuard;
-use crate::infra::error::{CaduceusError, CaduceusResult};
+use crate::infra::error::CaduceusResult;
 use crate::readiness;
 use crate::state::meta::MetaStore;
 use crate::state::oci_run::OciRunDao;
