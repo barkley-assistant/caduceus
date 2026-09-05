@@ -292,7 +292,7 @@ async fn run_lifecycle_core(
             pid: std::process::id(),
             started_at,
             updated_at: started_at,
-            issue_key: input.issue.clone(),
+            target: input.issue.display_key(),
             transcript_path: paths.transcript_path.clone(),
         },
         &paths.heartbeat_path,
@@ -445,7 +445,7 @@ fn spawn_heartbeat(
     cancellation: CancellationToken,
 ) -> tokio::task::JoinHandle<()> {
     let run_id = input.run_id.clone();
-    let issue = input.issue.clone();
+    let target = input.issue.display_key();
     tokio::spawn(async move {
         loop {
             tokio::select! {
@@ -458,7 +458,7 @@ fn spawn_heartbeat(
                         pid: std::process::id(),
                         started_at,
                         updated_at: now,
-                        issue_key: issue.clone(),
+                        target: target.clone(),
                         transcript_path: paths.transcript_path.clone(),
                     };
                     if write_heartbeat_record(&record, &paths.heartbeat_path).is_err() {

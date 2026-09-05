@@ -331,12 +331,18 @@ pub fn sanitized_env(
                 .map_err(|err| CaduceusError::Config(format!("labels JSON serialise: {err}")))?;
             let repo = format!("{}/{}", issue.key.owner, issue.key.repo);
             let issue_canonical: Vec<(String, String)> = vec![
-                ("CADUCEUS_ISSUE_NUMBER".to_string(), issue.key.number.to_string()),
+                (
+                    "CADUCEUS_ISSUE_NUMBER".to_string(),
+                    issue.key.number.to_string(),
+                ),
                 ("CADUCEUS_ISSUE_TITLE".to_string(), issue.title.clone()),
                 ("CADUCEUS_ISSUE_BODY".to_string(), issue.body.clone()),
                 ("CADUCEUS_ISSUE_REPO".to_string(), repo),
                 ("CADUCEUS_ISSUE_LABELS_JSON".to_string(), labels_json),
-                ("CADUCEUS_BRANCH_NAME".to_string(), issue.branch_name.clone()),
+                (
+                    "CADUCEUS_BRANCH_NAME".to_string(),
+                    issue.branch_name.clone(),
+                ),
             ];
             shared
                 .iter()
@@ -348,7 +354,10 @@ pub fn sanitized_env(
             validate_pr_env(pr)?;
             let pr_canonical: Vec<(String, String)> = vec![
                 ("CADUCEUS_WORK_TARGET".to_string(), "pr".to_string()),
-                ("CADUCEUS_PR_NUMBER".to_string(), pr.pull_request.to_string()),
+                (
+                    "CADUCEUS_PR_NUMBER".to_string(),
+                    pr.pull_request.to_string(),
+                ),
                 ("CADUCEUS_PR_REPO".to_string(), pr.repository.full_name()),
                 ("CADUCEUS_PR_BASE_SHA".to_string(), pr.base_sha.clone()),
                 ("CADUCEUS_PR_HEAD_SHA".to_string(), pr.head_sha.clone()),

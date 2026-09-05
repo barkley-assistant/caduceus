@@ -496,18 +496,16 @@ async fn run_canary(
         }
     };
     let result = match outcome {
-        Ok(outcome) => {
-            match caduceus::worker::parse_result_file(&outcome.result_path, issue_key) {
-                Ok(result) => DiagnosticCanary {
-                    status: DiagnosticStatus::Pass,
-                    detail: format!("production path completed with {:?} result", result.status),
-                },
-                Err(err) => DiagnosticCanary {
-                    status: DiagnosticStatus::Failure,
-                    detail: format!("result artifact validation failed: {err}"),
-                },
-            }
-        }
+        Ok(outcome) => match caduceus::worker::parse_result_file(&outcome.result_path, issue_key) {
+            Ok(result) => DiagnosticCanary {
+                status: DiagnosticStatus::Pass,
+                detail: format!("production path completed with {:?} result", result.status),
+            },
+            Err(err) => DiagnosticCanary {
+                status: DiagnosticStatus::Failure,
+                detail: format!("result artifact validation failed: {err}"),
+            },
+        },
         Err(err) => DiagnosticCanary {
             status: DiagnosticStatus::Failure,
             detail: format!("production path failed: {err}"),

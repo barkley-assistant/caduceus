@@ -121,6 +121,7 @@ fn run_supervisor_mode() -> CaduceusResult<()> {
     let mut issue_body: Option<String> = None;
     let mut issue_labels_json: Option<String> = None;
     let mut branch_name: Option<String> = None;
+    let mut pr_target_json: Option<String> = None;
 
     while let Some(arg) = args.next() {
         let s = arg.to_string_lossy().into_owned();
@@ -151,6 +152,9 @@ fn run_supervisor_mode() -> CaduceusResult<()> {
                 issue_labels_json = args.next().map(|a| a.to_string_lossy().into_owned())
             }
             "--branch-name" => branch_name = args.next().map(|a| a.to_string_lossy().into_owned()),
+            "--pr-target-json" => {
+                pr_target_json = args.next().map(|a| a.to_string_lossy().into_owned())
+            }
             "--" => {
                 for rest in args {
                     worker_command.push(rest.to_string_lossy().into_owned());
@@ -169,10 +173,7 @@ fn run_supervisor_mode() -> CaduceusResult<()> {
         context: "supervisor",
         stderr: "--run-id is required".to_string(),
     })?;
-    let issue_ref = issue_ref.ok_or_else(|| caduceus::CaduceusError::Worker {
-        context: "supervisor",
-        stderr: "--issue is required".to_string(),
-    })?;
+    let issue_ref: Option<String> = issue_ref;
     let context_json = context_json.unwrap_or_default();
     let transcript_path = transcript_path.ok_or_else(|| caduceus::CaduceusError::Worker {
         context: "supervisor",
@@ -188,6 +189,38 @@ fn run_supervisor_mode() -> CaduceusResult<()> {
     let issue_labels_json = issue_labels_json.unwrap_or_else(|| "[]".to_string());
     let branch_name = branch_name.unwrap_or_default();
 
+    // Target selection (DAR §6.1): `--pr-target-json` selects the PR
+    // review path (parse failure is fatal, matching the issue path's
+    // `IssueKey::parse` fail-fast); absence + `--issue` selects the
+    // issue path; absence of both keeps the legacy no-flags behaviour
+    // for hand-driven tests (no sanitized env is built).
+    let target = if let Some(pr_json) = pr_target_json {
+        let pr_target: caduceus::review::ReviewTarget =
+            serde_json::from_str(&pr_json).map_err(|err| {
+                caduceus::CaduceusError::Config(format!("invalid --pr-target-json: {err}"))
+            })?;
+        Some(caduceus::executor::WorkTarget::PullRequest(pr_target))
+    } else if let Some(issue_ref) = issue_ref {
+        let issue = caduceus::issue::IssueKey::parse(&issue_ref)?;
+        Some(caduceus::executor::WorkTarget::Issue(
+            caduceus::executor::IssueWorkTarget {
+                key: issue,
+                title: issue_title,
+                body: issue_body,
+                labels: if issue_labels_json.trim() == "[]" {
+                    Vec::new()
+                } else {
+                    serde_json::from_str(&issue_labels_json).map_err(|err| {
+                        caduceus::CaduceusError::Config(format!("invalid labels JSON: {err}"))
+                    })?
+                },
+                branch_name,
+            },
+        ))
+    } else {
+        None
+    };
+
     if worker_command.is_empty() {
         return Err(caduceus::CaduceusError::Worker {
             context: "supervisor",
@@ -201,11 +234,6 @@ fn run_supervisor_mode() -> CaduceusResult<()> {
         tracing::warn!(error = %err, "could not enable child subreaper");
     }
     let _ = heartbeat_path;
-
-    // Sanity-check the issue ref format. The daemon-side
-    // already validates this, but a malformed ref must fail
-    // fast inside the supervisor too.
-    let issue = caduceus::issue::IssueKey::parse(&issue_ref)?;
 
     // Detach into a new session so the worker has its own
     // process group. The daemon records our PGID via the
@@ -311,38 +339,33 @@ fn run_supervisor_mode() -> CaduceusResult<()> {
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
 
-    // When the daemon supplied the new issue-context flags,
-    // build a sanitized worker environment from them and
-    // apply it before the worker starts. Backward-compatible
-    // callers (e.g. existing tests that drive
-    // `__worker-supervisor` by hand) omit these flags; we
-    // leave the inherited environment untouched in that case.
-    if !branch_name.is_empty() {
-        let labels: Vec<String> = if issue_labels_json.trim() == "[]" {
-            Vec::new()
-        } else {
-            serde_json::from_str(&issue_labels_json).map_err(|err| {
-                caduceus::CaduceusError::Config(format!("invalid labels JSON: {err}"))
-            })?
+    // When the daemon supplied a target (issue-context flags or a
+    // `--pr-target-json` review target), build a sanitized worker
+    // environment from it and apply it before the worker starts.
+    // Backward-compatible callers (e.g. existing tests that drive
+    // `__worker-supervisor` by hand) omit these flags; we leave the
+    // inherited environment untouched in that case. Issue-path
+    // preservation: an issue target with an empty branch name skips
+    // the sanitized env exactly as the pre-#346 supervisor did.
+    if let Some(target) = &target {
+        let issue_branch_gate = match target {
+            caduceus::executor::WorkTarget::Issue(issue) => !issue.branch_name.is_empty(),
+            caduceus::executor::WorkTarget::PullRequest(_) => true,
         };
-        let inputs = caduceus::worker::SanitizedEnvInputs {
-            target: caduceus::executor::WorkTarget::Issue(caduceus::executor::IssueWorkTarget {
-                key: issue,
-                title: issue_title,
-                body: issue_body,
-                labels,
-                branch_name,
-            }),
-            worktree_path: worktree.clone(),
-            run_id: run_id.clone(),
-            allowlist: Vec::new(),
-            context_json,
-        };
-        let parent: std::collections::BTreeMap<std::ffi::OsString, std::ffi::OsString> =
-            std::env::vars_os().collect();
-        let env = caduceus::worker::sanitized_env(&parent, &inputs)?;
-        cmd.env_clear();
-        cmd.envs(env);
+        if issue_branch_gate {
+            let inputs = caduceus::worker::SanitizedEnvInputs {
+                target: target.clone(),
+                worktree_path: worktree.clone(),
+                run_id: run_id.clone(),
+                allowlist: Vec::new(),
+                context_json,
+            };
+            let parent: std::collections::BTreeMap<std::ffi::OsString, std::ffi::OsString> =
+                std::env::vars_os().collect();
+            let env = caduceus::worker::sanitized_env(&parent, &inputs)?;
+            cmd.env_clear();
+            cmd.envs(env);
+        }
     }
 
     cmd.process_group(0);

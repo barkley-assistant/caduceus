@@ -155,8 +155,7 @@ pub async fn probe_runtime_facts_with_daemon_id(
         crate::executor::WorkTarget::Issue(issue) => issue.key.clone(),
         crate::executor::WorkTarget::PullRequest(_) => {
             return Err(CaduceusError::Other(
-                "PR review targets are not yet supported by the OCI probe (issue #346)"
-                    .to_string(),
+                "PR review targets are not yet supported by the OCI probe (issue #346)".to_string(),
             ));
         }
     };

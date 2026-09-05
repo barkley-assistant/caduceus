@@ -9,10 +9,9 @@ use std::pin::Pin;
 
 use tokio_util::sync::CancellationToken;
 
-use crate::executor::{Executor, ExecutorOutcome, ExecutorSpec, WorkTarget};
-use crate::github::issue::IssueKey;
+use crate::executor::{Executor, ExecutorOutcome, ExecutorSpec};
 use crate::infra::config::Config;
-use crate::infra::error::{CaduceusError, CaduceusResult};
+use crate::infra::error::CaduceusResult;
 use crate::worker::supervisor::supervise;
 use crate::worker::worker_contract::WORKER_RESULT_FILE;
 
@@ -43,48 +42,16 @@ impl Executor for TrustedHostExecutor {
         let worker_command: &'a [String] = &spec.worker_command;
         let cancellation: CancellationToken = spec.cancellation.clone();
 
-        // Issue targets flow through the supervisor's issue-path flags.
-        // PR review targets are refused here until the supervisor
-        // boundary carries a `WorkTarget` (issue #346) — never faked
-        // into an issue.
-        let (issue_key, issue_title, issue_body, labels, branch_name): (
-            &'a IssueKey,
-            &'a str,
-            &'a str,
-            &'a [String],
-            &'a str,
-        ) = match &spec.target {
-            WorkTarget::Issue(issue) => (
-                &issue.key,
-                issue.title.as_str(),
-                issue.body.as_str(),
-                issue.labels.as_slice(),
-                issue.branch_name.as_str(),
-            ),
-            WorkTarget::PullRequest(_) => {
-                return Box::pin(async move {
-                    Err(CaduceusError::Other(
-                        "PR review targets are not yet supported on the trusted host"
-                            .to_string(),
-                    ))
-                });
-            }
-        };
-
         Box::pin(async move {
             let outcome = supervise(
                 self_exe,
                 cfg,
-                issue_key,
+                &spec.target,
                 worktree,
                 run_id,
                 context_json,
                 worker_command,
                 cancellation,
-                issue_title,
-                issue_body,
-                labels,
-                branch_name,
             )
             .await?;
             Ok(ExecutorOutcome {

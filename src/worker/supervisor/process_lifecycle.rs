@@ -4,7 +4,6 @@ use std::process::{Command, Stdio};
 #[cfg(target_os = "macos")]
 use libc::{c_int, c_uint, c_void};
 
-use crate::github::issue::IssueKey;
 use crate::infra::error::{CaduceusError, CaduceusResult};
 
 // Hidden command name
@@ -475,35 +474,52 @@ pub fn build_supervisor_command(
     self_exe: &Path,
     worktree: &Path,
     run_id: &str,
-    issue: &IssueKey,
+    target: &crate::executor::WorkTarget,
     context_json: &str,
     worker_command: &[String],
     transcript_path: &Path,
     heartbeat_path: &Path,
     timeout_seconds: u64,
     transcript_max_bytes: u64,
-    issue_title: &str,
-    issue_body: &str,
-    labels: &[String],
-    branch_name: &str,
 ) -> Command {
-    let labels_json = serde_json::to_string(labels).unwrap_or_else(|_| "[]".to_string());
     let mut cmd = Command::new(self_exe);
     cmd.arg(HIDDEN_COMMAND);
     cmd.arg("--worktree").arg(worktree);
     cmd.arg("--run-id").arg(run_id);
-    cmd.arg("--issue")
-        .arg(format!("{}/{}#{}", issue.owner, issue.repo, issue.number));
-    cmd.arg("--context-json").arg(context_json);
-    cmd.arg("--transcript").arg(transcript_path);
-    cmd.arg("--heartbeat").arg(heartbeat_path);
-    cmd.arg("--timeout").arg(timeout_seconds.to_string());
-    cmd.arg("--transcript-max-bytes")
-        .arg(transcript_max_bytes.to_string());
-    cmd.arg("--issue-title").arg(issue_title);
-    cmd.arg("--issue-body").arg(issue_body);
-    cmd.arg("--issue-labels-json").arg(&labels_json);
-    cmd.arg("--branch-name").arg(branch_name);
+    match target {
+        crate::executor::WorkTarget::Issue(issue) => {
+            // Issue-path argv is byte-for-byte the historical shape.
+            let labels_json =
+                serde_json::to_string(&issue.labels).unwrap_or_else(|_| "[]".to_string());
+            cmd.arg("--issue").arg(format!(
+                "{}/{}#{}",
+                issue.key.owner, issue.key.repo, issue.key.number
+            ));
+            cmd.arg("--context-json").arg(context_json);
+            cmd.arg("--transcript").arg(transcript_path);
+            cmd.arg("--heartbeat").arg(heartbeat_path);
+            cmd.arg("--timeout").arg(timeout_seconds.to_string());
+            cmd.arg("--transcript-max-bytes")
+                .arg(transcript_max_bytes.to_string());
+            cmd.arg("--issue-title").arg(&issue.title);
+            cmd.arg("--issue-body").arg(&issue.body);
+            cmd.arg("--issue-labels-json").arg(&labels_json);
+            cmd.arg("--branch-name").arg(&issue.branch_name);
+        }
+        crate::executor::WorkTarget::PullRequest(pr) => {
+            // PR-target argv: one `--pr-target-json` flag after
+            // `--run-id`; no `--issue` / issue-shaped flags, no
+            // synthetic branch (DAR §6.1).
+            let pr_json = serde_json::to_string(pr).expect("serialize pr target");
+            cmd.arg("--pr-target-json").arg(pr_json);
+            cmd.arg("--context-json").arg(context_json);
+            cmd.arg("--transcript").arg(transcript_path);
+            cmd.arg("--heartbeat").arg(heartbeat_path);
+            cmd.arg("--timeout").arg(timeout_seconds.to_string());
+            cmd.arg("--transcript-max-bytes")
+                .arg(transcript_max_bytes.to_string());
+        }
+    }
     cmd.arg("--");
     for arg in worker_command {
         cmd.arg(arg);

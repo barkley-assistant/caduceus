@@ -735,7 +735,10 @@ pub fn resolve_with_env(
             "CADUCEUS_CONTEXT_JSON".to_string(),
             spec.context_json.clone(),
         ),
-        ("CADUCEUS_BRANCH_NAME".to_string(), issue.branch_name.clone()),
+        (
+            "CADUCEUS_BRANCH_NAME".to_string(),
+            issue.branch_name.clone(),
+        ),
         (
             "CADUCEUS_WORKTREE_PATH".to_string(),
             CONTAINER_WORKSPACE_PATH.to_string(),
