@@ -528,6 +528,14 @@ pub async fn gc_review_worktrees(
             entries.iter().map(|e| canonical_or_raw(&e.path)).collect();
 
         for entry in &entries {
+            // The mirror's own porcelain entry
+            // (`worktree <mirror>` + `bare`) is not a worktree to
+            // sweep.
+            if let Some(mirror) = &mirror_opt {
+                if entry.path == mirror.path {
+                    continue;
+                }
+            }
             // Only detached review entries are swept; a branch-based
             // worktree in the review dir is an anomaly — refuse, do
             // not sweep.
