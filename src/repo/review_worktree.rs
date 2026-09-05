@@ -126,13 +126,15 @@ impl ReviewWorktree {
             });
         }
 
-        let parent_dir = worktree_path.parent().ok_or_else(|| CaduceusError::Worktree {
-            context: "review-create",
-            stderr: format!(
-                "worktree path {} has no parent directory",
-                worktree_path.display()
-            ),
-        })?;
+        let parent_dir = worktree_path
+            .parent()
+            .ok_or_else(|| CaduceusError::Worktree {
+                context: "review-create",
+                stderr: format!(
+                    "worktree path {} has no parent directory",
+                    worktree_path.display()
+                ),
+            })?;
         std::fs::create_dir_all(parent_dir).map_err(|err| CaduceusError::Worktree {
             context: "review-create",
             stderr: format!("create review dir {} failed: {err}", parent_dir.display()),
@@ -203,10 +205,11 @@ impl ReviewWorktree {
             merge_base: target.merge_base.clone(),
             created_at,
         };
-        let bytes = serde_json::to_vec_pretty(&metadata).map_err(|err| CaduceusError::Worktree {
-            context: "review-create",
-            stderr: format!("serialise review metadata: {err}"),
-        })?;
+        let bytes =
+            serde_json::to_vec_pretty(&metadata).map_err(|err| CaduceusError::Worktree {
+                context: "review-create",
+                stderr: format!("serialise review metadata: {err}"),
+            })?;
         if let Err(err) = std::fs::write(&metadata_path, bytes) {
             let _ = Self::remove(runner, &handle).await;
             return Err(CaduceusError::Worktree {
@@ -393,7 +396,12 @@ fn validate_review_worktree_metadata(meta: &ReviewWorktreeMetadata) -> CaduceusR
             meta.schema_version
         )));
     }
-    required_string("review worktree metadata", "run_id", &meta.run_id, MAX_RUN_ID_BYTES)?;
+    required_string(
+        "review worktree metadata",
+        "run_id",
+        &meta.run_id,
+        MAX_RUN_ID_BYTES,
+    )?;
     required_string(
         "review worktree metadata",
         "repository.owner",
@@ -406,9 +414,24 @@ fn validate_review_worktree_metadata(meta: &ReviewWorktreeMetadata) -> CaduceusR
         &meta.repository.repo,
         MAX_REPO_COMPONENT_BYTES,
     )?;
-    required_string("review worktree metadata", "head_sha", &meta.head_sha, MAX_SHA_BYTES)?;
-    required_string("review worktree metadata", "base_sha", &meta.base_sha, MAX_SHA_BYTES)?;
-    required_string("review worktree metadata", "base_ref", &meta.base_ref, MAX_REF_BYTES)?;
+    required_string(
+        "review worktree metadata",
+        "head_sha",
+        &meta.head_sha,
+        MAX_SHA_BYTES,
+    )?;
+    required_string(
+        "review worktree metadata",
+        "base_sha",
+        &meta.base_sha,
+        MAX_SHA_BYTES,
+    )?;
+    required_string(
+        "review worktree metadata",
+        "base_ref",
+        &meta.base_ref,
+        MAX_REF_BYTES,
+    )?;
     required_string(
         "review worktree metadata",
         "merge_base",
@@ -501,10 +524,8 @@ pub async fn gc_review_worktrees(
         };
 
         // Registered canonical paths for the orphan sweep.
-        let registered_paths: std::collections::HashSet<PathBuf> = entries
-            .iter()
-            .map(|e| canonical_or_raw(&e.path))
-            .collect();
+        let registered_paths: std::collections::HashSet<PathBuf> =
+            entries.iter().map(|e| canonical_or_raw(&e.path)).collect();
 
         for entry in &entries {
             // Only detached review entries are swept; a branch-based
@@ -592,7 +613,8 @@ pub async fn gc_review_worktrees(
         // Orphan sweep: unregistered directories under the per-repo
         // review dir. Git cannot remove what it does not know, so
         // orphans are removed with a direct `fs::remove_dir_all`.
-        let orphans = collect_review_orphans(&review_repo_dir, &registered_paths, &in_use, age_cutoff);
+        let orphans =
+            collect_review_orphans(&review_repo_dir, &registered_paths, &in_use, age_cutoff);
         for orphan in orphans {
             if dry_run {
                 println!("would remove review orphan {}", orphan.display());

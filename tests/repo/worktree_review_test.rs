@@ -160,15 +160,18 @@ fn init_bare_remote_base_moved(path: &Path) -> (String, String, String) {
     // A: empty tree on main.
     let empty_tree = git_out(path, &["hash-object", "-w", "-t", "tree", "/dev/null"]);
     let a = git_out(path, &["commit-tree", &empty_tree, "-m", "initial"]);
-    run_command(Command::new("git").current_dir(path).args([
-        "update-ref",
-        "refs/heads/main",
-        &a,
-    ]));
+    run_command(
+        Command::new("git")
+            .current_dir(path)
+            .args(["update-ref", "refs/heads/main", &a]),
+    );
 
     // B: child of A touching feature.txt.
     let feature_tree = tree_with_file(path, "feature.txt", "feature content\n");
-    let b = git_out(path, &["commit-tree", &feature_tree, "-p", &a, "-m", "feature"]);
+    let b = git_out(
+        path,
+        &["commit-tree", &feature_tree, "-p", &a, "-m", "feature"],
+    );
     run_command(Command::new("git").current_dir(path).args([
         "update-ref",
         "refs/heads/feature",
@@ -492,7 +495,8 @@ async fn review_worktree_remove_leaves_no_artefacts() {
 /// Backdate a directory's mtime so the review GC treats it as stale.
 fn backdate_to_older_than(path: &Path, days: i64) {
     let target = chrono::Utc::now() - chrono::Duration::days(days);
-    let ft = filetime::FileTime::from_unix_time(target.timestamp(), target.timestamp_subsec_nanos());
+    let ft =
+        filetime::FileTime::from_unix_time(target.timestamp(), target.timestamp_subsec_nanos());
     filetime::set_file_mtime(path, ft).expect("set mtime");
 }
 
