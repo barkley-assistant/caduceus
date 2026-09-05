@@ -171,14 +171,7 @@ async fn run_lifecycle(
         state,
         cfg.state_dir.clone(),
         facts.daemon_id,
-        match &input.target {
-            caduceus::executor::WorkTarget::Issue(issue) => issue.key.clone(),
-            caduceus::executor::WorkTarget::PullRequest(_) => unreachable!(),
-        },
-        match &input.target {
-            caduceus::executor::WorkTarget::Issue(issue) => issue.key.display_key(),
-            caduceus::executor::WorkTarget::PullRequest(_) => unreachable!(),
-        },
+        input.target.display(),
         "test-command-sha".to_string(),
         create_argv(),
         None,
@@ -212,14 +205,7 @@ async fn canonical_lifecycle_runs_end_to_end() {
         state.clone(),
         cfg.state_dir.clone(),
         "test-daemon".to_string(),
-        match &input.target {
-            caduceus::executor::WorkTarget::Issue(issue) => issue.key.clone(),
-            caduceus::executor::WorkTarget::PullRequest(_) => unreachable!(),
-        },
-        match &input.target {
-            caduceus::executor::WorkTarget::Issue(issue) => issue.key.display_key(),
-            caduceus::executor::WorkTarget::PullRequest(_) => unreachable!(),
-        },
+        input.target.display(),
         "test-command-sha".to_string(),
         create_argv(),
         None,

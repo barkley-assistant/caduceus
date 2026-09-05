@@ -156,7 +156,7 @@ fn live_fixture(engine: Option<SandboxEngine>, container_script: &str) -> Option
 
     let runtime = caduceus::executor::sandbox_spec::RuntimeFacts {
         run_id: run_id.to_string(),
-        issue: caduceus::github::issue::IssueKey::parse("owner/repo#1").expect("valid key"),
+        target: "owner/repo#1".to_string(),
         worker_command: vec![
             "sh".to_string(),
             "-c".to_string(),
@@ -199,7 +199,8 @@ fn live_fixture(engine: Option<SandboxEngine>, container_script: &str) -> Option
     let spec = caduceus::executor::ExecutorSpec {
         self_exe: std::path::PathBuf::from("/proc/self/exe"),
         target: caduceus::executor::WorkTarget::Issue(caduceus::executor::IssueWorkTarget {
-            key: runtime.issue.clone(),
+            key: caduceus::github::issue::IssueKey::parse(&runtime.target)
+                .expect("fixture target parses as issue key"),
             title: "Live env".to_string(),
             body: "Live body".to_string(),
             labels: vec!["bug".to_string()],

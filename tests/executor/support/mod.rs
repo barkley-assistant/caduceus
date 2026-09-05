@@ -40,7 +40,7 @@ pub fn git_shadow_host(cfg: &Config, run_id: &str) -> PathBuf {
 pub fn runtime_facts(cfg: &Config, run_id: &str, worktree: &Path) -> RuntimeFacts {
     RuntimeFacts {
         run_id: run_id.to_string(),
-        issue: IssueKey::parse("owner/repo#1").expect("valid key"),
+        target: "owner/repo#1".to_string(),
         worker_command: vec!["python3".to_string(), "bridge.py".to_string()],
         worktree: worktree.to_path_buf(),
         output_dir: oci_output_dir(cfg, run_id),
@@ -61,10 +61,11 @@ pub fn runtime_facts(cfg: &Config, run_id: &str, worktree: &Path) -> RuntimeFact
 /// needing non-default spec inputs mutate the returned struct.
 #[allow(dead_code)]
 pub fn executor_spec(runtime: &RuntimeFacts) -> caduceus::executor::ExecutorSpec {
+    let key = IssueKey::parse(&runtime.target).expect("fixture target parses as issue key");
     caduceus::executor::ExecutorSpec {
         self_exe: PathBuf::from("/proc/self/exe"),
         target: caduceus::executor::WorkTarget::Issue(caduceus::executor::IssueWorkTarget {
-            key: runtime.issue.clone(),
+            key,
             title: "Fix the thing".to_string(),
             body: "Body text".to_string(),
             labels: vec!["bug".to_string()],

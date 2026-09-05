@@ -89,7 +89,8 @@ fn executor_spec_for(
     caduceus::executor::ExecutorSpec {
         self_exe: PathBuf::from("/proc/self/exe"),
         target: caduceus::executor::WorkTarget::Issue(caduceus::executor::IssueWorkTarget {
-            key: runtime.issue.clone(),
+            key: caduceus::github::issue::IssueKey::parse(&runtime.target)
+                .expect("fixture target parses as issue key"),
             title: "Fix login bug".to_string(),
             body: "Steps to reproduce".to_string(),
             labels: vec!["bug".to_string()],
@@ -216,7 +217,7 @@ fn live_fixture_with(
 
     let runtime = caduceus::executor::sandbox_spec::RuntimeFacts {
         run_id: run_id.to_string(),
-        issue: caduceus::github::issue::IssueKey::parse("owner/repo#1").expect("valid key"),
+        target: "owner/repo#1".to_string(),
         worker_command: vec![
             "sh".to_string(),
             "-c".to_string(),
@@ -848,10 +849,7 @@ fn disk_pressure_watchdog_terminates_in_flight_and_refuses_new_dispatch() {
         };
         let runtime = caduceus::executor::sandbox_spec::RuntimeFacts {
             run_id: run_id.clone(),
-            issue: match &spec.target {
-                caduceus::executor::WorkTarget::Issue(issue) => issue.key.clone(),
-                caduceus::executor::WorkTarget::PullRequest(_) => unreachable!(),
-            },
+            target: spec.target.display(),
             worker_command: spec.worker_command.clone(),
             worktree: worktree.clone(),
             output_dir: fx_cfg
@@ -875,14 +873,7 @@ fn disk_pressure_watchdog_terminates_in_flight_and_refuses_new_dispatch() {
             state,
             fx_cfg.state_dir.clone(),
             runtime.daemon_id,
-            match &spec.target {
-                caduceus::executor::WorkTarget::Issue(issue) => issue.key.clone(),
-                caduceus::executor::WorkTarget::PullRequest(_) => unreachable!(),
-            },
-            match &spec.target {
-                caduceus::executor::WorkTarget::Issue(issue) => issue.key.display_key(),
-                caduceus::executor::WorkTarget::PullRequest(_) => unreachable!(),
-            },
+            spec.target.display(),
             "live-test-command-sha".to_string(),
             argv,
             None,
@@ -1381,14 +1372,7 @@ fn timeout_cleans_container_live() {
         Arc::clone(&state),
         fx.cfg.state_dir.clone(),
         "live-test-daemon".to_string(),
-        match &harness.spec_exec.target {
-            caduceus::executor::WorkTarget::Issue(issue) => issue.key.clone(),
-            caduceus::executor::WorkTarget::PullRequest(_) => unreachable!(),
-        },
-        match &harness.spec_exec.target {
-            caduceus::executor::WorkTarget::Issue(issue) => issue.key.display_key(),
-            caduceus::executor::WorkTarget::PullRequest(_) => unreachable!(),
-        },
+        harness.spec_exec.target.display(),
         "live-command-sha".to_string(),
         argv,
         None,
@@ -1445,14 +1429,7 @@ fn cancellation_cleans_container_live() {
         Arc::clone(&state),
         fx.cfg.state_dir.clone(),
         "live-test-daemon".to_string(),
-        match &harness.spec_exec.target {
-            caduceus::executor::WorkTarget::Issue(issue) => issue.key.clone(),
-            caduceus::executor::WorkTarget::PullRequest(_) => unreachable!(),
-        },
-        match &harness.spec_exec.target {
-            caduceus::executor::WorkTarget::Issue(issue) => issue.key.display_key(),
-            caduceus::executor::WorkTarget::PullRequest(_) => unreachable!(),
-        },
+        harness.spec_exec.target.display(),
         "live-command-sha".to_string(),
         argv,
         None,
@@ -1555,10 +1532,7 @@ fn crash_restart_orphan_reconcile_live() {
             created_at: now.clone(),
             updated_at: now,
             daemon_id: "live-test-daemon".to_string(),
-            issue_id: match &harness.spec_exec.target {
-                caduceus::executor::WorkTarget::Issue(issue) => issue.key.display_key(),
-                caduceus::executor::WorkTarget::PullRequest(_) => unreachable!(),
-            },
+            issue_id: harness.spec_exec.target.display(),
             worker_command_sha256: "live-command-sha".to_string(),
         })
         .expect("insert row");
@@ -1617,14 +1591,7 @@ fn heartbeat_advances_during_run_live() {
         Arc::clone(&state),
         fx.cfg.state_dir.clone(),
         "live-test-daemon".to_string(),
-        match &harness.spec_exec.target {
-            caduceus::executor::WorkTarget::Issue(issue) => issue.key.clone(),
-            caduceus::executor::WorkTarget::PullRequest(_) => unreachable!(),
-        },
-        match &harness.spec_exec.target {
-            caduceus::executor::WorkTarget::Issue(issue) => issue.key.display_key(),
-            caduceus::executor::WorkTarget::PullRequest(_) => unreachable!(),
-        },
+        harness.spec_exec.target.display(),
         "live-command-sha".to_string(),
         argv,
         None,
@@ -1909,7 +1876,7 @@ struct LifecycleHarness {
 fn lifecycle_harness(fx: &LiveFixture, worker_command: Vec<String>) -> LifecycleHarness {
     let runtime = caduceus::executor::sandbox_spec::RuntimeFacts {
         run_id: fx.run_id.clone(),
-        issue: caduceus::github::issue::IssueKey::parse("owner/repo#1").expect("valid key"),
+        target: "owner/repo#1".to_string(),
         worker_command: worker_command.clone(),
         worktree: fx.worktree.clone(),
         output_dir: fx
@@ -1934,7 +1901,8 @@ fn lifecycle_harness(fx: &LiveFixture, worker_command: Vec<String>) -> Lifecycle
     let spec_exec = caduceus::executor::ExecutorSpec {
         self_exe: std::path::PathBuf::from("/proc/self/exe"),
         target: caduceus::executor::WorkTarget::Issue(caduceus::executor::IssueWorkTarget {
-            key: runtime.issue.clone(),
+            key: caduceus::github::issue::IssueKey::parse(&runtime.target)
+                .expect("fixture target parses as issue key"),
             title: "title".to_string(),
             body: "body".to_string(),
             labels: vec!["bug".to_string()],

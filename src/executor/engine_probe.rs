@@ -151,17 +151,10 @@ pub async fn probe_runtime_facts_with_daemon_id(
     create_git_shadow(&git_shadow_host, git_shadow_kind, engine, engine_mode)?;
 
     // 6. Assemble the extended facts.
-    let issue = match &spec.target {
-        crate::executor::WorkTarget::Issue(issue) => issue.key.clone(),
-        crate::executor::WorkTarget::PullRequest(_) => {
-            return Err(CaduceusError::Other(
-                "PR review targets are not yet supported by the OCI probe (issue #346)".to_string(),
-            ));
-        }
-    };
+    let target = spec.target.display();
     Ok(RuntimeFacts {
         run_id: spec.run_id.clone(),
-        issue,
+        target,
         worker_command: spec.worker_command.clone(),
         worktree: spec.worktree.clone(),
         output_dir,

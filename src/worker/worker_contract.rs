@@ -380,7 +380,11 @@ pub fn sanitized_env(
 /// every `CADUCEUS_PR_*` string must be non-empty and NUL-free and
 /// the pull request number must be positive. `base_ref`/`merge_base`
 /// are context (DAR §2.1) and do not enter the environment.
-fn validate_pr_env(pr: &ReviewTarget) -> CaduceusResult<()> {
+///
+/// `pub(crate)` so the OCI env assembly in
+/// `executor::sandbox_spec::resolve_with_env` reuses this single
+/// authority instead of duplicating the checks.
+pub(crate) fn validate_pr_env(pr: &ReviewTarget) -> CaduceusResult<()> {
     for (field, value) in [
         ("pr.repository.owner", pr.repository.owner.as_str()),
         ("pr.repository.repo", pr.repository.repo.as_str()),

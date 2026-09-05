@@ -381,14 +381,7 @@ async fn create_failure_leaves_no_env_file() {
         state,
         cfg.state_dir.clone(),
         facts.daemon_id,
-        match &spec.target {
-            caduceus::executor::WorkTarget::Issue(issue) => issue.key.clone(),
-            caduceus::executor::WorkTarget::PullRequest(_) => unreachable!(),
-        },
-        match &spec.target {
-            caduceus::executor::WorkTarget::Issue(issue) => issue.key.display_key(),
-            caduceus::executor::WorkTarget::PullRequest(_) => unreachable!(),
-        },
+        spec.target.display(),
         "test-command-sha".to_string(),
         argv,
         Some(env_file),

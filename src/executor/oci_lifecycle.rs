@@ -58,7 +58,6 @@ pub struct OciAdapter {
     state_dir: PathBuf,
     daemon_id: String,
     issue_id: String,
-    issue: crate::github::issue::IssueKey,
     worker_command_sha256: String,
     create_argv: Vec<String>,
     env_file: Mutex<Option<OciEnvFile>>,
@@ -84,7 +83,6 @@ impl OciAdapter {
         state: Arc<dyn OciRunState>,
         state_dir: PathBuf,
         daemon_id: String,
-        issue: crate::github::issue::IssueKey,
         issue_id: String,
         worker_command_sha256: String,
         create_argv: Vec<String>,
@@ -100,7 +98,6 @@ impl OciAdapter {
             state: Some(state),
             state_dir,
             daemon_id,
-            issue,
             issue_id,
             worker_command_sha256,
             create_argv,
@@ -115,11 +112,6 @@ impl OciAdapter {
             state: Some(state),
             state_dir: cfg.state_dir.clone(),
             daemon_id: daemon_id.to_string(),
-            issue: crate::github::issue::IssueKey {
-                owner: String::new(),
-                repo: String::new(),
-                number: 0,
-            },
             issue_id: String::new(),
             worker_command_sha256: String::new(),
             create_argv: Vec::new(),
@@ -134,11 +126,6 @@ impl OciAdapter {
             state: None,
             state_dir: cfg.state_dir.clone(),
             daemon_id: daemon_id.to_string(),
-            issue: crate::github::issue::IssueKey {
-                owner: String::new(),
-                repo: String::new(),
-                number: 0,
-            },
             issue_id: String::new(),
             worker_command_sha256: String::new(),
             create_argv: Vec::new(),
@@ -231,7 +218,7 @@ pub async fn run_oci_lifecycle(
     let input = RunInput {
         run_id: spec.name().to_string(),
         issue_id: adapter.issue_id.clone(),
-        issue: adapter.issue.clone(),
+        target: adapter.issue_id.clone(),
         worker_command_sha256: adapter.worker_command_sha256.clone(),
     };
     run_lifecycle_core(&input, state.as_ref(), adapter, cfg, cancel, pressure).await
@@ -240,7 +227,10 @@ pub async fn run_oci_lifecycle(
 struct RunInput {
     run_id: String,
     issue_id: String,
-    issue: crate::github::issue::IssueKey,
+    /// [`crate::executor::WorkTarget::display()`] — the heartbeat
+    /// identity for this run (issue `owner/repo#N`, PR
+    /// `owner/repo#pr/N`).
+    target: String,
     worker_command_sha256: String,
 }
 
@@ -292,7 +282,7 @@ async fn run_lifecycle_core(
             pid: std::process::id(),
             started_at,
             updated_at: started_at,
-            target: input.issue.display_key(),
+            target: input.target.clone(),
             transcript_path: paths.transcript_path.clone(),
         },
         &paths.heartbeat_path,
@@ -445,7 +435,7 @@ fn spawn_heartbeat(
     cancellation: CancellationToken,
 ) -> tokio::task::JoinHandle<()> {
     let run_id = input.run_id.clone();
-    let target = input.issue.display_key();
+    let target = input.target.clone();
     tokio::spawn(async move {
         loop {
             tokio::select! {
@@ -638,7 +628,7 @@ pub async fn reconcile_installation(
                 let input = RunInput {
                     run_id: row.run_id.clone(),
                     issue_id: row.issue_id.clone(),
-                    issue: parse_issue_key(&row.issue_id),
+                    target: row.issue_id.clone(),
                     worker_command_sha256: row.worker_command_sha256.clone(),
                 };
                 let _ = teardown_container(
@@ -655,7 +645,7 @@ pub async fn reconcile_installation(
                 let input = RunInput {
                     run_id: row.run_id.clone(),
                     issue_id: row.issue_id.clone(),
-                    issue: parse_issue_key(&row.issue_id),
+                    target: row.issue_id.clone(),
                     worker_command_sha256: row.worker_command_sha256.clone(),
                 };
                 let _ = teardown_container(
@@ -672,7 +662,7 @@ pub async fn reconcile_installation(
                 let input = RunInput {
                     run_id,
                     issue_id: String::new(),
-                    issue: adapter.issue.clone(),
+                    target: String::new(),
                     worker_command_sha256: String::new(),
                 };
                 let _ = teardown_container(
@@ -765,14 +755,6 @@ pub async fn find_orphans(
         }
     }
     Ok(orphans)
-}
-
-fn parse_issue_key(value: &str) -> crate::github::issue::IssueKey {
-    crate::github::issue::IssueKey::parse(value).unwrap_or(crate::github::issue::IssueKey {
-        owner: String::new(),
-        repo: String::new(),
-        number: 0,
-    })
 }
 
 fn parse_exit_code(output: &str) -> i32 {

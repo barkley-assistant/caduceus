@@ -26,13 +26,18 @@ use crate::github::issue::IssueKey;
 use crate::infra::config::{SandboxConfig, SandboxNetwork};
 use crate::infra::error::{CaduceusError, CaduceusResult};
 use crate::worker::worker_contract::{
-    denied_name, CONTAINER_OUTPUT_PATH, CONTAINER_WORKSPACE_PATH, WORKER_RESULT_FILE,
+    denied_name, validate_pr_env, CONTAINER_OUTPUT_PATH, CONTAINER_WORKSPACE_PATH,
+    WORKER_RESULT_FILE,
 };
 
-/// The canonical `CADUCEUS_*` variable names every OCI worker
-/// receives (the frozen worker-environment contract, issue #249).
-/// Shared authority for `resolve_with_env` assembly and for the
-/// `sandbox.pass_env` reserved-key collision check at config load.
+/// The canonical `CADUCEUS_*` variable names every OCI **issue-path**
+/// worker receives (the frozen worker-environment contract, issue
+/// #249). Shared authority for `resolve_with_env` issue-arm assembly
+/// and for the `sandbox.pass_env` reserved-key collision check at
+/// config load. PR-path names (`CADUCEUS_WORK_TARGET`, `CADUCEUS_PR_*`)
+/// are emitted by `resolve_with_env` for PR targets but are not
+/// reserved here — the canonical layer overrides any colliding
+/// `pass_env` entry anyway (design D3 step 3).
 pub const CANONICAL_ENV_KEYS: &[&str] = &[
     "CADUCEUS_RUN_ID",
     "CADUCEUS_ISSUE_ID",
@@ -409,8 +414,12 @@ impl SandboxSpec {
 pub struct RuntimeFacts {
     /// Unique run identifier.
     pub run_id: String,
-    /// The issue key being worked on.
-    pub issue: IssueKey,
+    /// [`crate::executor::WorkTarget::display()`] — `owner/repo#N` for
+    /// issue runs, `owner/repo#pr/N` for PR review runs. Carried as a
+    /// display string so the OCI path is target-neutral (DAR §6.1):
+    /// the `caduceus.issue_id` label, `CADUCEUS_ISSUE_ID` (issue arm),
+    /// and the `oci_runs.issue_id` column all consume this value.
+    pub target: String,
     /// Worker command argv (bridge script + args).
     pub worker_command: Vec<String>,
     /// Host path to the worktree root.
@@ -706,48 +715,80 @@ pub fn resolve_with_env(
     //     (`write_prompt`). Operator `pass_env` values are NOT
     //     normalized — a newline-bearing one fails closed above
     //     (design D3).
-    let crate::executor::WorkTarget::Issue(issue) = &spec.target else {
-        return Err(CaduceusError::Config(
-            "PR review targets are not yet supported by OCI env resolution (issue #346)"
-                .to_string(),
-        ));
+    //     Issue arm: the historical 10-name canonical contract
+    //     byte-for-byte (including the OCI-only compat
+    //     `CADUCEUS_ISSUE_ID`); PR arm: the `pr` mode marker plus
+    //     the four `CADUCEUS_PR_*` values (DAR §6.1). The
+    //     `caduceus.issue_id` *label* carries the target identity on
+    //     both arms (D5).
+    let canonical: Vec<(String, String)> = match &spec.target {
+        crate::executor::WorkTarget::Issue(issue) => {
+            let labels_json = serde_json::to_string(&issue.labels)
+                .map_err(|err| CaduceusError::Config(format!("labels JSON serialise: {err}")))?;
+            let issue_canonical: Vec<(String, String)> = vec![
+                ("CADUCEUS_RUN_ID".to_string(), runtime.run_id.clone()),
+                ("CADUCEUS_ISSUE_ID".to_string(), runtime.target.clone()),
+                (
+                    "CADUCEUS_ISSUE_NUMBER".to_string(),
+                    issue.key.number.to_string(),
+                ),
+                (
+                    "CADUCEUS_ISSUE_REPO".to_string(),
+                    format!("{}/{}", issue.key.owner, issue.key.repo),
+                ),
+                ("CADUCEUS_ISSUE_TITLE".to_string(), issue.title.clone()),
+                ("CADUCEUS_ISSUE_BODY".to_string(), issue.body.clone()),
+                (
+                    "CADUCEUS_ISSUE_LABELS_JSON".to_string(),
+                    labels_json.clone(),
+                ),
+                (
+                    "CADUCEUS_CONTEXT_JSON".to_string(),
+                    spec.context_json.clone(),
+                ),
+                (
+                    "CADUCEUS_BRANCH_NAME".to_string(),
+                    issue.branch_name.clone(),
+                ),
+                (
+                    "CADUCEUS_WORKTREE_PATH".to_string(),
+                    CONTAINER_WORKSPACE_PATH.to_string(),
+                ),
+                (
+                    "CADUCEUS_RESULT_PATH".to_string(),
+                    format!("{CONTAINER_OUTPUT_PATH}/{WORKER_RESULT_FILE}"),
+                ),
+            ];
+            issue_canonical
+        }
+        crate::executor::WorkTarget::PullRequest(pr) => {
+            validate_pr_env(pr)?;
+            let pr_canonical: Vec<(String, String)> = vec![
+                ("CADUCEUS_RUN_ID".to_string(), runtime.run_id.clone()),
+                ("CADUCEUS_WORK_TARGET".to_string(), "pr".to_string()),
+                (
+                    "CADUCEUS_PR_NUMBER".to_string(),
+                    pr.pull_request.to_string(),
+                ),
+                ("CADUCEUS_PR_REPO".to_string(), pr.repository.full_name()),
+                ("CADUCEUS_PR_BASE_SHA".to_string(), pr.base_sha.clone()),
+                ("CADUCEUS_PR_HEAD_SHA".to_string(), pr.head_sha.clone()),
+                (
+                    "CADUCEUS_CONTEXT_JSON".to_string(),
+                    spec.context_json.clone(),
+                ),
+                (
+                    "CADUCEUS_WORKTREE_PATH".to_string(),
+                    CONTAINER_WORKSPACE_PATH.to_string(),
+                ),
+                (
+                    "CADUCEUS_RESULT_PATH".to_string(),
+                    format!("{CONTAINER_OUTPUT_PATH}/{WORKER_RESULT_FILE}"),
+                ),
+            ];
+            pr_canonical
+        }
     };
-    let labels_json = serde_json::to_string(&issue.labels)
-        .map_err(|err| CaduceusError::Config(format!("labels JSON serialise: {err}")))?;
-    let canonical: Vec<(String, String)> = vec![
-        ("CADUCEUS_RUN_ID".to_string(), runtime.run_id.clone()),
-        ("CADUCEUS_ISSUE_ID".to_string(), runtime.issue.display_key()),
-        (
-            "CADUCEUS_ISSUE_NUMBER".to_string(),
-            issue.key.number.to_string(),
-        ),
-        (
-            "CADUCEUS_ISSUE_REPO".to_string(),
-            format!("{}/{}", issue.key.owner, issue.key.repo),
-        ),
-        ("CADUCEUS_ISSUE_TITLE".to_string(), issue.title.clone()),
-        ("CADUCEUS_ISSUE_BODY".to_string(), issue.body.clone()),
-        (
-            "CADUCEUS_ISSUE_LABELS_JSON".to_string(),
-            labels_json.clone(),
-        ),
-        (
-            "CADUCEUS_CONTEXT_JSON".to_string(),
-            spec.context_json.clone(),
-        ),
-        (
-            "CADUCEUS_BRANCH_NAME".to_string(),
-            issue.branch_name.clone(),
-        ),
-        (
-            "CADUCEUS_WORKTREE_PATH".to_string(),
-            CONTAINER_WORKSPACE_PATH.to_string(),
-        ),
-        (
-            "CADUCEUS_RESULT_PATH".to_string(),
-            format!("{CONTAINER_OUTPUT_PATH}/{WORKER_RESULT_FILE}"),
-        ),
-    ];
     for (key, value) in canonical {
         environment.insert(key, normalize_canonical_value(&value));
     }
@@ -777,7 +818,7 @@ pub fn resolve_with_env(
     let labels = crate::executor::sandbox_renderer::render_labels(
         &runtime.daemon_id,
         &runtime.run_id,
-        &runtime.issue.display_key(),
+        &runtime.target,
     );
 
     // 13. Command — worker argv.
