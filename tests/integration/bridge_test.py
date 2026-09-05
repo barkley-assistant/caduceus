@@ -20,8 +20,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 BRIDGE_PATH = REPO_ROOT / "plugin-assets" / "worker-bridge.py"
 FAKE_HARNESS_PATH = REPO_ROOT / "tests" / "fixtures" / "bridge_harness.py"
 
-# All required CADUCEUS_* environment values. Mirrors
-# ``plugin_assets.worker_bridge.REQUIRED_ENV_VARS``.
+# All required CADUCEUS_* environment values — the union across both
+# target paths. Mirrors ``plugin_assets.worker_bridge.REQUIRED_ENV_VARS``
+# (DAR §6.1). A single run never carries every name: the issue path
+# omits the ``CADUCEUS_PR_*`` set and the PR path omits ``CADUCEUS_ISSUE_*``.
 REQUIRED_ENV_KEYS = (
     "CADUCEUS_ISSUE_NUMBER",
     "CADUCEUS_ISSUE_TITLE",
@@ -33,6 +35,11 @@ REQUIRED_ENV_KEYS = (
     "CADUCEUS_ISSUE_LABELS_JSON",
     "CADUCEUS_BRANCH_NAME",
     "CADUCEUS_RESULT_PATH",
+    "CADUCEUS_WORK_TARGET",
+    "CADUCEUS_PR_BASE_SHA",
+    "CADUCEUS_PR_HEAD_SHA",
+    "CADUCEUS_PR_NUMBER",
+    "CADUCEUS_PR_REPO",
 )
 
 
@@ -88,8 +95,18 @@ class TestReadRequiredEnv:
         self, bridge_module, fake_env
     ):
         result = bridge_module.read_required_env(fake_env)
-        assert set(result.keys()) == set(REQUIRED_ENV_KEYS)
+        # The returned dict carries the issue mode's full name set
+        # (mode-neutral + issue vars + the soft result path) — not the
+        # union, because the PR-only names are absent from an issue env.
+        expected = (
+            set(bridge_module.MODE_NEUTRAL_ENV_VARS)
+            | set(bridge_module.ISSUE_PATH_ENV_VARS)
+            | {bridge_module.RESULT_PATH_ENV_VAR}
+        )
+        assert set(result.keys()) == expected
         assert result["CADUCEUS_ISSUE_NUMBER"] == "42"
+        # The test-side mirror stays in lockstep with the bridge union.
+        assert set(REQUIRED_ENV_KEYS) == set(bridge_module.REQUIRED_ENV_VARS)
 
     def test_empty_string_counts_as_missing(self, bridge_module, fake_env):
         env = dict(fake_env)
@@ -772,6 +789,40 @@ def _new_contract_env(worktree: Path, hermes_home: Path) -> dict:
     return env
 
 
+def _pr_review_env(worktree: Path, hermes_home: Path) -> dict:
+    """A complete PR-mode env (DAR §6.1) with a real prompt file.
+
+    Issue-path variables (``CADUCEUS_ISSUE_*``, ``CADUCEUS_BRANCH_NAME``)
+    are deliberately absent — the PR mode must not require them.
+    """
+    prompt = worktree / "worker-prompt.md"
+    if not prompt.exists():
+        prompt.write_text(
+            "# PR review prompt\n\nReview the pull request.", encoding="utf-8"
+        )
+    return {
+        "HERMES_HOME": str(hermes_home),
+        "CADUCEUS_WORK_TARGET": "pr",
+        "CADUCEUS_RUN_ID": "01J0X0X0X0X0X0X0X0X0X0X0X",
+        "CADUCEUS_WORKTREE_PATH": str(worktree),
+        "CADUCEUS_CONTEXT_JSON": json.dumps(
+            {
+                "pull_request": {
+                    "number": 7,
+                    "repo": "barkley-assistant/caduceus",
+                    "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                }
+            }
+        ),
+        "CADUCEUS_PR_REPO": "barkley-assistant/caduceus",
+        "CADUCEUS_PR_NUMBER": "7",
+        "CADUCEUS_PR_BASE_SHA": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "CADUCEUS_PR_HEAD_SHA": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "CADUCEUS_RESULT_PATH": str(worktree / "pr-review-result.json"),
+    }
+
+
 class TestNewContract:
     def test_hook_present_activates_new_contract(
         self, bridge_module, tmp_path
@@ -1189,3 +1240,121 @@ class TestResultPathResolution:
         err = capsys.readouterr().err
         assert "CADUCEUS_RESULT_PATH is not set" in err
         assert "falling back" in err
+
+
+# ---------------------------------------------------------------------------
+# 10. PR review mode (DAR §6.1/§6.2) — target-neutral bridge behaviour
+# ---------------------------------------------------------------------------
+
+
+class TestPrMode:
+    """``CADUCEUS_WORK_TARGET=pr`` selects the PR review env contract:
+    the issue vars are not required, ``ctx.pr`` is populated, and the
+    bridge never synthesizes a result file (the harness owns it)."""
+
+    def test_read_required_env_validates_pr_set_without_issue_vars(
+        self, bridge_module, tmp_path
+    ):
+        env = _pr_review_env(tmp_path, tmp_path / "hermes")
+        result = bridge_module.read_required_env(env)
+        expected = (
+            set(bridge_module.MODE_NEUTRAL_ENV_VARS)
+            | set(bridge_module.PR_PATH_ENV_VARS)
+            | {bridge_module.RESULT_PATH_ENV_VAR}
+        )
+        assert set(result.keys()) == expected
+        assert result["CADUCEUS_PR_NUMBER"] == "7"
+        for name in bridge_module.ISSUE_PATH_ENV_VARS:
+            assert name not in result
+
+    def test_unknown_work_target_fails_closed(
+        self, bridge_module, tmp_path, capsys
+    ):
+        env = _pr_review_env(tmp_path, tmp_path / "hermes")
+        env["CADUCEUS_WORK_TARGET"] = "pullrequest"
+        with pytest.raises(SystemExit) as excinfo:
+            bridge_module.read_required_env(env)
+        assert excinfo.value.code == bridge_module.EXIT_MISSING_ENV
+        assert "pullrequest" in capsys.readouterr().err
+
+    def test_pr_mode_hard_requires_result_path(
+        self, bridge_module, tmp_path, capsys
+    ):
+        """On the PR path there is no legacy fallback, so the result
+        path is hard-required — unlike the issue path."""
+        env = _pr_review_env(tmp_path, tmp_path / "hermes")
+        env.pop("CADUCEUS_RESULT_PATH")
+        with pytest.raises(SystemExit) as excinfo:
+            bridge_module.read_required_env(env)
+        assert excinfo.value.code == bridge_module.EXIT_MISSING_ENV
+        assert "CADUCEUS_RESULT_PATH" in capsys.readouterr().err
+
+    def test_pr_mode_builds_pr_context(self, bridge_module, tmp_path):
+        worktree = _make_worktree_with_prompt(tmp_path / "worktree")
+        env = _pr_review_env(worktree, tmp_path / "hermes")
+        ctx = bridge_module._build_ctx(env)
+        assert ctx.issue is None
+        assert ctx.pr is not None
+        assert ctx.pr.repo == "barkley-assistant/caduceus"
+        assert ctx.pr.number == 7
+        assert ctx.pr.base_sha == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        assert ctx.pr.head_sha == "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        # Empty passthrough — the PR path carries no synthetic branch.
+        assert ctx.branch == ""
+        assert ctx.labels == []
+
+    def test_issue_path_ctx_pr_is_none(self, bridge_module, fake_env):
+        ctx = bridge_module._build_ctx(fake_env)
+        assert ctx.pr is None
+        assert ctx.issue is not None
+
+    def test_pr_hook_no_result_exits_missing_result_no_synthesis(
+        self, bridge_module, tmp_path, capsys
+    ):
+        worktree = _make_worktree_with_prompt(tmp_path / "worktree")
+        hermes_home = tmp_path / "hermes"
+        _write_hook(
+            hermes_home,
+            f"""
+            def run_task(ctx):
+                return [{sys.executable!r}, "-c", "print('harness ran without result')"]
+            """,
+        )
+        env = _pr_review_env(worktree, hermes_home)
+        rc = bridge_module.main(env=env, argv=["bridge"])
+        assert rc == bridge_module.EXIT_MISSING_RESULT
+        assert "no result file" in capsys.readouterr().err
+        # No synthesis anywhere: neither the mode-correct path nor the
+        # legacy worktree location received a file.
+        assert not Path(env["CADUCEUS_RESULT_PATH"]).exists()
+        assert not (worktree / "worker-result.json").exists()
+
+    def test_pr_hook_prewritten_result_left_byte_identical(
+        self, bridge_module, tmp_path
+    ):
+        worktree = _make_worktree_with_prompt(tmp_path / "worktree")
+        hermes_home = tmp_path / "hermes"
+        env = _pr_review_env(worktree, hermes_home)
+        result_path = Path(env["CADUCEUS_RESULT_PATH"])
+        payload = {
+            "status": "success",
+            "summary": "LGTM",
+            "commit_message": "merge",
+            "pull_request_title": "fix: pr review",
+            "artifacts": {"note": "kept"},
+            "investigation": False,
+        }
+        payload_text = json.dumps(payload, ensure_ascii=False)
+        result_path.write_text(payload_text, encoding="utf-8")
+        _write_hook(
+            hermes_home,
+            f"""
+            def run_task(ctx):
+                return [{sys.executable!r}, "-c", "print('harness ran')"]
+            """,
+        )
+        rc = bridge_module.main(env=env, argv=["bridge"])
+        assert rc == 0
+        # Exists-check skips synthesis: byte-identical pre-written result.
+        assert result_path.read_text(encoding="utf-8") == payload_text
+        assert not (worktree / "worker-result.json").exists()
