@@ -54,16 +54,18 @@ fn test_spec(cfg: &Config) -> ExecutorSpec {
         .join("run-1");
     ExecutorSpec {
         self_exe: "/usr/bin/caduceus".into(),
-        issue: issue_key(),
+        target: caduceus::executor::WorkTarget::Issue(caduceus::executor::IssueWorkTarget {
+            key: issue_key(),
+            title: "title".to_string(),
+            body: "body".to_string(),
+            labels: Vec::new(),
+            branch_name: "automation/issue-1".to_string(),
+        }),
         worktree,
         run_id: "oci-run-1".to_string(),
         context_json: r#"{"x":1}"#.to_string(),
         worker_command: vec!["python3".to_string(), "bridge.py".to_string()],
         cancellation: tokio_util::sync::CancellationToken::new(),
-        issue_title: "title".to_string(),
-        issue_body: "body".to_string(),
-        labels: Vec::new(),
-        branch_name: "automation/issue-1".to_string(),
     }
 }
 

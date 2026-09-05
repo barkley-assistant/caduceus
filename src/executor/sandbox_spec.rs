@@ -706,21 +706,27 @@ pub fn resolve_with_env(
     //     (`write_prompt`). Operator `pass_env` values are NOT
     //     normalized — a newline-bearing one fails closed above
     //     (design D3).
-    let labels_json = serde_json::to_string(&spec.labels)
+    let crate::executor::WorkTarget::Issue(issue) = &spec.target else {
+        return Err(CaduceusError::Config(
+            "PR review targets are not yet supported by OCI env resolution (issue #346)"
+                .to_string(),
+        ));
+    };
+    let labels_json = serde_json::to_string(&issue.labels)
         .map_err(|err| CaduceusError::Config(format!("labels JSON serialise: {err}")))?;
     let canonical: Vec<(String, String)> = vec![
         ("CADUCEUS_RUN_ID".to_string(), runtime.run_id.clone()),
         ("CADUCEUS_ISSUE_ID".to_string(), runtime.issue.display_key()),
         (
             "CADUCEUS_ISSUE_NUMBER".to_string(),
-            spec.issue.number.to_string(),
+            issue.key.number.to_string(),
         ),
         (
             "CADUCEUS_ISSUE_REPO".to_string(),
-            format!("{}/{}", spec.issue.owner, spec.issue.repo),
+            format!("{}/{}", issue.key.owner, issue.key.repo),
         ),
-        ("CADUCEUS_ISSUE_TITLE".to_string(), spec.issue_title.clone()),
-        ("CADUCEUS_ISSUE_BODY".to_string(), spec.issue_body.clone()),
+        ("CADUCEUS_ISSUE_TITLE".to_string(), issue.title.clone()),
+        ("CADUCEUS_ISSUE_BODY".to_string(), issue.body.clone()),
         (
             "CADUCEUS_ISSUE_LABELS_JSON".to_string(),
             labels_json.clone(),
@@ -729,7 +735,7 @@ pub fn resolve_with_env(
             "CADUCEUS_CONTEXT_JSON".to_string(),
             spec.context_json.clone(),
         ),
-        ("CADUCEUS_BRANCH_NAME".to_string(), spec.branch_name.clone()),
+        ("CADUCEUS_BRANCH_NAME".to_string(), issue.branch_name.clone()),
         (
             "CADUCEUS_WORKTREE_PATH".to_string(),
             CONTAINER_WORKSPACE_PATH.to_string(),

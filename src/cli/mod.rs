@@ -16,7 +16,7 @@ use clap::{Parser, Subcommand};
 use caduceus::config::{Config, SetupAction};
 use caduceus::error::{CaduceusError, CaduceusResult};
 use caduceus::executor::oci::OciExecutor;
-use caduceus::executor::{Executor, ExecutorSpec};
+use caduceus::executor::{Executor, ExecutorSpec, IssueWorkTarget, WorkTarget};
 use caduceus::issue::IssueKey;
 use caduceus::queue::{
     display_digest, Phase, QueueEntry, QueueState, RemoveOutcome, StateStore, TicketType,
@@ -466,16 +466,18 @@ async fn run_canary(
     };
     let spec = ExecutorSpec {
         self_exe: std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("caduceus")),
-        issue,
+        target: WorkTarget::Issue(IssueWorkTarget {
+            key: issue,
+            title: "OCI readiness canary".to_string(),
+            body: "Diagnostic only".to_string(),
+            labels: Vec::new(),
+            branch_name: "doctor-canary".to_string(),
+        }),
         worktree: worktree.clone(),
         run_id,
         context_json: "{}".to_string(),
         worker_command: command,
         cancellation: tokio_util::sync::CancellationToken::new(),
-        issue_title: "OCI readiness canary".to_string(),
-        issue_body: "Diagnostic only".to_string(),
-        labels: Vec::new(),
-        branch_name: "doctor-canary".to_string(),
     };
     let executor = OciExecutor::new(
         canary_config.clone(),
@@ -484,18 +486,28 @@ async fn run_canary(
         )),
     );
     let outcome = executor.run(&spec).await;
-    let result = match outcome {
-        Ok(outcome) => match caduceus::worker::parse_result_file(&outcome.result_path, &spec.issue)
-        {
-            Ok(result) => DiagnosticCanary {
-                status: DiagnosticStatus::Pass,
-                detail: format!("production path completed with {:?} result", result.status),
-            },
-            Err(err) => DiagnosticCanary {
+    let issue_key = match &spec.target {
+        WorkTarget::Issue(issue) => &issue.key,
+        WorkTarget::PullRequest(_) => {
+            return DiagnosticCanary {
                 status: DiagnosticStatus::Failure,
-                detail: format!("result artifact validation failed: {err}"),
-            },
-        },
+                detail: "doctor canary only supports issue targets".to_string(),
+            };
+        }
+    };
+    let result = match outcome {
+        Ok(outcome) => {
+            match caduceus::worker::parse_result_file(&outcome.result_path, issue_key) {
+                Ok(result) => DiagnosticCanary {
+                    status: DiagnosticStatus::Pass,
+                    detail: format!("production path completed with {:?} result", result.status),
+                },
+                Err(err) => DiagnosticCanary {
+                    status: DiagnosticStatus::Failure,
+                    detail: format!("result artifact validation failed: {err}"),
+                },
+            }
+        }
         Err(err) => DiagnosticCanary {
             status: DiagnosticStatus::Failure,
             detail: format!("production path failed: {err}"),

@@ -25,7 +25,7 @@ use crate::executor::{
 };
 use crate::infra::config::Config;
 use crate::infra::disk::DiskPressureGuard;
-use crate::infra::error::CaduceusResult;
+use crate::infra::error::{CaduceusError, CaduceusResult};
 use crate::readiness;
 use crate::state::meta::MetaStore;
 use crate::state::oci_run::OciRunDao;
@@ -152,13 +152,24 @@ impl Executor for OciExecutor {
             //    lifecycle token is linked with the watchdog token so
             //    a disk-pressure breach terminates in-flight work via
             //    the existing stop path (issue #245).
+            let (issue_key, issue_id) = match &spec.target {
+                crate::executor::WorkTarget::Issue(issue) => {
+                    (issue.key.clone(), issue.key.display_key())
+                }
+                crate::executor::WorkTarget::PullRequest(_) => {
+                    return Err(CaduceusError::Other(
+                        "PR review targets are not yet supported by the OCI executor (issue #346)"
+                            .to_string(),
+                    ));
+                }
+            };
             let adapter = oci_lifecycle::OciAdapter::new(
                 engine,
                 Arc::new(dao),
                 self.cfg.state_dir.clone(),
                 daemon_id,
-                spec.issue.clone(),
-                spec.issue.display_key(),
+                issue_key,
+                issue_id,
                 sha256_of(&spec.worker_command.join(" ")),
                 argv,
                 Some(env_file),

@@ -316,16 +316,18 @@ fn resolves_full_canonical_environment_with_container_paths() {
     runtime.issue = IssueKey::parse("octocat/hello#42").expect("valid key");
     let spec_input = caduceus::executor::ExecutorSpec {
         self_exe: PathBuf::from("/proc/self/exe"),
-        issue: runtime.issue.clone(),
+        target: caduceus::executor::WorkTarget::Issue(caduceus::executor::IssueWorkTarget {
+            key: runtime.issue.clone(),
+            title: "A title".to_string(),
+            body: "A body\nwith newline".to_string(),
+            labels: vec!["p1".to_string(), "p2".to_string()],
+            branch_name: "caduceus/octocat/hello#42".to_string(),
+        }),
         worktree: worktree.clone(),
         run_id: "run-100".to_string(),
         context_json: "{\"context\":true}".to_string(),
         worker_command: vec!["python3".to_string(), "bridge.py".to_string()],
         cancellation: tokio_util::sync::CancellationToken::new(),
-        issue_title: "A title".to_string(),
-        issue_body: "A body\nwith newline".to_string(),
-        labels: vec!["p1".to_string(), "p2".to_string()],
-        branch_name: "caduceus/octocat/hello#42".to_string(),
     };
     let resolved = resolve(cfg.sandbox(), &runtime, &spec_input).expect("must resolve");
     let env = resolved.environment();
@@ -392,16 +394,18 @@ fn multi_line_issue_text_resolves_to_single_line_env_file() {
     let runtime = runtime_for(&cfg, &worktree);
     let spec_input = caduceus::executor::ExecutorSpec {
         self_exe: PathBuf::from("/proc/self/exe"),
-        issue: runtime.issue.clone(),
+        target: caduceus::executor::WorkTarget::Issue(caduceus::executor::IssueWorkTarget {
+            key: runtime.issue.clone(),
+            title: "A title\nwith lines\r\nand CR".to_string(),
+            body: "A body\r\nwith CRLF\nand LF".to_string(),
+            labels: vec!["p1".to_string()],
+            branch_name: "caduceus/owner/repo#1".to_string(),
+        }),
         worktree: worktree.clone(),
         run_id: "run-101".to_string(),
         context_json: "{}".to_string(),
         worker_command: vec!["python3".to_string(), "bridge.py".to_string()],
         cancellation: tokio_util::sync::CancellationToken::new(),
-        issue_title: "A title\nwith lines\r\nand CR".to_string(),
-        issue_body: "A body\r\nwith CRLF\nand LF".to_string(),
-        labels: vec!["p1".to_string()],
-        branch_name: "caduceus/owner/repo#1".to_string(),
     };
     let resolved = resolve(cfg.sandbox(), &runtime, &spec_input).expect(
         "multi-line issue title/body must resolve (newline-normalized, \

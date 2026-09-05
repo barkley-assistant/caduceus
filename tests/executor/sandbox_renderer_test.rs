@@ -29,16 +29,18 @@ fn executor_spec_for(
 ) -> caduceus::executor::ExecutorSpec {
     caduceus::executor::ExecutorSpec {
         self_exe: PathBuf::from("/proc/self/exe"),
-        issue: runtime.issue.clone(),
+        target: caduceus::executor::WorkTarget::Issue(caduceus::executor::IssueWorkTarget {
+            key: runtime.issue.clone(),
+            title: "Fix login bug".to_string(),
+            body: "Steps to reproduce".to_string(),
+            labels: vec!["bug".to_string()],
+            branch_name: "caduceus/owner/repo#1".to_string(),
+        }),
         worktree: runtime.worktree.clone(),
         run_id: runtime.run_id.clone(),
         context_json: "{}".to_string(),
         worker_command: runtime.worker_command.clone(),
         cancellation: tokio_util::sync::CancellationToken::new(),
-        issue_title: "Fix login bug".to_string(),
-        issue_body: "Steps to reproduce".to_string(),
-        labels: vec!["bug".to_string()],
-        branch_name: "caduceus/owner/repo#1".to_string(),
     }
 }
 

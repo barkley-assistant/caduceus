@@ -9,10 +9,10 @@ use std::pin::Pin;
 
 use tokio_util::sync::CancellationToken;
 
-use crate::executor::{Executor, ExecutorOutcome, ExecutorSpec};
+use crate::executor::{Executor, ExecutorOutcome, ExecutorSpec, WorkTarget};
 use crate::github::issue::IssueKey;
 use crate::infra::config::Config;
-use crate::infra::error::CaduceusResult;
+use crate::infra::error::{CaduceusError, CaduceusResult};
 use crate::worker::supervisor::supervise;
 use crate::worker::worker_contract::WORKER_RESULT_FILE;
 
@@ -37,22 +37,45 @@ impl Executor for TrustedHostExecutor {
     ) -> Pin<Box<dyn Future<Output = CaduceusResult<ExecutorOutcome>> + Send + 'a>> {
         let self_exe: &'a Path = &spec.self_exe;
         let cfg: &'a Config = &self.cfg;
-        let issue: &'a IssueKey = &spec.issue;
         let worktree: &'a Path = &spec.worktree;
         let run_id: &'a str = &spec.run_id;
         let context_json: &'a str = &spec.context_json;
         let worker_command: &'a [String] = &spec.worker_command;
         let cancellation: CancellationToken = spec.cancellation.clone();
-        let issue_title: &'a str = &spec.issue_title;
-        let issue_body: &'a str = &spec.issue_body;
-        let labels: &'a [String] = &spec.labels;
-        let branch_name: &'a str = &spec.branch_name;
+
+        // Issue targets flow through the supervisor's issue-path flags.
+        // PR review targets are refused here until the supervisor
+        // boundary carries a `WorkTarget` (issue #346) — never faked
+        // into an issue.
+        let (issue_key, issue_title, issue_body, labels, branch_name): (
+            &'a IssueKey,
+            &'a str,
+            &'a str,
+            &'a [String],
+            &'a str,
+        ) = match &spec.target {
+            WorkTarget::Issue(issue) => (
+                &issue.key,
+                issue.title.as_str(),
+                issue.body.as_str(),
+                issue.labels.as_slice(),
+                issue.branch_name.as_str(),
+            ),
+            WorkTarget::PullRequest(_) => {
+                return Box::pin(async move {
+                    Err(CaduceusError::Other(
+                        "PR review targets are not yet supported on the trusted host"
+                            .to_string(),
+                    ))
+                });
+            }
+        };
 
         Box::pin(async move {
             let outcome = supervise(
                 self_exe,
                 cfg,
-                issue,
+                issue_key,
                 worktree,
                 run_id,
                 context_json,

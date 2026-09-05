@@ -198,16 +198,18 @@ fn live_fixture(engine: Option<SandboxEngine>, container_script: &str) -> Option
 
     let spec = caduceus::executor::ExecutorSpec {
         self_exe: std::path::PathBuf::from("/proc/self/exe"),
-        issue: runtime.issue.clone(),
+        target: caduceus::executor::WorkTarget::Issue(caduceus::executor::IssueWorkTarget {
+            key: runtime.issue.clone(),
+            title: "Live env".to_string(),
+            body: "Live body".to_string(),
+            labels: vec!["bug".to_string()],
+            branch_name: "caduceus/owner/repo#1".to_string(),
+        }),
         worktree: runtime.worktree.clone(),
         run_id: runtime.run_id.clone(),
         context_json: "{}".to_string(),
         worker_command: runtime.worker_command.clone(),
         cancellation: tokio_util::sync::CancellationToken::new(),
-        issue_title: "Live env".to_string(),
-        labels: vec!["bug".to_string()],
-        branch_name: "caduceus/owner/repo#1".to_string(),
-        issue_body: "Live body".to_string(),
     };
     let spec = resolve_with_env(cfg.sandbox(), &runtime, &spec, &daemon_snapshot)
         .expect("live facts must resolve");
