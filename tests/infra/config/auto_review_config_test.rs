@@ -38,3 +38,37 @@ fn auto_review_enabled_with_trusted_host_is_rejected() {
     assert!(msg.contains("sandbox:"), "got: {msg}");
     assert!(msg.contains("caduceus doctor"), "got: {msg}");
 }
+
+#[test]
+fn max_reviews_per_tick_defaults_to_parallelism_x4() {
+    let cfg =
+        load(&format!("{}worker_parallelism: 3\n", trusted_host_base())).expect("config loads");
+    assert_eq!(cfg.max_reviews_per_tick, 12);
+}
+
+#[test]
+fn max_reviews_per_tick_explicit_value_wins() {
+    let cfg = load(&format!(
+        "{}worker_parallelism: 3\nmax_reviews_per_tick: 5\n",
+        trusted_host_base()
+    ))
+    .expect("config loads");
+    assert_eq!(cfg.max_reviews_per_tick, 5);
+}
+
+#[test]
+fn max_reviews_per_tick_zero_is_unbounded_not_rejected() {
+    let cfg = load(&format!("{}max_reviews_per_tick: 0\n", trusted_host_base()))
+        .expect("0 = unbounded opt-in, mirrors max_issues_per_tick");
+    assert_eq!(cfg.max_reviews_per_tick, 0);
+}
+
+#[test]
+fn max_reviews_per_tick_saturates_instead_of_overflowing() {
+    let cfg = load(&format!(
+        "{}worker_parallelism: 4294967295\n",
+        trusted_host_base()
+    ))
+    .expect("saturating_mul must not panic");
+    assert_eq!(cfg.max_reviews_per_tick, u32::MAX);
+}
