@@ -481,17 +481,24 @@ pub async fn gc_review_worktrees(
             .join("mirrors")
             .join(&owner)
             .join(format!("{repo_name}.git"));
-        if !mirror_path.is_dir() {
-            continue;
-        }
-        let mirror = BareMirror {
-            path: mirror_path,
-            remote_url: String::new(),
+        // A missing mirror means no git registration can exist, so the
+        // registration set is empty and the orphan sweep is the only
+        // work (crash leftovers with no mirror are swept, not skipped).
+        let mirror_opt = if mirror_path.is_dir() {
+            Some(BareMirror {
+                path: mirror_path,
+                remote_url: String::new(),
+            })
+        } else {
+            None
         };
 
         let in_use = collect_review_in_use_paths(cfg, &owner, &repo_name)?;
 
-        let entries = list_review_worktrees_porcelain(runner, &mirror.path).await?;
+        let entries = match &mirror_opt {
+            Some(mirror) => list_review_worktrees_porcelain(runner, &mirror.path).await?,
+            None => Vec::new(),
+        };
 
         // Registered canonical paths for the orphan sweep.
         let registered_paths: std::collections::HashSet<PathBuf> = entries
@@ -533,6 +540,19 @@ pub async fn gc_review_worktrees(
                 continue;
             }
 
+            // A registered worktree implies its mirror exists (the
+            // registration lives in the mirror's metadata). Defensive
+            // skip if that invariant broke.
+            let mirror = match &mirror_opt {
+                Some(m) => m.clone(),
+                None => {
+                    eprintln!(
+                        "caduceus worktree-gc: cannot remove {} without its mirror",
+                        entry.path.display()
+                    );
+                    continue;
+                }
+            };
             let run_id = entry
                 .path
                 .file_name()

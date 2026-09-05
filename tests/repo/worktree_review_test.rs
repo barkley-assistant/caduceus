@@ -484,3 +484,163 @@ async fn review_worktree_remove_leaves_no_artefacts() {
         .to_path_buf();
     assert!(parent.is_dir(), "per-repo review dir must remain");
 }
+
+// ---------------------------------------------------------------------------
+// Reaper (AC 5 second half): gc_review_worktrees
+// ---------------------------------------------------------------------------
+
+/// Backdate a directory's mtime so the review GC treats it as stale.
+fn backdate_to_older_than(path: &Path, days: i64) {
+    let target = chrono::Utc::now() - chrono::Duration::days(days);
+    let ft = filetime::FileTime::from_unix_time(target.timestamp(), target.timestamp_subsec_nanos());
+    filetime::set_file_mtime(path, ft).expect("set mtime");
+}
+
+fn review_gc_config(root: &Path) -> Config {
+    let mut cfg = review_config(root);
+    cfg.watched_repos = vec!["rvowner/rvrepo".to_string()];
+    cfg
+}
+
+// The reaper removes a stale, unregistered review worktree and leaves
+// the mirror's refs untouched.
+#[tokio::test]
+async fn review_gc_removes_stale_review_worktree() {
+    let root = tempdir("rv-gc-stale");
+    let remote_dir = root.join("remote.git");
+    let (a, b) = init_bare_remote_with_feature(&remote_dir);
+    let cfg = review_gc_config(&root);
+    let runner = GitRunner::new(&cfg);
+    let mirror = ensure_mirror(&runner, &cfg, &remote_dir, "rvrepo").await;
+
+    let target = target_for("rvrepo", 20, &b, &a, &a);
+    let wt = RepoReviewWorktree::create_review(&runner, &mirror, "run-stale-1", &target)
+        .await
+        .expect("create_review");
+    let refs_before = sorted_show_refs(&mirror.path);
+    backdate_to_older_than(&wt.path, 30);
+
+    let removed = caduceus::repo::review_worktree::gc_review_worktrees(&cfg, &runner, 7, false)
+        .await
+        .expect("gc");
+    assert_eq!(removed, 1, "one stale review worktree should be removed");
+    assert!(!wt.path.exists(), "stale worktree path should be gone");
+
+    let list = git_out(&mirror.path, &["worktree", "list", "--porcelain"]);
+    assert!(
+        !list.contains(&wt.path.to_string_lossy().to_string()),
+        "stale worktree registration should be gone"
+    );
+    assert_eq!(
+        sorted_show_refs(&mirror.path),
+        refs_before,
+        "gc must not change refs (none were ever created)"
+    );
+}
+
+// A fresh review worktree survives the sweep.
+#[tokio::test]
+async fn review_gc_retains_fresh_review_worktree() {
+    let root = tempdir("rv-gc-fresh");
+    let remote_dir = root.join("remote.git");
+    let (a, b) = init_bare_remote_with_feature(&remote_dir);
+    let cfg = review_gc_config(&root);
+    let runner = GitRunner::new(&cfg);
+    let mirror = ensure_mirror(&runner, &cfg, &remote_dir, "rvrepo").await;
+
+    let target = target_for("rvrepo", 21, &b, &a, &a);
+    let wt = RepoReviewWorktree::create_review(&runner, &mirror, "run-fresh-1", &target)
+        .await
+        .expect("create_review");
+
+    let removed = caduceus::repo::review_worktree::gc_review_worktrees(&cfg, &runner, 7, false)
+        .await
+        .expect("gc");
+    assert_eq!(removed, 0, "fresh review worktree must be retained");
+    assert!(wt.path.exists());
+}
+
+// A stale worktree referenced by a live claim file is in use and
+// survives the sweep.
+#[tokio::test]
+async fn review_gc_retains_claimed_review_worktree() {
+    let root = tempdir("rv-gc-claimed");
+    let remote_dir = root.join("remote.git");
+    let (a, b) = init_bare_remote_with_feature(&remote_dir);
+    let cfg = review_gc_config(&root);
+    let runner = GitRunner::new(&cfg);
+    let mirror = ensure_mirror(&runner, &cfg, &remote_dir, "rvrepo").await;
+
+    let target = target_for("rvrepo", 22, &b, &a, &a);
+    let wt = RepoReviewWorktree::create_review(&runner, &mirror, "run-claimed-1", &target)
+        .await
+        .expect("create_review");
+    backdate_to_older_than(&wt.path, 30);
+
+    // A claim file whose parsed worktree_path matches protects the
+    // worktree (the reaper reads all .claim files, path-keyed).
+    let claims_dir = cfg.state_dir.join("claims");
+    std::fs::create_dir_all(&claims_dir).expect("claims dir");
+    let claim_path = claims_dir.join("review-claimed.claim");
+    let body = serde_json::json!({
+        "version": 1,
+        "key": caduceus::issue::IssueKey {
+            owner: "rvowner".to_string(),
+            repo: "rvrepo".to_string(),
+            number: 22,
+        },
+        "run_id": "run-claimed-1",
+        "pid": 4_000_022_u32,
+        "process_start_identity": "<boot>:0",
+        "started_at": chrono::Utc::now(),
+        "worktree_path": wt.path,
+    });
+    std::fs::write(&claim_path, serde_json::to_vec(&body).unwrap()).expect("write claim");
+
+    let removed = caduceus::repo::review_worktree::gc_review_worktrees(&cfg, &runner, 7, false)
+        .await
+        .expect("gc");
+    assert_eq!(removed, 0, "an in-use review worktree must not be removed");
+    assert!(wt.path.exists());
+}
+
+// An unregistered orphan is swept; a symlinked orphan is refused.
+#[tokio::test]
+async fn review_gc_removes_orphan_without_registration() {
+    let root = tempdir("rv-gc-orphan");
+    let cfg = review_gc_config(&root);
+    let runner = GitRunner::new(&cfg);
+
+    // No mirror exists — the orphan sweep must still run (crash
+    // leftovers with no registration and no mirror are swept).
+    let review_repo_dir = cfg
+        .repo_storage_root
+        .join("worktrees")
+        .join("review")
+        .join("rvowner")
+        .join("rvrepo");
+    std::fs::create_dir_all(&review_repo_dir).expect("review dir");
+
+    let orphan = review_repo_dir.join("orphan-run");
+    std::fs::create_dir_all(&orphan).expect("orphan");
+    backdate_to_older_than(&orphan, 30);
+
+    let removed = caduceus::repo::review_worktree::gc_review_worktrees(&cfg, &runner, 7, false)
+        .await
+        .expect("gc");
+    assert_eq!(removed, 1, "orphan should be removed");
+    assert!(!orphan.exists(), "orphan should be gone");
+
+    // A symlinked entry is refused and survives.
+    let target = root.join("symlink-target");
+    std::fs::create_dir_all(&target).expect("target");
+    backdate_to_older_than(&target, 30);
+    let link = review_repo_dir.join("evil-link");
+    std::os::unix::fs::symlink(&target, &link).expect("symlink");
+
+    let removed2 = caduceus::repo::review_worktree::gc_review_worktrees(&cfg, &runner, 7, false)
+        .await
+        .expect("gc");
+    assert_eq!(removed2, 0, "symlinks must not be removed");
+    assert!(link.exists(), "symlink must remain on disk");
+}
