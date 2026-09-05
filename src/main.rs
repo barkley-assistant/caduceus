@@ -326,13 +326,15 @@ fn run_supervisor_mode() -> CaduceusResult<()> {
             })?
         };
         let inputs = caduceus::worker::SanitizedEnvInputs {
-            issue,
-            issue_title,
-            issue_body,
-            labels,
+            target: caduceus::executor::WorkTarget::Issue(caduceus::executor::IssueWorkTarget {
+                key: issue,
+                title: issue_title,
+                body: issue_body,
+                labels,
+                branch_name,
+            }),
             worktree_path: worktree.clone(),
             run_id: run_id.clone(),
-            branch_name,
             allowlist: Vec::new(),
             context_json,
         };

@@ -17,26 +17,48 @@
 //!
 //! # Canonical `CADUCEUS_*` environment
 //!
-//! [`sanitized_env`] exports exactly these daemon-owned variables
-//! on every invocation (see also
+//! [`sanitized_env`] exports exactly these daemon-owned variables on
+//! every invocation (see also
 //! `crate::infra::fixtures::CANONICAL_WORKER_ENV_VARS`, mirrored by
-//! the bridge's `REQUIRED_ENV_VARS`):
+//! the bridge's `REQUIRED_ENV_VARS`). The set depends on the run's
+//! [`WorkTarget`] (DAR §6.1): issue runs keep the historical
+//! issue-shaped contract byte-for-byte; PR review runs carry a
+//! `pr` mode marker plus the four `CADUCEUS_PR_*` variables and
+//! **never** an `CADUCEUS_ISSUE_*` or `CADUCEUS_BRANCH_NAME`.
+//!
+//! Shared by both paths:
+//!
+//! | Variable | Value |
+//! |---|---|
+//! | `CADUCEUS_CONTEXT_JSON` | serialised run context |
+//! | `CADUCEUS_RUN_ID` | run identifier |
+//! | `CADUCEUS_WORKTREE_PATH` | host path of the mounted worktree |
+//! | `CADUCEUS_RESULT_PATH` | host result-file path (`<worktree>/worker-result.json`) |
+//!
+//! Issue path (byte-for-byte v0.1 contract, unchanged):
 //!
 //! | Variable | Value |
 //! |---|---|
 //! | `CADUCEUS_BRANCH_NAME` | target branch name |
-//! | `CADUCEUS_CONTEXT_JSON` | serialised run context |
 //! | `CADUCEUS_ISSUE_BODY` | issue body |
 //! | `CADUCEUS_ISSUE_LABELS_JSON` | JSON array of issue labels |
 //! | `CADUCEUS_ISSUE_NUMBER` | issue number |
 //! | `CADUCEUS_ISSUE_REPO` | `owner/repo` |
 //! | `CADUCEUS_ISSUE_TITLE` | issue title |
-//! | `CADUCEUS_RUN_ID` | run identifier |
-//! | `CADUCEUS_WORKTREE_PATH` | host path of the mounted worktree |
-//! | `CADUCEUS_RESULT_PATH` | host result-file path (`<worktree>/worker-result.json`) |
 //!
-//! The bridge writes its result to `CADUCEUS_RESULT_PATH` (legacy
-//! fallback: `<worktree>/worker-result.json`). The daemon then
+//! PR review path (DAR §6.1 — no synthetic issue key, no branch):
+//!
+//! | Variable | Value |
+//! |---|---|
+//! | `CADUCEUS_WORK_TARGET` | `pr` |
+//! | `CADUCEUS_PR_NUMBER` | pull request number |
+//! | `CADUCEUS_PR_REPO` | `owner/repo` |
+//! | `CADUCEUS_PR_BASE_SHA` | base SHA |
+//! | `CADUCEUS_PR_HEAD_SHA` | head SHA |
+//!
+//! The bridge writes its result to `CADUCEUS_RESULT_PATH` (issue-path
+//! legacy fallback: `<worktree>/worker-result.json`; the PR path has
+//! no fallback — the variable is hard-required). The daemon then
 //! [`parse_result_file`]s that file — opening it with
 //! `O_NOFOLLOW`, verifying the descriptor is a regular file, and
 //! reading with a 1 MiB cap before allocating the full document.
@@ -81,8 +103,10 @@ use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 
+use crate::executor::WorkTarget;
 use crate::github::issue::IssueKey;
 use crate::infra::error::{CaduceusError, CaduceusResult};
+use crate::review::ReviewTarget;
 
 /// Container-side workspace mount target: read-write scratch and
 /// working directory bound to the host worktree. Normative for every
@@ -174,22 +198,17 @@ pub enum WorkerStatus {
 /// operator-configured `worker_env_allowlist`. The parent
 /// environment is supplied as a separate argument to keep the
 /// function pure and easy to test.
+///
+/// The run's [`WorkTarget`] selects the emitted set: issue runs
+/// render the historical issue payload, PR review runs render the
+/// `pr` mode marker plus the four `CADUCEUS_PR_*` values (DAR §6.1).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SanitizedEnvInputs {
-    /// GitHub issue the worker is processing. The display key
-    /// (`owner/repo#number`) is rendered to `CADUCEUS_ISSUE_REPO`
-    /// and the number alone to `CADUCEUS_ISSUE_NUMBER`.
-    pub issue: IssueKey,
-    /// Issue title (one line, NUL-free, no embedded newlines
-    /// per the GitHub API contract; the daemon copies it as-is
-    /// because the upstream title is the authoritative value).
-    pub issue_title: String,
-    /// Issue body. NUL-free, may contain newlines.
-    pub issue_body: String,
-    /// Label names. Emitted to `CADUCEUS_ISSUE_LABELS_JSON` as a
-    /// JSON array so embedded commas and quotes survive the env
-    /// boundary intact.
-    pub labels: Vec<String>,
+    /// The work item this run addresses. Issue runs emit
+    /// `CADUCEUS_ISSUE_*` + `CADUCEUS_BRANCH_NAME` byte-for-byte;
+    /// PR runs emit `CADUCEUS_WORK_TARGET=pr` + `CADUCEUS_PR_*` and
+    /// never an issue-shaped variable.
+    pub target: WorkTarget,
     /// Worktree path. Must be an absolute UTF-8 path; the
     /// `sanitized_env` validator rejects relative or non-UTF-8
     /// values to keep the bridge's `os.path` calls deterministic.
@@ -197,10 +216,6 @@ pub struct SanitizedEnvInputs {
     /// Run identifier. Used for `CADUCEUS_RUN_ID` and to
     /// disambiguate concurrent runs in the bridge's logs.
     pub run_id: String,
-    /// Daemon-owned expected branch name. Emitted as
-    /// `CADUCEUS_BRANCH_NAME` so the bridge never has to
-    /// select its own ref.
-    pub branch_name: String,
     /// Operator-configured `worker_env_allowlist`. Each entry is
     /// either an exact variable name or a single terminal-`*`
     /// prefix pattern (the syntax validated in `Config`).
@@ -261,21 +276,6 @@ pub fn sanitized_env(
     if inputs.run_id.contains('\0') {
         return Err(CaduceusError::Config("run_id contains NUL".to_string()));
     }
-    if inputs.branch_name.trim().is_empty() {
-        return Err(CaduceusError::Config(
-            "branch_name must not be empty".to_string(),
-        ));
-    }
-    if inputs.branch_name.contains('\0') {
-        return Err(CaduceusError::Config(
-            "branch_name contains NUL".to_string(),
-        ));
-    }
-    if inputs.issue_title.contains('\0') || inputs.issue_body.contains('\0') {
-        return Err(CaduceusError::Config(
-            "issue title/body contains NUL".to_string(),
-        ));
-    }
     if inputs.context_json.contains('\0') {
         return Err(CaduceusError::Config(
             "context_json contains NUL".to_string(),
@@ -298,27 +298,99 @@ pub fn sanitized_env(
     // Step 3: layer the canonical `CADUCEUS_*` variables on
     // top. These override any parent entry with the same name
     // (a `CADUCEUS_*` value the operator may have set in the
-    // shell is never trusted — the daemon owns them).
-    let labels_json = serde_json::to_string(&inputs.labels)
-        .map_err(|err| CaduceusError::Config(format!("labels JSON serialise: {err}")))?;
-    let repo = format!("{}/{}", inputs.issue.owner, inputs.issue.repo);
-    let canonical: &[(&str, &str)] = &[
-        ("CADUCEUS_ISSUE_NUMBER", &inputs.issue.number.to_string()),
-        ("CADUCEUS_ISSUE_TITLE", &inputs.issue_title),
-        ("CADUCEUS_ISSUE_BODY", &inputs.issue_body),
-        ("CADUCEUS_ISSUE_REPO", &repo),
-        ("CADUCEUS_ISSUE_LABELS_JSON", &labels_json),
+    // shell is never trusted — the daemon owns them). The
+    // emitted set depends on the run's [`WorkTarget`] (DAR §6.1):
+    // issue runs keep the historical 10-name issue contract
+    // byte-for-byte; PR review runs emit the `pr` mode marker plus
+    // the four `CADUCEUS_PR_*` values and never an issue-shaped
+    // variable.
+    let shared: &[(&str, &str)] = &[
         ("CADUCEUS_WORKTREE_PATH", &worktree_str),
         ("CADUCEUS_RESULT_PATH", &result_path_str),
         ("CADUCEUS_RUN_ID", &inputs.run_id),
-        ("CADUCEUS_BRANCH_NAME", &inputs.branch_name),
         ("CADUCEUS_CONTEXT_JSON", &inputs.context_json),
     ];
+    let canonical: Vec<(String, String)> = match &inputs.target {
+        WorkTarget::Issue(issue) => {
+            if issue.branch_name.trim().is_empty() {
+                return Err(CaduceusError::Config(
+                    "branch_name must not be empty".to_string(),
+                ));
+            }
+            if issue.branch_name.contains('\0') {
+                return Err(CaduceusError::Config(
+                    "branch_name contains NUL".to_string(),
+                ));
+            }
+            if issue.title.contains('\0') || issue.body.contains('\0') {
+                return Err(CaduceusError::Config(
+                    "issue title/body contains NUL".to_string(),
+                ));
+            }
+            let labels_json = serde_json::to_string(&issue.labels)
+                .map_err(|err| CaduceusError::Config(format!("labels JSON serialise: {err}")))?;
+            let repo = format!("{}/{}", issue.key.owner, issue.key.repo);
+            let issue_canonical: Vec<(String, String)> = vec![
+                ("CADUCEUS_ISSUE_NUMBER".to_string(), issue.key.number.to_string()),
+                ("CADUCEUS_ISSUE_TITLE".to_string(), issue.title.clone()),
+                ("CADUCEUS_ISSUE_BODY".to_string(), issue.body.clone()),
+                ("CADUCEUS_ISSUE_REPO".to_string(), repo),
+                ("CADUCEUS_ISSUE_LABELS_JSON".to_string(), labels_json),
+                ("CADUCEUS_BRANCH_NAME".to_string(), issue.branch_name.clone()),
+            ];
+            shared
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .chain(issue_canonical)
+                .collect()
+        }
+        WorkTarget::PullRequest(pr) => {
+            validate_pr_env(pr)?;
+            let pr_canonical: Vec<(String, String)> = vec![
+                ("CADUCEUS_WORK_TARGET".to_string(), "pr".to_string()),
+                ("CADUCEUS_PR_NUMBER".to_string(), pr.pull_request.to_string()),
+                ("CADUCEUS_PR_REPO".to_string(), pr.repository.full_name()),
+                ("CADUCEUS_PR_BASE_SHA".to_string(), pr.base_sha.clone()),
+                ("CADUCEUS_PR_HEAD_SHA".to_string(), pr.head_sha.clone()),
+            ];
+            shared
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .chain(pr_canonical)
+                .collect()
+        }
+    };
     for (k, v) in canonical {
-        out.insert(OsString::from(*k), OsString::from(*v));
+        out.insert(OsString::from(k), OsString::from(v));
     }
 
     Ok(out)
+}
+
+/// Validate the PR-path env inputs. Mirrors the issue-arm checks:
+/// every `CADUCEUS_PR_*` string must be non-empty and NUL-free and
+/// the pull request number must be positive. `base_ref`/`merge_base`
+/// are context (DAR §2.1) and do not enter the environment.
+fn validate_pr_env(pr: &ReviewTarget) -> CaduceusResult<()> {
+    for (field, value) in [
+        ("pr.repository.owner", pr.repository.owner.as_str()),
+        ("pr.repository.repo", pr.repository.repo.as_str()),
+        ("pr.base_sha", pr.base_sha.as_str()),
+        ("pr.head_sha", pr.head_sha.as_str()),
+    ] {
+        if value.trim().is_empty() {
+            return Err(CaduceusError::Config(format!("{field} must not be empty")));
+        }
+        if value.contains('\0') {
+            return Err(CaduceusError::Config(format!("{field} contains NUL")));
+        }
+    }
+    if pr.pull_request == 0 {
+        return Err(CaduceusError::Config(
+            "pr.pull_request must be greater than 0".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// Spawn *command* with the sanitized environment. The function

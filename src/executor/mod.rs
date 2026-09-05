@@ -62,7 +62,7 @@ pub use sandbox_spec::{
 /// [`ExecutorSpec`] fields); PR review runs carry the frozen review
 /// identity. No variant may be faked into the other: constructing a PR
 /// run never requires an [`IssueKey`] or a branch name, and vice versa.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WorkTarget {
     /// Issue-path payload — byte-for-byte the former flat fields.
     Issue(IssueWorkTarget),
@@ -73,7 +73,7 @@ pub enum WorkTarget {
 /// Issue-path payload — byte-for-byte the former flat `ExecutorSpec`
 /// issue fields, kept so the issue env contract and supervisor argv
 /// stay unchanged (DAR §6.1).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IssueWorkTarget {
     /// The issue key being worked on.
     pub key: IssueKey,
