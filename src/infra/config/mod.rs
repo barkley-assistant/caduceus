@@ -104,6 +104,11 @@ pub const DEFAULT_WORKER_PARALLELISM: u32 = 1;
 /// `worker_parallelism: N` processes up to `N * 4` issues, leaving
 /// the rest for the next tick (issue #108).
 pub const DEFAULT_MAX_ISSUES_PER_TICK_MULTIPLIER: u32 = 4;
+/// Multiplier applied to `worker_parallelism` to derive the default
+/// `max_reviews_per_tick` admission budget (DAR §5). Deliberately a
+/// separate constant from `DEFAULT_MAX_ISSUES_PER_TICK_MULTIPLIER`
+/// so the two budgets can diverge without cross-talk.
+pub const DEFAULT_MAX_REVIEWS_PER_TICK_MULTIPLIER: u32 = 4;
 pub const DEFAULT_SCHEDULER_LEASE_TTL_SECONDS: u64 = 60;
 pub const DEFAULT_WORKER_LEASE_TTL_SECONDS: u64 = 600;
 pub const DEFAULT_SCHEDULER_TRANSACTION_BUDGET_MS: u64 = 100;
@@ -210,6 +215,30 @@ pub struct RawSandboxResources {
     pub shm_mb: Option<u64>,
 }
 
+/// Resolved `auto_review:` section. `None` on `Config` means the block
+/// is absent — Auto Review is disabled and no downstream code may
+/// read it (DAR §5.2: Phase-1 contract is flag-based; the
+/// `autoreview` GitHub label is reserved and INERT — no daemon code
+/// polls it, and PR eligibility never requires it).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AutoReviewConfig {
+    /// Explicit opt-in for automatic review of every eligible PR
+    /// revision in watched repos. Default `false`.
+    pub enabled: bool,
+    /// Review draft PRs. Default `false` (drafts are skipped with
+    /// `review_skipped_draft` per DAR §5.1).
+    pub draft_pull_requests: bool,
+}
+
+/// Raw layer — mirrors the schema with all-`Option` fields.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawAutoReviewConfig {
+    pub enabled: Option<bool>,
+    pub draft_pull_requests: Option<bool>,
+}
+
 /// Caduceus configuration. Field semantics are pinned here.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -271,6 +300,12 @@ pub struct Config {
     /// `contract/SCHED-001` (bounded single-host concurrency)
     /// bounded across a long cron tick.
     pub max_issues_per_tick: u32,
+    /// Per-tick admission budget for Auto Review targets — the
+    /// maximum number of new PR head revisions a single tick admits
+    /// (DAR §5). Sibling of `max_issues_per_tick`. `0` means
+    /// unbounded. Default `worker_parallelism * 4`. Consumed by the
+    /// PR discovery step (#312); schema owned here.
+    pub max_reviews_per_tick: u32,
     /// Maximum number of pages to follow during paginated API
     /// discovery. Default 20.
     pub discovery_max_pages: u32,
@@ -330,6 +365,12 @@ pub struct Config {
     /// `executor_mode == oci` — `Config::from_raw` rejects OCI configs
     /// without a valid `sandbox.image`.
     pub sandbox: Option<SandboxConfig>,
+    /// Auto Review configuration. `None` = block absent = disabled;
+    /// `Some` = the operator declared an `auto_review:` section (its
+    /// `enabled` flag still defaults to `false`). The `autoreview`
+    /// GitHub label is reserved but inert in Phase 1 — no daemon code
+    /// polls it and PR eligibility never requires it (DAR §5.2).
+    pub auto_review: Option<AutoReviewConfig>,
 }
 
 /// Loose deserialisation layer used to read the YAML before the source
@@ -376,6 +417,7 @@ pub struct RawConfig {
     pub dry_run: Option<bool>,
     pub worker_parallelism: Option<u32>,
     pub max_issues_per_tick: Option<u32>,
+    pub max_reviews_per_tick: Option<u32>,
     pub discovery_max_pages: Option<u32>,
     pub scheduler_lease_ttl_seconds: Option<u64>,
     pub worker_lease_ttl_seconds: Option<u64>,
@@ -393,6 +435,9 @@ pub struct RawConfig {
     /// Optional in the raw layer — absent means `Config.sandbox` is
     /// `None` (valid for TrustedHost) unless `executor_mode == oci`.
     pub sandbox: Option<RawSandboxConfig>,
+    /// Optional in the raw layer — absent means `Config.auto_review`
+    /// is `None` (Auto Review disabled).
+    pub auto_review: Option<RawAutoReviewConfig>,
 }
 
 /// Load context — used to resolve paths and the default worker command
@@ -745,6 +790,19 @@ impl Config {
         if ticket_label_code.trim().is_empty() {
             errors.push("ticket_label_code must not be empty".to_string());
         }
+        // `ticket_label_investigation` is DEPRECATED in release N (DAR §12):
+        // Investigation remains admitted (warning only), but the config key
+        // is on the N+1 removal path. Warn once per config load when the
+        // operator explicitly set it; the default (`autofix-investigate`)
+        // resolves silently — its deprecation surfaces per-admission (#329).
+        if raw.ticket_label_investigation.is_some() {
+            tracing::warn!(
+                value = %raw.ticket_label_investigation.as_deref().unwrap_or_default(),
+                "ticket_label_investigation is deprecated and will be removed in a \
+                 future release; migrate to auto_review (docs/architecture/\
+                 auto-review.md §12)"
+            );
+        }
         let mut ticket_label_investigation = raw
             .ticket_label_investigation
             .unwrap_or_else(|| DEFAULT_TICKET_LABEL_INVESTIGATION.to_string());
@@ -824,6 +882,26 @@ impl Config {
             Some(raw_sb) => Some(resolve_sandbox(raw_sb, &mut errors)),
         };
 
+        // Auto Review config (DAR §5.2, §6.3). Absent block ⇒ disabled.
+        // Resolution order: block first, then the OCI-required check, so
+        // a TrustedHost+enabled config fails with BOTH required changes
+        // named before any other surface reads it.
+        let auto_review = raw.auto_review.map(|raw_ar| AutoReviewConfig {
+            enabled: raw_ar.enabled.unwrap_or(false),
+            draft_pull_requests: raw_ar.draft_pull_requests.unwrap_or(false),
+        });
+        if let Some(ar) = &auto_review {
+            if ar.enabled && matches!(executor_mode, crate::executor::ExecutorKind::TrustedHost) {
+                errors.push(
+                    "auto_review.enabled requires OCI execution: set executor_mode: oci \
+                     and provide a valid sandbox: section (digest-pinned image). \
+                     TrustedHost offers no containment for reviewing untrusted PR \
+                     content. Run `caduceus doctor` or see the configuration docs"
+                        .to_string(),
+                );
+            }
+        }
+
         // dry_run is resolved by the env overlay. The raw
         // layer may carry a YAML-supplied hint here for tests; we
         // delegate the merge.
@@ -839,6 +917,9 @@ impl Config {
         let max_issues_per_tick = raw
             .max_issues_per_tick
             .unwrap_or(worker_parallelism.saturating_mul(DEFAULT_MAX_ISSUES_PER_TICK_MULTIPLIER));
+        let max_reviews_per_tick = raw
+            .max_reviews_per_tick
+            .unwrap_or(worker_parallelism.saturating_mul(DEFAULT_MAX_REVIEWS_PER_TICK_MULTIPLIER));
 
         if !errors.is_empty() {
             return Err(CaduceusError::Config(errors.join("; ")));
@@ -898,6 +979,7 @@ impl Config {
             dry_run,
             worker_parallelism,
             max_issues_per_tick,
+            max_reviews_per_tick,
             discovery_max_pages,
             compiled_ignore_patterns,
             scheduler_lease_ttl_seconds: raw
@@ -957,6 +1039,7 @@ impl Config {
             executor_mode,
             reduced_containment_acknowledged,
             sandbox,
+            auto_review,
         })
     }
 
@@ -967,6 +1050,12 @@ impl Config {
         self.sandbox
             .as_ref()
             .expect("sandbox section is required for the OCI executor")
+    }
+
+    /// Auto Review configuration. `None` = block absent = disabled.
+    /// (`#312`'s PR discovery step consumes this.)
+    pub fn auto_review(&self) -> Option<&AutoReviewConfig> {
+        self.auto_review.as_ref()
     }
 
     /// Deterministic root-anchored defaults for tests. Avoids any
@@ -1012,6 +1101,8 @@ impl Config {
             worker_parallelism: DEFAULT_WORKER_PARALLELISM,
             max_issues_per_tick: DEFAULT_WORKER_PARALLELISM
                 .saturating_mul(DEFAULT_MAX_ISSUES_PER_TICK_MULTIPLIER),
+            max_reviews_per_tick: DEFAULT_WORKER_PARALLELISM
+                .saturating_mul(DEFAULT_MAX_REVIEWS_PER_TICK_MULTIPLIER),
             discovery_max_pages: DEFAULT_DISCOVERY_MAX_PAGES,
             compiled_ignore_patterns: Vec::new(),
             scheduler_lease_ttl_seconds: DEFAULT_SCHEDULER_LEASE_TTL_SECONDS,
@@ -1056,6 +1147,9 @@ impl Config {
                 reconcile_timeout_seconds: DEFAULT_SANDBOX_RECONCILE_TIMEOUT_SECONDS,
                 reserved_host_disk_mb: DEFAULT_SANDBOX_RESERVED_HOST_DISK_MB,
             }),
+            // Auto Review disabled by default in tests; tests that
+            // exercise the block set it explicitly.
+            auto_review: None,
         }
     }
 

@@ -27,6 +27,7 @@
 /// sorted lexicographically so operators grep-ing docs find every key.
 pub const CANONICAL_CONFIG_KEYS: &[&str] = &[
     "api_base",
+    "auto_review",
     "comment_forbidden_strings",
     "comment_ignore_patterns",
     "discovery_max_pages",
@@ -37,6 +38,7 @@ pub const CANONICAL_CONFIG_KEYS: &[&str] = &[
     "http_timeout_seconds",
     "log_path",
     "max_retries_per_issue",
+    "max_reviews_per_tick",
     "poll_interval_seconds",
     "reduced_containment_acknowledged",
     "retry_backoff_seconds",

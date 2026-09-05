@@ -127,6 +127,22 @@ and leaves the rest for the next tick. Set `0` to restore the unbounded
 drain-the-queue behavior. In-flight workers always finish their current
 work on tick exit; the cap only stops claiming new entries.
 
+## Auto Review
+
+The `auto_review:` block (default absent = disabled) opts the daemon
+into automatic review of every eligible PR revision in watched repos.
+`auto_review.enabled: true` requires `executor_mode: oci` with a valid
+`sandbox:` section — TrustedHost + enabled fails at config load (reviews
+execute third-party tooling against untrusted PR content). The
+`autoreview` GitHub label is reserved but inert in Phase 1: no daemon
+code polls it and PR eligibility never requires it. Draft PRs are
+skipped unless `auto_review.draft_pull_requests: true`.
+`max_reviews_per_tick` (default `worker_parallelism * 4`, `0` =
+unbounded) bounds per-tick review admission. Investigation tickets
+(`ticket_label_investigation`) still work but are deprecated: explicit
+config use emits a warning, and the key will be removed in a future
+release.
+
 ## State Recovery Procedure
 
 Both `state.json` and `state_meta.json` use temp-file + `fsync` + atomic

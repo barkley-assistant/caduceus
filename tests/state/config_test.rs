@@ -6,7 +6,8 @@
 
 use caduceus::config::{
     expand_leading_tilde, is_valid_repo_slug, Config, LoadContext, RawConfig, RawEnv,
-    DEFAULT_API_BASE, DEFAULT_TICKET_LABEL_CODE, DEFAULT_TICKET_LABEL_INVESTIGATION,
+    DEFAULT_API_BASE, DEFAULT_MAX_REVIEWS_PER_TICK_MULTIPLIER, DEFAULT_TICKET_LABEL_CODE,
+    DEFAULT_TICKET_LABEL_INVESTIGATION, DEFAULT_WORKER_PARALLELISM,
 };
 #[path = "../fixtures/mod.rs"]
 mod fixtures;
@@ -60,6 +61,11 @@ fn test_defaults_match_contract() {
     assert!(cfg.github_token.is_none());
     assert!(cfg.compiled_ignore_patterns.is_empty());
     assert_eq!(cfg.state_backend, "json");
+    assert_eq!(
+        cfg.max_reviews_per_tick,
+        DEFAULT_WORKER_PARALLELISM.saturating_mul(DEFAULT_MAX_REVIEWS_PER_TICK_MULTIPLIER)
+    );
+    assert!(cfg.auto_review.is_none());
 }
 
 #[test]

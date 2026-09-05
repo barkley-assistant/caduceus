@@ -80,6 +80,15 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
   `review_skipped_fork_unsupported` event. The gate is unconditional:
   there is no configuration to enable fork review in Phase 1. Closes
   #316.
+- **Auto Review configuration block.** New `auto_review:` config section
+  (`enabled`, `draft_pull_requests`, both default `false`) opts a daemon
+  into automatic PR review; enabling it requires `executor_mode: oci`
+  with a valid `sandbox:` section (TrustedHost + `enabled: true` now
+  fails config load with an actionable error). New top-level
+  `max_reviews_per_tick` (default `worker_parallelism * 4`, `0` =
+  unbounded) bounds per-tick review admission. `ticket_label_investigation`
+  is deprecated: explicit config use now emits a warning; the key is
+  removed in a future release. Closes #320.
 
 ### Fixed
 
