@@ -110,12 +110,12 @@ fn matrix_trusted_host_error_survives_present_valid_sandbox() {
 
 #[test]
 fn matrix_enabled_oci_missing_sandbox_errors_from_existing_check() {
-    let err = load(&format!(
+    let err = load(
         "worker_command: [\"python3\", \"/tmp/bridge.py\"]\n\
          state_dir: \"__TMP__/state\"\n\
          executor_mode: oci\n\
-         auto_review:\n  enabled: true\n"
-    ))
+         auto_review:\n  enabled: true\n",
+    )
     .expect_err("oci without sandbox must fail (existing rule)");
     let msg = format!("{err}");
     assert!(
@@ -141,13 +141,13 @@ fn matrix_enabled_oci_valid_sandbox_is_the_ok_shape() {
 
 #[test]
 fn matrix_enabled_oci_invalid_image_errors_from_sandbox_validation() {
-    let err = load(&format!(
+    let err = load(
         "worker_command: [\"python3\", \"/tmp/bridge.py\"]\n\
          state_dir: \"__TMP__/state\"\n\
          executor_mode: oci\n\
          sandbox:\n  image: \"not-a-digest\"\n\
-         auto_review:\n  enabled: true\n"
-    ))
+         auto_review:\n  enabled: true\n",
+    )
     .expect_err("bad image must fail (existing rule)");
     let msg = format!("{err}");
     assert!(msg.contains("sandbox.image"), "got: {msg}");
