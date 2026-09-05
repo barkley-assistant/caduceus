@@ -32,17 +32,19 @@ fn env_with(pairs: &[(&str, &str)]) -> BTreeMap<OsString, OsString> {
 
 fn sample_inputs(worktree: &Path) -> SanitizedEnvInputs {
     SanitizedEnvInputs {
-        issue: IssueKey {
-            owner: "owner".to_string(),
-            repo: "repo".to_string(),
-            number: 75,
-        },
-        issue_title: "Issue title".to_string(),
-        issue_body: "Issue body".to_string(),
-        labels: vec!["autofix".to_string()],
+        target: caduceus::executor::WorkTarget::Issue(caduceus::executor::IssueWorkTarget {
+            key: IssueKey {
+                owner: "owner".to_string(),
+                repo: "repo".to_string(),
+                number: 75,
+            },
+            title: "Issue title".to_string(),
+            body: "Issue body".to_string(),
+            labels: vec!["autofix".to_string()],
+            branch_name: "automation/issue-75-run75".to_string(),
+        }),
         worktree_path: worktree.to_path_buf(),
         run_id: "RUN75".to_string(),
-        branch_name: "automation/issue-75-run75".to_string(),
         allowlist: Vec::new(),
         context_json: r#"{"x":1}"#.to_string(),
     }
@@ -136,7 +138,12 @@ fn supervisor_command_validates_labels_json() {
     let worktree = tempdir("labels_json");
     fs::create_dir_all(&worktree).expect("worktree dir");
     let mut inputs = sample_inputs(&worktree);
-    inputs.labels = vec!["autofix".to_string()];
+    match &mut inputs.target {
+        caduceus::executor::WorkTarget::Issue(issue) => {
+            issue.labels = vec!["autofix".to_string()];
+        }
+        caduceus::executor::WorkTarget::PullRequest(_) => unreachable!(),
+    }
     let env = sanitized_env(&empty_env(), &inputs).expect("sanitized env");
 
     let raw = env

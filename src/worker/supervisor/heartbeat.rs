@@ -8,7 +8,6 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::github::issue::IssueKey;
 use crate::infra::error::{CaduceusError, CaduceusResult};
 
 // Heartbeat
@@ -27,16 +26,20 @@ pub struct Heartbeat {
     pub pid: u32,
     pub started_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
-    pub issue_key: IssueKey,
+    /// [`crate::executor::WorkTarget::display()`] — `owner/repo#N` for
+    /// issue runs, `owner/repo#pr/N` for PR review runs. A string so
+    /// the heartbeat envelope is target-neutral (DAR §6.1).
+    pub target: String,
     pub transcript_path: PathBuf,
 }
 
-/// File-format version the supervisor writes. The first
-/// versioned shape; older unversioned timestamp-only
-/// heartbeats are not recognised by `status` and are
-/// surfaced as `HeartbeatParseError::Malformed` so the
-/// operator can investigate.
-pub const HEARTBEAT_FILE_VERSION: u32 = 1;
+/// File-format version the supervisor writes. The second
+/// versioned shape: v1 carried `issue_key: IssueKey`; v2 carries
+/// the target-neutral `target: String` (DAR §6.1). Older
+/// unversioned timestamp-only heartbeats are not recognised by
+/// `status` and are surfaced as `HeartbeatParseError::Malformed`
+/// so the operator can investigate.
+pub const HEARTBEAT_FILE_VERSION: u32 = 2;
 
 /// Write the heartbeat file atomically. The supervisor
 /// calls this at most once per second while the worker is
@@ -95,11 +98,7 @@ pub fn write_heartbeat(path: &Path) -> CaduceusResult<()> {
         pid: std::process::id(),
         started_at: now,
         updated_at: now,
-        issue_key: IssueKey {
-            owner: String::new(),
-            repo: String::new(),
-            number: 0,
-        },
+        target: String::new(),
         transcript_path: path.with_extension("log"),
     };
     write_heartbeat_record(&record, path)
@@ -140,8 +139,9 @@ pub fn read_heartbeat_record(path: &Path) -> Option<Heartbeat> {
         return None;
     }
     // Legacy format: a single RFC 3339 line. We synthesise
-    // a v1 envelope so the rest of the status surface can
-    // treat heartbeats uniformly.
+    // a v2 envelope so the rest of the status surface can
+    // treat heartbeats uniformly. The target is unknown for
+    // a legacy file — an empty string is the honest value.
     let updated_at = chrono::DateTime::parse_from_rfc3339(buf.trim())
         .ok()?
         .with_timezone(&chrono::Utc);
@@ -156,11 +156,7 @@ pub fn read_heartbeat_record(path: &Path) -> Option<Heartbeat> {
         pid: 0,
         started_at: updated_at,
         updated_at,
-        issue_key: IssueKey {
-            owner: String::new(),
-            repo: String::new(),
-            number: 0,
-        },
+        target: String::new(),
         transcript_path: path.with_extension("log"),
     })
 }

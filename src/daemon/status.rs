@@ -18,7 +18,6 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
-use crate::github::issue::IssueKey;
 use crate::infra::error::{CaduceusError, CaduceusResult};
 use crate::readiness::{ReadinessReport, ReadinessVerdict};
 use crate::state::meta::{MetaStore, StateMeta, TickOutcome};
@@ -556,7 +555,7 @@ fn collect_live_workers(state_dir: &Path) -> Vec<LiveWorker> {
         // marker tells them which is which.
         workers.push(LiveWorker {
             run_id: record.run_id,
-            issue: record.issue_key.display_key(),
+            issue: record.target.clone(),
             pid: record.pid,
             started_at: record.started_at,
             updated_at: record.updated_at,
@@ -803,7 +802,7 @@ pub fn live_worker_from_heartbeat(record: &Heartbeat, now: DateTime<Utc>) -> Liv
     };
     LiveWorker {
         run_id: record.run_id.clone(),
-        issue: record.issue_key.display_key(),
+        issue: record.target.clone(),
         pid: record.pid,
         started_at: record.started_at,
         updated_at: record.updated_at,
@@ -816,14 +815,14 @@ pub fn live_worker_from_heartbeat(record: &Heartbeat, now: DateTime<Utc>) -> Liv
 /// supervisor's production writer so the
 /// `read_heartbeat_record` round-trip succeeds.
 #[allow(dead_code)]
-pub fn sample_heartbeat(run_id: &str, issue: IssueKey, now: DateTime<Utc>) -> Heartbeat {
+pub fn sample_heartbeat(run_id: &str, target: &str, now: DateTime<Utc>) -> Heartbeat {
     Heartbeat {
         version: crate::worker::supervisor::HEARTBEAT_FILE_VERSION,
         run_id: run_id.to_string(),
         pid: std::process::id(),
         started_at: now,
         updated_at: now,
-        issue_key: issue,
+        target: target.to_string(),
         transcript_path: PathBuf::from(format!("/tmp/runs/{run_id}.log")),
     }
 }

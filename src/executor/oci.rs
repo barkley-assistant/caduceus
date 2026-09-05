@@ -151,14 +151,17 @@ impl Executor for OciExecutor {
             // 8. Run the lifecycle with the rendered argv. The run's
             //    lifecycle token is linked with the watchdog token so
             //    a disk-pressure breach terminates in-flight work via
-            //    the existing stop path (issue #245).
+            //    the existing stop path (issue #245). The adapter
+            //    carries the target-neutral display identity
+            //    (`WorkTarget::display()`) — issue runs
+            //    `owner/repo#N`, PR runs `owner/repo#pr/N` (DAR §6.1).
+            let issue_id = spec.target.display();
             let adapter = oci_lifecycle::OciAdapter::new(
                 engine,
                 Arc::new(dao),
                 self.cfg.state_dir.clone(),
                 daemon_id,
-                spec.issue.clone(),
-                spec.issue.display_key(),
+                issue_id,
                 sha256_of(&spec.worker_command.join(" ")),
                 argv,
                 Some(env_file),

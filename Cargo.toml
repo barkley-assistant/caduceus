@@ -192,6 +192,10 @@ name = "sandbox_resolve_test"
 path = "tests/executor/sandbox_resolve_test.rs"
 
 [[test]]
+name = "work_target_test"
+path = "tests/executor/work_target_test.rs"
+
+[[test]]
 name = "identity_resolution_test"
 path = "tests/executor/identity_resolution_test.rs"
 

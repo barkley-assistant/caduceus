@@ -127,16 +127,18 @@ impl OciRunState for FakeOciRunState {
 fn test_spec(run_id: &str) -> ExecutorSpec {
     ExecutorSpec {
         self_exe: Path::new("/usr/bin/caduceus").to_path_buf(),
-        issue: IssueKey::parse("owner/repo#1").expect("valid key"),
+        target: caduceus::executor::WorkTarget::Issue(caduceus::executor::IssueWorkTarget {
+            key: IssueKey::parse("owner/repo#1").expect("valid key"),
+            title: "title".to_string(),
+            body: "body".to_string(),
+            labels: Vec::new(),
+            branch_name: "automation/issue-1".to_string(),
+        }),
         worktree: Path::new("/tmp/worktree").to_path_buf(),
         run_id: run_id.to_string(),
         context_json: r#"{"x":1}"#.to_string(),
         worker_command: vec!["python3".to_string(), "bridge.py".to_string()],
         cancellation: CancellationToken::new(),
-        issue_title: "title".to_string(),
-        issue_body: "body".to_string(),
-        labels: Vec::new(),
-        branch_name: "automation/issue-1".to_string(),
     }
 }
 
@@ -169,8 +171,7 @@ async fn run_lifecycle(
         state,
         cfg.state_dir.clone(),
         facts.daemon_id,
-        input.issue.clone(),
-        input.issue.display_key(),
+        input.target.display(),
         "test-command-sha".to_string(),
         create_argv(),
         None,
@@ -204,8 +205,7 @@ async fn canonical_lifecycle_runs_end_to_end() {
         state.clone(),
         cfg.state_dir.clone(),
         "test-daemon".to_string(),
-        input.issue.clone(),
-        input.issue.display_key(),
+        input.target.display(),
         "test-command-sha".to_string(),
         create_argv(),
         None,

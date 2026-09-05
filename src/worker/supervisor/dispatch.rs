@@ -10,7 +10,6 @@ use std::time::Duration;
 use chrono::Utc;
 use tokio::process::{Child, Command as TokioCommand};
 
-use crate::github::issue::IssueKey;
 use crate::infra::error::{CaduceusError, CaduceusResult};
 use crate::worker::supervisor::process_lifecycle::{
     decide_deadline_kill, kill_pid, signal_number_from_str, DeadlineKillDecision, IDENTITY, TREE,
@@ -49,16 +48,12 @@ use crate::worker::supervisor::process_lifecycle::{
 pub async fn supervise(
     self_exe: &Path,
     cfg: &crate::infra::config::Config,
-    issue: &IssueKey,
+    target: &crate::executor::WorkTarget,
     worktree: &Path,
     run_id: &str,
     context_json: &str,
     worker_command: &[String],
     cancellation: tokio_util::sync::CancellationToken,
-    issue_title: &str,
-    issue_body: &str,
-    labels: &[String],
-    branch_name: &str,
 ) -> CaduceusResult<SupervisorOutcome> {
     let paths = WorkerRunPaths::new(cfg.state_dir.clone(), run_id.to_string());
     paths.ensure_dirs()?;
@@ -70,7 +65,7 @@ pub async fn supervise(
             pid: std::process::id(),
             started_at,
             updated_at: started_at,
-            issue_key: issue.clone(),
+            target: target.display(),
             transcript_path: paths.transcript_path.clone(),
         },
         &paths.heartbeat_path,
@@ -87,17 +82,13 @@ pub async fn supervise(
     let spawn_result = run_supervisor(
         self_exe,
         cfg,
-        issue,
+        target,
         worktree,
         run_id,
         context_json,
         worker_command,
         &paths,
         cancellation,
-        issue_title,
-        issue_body,
-        labels,
-        branch_name,
     )
     .await;
 
@@ -123,33 +114,25 @@ pub async fn supervise(
 pub(crate) async fn run_supervisor(
     self_exe: &Path,
     cfg: &crate::infra::config::Config,
-    issue: &IssueKey,
+    target: &crate::executor::WorkTarget,
     worktree: &Path,
     run_id: &str,
     context_json: &str,
     worker_command: &[String],
     paths: &WorkerRunPaths,
     cancellation: tokio_util::sync::CancellationToken,
-    issue_title: &str,
-    issue_body: &str,
-    labels: &[String],
-    branch_name: &str,
 ) -> CaduceusResult<SupervisorOutcome> {
     let cmd = build_supervisor_command(
         self_exe,
         worktree,
         run_id,
-        issue,
+        target,
         context_json,
         worker_command,
         &paths.transcript_path,
         &paths.heartbeat_path,
         cfg.worker_timeout_seconds,
         cfg.transcript_max_bytes,
-        issue_title,
-        issue_body,
-        labels,
-        branch_name,
     );
 
     // Convert to a tokio command for async I/O.
@@ -352,7 +335,7 @@ pub(crate) async fn run_supervisor(
     let hb_path = paths.heartbeat_path.clone();
     let hb_cancel = cancellation.clone();
     let started_at_copy = started_at;
-    let issue_clone = issue.clone();
+    let target_display = target.display();
     let transcript_path_clone = paths.transcript_path.clone();
     let run_id_string = run_id.to_string();
     let heartbeat_task = tokio::spawn(async move {
@@ -367,7 +350,7 @@ pub(crate) async fn run_supervisor(
                 pid: std::process::id(),
                 started_at: started_at_copy,
                 updated_at: Utc::now(),
-                issue_key: issue_clone.clone(),
+                target: target_display.clone(),
                 transcript_path: transcript_path_clone.clone(),
             };
             if write_heartbeat_record(&record, &hb_path).is_err() {

@@ -14,6 +14,15 @@
 //!   CLI. The `create` argv is produced by the pure
 //!   [`sandbox_spec::resolve`] → [`sandbox_renderer::render`] pipeline;
 //!   the single crash-safe lifecycle lives in [`oci_lifecycle`].
+//!
+//! # Target-neutral boundary (DAR §6.1)
+//!
+//! [`ExecutorSpec`] carries a [`WorkTarget`] — the work item a run
+//! addresses — instead of flat issue-shaped fields. Issue runs keep
+//! the historical issue payload byte-for-byte (see
+//! [`IssueWorkTarget`]); PR review runs carry a [`ReviewTarget`] with
+//! no `IssueKey` and no branch name. No variant may be faked into the
+//! other.
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -27,6 +36,7 @@ use crate::github::issue::IssueKey;
 use crate::infra::config::Config;
 use crate::infra::disk::DiskPressureGuard;
 use crate::infra::error::CaduceusResult;
+use crate::review::ReviewTarget;
 use crate::worker::supervisor::SupervisorOutcome;
 
 use self::oci::OciExecutor;
@@ -47,14 +57,58 @@ pub use sandbox_spec::{
     EngineMode, GitShadowKind, MountSpec, RuntimeFacts, SandboxEngine, SandboxSpec,
 };
 
+/// The work item a worker run targets (DAR §6.1). Issue runs carry the
+/// historical issue payload (a lossless rename of the former flat
+/// [`ExecutorSpec`] fields); PR review runs carry the frozen review
+/// identity. No variant may be faked into the other: constructing a PR
+/// run never requires an [`IssueKey`] or a branch name, and vice versa.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WorkTarget {
+    /// Issue-path payload — byte-for-byte the former flat fields.
+    Issue(IssueWorkTarget),
+    /// PR review run — no synthetic issue key, no branch name.
+    PullRequest(ReviewTarget),
+}
+
+/// Issue-path payload — byte-for-byte the former flat `ExecutorSpec`
+/// issue fields, kept so the issue env contract and supervisor argv
+/// stay unchanged (DAR §6.1).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IssueWorkTarget {
+    /// The issue key being worked on.
+    pub key: IssueKey,
+    /// Issue title (UTF-8, NUL-free, may contain newlines).
+    pub title: String,
+    /// Issue body (UTF-8, NUL-free, may contain newlines).
+    pub body: String,
+    /// Label names (e.g. `["autofix"]`).
+    pub labels: Vec<String>,
+    /// Daemon-owned expected branch name.
+    pub branch_name: String,
+}
+
+impl WorkTarget {
+    /// Stable display identity for heartbeats, OCI labels, and the
+    /// `oci_runs.issue_id` column. Issue: `owner/repo#N` (unchanged).
+    /// PR: `owner/repo#pr/N`.
+    pub fn display(&self) -> String {
+        match self {
+            WorkTarget::Issue(issue) => issue.key.display_key(),
+            WorkTarget::PullRequest(pr) => {
+                format!("{}#pr/{}", pr.repository.full_name(), pr.pull_request)
+            }
+        }
+    }
+}
+
 /// Arguments to [`Executor::run`]. Every field the executor needs
 /// to dispatch a worker, regardless of mode.
 #[derive(Clone, Debug)]
 pub struct ExecutorSpec {
     /// Path to the running caduceus binary (re-exec for supervisor mode).
     pub self_exe: PathBuf,
-    /// The issue key being worked on.
-    pub issue: IssueKey,
+    /// The work item this run addresses — issue or PR review.
+    pub target: WorkTarget,
     /// The worktree root path (supervisor cwd; OCI volume mount target).
     pub worktree: PathBuf,
     /// Unique run identifier for this dispatch.
@@ -65,14 +119,6 @@ pub struct ExecutorSpec {
     pub worker_command: Vec<String>,
     /// Cancellation token for daemon shutdown.
     pub cancellation: CancellationToken,
-    /// Issue title (UTF-8, NUL-free, may contain newlines).
-    pub issue_title: String,
-    /// Issue body (UTF-8, NUL-free, may contain newlines).
-    pub issue_body: String,
-    /// Label names (e.g. `["autofix"]`).
-    pub labels: Vec<String>,
-    /// Daemon-owned expected branch name.
-    pub branch_name: String,
 }
 
 /// Result of [`Executor::run`] plus the host-side path the worker

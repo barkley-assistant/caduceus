@@ -89,6 +89,18 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
   unbounded) bounds per-tick review admission. `ticket_label_investigation`
   is deprecated: explicit config use now emits a warning; the key is
   removed in a future release. Closes #320.
+- **Target-neutral worker boundary.** The executor/supervisor boundary
+  now carries a `WorkTarget` — `Issue(IssueWorkTarget)` keeps the
+  historical issue payload (byte-for-byte env and supervisor argv
+  compatibility) while `PullRequest(ReviewTarget)` carries the frozen
+  review identity with no synthetic issue key and no branch name.
+  Review runs export `CADUCEUS_WORK_TARGET=pr` plus
+  `CADUCEUS_PR_NUMBER` / `CADUCEUS_PR_REPO` / `CADUCEUS_PR_BASE_SHA` /
+  `CADUCEUS_PR_HEAD_SHA`; `CANONICAL_WORKER_ENV_VARS` is now the union
+  of the issue and PR path sets. The worker bridge is mode-aware: PR
+  runs resolve only the mode-correct result path and never synthesise
+  a legacy result (missing result file = execution failure). Closes
+  #346.
 
 ### Fixed
 

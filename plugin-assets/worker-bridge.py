@@ -72,27 +72,77 @@ from types import MappingProxyType
 # Constants
 # ---------------------------------------------------------------------------
 
-#: Required ``CADUCEUS_*`` environment variables. The daemon exports every
-#: one of these for the worker; a missing entry means the daemon is not
+#: Required ``CADUCEUS_*`` environment variables — the full union
+#: across both target paths (DAR §6.1). The daemon exports every one of
+#: these for some worker run; the mode-aware :func:`read_required_env`
+#: is the single authority that decides which names a given run must
+#: actually carry (issue path: mode-neutral + ``CADUCEUS_ISSUE_*`` +
+#: branch; PR path: mode-neutral + ``CADUCEUS_PR_*`` + the ``pr`` mode
+#: marker). A missing hard-required entry means the daemon is not
 #: talking to a current bridge.
 REQUIRED_ENV_VARS: tuple[str, ...] = (
-    "CADUCEUS_ISSUE_NUMBER",
-    "CADUCEUS_ISSUE_TITLE",
-    "CADUCEUS_ISSUE_BODY",
-    "CADUCEUS_ISSUE_REPO",
-    "CADUCEUS_CONTEXT_JSON",
-    "CADUCEUS_WORKTREE_PATH",
-    "CADUCEUS_RUN_ID",
-    "CADUCEUS_ISSUE_LABELS_JSON",
     "CADUCEUS_BRANCH_NAME",
+    "CADUCEUS_CONTEXT_JSON",
+    "CADUCEUS_ISSUE_BODY",
+    "CADUCEUS_ISSUE_LABELS_JSON",
+    "CADUCEUS_ISSUE_NUMBER",
+    "CADUCEUS_ISSUE_REPO",
+    "CADUCEUS_ISSUE_TITLE",
+    "CADUCEUS_RUN_ID",
+    "CADUCEUS_WORKTREE_PATH",
     "CADUCEUS_RESULT_PATH",
+    "CADUCEUS_WORK_TARGET",
+    "CADUCEUS_PR_BASE_SHA",
+    "CADUCEUS_PR_HEAD_SHA",
+    "CADUCEUS_PR_NUMBER",
+    "CADUCEUS_PR_REPO",
 )
+
+#: Variables every run needs, regardless of target (DAR §6.1).
+MODE_NEUTRAL_ENV_VARS: frozenset[str] = frozenset(
+    {
+        "CADUCEUS_CONTEXT_JSON",
+        "CADUCEUS_RUN_ID",
+        "CADUCEUS_WORKTREE_PATH",
+    }
+)
+
+#: Issue-path-only variables (DAR §6.1). Required when
+#: ``CADUCEUS_WORK_TARGET`` is absent; never required on the PR path.
+ISSUE_PATH_ENV_VARS: frozenset[str] = frozenset(
+    {
+        "CADUCEUS_BRANCH_NAME",
+        "CADUCEUS_ISSUE_BODY",
+        "CADUCEUS_ISSUE_LABELS_JSON",
+        "CADUCEUS_ISSUE_NUMBER",
+        "CADUCEUS_ISSUE_REPO",
+        "CADUCEUS_ISSUE_TITLE",
+    }
+)
+
+#: PR-path-only variables (DAR §6.1). Required when
+#: ``CADUCEUS_WORK_TARGET=pr``; never required on the issue path.
+PR_PATH_ENV_VARS: frozenset[str] = frozenset(
+    {
+        "CADUCEUS_PR_BASE_SHA",
+        "CADUCEUS_PR_HEAD_SHA",
+        "CADUCEUS_PR_NUMBER",
+        "CADUCEUS_PR_REPO",
+        "CADUCEUS_WORK_TARGET",
+    }
+)
+
+#: The daemon-consumed result location. Soft-required on the issue path
+#: (the bridge falls back to the legacy location with a warning); on the
+#: PR path there is no legacy location, so a missing value is a
+#: hard-required contract failure (DAR §6.2).
+RESULT_PATH_ENV_VAR = "CADUCEUS_RESULT_PATH"
 
 #: Names in :data:`REQUIRED_ENV_VARS` that are soft-required. A missing
 #: entry must not abort the worker: the bridge falls back to the legacy
 #: location (with a stderr warning) instead. Every other required name
 #: is hard-required and aborts with ``EXIT_MISSING_ENV``.
-SOFT_REQUIRED_ENV_VARS: frozenset[str] = frozenset({"CADUCEUS_RESULT_PATH"})
+SOFT_REQUIRED_ENV_VARS: frozenset[str] = frozenset({RESULT_PATH_ENV_VAR})
 
 #: File names inside the worktree the daemon prepares. The bridge never
 #: reads ``worker-result.json`` (the daemon reads it after the worker
@@ -102,6 +152,7 @@ PROMPT_FILE_NAME = "worker-prompt.md"
 #: Exit codes that the bridge maps onto the daemon's worker interface.
 EXIT_OK = 0
 EXIT_MISSING_ENV = 2
+EXIT_MISSING_RESULT = 2
 EXIT_MALFORMED_LABELS = 2
 EXIT_MISSING_PROMPT = 2
 EXIT_HARNESS_NOT_FOUND = 127
@@ -146,18 +197,41 @@ class Issue:
 
 
 @dataclass(frozen=True)
+class PrTarget:
+    """PR review target exposed to a user harness through :class:`Ctx`.
+
+    Mirrors the daemon's ``CADUCEUS_PR_*`` env contract (DAR §6.1): the
+    frozen review identity. ``base_ref``/``merge_base`` do not enter the
+    environment — they reach the worker through the prompt/context.
+    """
+
+    repo: str
+    number: int
+    base_sha: str
+    head_sha: str
+
+
+@dataclass(frozen=True)
 class Ctx:
-    """The explicit worker context passed to ``run_task``."""
+    """The explicit worker context passed to ``run_task``.
+
+    ``issue`` is populated on the issue path (all historical fields
+    identical to pre-#346); ``pr`` is populated on the PR review path.
+    Exactly one of them is ``None`` for any run. ``branch`` is the
+    daemon-owned branch on the issue path and the empty string on the
+    PR path (an empty passthrough, never a synthetic branch name).
+    """
 
     worktree: Path
     prompt: Path
     run_id: str
     branch: str
     labels: list[str]
-    issue: Issue
+    issue: Issue | None
     context_json: str
     dry_run: bool
     env: Mapping[str, str]
+    pr: PrTarget | None = None
 
 
 def _hermes_home(env: Mapping[str, str] | None = None) -> Path:
@@ -181,11 +255,53 @@ def _legacy_bridge_path(env: Mapping[str, str] | None = None) -> Path:
 
 
 def _build_ctx(env: Mapping[str, str]) -> Ctx:
-    """Validate the daemon environment and construct the hook context."""
+    """Validate the daemon environment and construct the hook context.
+
+    Mode-aware (DAR §6.1): the absence of ``CADUCEUS_WORK_TARGET``
+    selects the issue path (historical ``ctx.issue`` shape); the value
+    ``pr`` selects the PR review path (``ctx.pr`` populated, ``issue``
+    ``None``, ``branch`` empty, ``labels`` empty). Any other value is
+    fail-closed — the daemon is the only setter of this variable.
+    """
     values = read_required_env(env)
-    labels = parse_labels(values["CADUCEUS_ISSUE_LABELS_JSON"])
+    mode = env.get("CADUCEUS_WORK_TARGET", "")
     worktree = resolve_worktree(env).expanduser().resolve()
     prompt = verify_prompt(worktree / PROMPT_FILE_NAME)
+    dry_run = env.get("CADUCEUS_DRY_RUN", "").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if mode == "pr":
+        try:
+            pr_number = int(values["CADUCEUS_PR_NUMBER"])
+        except ValueError as exc:
+            print(
+                f"caduceus bridge: invalid CADUCEUS_PR_NUMBER: {exc}",
+                file=sys.stderr,
+            )
+            sys.exit(EXIT_MISSING_ENV)
+        return Ctx(
+            worktree=worktree,
+            prompt=prompt,
+            run_id=values["CADUCEUS_RUN_ID"],
+            # Empty passthrough on the PR path — never a synthetic
+            # branch name (DAR §6.1).
+            branch="",
+            labels=[],
+            issue=None,
+            context_json=values["CADUCEUS_CONTEXT_JSON"],
+            dry_run=dry_run,
+            env=MappingProxyType(dict(env)),
+            pr=PrTarget(
+                repo=values["CADUCEUS_PR_REPO"],
+                number=pr_number,
+                base_sha=values["CADUCEUS_PR_BASE_SHA"],
+                head_sha=values["CADUCEUS_PR_HEAD_SHA"],
+            ),
+        )
+    labels = parse_labels(values["CADUCEUS_ISSUE_LABELS_JSON"])
     try:
         issue_number = int(values["CADUCEUS_ISSUE_NUMBER"])
     except ValueError as exc:
@@ -195,12 +311,6 @@ def _build_ctx(env: Mapping[str, str]) -> Ctx:
             file=sys.stderr,
         )
         sys.exit(EXIT_MISSING_ENV)
-    dry_run = env.get("CADUCEUS_DRY_RUN", "").lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
     return Ctx(
         worktree=worktree,
         prompt=prompt,
@@ -307,15 +417,30 @@ def truncate_pull_request_title(title: str) -> str:
     return title[: MAX_PULL_REQUEST_TITLE_CHARS - 1] + "…"
 
 
-def _result_path(worktree: Path) -> Path:
-    """Return the daemon-consumed result path for a worktree.
+def _result_path(worktree: Path, env: Mapping[str, str] | None = None) -> Path:
+    """Return the daemon-consumed result path for a run.
 
     The daemon may export ``CADUCEUS_RESULT_PATH`` (the agent-neutral
-    result location). When set and non-empty it wins; otherwise the
-    legacy ``<worktree>/worker-result.json`` location is used and a
-    visible but non-fatal warning is written to stderr.
+    result location); when set and non-empty it wins. On the **issue
+    path** a missing value falls back to the legacy
+    ``<worktree>/worker-result.json`` location with a visible but
+    non-fatal warning (unchanged pre-#346 behaviour). On the **PR
+    path** (``CADUCEUS_WORK_TARGET=pr``) there is no legacy location:
+    the mode-correct path is ``CADUCEUS_RESULT_PATH`` only (DAR §6.2),
+    and a missing value aborts — ``read_required_env`` already
+    hard-requires it, this is belt-and-braces.
     """
-    override = os.environ.get("CADUCEUS_RESULT_PATH")
+    source = os.environ if env is None else env
+    mode = source.get("CADUCEUS_WORK_TARGET", "")
+    override = source.get(RESULT_PATH_ENV_VAR)
+    if mode == "pr":
+        if override:
+            return Path(override)
+        sys.stderr.write(
+            "caduceus bridge: pr target requires "
+            f"{RESULT_PATH_ENV_VAR}; no legacy fallback exists\n"
+        )
+        sys.exit(EXIT_MISSING_ENV)
     if override:
         return Path(override)
     sys.stderr.write(
@@ -426,14 +551,36 @@ def invoke_harness(
 def read_required_env(env: Mapping[str, str]) -> dict:
     """Return a new dict containing every required ``CADUCEUS_*`` value.
 
+    Mode-aware (DAR §6.1): ``CADUCEUS_WORK_TARGET`` selects the
+    required set. Absent/empty → issue path (mode-neutral + issue
+    vars; ``CADUCEUS_RESULT_PATH`` stays soft-required). ``pr`` →
+    PR path (mode-neutral + PR vars; ``CADUCEUS_RESULT_PATH`` becomes
+    hard-required because no legacy fallback exists). Any other value
+    is fail-closed — the daemon is the only setter of this variable.
     Raises ``SystemExit(EXIT_MISSING_ENV)`` with a one-line stderr
-    diagnostic naming each missing key. The error message never embeds
-    the values (no echo of titles, bodies, or tokens).
+    diagnostic naming each missing key. The error message never
+    embeds the values (no echo of titles, bodies, or tokens).
     """
+    mode = env.get("CADUCEUS_WORK_TARGET", "")
+    if mode == "pr":
+        required = (
+            MODE_NEUTRAL_ENV_VARS | PR_PATH_ENV_VARS | {RESULT_PATH_ENV_VAR}
+        )
+        soft: frozenset[str] = frozenset()
+    elif mode == "":
+        required = MODE_NEUTRAL_ENV_VARS | ISSUE_PATH_ENV_VARS
+        soft = SOFT_REQUIRED_ENV_VARS
+    else:
+        print(
+            "caduceus bridge: unknown CADUCEUS_WORK_TARGET value: "
+            f"{mode!r} (expected empty or 'pr')",
+            file=sys.stderr,
+        )
+        sys.exit(EXIT_MISSING_ENV)
     missing = [
         name
-        for name in REQUIRED_ENV_VARS
-        if name not in SOFT_REQUIRED_ENV_VARS and not env.get(name)
+        for name in sorted(required)
+        if name not in soft and not env.get(name)
     ]
     if missing:
         print(
@@ -444,7 +591,7 @@ def read_required_env(env: Mapping[str, str]) -> dict:
         sys.exit(EXIT_MISSING_ENV)
     return {
         name: env[name]
-        for name in REQUIRED_ENV_VARS
+        for name in required | soft
         if name in env and env[name]
     }
 
@@ -541,7 +688,19 @@ def main(
             sys.stdout.write(stdout)
         if stderr:
             sys.stderr.write(stderr)
-        if not _result_path(ctx.worktree).exists():
+        result_path = _result_path(ctx.worktree, env)
+        if env.get("CADUCEUS_WORK_TARGET", "") == "pr":
+            # PR mode (DAR §6.2): the harness is responsible for the
+            # review result; the bridge never synthesizes one. A run
+            # that produced no result file is a contract failure.
+            if not result_path.exists():
+                sys.stderr.write(
+                    "caduceus bridge: pr target produced no result file at "
+                    f"{result_path}\n"
+                )
+                return EXIT_MISSING_RESULT
+            return returncode
+        if not result_path.exists():
             _synthesize_worker_result(ctx.worktree, returncode, stdout, stderr)
         return returncode
 

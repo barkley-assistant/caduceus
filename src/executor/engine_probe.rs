@@ -151,9 +151,10 @@ pub async fn probe_runtime_facts_with_daemon_id(
     create_git_shadow(&git_shadow_host, git_shadow_kind, engine, engine_mode)?;
 
     // 6. Assemble the extended facts.
+    let target = spec.target.display();
     Ok(RuntimeFacts {
         run_id: spec.run_id.clone(),
-        issue: spec.issue.clone(),
+        target,
         worker_command: spec.worker_command.clone(),
         worktree: spec.worktree.clone(),
         output_dir,

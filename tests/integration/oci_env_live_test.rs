@@ -156,7 +156,7 @@ fn live_fixture(engine: Option<SandboxEngine>, container_script: &str) -> Option
 
     let runtime = caduceus::executor::sandbox_spec::RuntimeFacts {
         run_id: run_id.to_string(),
-        issue: caduceus::github::issue::IssueKey::parse("owner/repo#1").expect("valid key"),
+        target: "owner/repo#1".to_string(),
         worker_command: vec![
             "sh".to_string(),
             "-c".to_string(),
@@ -198,16 +198,19 @@ fn live_fixture(engine: Option<SandboxEngine>, container_script: &str) -> Option
 
     let spec = caduceus::executor::ExecutorSpec {
         self_exe: std::path::PathBuf::from("/proc/self/exe"),
-        issue: runtime.issue.clone(),
+        target: caduceus::executor::WorkTarget::Issue(caduceus::executor::IssueWorkTarget {
+            key: caduceus::github::issue::IssueKey::parse(&runtime.target)
+                .expect("fixture target parses as issue key"),
+            title: "Live env".to_string(),
+            body: "Live body".to_string(),
+            labels: vec!["bug".to_string()],
+            branch_name: "caduceus/owner/repo#1".to_string(),
+        }),
         worktree: runtime.worktree.clone(),
         run_id: runtime.run_id.clone(),
         context_json: "{}".to_string(),
         worker_command: runtime.worker_command.clone(),
         cancellation: tokio_util::sync::CancellationToken::new(),
-        issue_title: "Live env".to_string(),
-        labels: vec!["bug".to_string()],
-        branch_name: "caduceus/owner/repo#1".to_string(),
-        issue_body: "Live body".to_string(),
     };
     let spec = resolve_with_env(cfg.sandbox(), &runtime, &spec, &daemon_snapshot)
         .expect("live facts must resolve");

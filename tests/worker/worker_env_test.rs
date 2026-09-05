@@ -45,17 +45,19 @@ use std::process::Stdio;
 
 fn sample_inputs(worktree: &Path) -> SanitizedEnvInputs {
     SanitizedEnvInputs {
-        issue: IssueKey {
-            owner: "owner".to_string(),
-            repo: "repo".to_string(),
-            number: 7,
-        },
-        issue_title: "The title".to_string(),
-        issue_body: "The body".to_string(),
-        labels: vec!["bug".to_string(), "area,commas".to_string()],
+        target: caduceus::executor::WorkTarget::Issue(caduceus::executor::IssueWorkTarget {
+            key: IssueKey {
+                owner: "owner".to_string(),
+                repo: "repo".to_string(),
+                number: 7,
+            },
+            title: "The title".to_string(),
+            body: "The body".to_string(),
+            labels: vec!["bug".to_string(), "area,commas".to_string()],
+            branch_name: "automation/issue-7-run01abcdefg".to_string(),
+        }),
         worktree_path: worktree.to_path_buf(),
         run_id: "RUN01ABCDEFG".to_string(),
-        branch_name: "automation/issue-7-run01abcdefg".to_string(),
         allowlist: Vec::new(),
         context_json: r#"{"k":"v"}"#.to_string(),
     }
@@ -135,7 +137,10 @@ fn sanitized_env_emits_labels_as_json_array() {
 fn sanitized_env_emits_empty_labels_as_empty_json_array() {
     let worktree = tempdir("labels_empty");
     let mut inputs = sample_inputs(&worktree);
-    inputs.labels.clear();
+    match &mut inputs.target {
+        caduceus::executor::WorkTarget::Issue(issue) => issue.labels.clear(),
+        caduceus::executor::WorkTarget::PullRequest(_) => unreachable!(),
+    }
     let env = sanitized_env(&empty_env(), &inputs).expect("sanitized env");
     let raw = env
         .get(OsStr::new("CADUCEUS_ISSUE_LABELS_JSON"))
@@ -539,4 +544,173 @@ fn sanitized_env_redacts_values_in_debug_output() {
     // definition one the worker sees; the debug-format
     // requirement is about *denied* secrets).
     assert!(!dbg.contains("ghp_should_never_appear"));
+}
+
+// PR-path env contract (DAR §6.1): CADUCEUS_WORK_TARGET=pr + the four
+// CADUCEUS_PR_* variables; no synthetic IssueKey, no branch name.
+
+fn sample_pr_target() -> caduceus::executor::WorkTarget {
+    caduceus::executor::WorkTarget::PullRequest(caduceus::review::ReviewTarget {
+        repository: caduceus::review::RepositoryId {
+            owner: "owner".to_string(),
+            repo: "repo".to_string(),
+        },
+        pull_request: 9,
+        head_sha: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef".to_string(),
+        base_sha: "cafebabecafebabecafebabecafebabecafebabe".to_string(),
+        base_ref: "main".to_string(),
+        merge_base: "abcdef01abcdef01abcdef01abcdef01abcdef01".to_string(),
+    })
+}
+
+#[test]
+fn sanitized_env_pr_path_emits_pr_contract_and_nothing_else() {
+    let worktree = tempdir("prvars");
+    let inputs = SanitizedEnvInputs {
+        target: sample_pr_target(),
+        worktree_path: worktree.to_path_buf(),
+        run_id: "RUN01ABCDEFG".to_string(),
+        allowlist: Vec::new(),
+        context_json: r#"{"k":"v"}"#.to_string(),
+    };
+    let env = sanitized_env(&empty_env(), &inputs).expect("sanitized env");
+    let caduceus_names: Vec<String> = env
+        .keys()
+        .map(|k| k.to_str().unwrap().to_string())
+        .filter(|k| k.starts_with("CADUCEUS_"))
+        .collect();
+    let expected: Vec<String> = [
+        "CADUCEUS_CONTEXT_JSON",
+        "CADUCEUS_PR_BASE_SHA",
+        "CADUCEUS_PR_HEAD_SHA",
+        "CADUCEUS_PR_NUMBER",
+        "CADUCEUS_PR_REPO",
+        "CADUCEUS_RESULT_PATH",
+        "CADUCEUS_RUN_ID",
+        "CADUCEUS_WORKTREE_PATH",
+        "CADUCEUS_WORK_TARGET",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    assert_eq!(caduceus_names, expected); // exact set: no ISSUE_*, no BRANCH_NAME
+    assert_eq!(
+        env.get(OsStr::new("CADUCEUS_WORK_TARGET")).unwrap(),
+        OsStr::new("pr")
+    );
+    assert_eq!(
+        env.get(OsStr::new("CADUCEUS_PR_NUMBER")).unwrap(),
+        OsStr::new("9")
+    );
+    assert_eq!(
+        env.get(OsStr::new("CADUCEUS_PR_REPO")).unwrap(),
+        OsStr::new("owner/repo")
+    );
+    assert_eq!(
+        env.get(OsStr::new("CADUCEUS_PR_HEAD_SHA")).unwrap(),
+        OsStr::new("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
+    );
+    assert_eq!(
+        env.get(OsStr::new("CADUCEUS_PR_BASE_SHA")).unwrap(),
+        OsStr::new("cafebabecafebabecafebabecafebabecafebabe")
+    );
+}
+
+#[test]
+fn sanitized_env_issue_path_matches_issue_fixture_exactly() {
+    // Guards AC1: the emitted CADUCEUS_* set equals the historical
+    // issue contract exactly (no WORK_TARGET leak, no PR vars).
+    let worktree = tempdir("issueexact");
+    let inputs = sample_inputs(&worktree);
+    let env = sanitized_env(&empty_env(), &inputs).expect("sanitized env");
+    let caduceus_names: Vec<String> = env
+        .keys()
+        .map(|k| k.to_str().unwrap().to_string())
+        .filter(|k| k.starts_with("CADUCEUS_"))
+        .collect();
+    let expected: Vec<String> = [
+        "CADUCEUS_BRANCH_NAME",
+        "CADUCEUS_CONTEXT_JSON",
+        "CADUCEUS_ISSUE_BODY",
+        "CADUCEUS_ISSUE_LABELS_JSON",
+        "CADUCEUS_ISSUE_NUMBER",
+        "CADUCEUS_ISSUE_REPO",
+        "CADUCEUS_ISSUE_TITLE",
+        "CADUCEUS_RESULT_PATH",
+        "CADUCEUS_RUN_ID",
+        "CADUCEUS_WORKTREE_PATH",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    assert_eq!(caduceus_names, expected);
+}
+
+#[test]
+fn sanitized_env_pr_rejects_empty_or_nul_sha() {
+    let worktree = tempdir("prbad");
+
+    let empty_sha = SanitizedEnvInputs {
+        target: caduceus::executor::WorkTarget::PullRequest(caduceus::review::ReviewTarget {
+            repository: caduceus::review::RepositoryId {
+                owner: "owner".to_string(),
+                repo: "repo".to_string(),
+            },
+            pull_request: 9,
+            head_sha: "".to_string(),
+            base_sha: "cafebabecafebabecafebabecafebabecafebabe".to_string(),
+            base_ref: "main".to_string(),
+            merge_base: "abcdef01abcdef01abcdef01abcdef01abcdef01".to_string(),
+        }),
+        worktree_path: worktree.to_path_buf(),
+        run_id: "RUN01".to_string(),
+        allowlist: Vec::new(),
+        context_json: "{}".to_string(),
+    };
+    let err = sanitized_env(&empty_env(), &empty_sha).expect_err("empty head_sha must be rejected");
+    assert!(format!("{err:?}").contains("head_sha"));
+
+    let nul_sha = SanitizedEnvInputs {
+        target: caduceus::executor::WorkTarget::PullRequest(caduceus::review::ReviewTarget {
+            repository: caduceus::review::RepositoryId {
+                owner: "owner".to_string(),
+                repo: "repo".to_string(),
+            },
+            pull_request: 9,
+            head_sha: "deadbeef\0deadbeef".to_string(),
+            base_sha: "cafebabecafebabecafebabecafebabecafebabe".to_string(),
+            base_ref: "main".to_string(),
+            merge_base: "abcdef01abcdef01abcdef01abcdef01abcdef01".to_string(),
+        }),
+        worktree_path: worktree.to_path_buf(),
+        run_id: "RUN01".to_string(),
+        allowlist: Vec::new(),
+        context_json: "{}".to_string(),
+    };
+    let err = sanitized_env(&empty_env(), &nul_sha).expect_err("NUL head_sha must be rejected");
+    assert!(format!("{err:?}").contains("NUL"));
+}
+
+#[test]
+fn sanitized_env_pr_rejects_zero_pull_request_number() {
+    let worktree = tempdir("przero");
+    let inputs = SanitizedEnvInputs {
+        target: caduceus::executor::WorkTarget::PullRequest(caduceus::review::ReviewTarget {
+            repository: caduceus::review::RepositoryId {
+                owner: "owner".to_string(),
+                repo: "repo".to_string(),
+            },
+            pull_request: 0,
+            head_sha: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef".to_string(),
+            base_sha: "cafebabecafebabecafebabecafebabecafebabe".to_string(),
+            base_ref: "main".to_string(),
+            merge_base: "abcdef01abcdef01abcdef01abcdef01abcdef01".to_string(),
+        }),
+        worktree_path: worktree.to_path_buf(),
+        run_id: "RUN01".to_string(),
+        allowlist: Vec::new(),
+        context_json: "{}".to_string(),
+    };
+    let err = sanitized_env(&empty_env(), &inputs).expect_err("zero PR number must be rejected");
+    assert!(format!("{err:?}").contains("pull_request"));
 }

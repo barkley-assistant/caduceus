@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use caduceus::executor::trusted_host::TrustedHostExecutor;
-use caduceus::executor::{Executor, ExecutorSpec};
+use caduceus::executor::{Executor, ExecutorSpec, IssueWorkTarget, WorkTarget};
 use caduceus::github::issue::IssueKey;
 use caduceus::infra::config::Config;
 
@@ -23,16 +23,18 @@ fn test_cfg() -> Config {
 fn test_spec() -> ExecutorSpec {
     ExecutorSpec {
         self_exe: "/usr/bin/caduceus".into(),
-        issue: issue_key(),
+        target: WorkTarget::Issue(IssueWorkTarget {
+            key: issue_key(),
+            title: "title".to_string(),
+            body: "body".to_string(),
+            labels: Vec::new(),
+            branch_name: "automation/issue-1".to_string(),
+        }),
         worktree: "/tmp/test-worktree".into(),
         run_id: "test-run-1".to_string(),
         context_json: r#"{"x":1}"#.to_string(),
         worker_command: vec!["python3".to_string(), "bridge.py".to_string()],
         cancellation: tokio_util::sync::CancellationToken::new(),
-        issue_title: "title".to_string(),
-        issue_body: "body".to_string(),
-        labels: Vec::new(),
-        branch_name: "automation/issue-1".to_string(),
     }
 }
 
@@ -142,16 +144,18 @@ async fn trusted_host_run_reports_host_result_path() {
 
     let spec = ExecutorSpec {
         self_exe: PathBuf::from(env!("CARGO_BIN_EXE_caduceus")),
-        issue: issue_key(),
+        target: WorkTarget::Issue(IssueWorkTarget {
+            key: issue_key(),
+            title: "title".to_string(),
+            body: "body".to_string(),
+            labels: Vec::new(),
+            branch_name: "automation/issue-1".to_string(),
+        }),
         worktree: worktree.clone(),
         run_id: "test-run-outcome".to_string(),
         context_json: r#"{"x":1}"#.to_string(),
         worker_command: vec!["/bin/true".to_string()],
         cancellation: tokio_util::sync::CancellationToken::new(),
-        issue_title: "title".to_string(),
-        issue_body: "body".to_string(),
-        labels: Vec::new(),
-        branch_name: "automation/issue-1".to_string(),
     };
 
     let executor: Arc<dyn Executor> = Arc::new(TrustedHostExecutor::new(cfg));

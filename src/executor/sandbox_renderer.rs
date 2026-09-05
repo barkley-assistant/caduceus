@@ -218,42 +218,72 @@ pub fn render_with_env_files(
     // back into argv, violating the frozen no-values-in-argv
     // invariant (issue #249; design D4).
     if env_files.is_empty() {
-        // `resolve` guarantees both CADUCEUS_* entries; the fallbacks
-        // are a non-panicking safety net for a spec-construction bug.
+        // `resolve` guarantees the canonical CADUCEUS_* entries; the
+        // fallbacks are a non-panicking safety net for a
+        // spec-construction bug. The emitted list mirrors the
+        // resolved target: a PR-target spec carries
+        // `CADUCEUS_WORK_TARGET=pr` in its environment and renders
+        // only the PR-shaped fallbacks; any other spec renders the
+        // historical issue-shaped fallbacks (DAR §6.1, D5).
+        let pr_mode = spec
+            .environment()
+            .iter()
+            .any(|(k, v)| k == "CADUCEUS_WORK_TARGET" && v == "pr");
         argv.push("-e".to_string());
         argv.push(format!(
             "CADUCEUS_RUN_ID={}",
             env_value(spec, "CADUCEUS_RUN_ID", spec.name().to_string())
         ));
-        argv.push("-e".to_string());
-        argv.push(format!(
-            "CADUCEUS_ISSUE_ID={}",
-            env_value(
-                spec,
-                "CADUCEUS_ISSUE_ID",
-                label_value(spec, "caduceus.issue_id").unwrap_or_default(),
-            )
-        ));
-        // Remaining canonical `CADUCEUS_*` entries, in canonical order.
-        // `resolve` guarantees all of them; the fallbacks are a
-        // non-panicking safety net for a spec-construction bug.
-        let result_path_fallback = format!("{CONTAINER_OUTPUT_PATH}/{WORKER_RESULT_FILE}");
-        for (key, fallback) in [
-            ("CADUCEUS_ISSUE_NUMBER", ""),
-            ("CADUCEUS_ISSUE_REPO", ""),
-            ("CADUCEUS_ISSUE_TITLE", ""),
-            ("CADUCEUS_ISSUE_BODY", ""),
-            ("CADUCEUS_ISSUE_LABELS_JSON", "[]"),
-            ("CADUCEUS_CONTEXT_JSON", "{}"),
-            ("CADUCEUS_BRANCH_NAME", ""),
-            ("CADUCEUS_WORKTREE_PATH", CONTAINER_WORKSPACE_PATH),
-            ("CADUCEUS_RESULT_PATH", result_path_fallback.as_str()),
-        ] {
+        if pr_mode {
+            let result_path_fallback = format!("{CONTAINER_OUTPUT_PATH}/{WORKER_RESULT_FILE}");
+            for (key, fallback) in [
+                ("CADUCEUS_WORK_TARGET", "pr"),
+                ("CADUCEUS_PR_NUMBER", ""),
+                ("CADUCEUS_PR_REPO", ""),
+                ("CADUCEUS_PR_BASE_SHA", ""),
+                ("CADUCEUS_PR_HEAD_SHA", ""),
+                ("CADUCEUS_CONTEXT_JSON", "{}"),
+                ("CADUCEUS_WORKTREE_PATH", CONTAINER_WORKSPACE_PATH),
+                ("CADUCEUS_RESULT_PATH", result_path_fallback.as_str()),
+            ] {
+                argv.push("-e".to_string());
+                argv.push(format!(
+                    "{key}={}",
+                    env_value(spec, key, fallback.to_string())
+                ));
+            }
+        } else {
             argv.push("-e".to_string());
             argv.push(format!(
-                "{key}={}",
-                env_value(spec, key, fallback.to_string())
+                "CADUCEUS_ISSUE_ID={}",
+                env_value(
+                    spec,
+                    "CADUCEUS_ISSUE_ID",
+                    label_value(spec, "caduceus.issue_id").unwrap_or_default(),
+                )
             ));
+            // Remaining canonical `CADUCEUS_*` entries, in canonical
+            // order. `resolve` guarantees all of them; the fallbacks
+            // are a non-panicking safety net for a spec-construction
+            // bug.
+            let result_path_fallback = format!("{CONTAINER_OUTPUT_PATH}/{WORKER_RESULT_FILE}");
+            for (key, fallback) in [
+                ("CADUCEUS_ISSUE_NUMBER", ""),
+                ("CADUCEUS_ISSUE_REPO", ""),
+                ("CADUCEUS_ISSUE_TITLE", ""),
+                ("CADUCEUS_ISSUE_BODY", ""),
+                ("CADUCEUS_ISSUE_LABELS_JSON", "[]"),
+                ("CADUCEUS_CONTEXT_JSON", "{}"),
+                ("CADUCEUS_BRANCH_NAME", ""),
+                ("CADUCEUS_WORKTREE_PATH", CONTAINER_WORKSPACE_PATH),
+                ("CADUCEUS_RESULT_PATH", result_path_fallback.as_str()),
+            ] {
+                argv.push("-e".to_string());
+                argv.push(format!(
+                    "{key}={}",
+                    env_value(spec, key, fallback.to_string())
+                ));
+            }
         }
     }
 

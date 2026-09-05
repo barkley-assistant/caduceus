@@ -39,7 +39,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use caduceus::fixtures::{
-    CANONICAL_CONFIG_KEYS, CANONICAL_WORKER_ENV_VARS, DEFAULT_ALLOWLIST_EXACT_ENV_NAMES,
+    CANONICAL_CONFIG_KEYS, CANONICAL_WORKER_ENV_VARS, CANONICAL_WORKER_ENV_VARS_ISSUE_PATH,
+    CANONICAL_WORKER_ENV_VARS_PR_PATH, DEFAULT_ALLOWLIST_EXACT_ENV_NAMES,
     DEFAULT_ALLOWLIST_PREFIX_ENV_PATTERNS, DENIED_ENV_NAMES, HERMES_FORBIDDEN_MANIFEST_FIELDS,
     HERMES_MANIFEST_FIELDS,
 };
@@ -173,17 +174,31 @@ fn extract_daemon_config_fields(source: &str) -> BTreeSet<String> {
 /// Worker env names emitted by `crate::worker::sanitized_env`. The
 /// daemon's tests assert them directly; this cross-doc test only
 /// requires that the canonical fixture covers the contract.
+///
+/// The extractor is deliberately format-agnostic: rustfmt may render a
+/// vec entry as `("CADUCEUS_NAME", &value),` on one line or split a
+/// `"CADUCEUS_NAME".to_string(),` value across lines, so we scan for
+/// every quoted `CADUCEUS_*` token instead of pinning one layout.
+/// Over-capture is safe (the caller asserts `canonical ⊆ names`); the
+/// only requirement is that every emitted name appears somewhere in
+/// the file as a quoted literal.
 fn extract_daemon_worker_env_names() -> BTreeSet<String> {
     let source = read_repo_file("src/worker/worker_contract.rs");
     let mut names = BTreeSet::new();
     for line in source.lines() {
-        let trimmed = line.trim_start();
-        if let Some(rest) = trimmed.strip_prefix("(\"") {
-            // Handles `(  "CADUCEUS_...", &value),` entries.
-            if let Some((name, _)) = rest.split_once("\",") {
-                if name.starts_with("CADUCEUS_") {
-                    names.insert(name.to_string());
+        let mut rest = line;
+        while let Some(start) = rest.find('"') {
+            rest = &rest[start + 1..];
+            if let Some(end) = rest.find('"') {
+                let token = &rest[..end];
+                if token.starts_with("CADUCEUS_")
+                    && token
+                        .chars()
+                        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+                {
+                    names.insert(token.to_string());
                 }
+                rest = &rest[end + 1..];
             }
         }
     }
@@ -328,6 +343,99 @@ fn bridge_required_env_vars_match_daemon_canonical() {
         required, canonical,
         "worker-bridge.py REQUIRED_ENV_VARS must equal CANONICAL_WORKER_ENV_VARS"
     );
+}
+
+/// The canonical union decomposes exactly into the issue-path set and
+/// the PR-path set — nothing else, nothing missing (DAR §6.1, D6).
+/// The overlap is exactly the four shared run/context/worktree/result
+/// vars; every other name belongs to exactly one path.
+#[test]
+fn canonical_union_is_exactly_issue_path_plus_pr_path() {
+    let union: BTreeSet<&str> = CANONICAL_WORKER_ENV_VARS.iter().copied().collect();
+    let issue: BTreeSet<&str> = CANONICAL_WORKER_ENV_VARS_ISSUE_PATH
+        .iter()
+        .copied()
+        .collect();
+    let pr: BTreeSet<&str> = CANONICAL_WORKER_ENV_VARS_PR_PATH.iter().copied().collect();
+
+    assert_eq!(
+        union,
+        issue.union(&pr).copied().collect::<BTreeSet<&str>>(),
+        "the canonical union must equal issue-path ∪ pr-path"
+    );
+    // The overlap is exactly the four shared vars (D2).
+    let shared = issue.intersection(&pr).copied().collect::<BTreeSet<&str>>();
+    let expected_shared: BTreeSet<&str> = [
+        "CADUCEUS_CONTEXT_JSON",
+        "CADUCEUS_RESULT_PATH",
+        "CADUCEUS_RUN_ID",
+        "CADUCEUS_WORKTREE_PATH",
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(
+        shared, expected_shared,
+        "only the shared run/context/worktree/result vars may appear on both paths"
+    );
+}
+
+/// The issue-path fixture pins the byte-for-byte v0.1 contract exactly
+/// (AC1): the historical 10 names and nothing else — no
+/// `CADUCEUS_WORK_TARGET`, no `CADUCEUS_PR_*`.
+#[test]
+fn issue_path_fixture_is_exactly_the_historical_contract() {
+    let expected: &[&str] = &[
+        "CADUCEUS_BRANCH_NAME",
+        "CADUCEUS_CONTEXT_JSON",
+        "CADUCEUS_ISSUE_BODY",
+        "CADUCEUS_ISSUE_LABELS_JSON",
+        "CADUCEUS_ISSUE_NUMBER",
+        "CADUCEUS_ISSUE_REPO",
+        "CADUCEUS_ISSUE_TITLE",
+        "CADUCEUS_RUN_ID",
+        "CADUCEUS_WORKTREE_PATH",
+        "CADUCEUS_RESULT_PATH",
+    ];
+    assert_eq!(CANONICAL_WORKER_ENV_VARS_ISSUE_PATH, expected);
+    assert_eq!(CANONICAL_WORKER_ENV_VARS_ISSUE_PATH.len(), 10);
+    assert!(
+        !CANONICAL_WORKER_ENV_VARS_ISSUE_PATH.contains(&"CADUCEUS_WORK_TARGET"),
+        "issue-path fixture must not carry the PR mode marker"
+    );
+}
+
+/// No PR-only name appears in the issue-path fixture and no
+/// issue-only name appears in the PR-path fixture (DAR §6.1).
+#[test]
+fn path_fixtures_do_not_cross_contaminate() {
+    let issue: BTreeSet<&str> = CANONICAL_WORKER_ENV_VARS_ISSUE_PATH
+        .iter()
+        .copied()
+        .collect();
+    let pr: BTreeSet<&str> = CANONICAL_WORKER_ENV_VARS_PR_PATH.iter().copied().collect();
+    for pr_only in [
+        "CADUCEUS_WORK_TARGET",
+        "CADUCEUS_PR_NUMBER",
+        "CADUCEUS_PR_REPO",
+    ] {
+        assert!(
+            !issue.contains(pr_only),
+            "issue-path fixture must not contain {pr_only}"
+        );
+    }
+    for issue_only in [
+        "CADUCEUS_ISSUE_NUMBER",
+        "CADUCEUS_ISSUE_TITLE",
+        "CADUCEUS_ISSUE_BODY",
+        "CADUCEUS_ISSUE_REPO",
+        "CADUCEUS_ISSUE_LABELS_JSON",
+        "CADUCEUS_BRANCH_NAME",
+    ] {
+        assert!(
+            !pr.contains(issue_only),
+            "pr-path fixture must not contain {issue_only}"
+        );
+    }
 }
 
 #[test]

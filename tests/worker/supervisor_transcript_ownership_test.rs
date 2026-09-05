@@ -58,7 +58,13 @@ async fn transcript_keeps_worker_output_after_daemon_handshake() {
     let outcome = supervise(
         &find_self_exe(),
         &cfg,
-        &issue_key(),
+        &caduceus::executor::WorkTarget::Issue(caduceus::executor::IssueWorkTarget {
+            key: issue_key(),
+            title: "title".to_string(),
+            body: "body".to_string(),
+            labels: Vec::new(),
+            branch_name: "automation/issue-134".to_string(),
+        }),
         &worktree,
         run_id,
         r#"{}"#,
@@ -68,10 +74,6 @@ async fn transcript_keeps_worker_output_after_daemon_handshake() {
             "echo STDOUT_MARKER_134; echo STDERR_MARKER_134 1>&2; exit 0",
         ]),
         CancellationToken::new(),
-        "title",
-        "body",
-        &[],
-        "automation/issue-134",
     )
     .await
     .expect("supervise ok");

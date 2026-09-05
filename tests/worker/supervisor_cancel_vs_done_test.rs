@@ -56,16 +56,18 @@ async fn clean_exit_reports_status_not_cancelled() {
     let outcome = supervise(
         &find_self_exe(),
         &cfg_for(&dir),
-        &issue_key(),
+        &caduceus::executor::WorkTarget::Issue(caduceus::executor::IssueWorkTarget {
+            key: issue_key(),
+            title: "title".to_string(),
+            body: "body".to_string(),
+            labels: Vec::new(),
+            branch_name: "automation/issue-130".to_string(),
+        }),
         &worktree,
         "RUN_CLEAN_130",
         r#"{}"#,
         &worker_command(&["sh", "-c", "exit 0"]),
         CancellationToken::new(),
-        "title",
-        "body",
-        &[],
-        "automation/issue-130",
     )
     .await
     .expect("supervise ok");
@@ -95,16 +97,18 @@ async fn genuine_cancel_still_reports_cancelled() {
     let outcome = supervise(
         &find_self_exe(),
         &cfg_for(&dir),
-        &issue_key(),
+        &caduceus::executor::WorkTarget::Issue(caduceus::executor::IssueWorkTarget {
+            key: issue_key(),
+            title: "title".to_string(),
+            body: "body".to_string(),
+            labels: Vec::new(),
+            branch_name: "automation/issue-130".to_string(),
+        }),
         &worktree,
         "RUN_CANCEL_130",
         r#"{}"#,
         &worker_command(&["sh", "-c", "sleep 30"]),
         cancellation,
-        "title",
-        "body",
-        &[],
-        "automation/issue-130",
     )
     .await
     .expect("supervise ok");
