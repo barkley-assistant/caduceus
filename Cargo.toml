@@ -734,3 +734,7 @@ path = "tests/runtime/open_no_follow_test.rs"
 [[test]]
 name = "oci_env_live_test"
 path = "tests/integration/oci_env_live_test.rs"
+
+[[test]]
+name = "review_discovery_test"
+path = "tests/daemon/review_discovery_test.rs"

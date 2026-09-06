@@ -245,6 +245,43 @@ impl BareMirror {
         Ok(output.status == Some(0))
     }
 
+    /// Compute the merge base of two SHAs inside the mirror:
+    /// `git merge-base <base_sha> <head_sha>` (issue #312, D11 step 4).
+    /// This is the three-dot diff anchor captured once at admission and
+    /// persisted on `ReviewTarget` (DAR SS2.1-2.2). Both SHAs must
+    /// already be in the mirror's object store (`fetch_sha` first) -
+    /// unrelated histories (no common ancestor) fail as
+    /// [`CaduceusError::Git`].
+    pub async fn merge_base(
+        &self,
+        runner: &GitRunner,
+        base_sha: &str,
+        head_sha: &str,
+    ) -> CaduceusResult<String> {
+        let output = runner
+            .run_args(
+                "mirror-merge-base",
+                [
+                    "-C",
+                    &self.path.to_string_lossy(),
+                    "merge-base",
+                    base_sha,
+                    head_sha,
+                ],
+            )
+            .await?;
+        if output.cancelled {
+            return Err(CaduceusError::Cancelled);
+        }
+        if output.timed_out || output.status != Some(0) {
+            return Err(CaduceusError::Git {
+                operation: "mirror-merge-base",
+                stderr: output.stderr,
+            });
+        }
+        Ok(output.stdout.trim().to_string())
+    }
+
     /// Expose the mirror path.
     pub fn path(&self) -> &Path {
         &self.path
