@@ -21,6 +21,7 @@ use caduceus::review::{
     Severity, Verdict, MAX_FINDING_BODY_BYTES, MAX_FINDING_PATH_BYTES,
     MAX_FINDING_REMEDIATION_BYTES, MAX_FINDING_TITLE_BYTES, REVIEW_SCHEMA_VERSION,
 };
+use caduceus::worker::{parse_review_result_file, MAX_REVIEW_RESULT_FILE_BYTES};
 use serde_json::json;
 
 // -----------------------------------------------------------------------
@@ -264,4 +265,178 @@ fn single_finding_cannot_exceed_comment_budget_alone() {
         + MAX_FINDING_PATH_BYTES
         + MAX_FINDING_REMEDIATION_BYTES;
     assert!(worst < 64 * 1024, "DAR §10.3 invariant broken: {worst}");
+}
+
+// -----------------------------------------------------------------------
+// File ingress (worker_contract::parse_review_result_file) + Worker
+// classification of every rejection (DAR §8)
+// -----------------------------------------------------------------------
+
+use caduceus::orchestration::{classify_error, FailureClass};
+use caduceus::CaduceusError;
+use std::fs;
+use std::path::Path;
+
+#[path = "../fixtures/mod.rs"]
+mod fixtures;
+
+use fixtures::tempdir;
+
+#[test]
+fn ingress_accepts_consistent_pass_document() {
+    let dir = tempdir("rv-ingress-ok");
+    let path = dir.join("worker-result.json");
+    fs::write(
+        &path,
+        doc(&success_result(Some(review(
+            Verdict::Pass,
+            vec![finding(Severity::Warning)],
+        )))),
+    )
+    .unwrap();
+    let result = parse_review_result_file(&path).expect("consistent document accepted");
+    assert_eq!(result.status, ExecutionStatus::Success);
+    assert_eq!(result.review.as_ref().unwrap().verdict, Verdict::Pass);
+}
+
+#[test]
+fn ingress_accepts_failure_status_document() {
+    let dir = tempdir("rv-ingress-failure");
+    let path = dir.join("worker-result.json");
+    fs::write(
+        &path,
+        r#"{"schema_version":1,"status":"failure","review":null}"#,
+    )
+    .unwrap();
+    let result = parse_review_result_file(&path).expect("failure status is a valid document");
+    assert_eq!(result.status, ExecutionStatus::Failure);
+    assert!(result.review.is_none());
+}
+
+#[test]
+fn ingress_missing_file_is_worker_read_error() {
+    let err = parse_review_result_file(Path::new("/nonexistent/worker-result.json"))
+        .expect_err("missing file rejected");
+    assert!(
+        matches!(
+            err,
+            CaduceusError::Worker {
+                context: "read",
+                ..
+            }
+        ),
+        "got: {err:?}"
+    );
+    assert_eq!(classify_error(&err), FailureClass::Worker);
+}
+
+#[test]
+fn ingress_rejects_symlinked_result_file() {
+    let dir = tempdir("rv-ingress-symlink");
+    let real = dir.join("worker-result.json");
+    fs::write(
+        &real,
+        doc(&success_result(Some(review(Verdict::Pass, vec![])))),
+    )
+    .unwrap();
+    let link = dir.join("link.json");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let err = parse_review_result_file(&link).expect_err("symlink rejected (O_NOFOLLOW)");
+    assert!(
+        matches!(
+            err,
+            CaduceusError::Worker {
+                context: "read",
+                ..
+            }
+        ),
+        "got: {err:?}"
+    );
+}
+
+#[test]
+fn ingress_rejects_oversized_result_file() {
+    let dir = tempdir("rv-ingress-oversize");
+    let path = dir.join("worker-result.json");
+    let mut blob = String::new();
+    // Valid JSON shape, but padded past the file cap via the summary.
+    blob.push_str(
+        r#"{"schema_version":1,"status":"success","review":{"verdict":"pass","summary":""#,
+    );
+    blob.push_str(&"x".repeat(MAX_REVIEW_RESULT_FILE_BYTES as usize));
+    blob.push_str(r#"","findings":[]}}"#);
+    fs::write(&path, blob).unwrap();
+    let err = parse_review_result_file(&path).expect_err("oversized file rejected");
+    assert!(
+        matches!(
+            err,
+            CaduceusError::Worker {
+                context: "read",
+                ..
+            }
+        ),
+        "got: {err:?}"
+    );
+    assert!(format!("{err:?}").contains("exceeds cap"), "got: {err:?}");
+}
+
+#[test]
+fn ingress_schema_version_mismatch_is_typed_and_worker_class() {
+    let dir = tempdir("rv-ingress-version");
+    let path = dir.join("worker-result.json");
+    fs::write(
+        &path,
+        r#"{"schema_version":2,"status":"success","review":null}"#,
+    )
+    .unwrap();
+    let err = parse_review_result_file(&path).expect_err("unknown version rejected");
+    assert!(
+        matches!(
+            err,
+            CaduceusError::ReviewSchemaVersion {
+                found: 2,
+                supported: 1
+            }
+        ),
+        "got: {err:?}"
+    );
+    let class = classify_error(&err);
+    assert_eq!(class, FailureClass::Worker);
+    assert!(class.counts_against_retry_budget());
+}
+
+#[test]
+fn ingress_verdict_rejection_is_worker_validate_and_burns_budget() {
+    let dir = tempdir("rv-ingress-verdict");
+    let path = dir.join("worker-result.json");
+    fs::write(
+        &path,
+        doc(&success_result(Some(review(Verdict::Fail, vec![])))),
+    )
+    .unwrap();
+    let err = parse_review_result_file(&path).expect_err("FAIL + zero blocking rejected");
+    assert!(
+        matches!(
+            err,
+            CaduceusError::Worker {
+                context: "validate",
+                ..
+            }
+        ),
+        "got: {err:?}"
+    );
+    assert!(format!("{err:?}").contains("blocking"), "got: {err:?}");
+    let class = classify_error(&err);
+    assert_eq!(class, FailureClass::Worker);
+    assert!(class.counts_against_retry_budget());
+}
+
+#[test]
+fn ingress_malformed_json_is_worker_error() {
+    let dir = tempdir("rv-ingress-malformed");
+    let path = dir.join("worker-result.json");
+    fs::write(&path, "not json").unwrap();
+    let err = parse_review_result_file(&path).expect_err("malformed document rejected");
+    assert!(matches!(err, CaduceusError::Worker { .. }), "got: {err:?}");
+    assert_eq!(classify_error(&err), FailureClass::Worker);
 }

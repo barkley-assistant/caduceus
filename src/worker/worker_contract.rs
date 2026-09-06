@@ -61,7 +61,11 @@
 //! no fallback — the variable is hard-required). The daemon then
 //! [`parse_result_file`]s that file — opening it with
 //! `O_NOFOLLOW`, verifying the descriptor is a regular file, and
-//! reading with a 1 MiB cap before allocating the full document.
+//! reading with a 1 MiB cap before allocating the full document. The
+//! PR review path reads the same file name through
+//! [`parse_review_result_file`], which enforces the review contract
+//! (DAR §8/§10.3) and classifies every rejection as a
+//! worker-attributable execution failure.
 //!
 //! Every string field is validated:
 //!
@@ -125,6 +129,14 @@ pub const WORKER_RESULT_FILE: &str = "worker-result.json";
 
 /// Hard cap on the worker-result file size.
 pub const MAX_RESULT_FILE_BYTES: u64 = 1 << 20; // 1 MiB
+
+/// Hard cap on the review worker-result file size. Sized above the
+/// ~2.9 MiB sum of the decoded per-field caps (100 findings ×
+/// (title 256 + body 16 KiB + path 4096 + remediation 8 KiB) + 64
+/// KiB summary) so every caps-valid ordinary document fits the read;
+/// pathological escape-heavy serialization beyond this is rejected
+/// at the read as an execution failure (DAR §10.3).
+pub const MAX_REVIEW_RESULT_FILE_BYTES: u64 = 4 << 20; // 4 MiB
 
 /// Maximum size of the `summary` field.
 pub const MAX_SUMMARY_BYTES: usize = 64 * 1024;
@@ -585,6 +597,51 @@ pub fn parse_result_file(path: &Path, issue: &IssueKey) -> CaduceusResult<Worker
         stderr: format!("{}: {err}", path.display()),
     })?;
     Ok(result)
+}
+
+/// Parse + validate a review run's `worker-result.json` at *path*
+/// (the #305 review ingress, DAR §6.2/§8/§10.3).
+///
+/// Same read-side invariants as [`parse_result_file`]: `O_NOFOLLOW`
+/// open, regular-file check, size cap (`MAX_REVIEW_RESULT_FILE_BYTES`)
+/// before allocation. The document is then parsed and fully validated
+/// by [`crate::review::parse_review_result`] (strict serde,
+/// `schema_version`, presence, verdict consistency, caps, path/line
+/// semantics).
+///
+/// Error surface — every rejection is an execution failure
+/// (`FailureClass::Worker`, DAR §8):
+/// - read failures (missing, symlink, oversized, not regular) wrap
+///   as `Worker { context: "read" }`;
+/// - a non-UTF-8 document wraps as `Worker { context: "parse" }`;
+/// - malformed JSON, cap violations, and verdict/presence/path/line
+///   rejections wrap as `Worker { context: "validate" }` (the stderr
+///   carries the self-describing domain message);
+/// - an unknown `schema_version` propagates as the typed
+///   [`CaduceusError::ReviewSchemaVersion`] so callers can match it.
+///
+/// A `status: "failure"` document with no `review` is a VALID parse
+/// result — the run did not execute; the retry decision belongs to
+/// the tick (#312). A `verdict: "fail"` review is a SUCCESSFUL
+/// execution and is never encoded as `status: "failure"` (DAR §8).
+pub fn parse_review_result_file(path: &Path) -> CaduceusResult<crate::review::ReviewResult> {
+    let bytes = read_capped_file(path, MAX_REVIEW_RESULT_FILE_BYTES).map_err(|err| {
+        CaduceusError::Worker {
+            context: "read",
+            stderr: format!("{}: {err}", path.display()),
+        }
+    })?;
+    let text = std::str::from_utf8(&bytes).map_err(|err| CaduceusError::Worker {
+        context: "parse",
+        stderr: format!("{}: {err}", path.display()),
+    })?;
+    crate::review::parse_review_result(text).map_err(|err| match err {
+        CaduceusError::ReviewSchemaVersion { .. } => err,
+        other => CaduceusError::Worker {
+            context: "validate",
+            stderr: format!("{}: {other}", path.display()),
+        },
+    })
 }
 
 /// Pure validator: takes an already-parsed [`WorkerResult`] and
