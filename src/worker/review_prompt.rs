@@ -172,7 +172,7 @@ pub enum ReviewPromptOutcome {
 /// exceeds [`MAX_REVIEW_DIFF_BYTES`]; `Err` is reserved for invalid
 /// inputs (empty `head_sha`/`merge_base`).
 pub fn build_review_prompt(input: &ReviewPromptInput<'_>) -> CaduceusResult<ReviewPromptOutcome> {
-    validate_target(&input.target)?;
+    validate_target(input.target)?;
 
     // The diff is budgeted on the fence-escaped text (the bytes that
     // actually land in the prompt) and is never truncated.

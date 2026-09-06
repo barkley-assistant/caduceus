@@ -157,10 +157,8 @@ pub async fn probe_runtime_facts_with_daemon_id(
     // (`<repo_storage_root>/worktrees/review`, single source of truth
     // shared with `repo::review_worktree`); issue runs keep the
     // workdir_base rule and carry no review root.
-    let review_worktree_root = if matches!(
-        spec.target,
-        crate::executor::WorkTarget::PullRequest(_)
-    ) {
+    let review_worktree_root = if matches!(spec.target, crate::executor::WorkTarget::PullRequest(_))
+    {
         Some(crate::repo::review_worktree::review_worktrees_root(
             &cfg.repo_storage_root,
         ))
