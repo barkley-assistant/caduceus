@@ -136,9 +136,25 @@ mod harness {
             sql.push_str("CREATE TABLE oci_runs (run_id TEXT PRIMARY KEY, container_id TEXT, state TEXT NOT NULL, engine TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, daemon_id TEXT NOT NULL, issue_id TEXT NOT NULL, worker_command_sha256 TEXT NOT NULL);");
         }
         // The review-era tables land at v8; a v7-era store (the real
-        // pre-#295 shape) must NOT carry them.
+        // pre-#295 shape) must NOT carry them. #306 adds the blocked
+        // columns to `review_queue_entries` at v9 — the v8 shape must
+        // NOT carry them or the v8→v9 ALTER would fail with a
+        // duplicate-column error.
         if version >= 8 {
-            sql.push_str("CREATE TABLE review_queue_entries (review_key TEXT PRIMARY KEY, owner TEXT NOT NULL, repo TEXT NOT NULL, pull_request INTEGER NOT NULL, head_sha TEXT NOT NULL, base_sha TEXT NOT NULL, base_ref TEXT NOT NULL, merge_base TEXT NOT NULL, phase TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, last_run_id TEXT, next_attempt_at TEXT, queued_at TEXT NOT NULL, updated_at TEXT NOT NULL, review_generation INTEGER NOT NULL DEFAULT 1);");
+            let blocked = if version >= 9 {
+                ", blocked_source TEXT, blocked_recovery_hint TEXT"
+            } else {
+                ""
+            };
+            sql.push_str(&format!(
+                "CREATE TABLE review_queue_entries (review_key TEXT PRIMARY KEY, \
+                 owner TEXT NOT NULL, repo TEXT NOT NULL, pull_request INTEGER NOT NULL, \
+                 head_sha TEXT NOT NULL, base_sha TEXT NOT NULL, base_ref TEXT NOT NULL, \
+                 merge_base TEXT NOT NULL, phase TEXT NOT NULL, \
+                 attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, last_run_id TEXT, \
+                 next_attempt_at TEXT, queued_at TEXT NOT NULL, updated_at TEXT NOT NULL, \
+                 review_generation INTEGER NOT NULL DEFAULT 1{blocked});"
+            ));
             sql.push_str("CREATE TABLE review_state (owner TEXT NOT NULL, repo TEXT NOT NULL, pull_request INTEGER NOT NULL, last_reviewed_head_sha TEXT, last_verdict TEXT, last_reviewed_at TEXT, sticky_comment_id INTEGER, last_run_id TEXT, review_generation INTEGER NOT NULL DEFAULT 1, publication_state TEXT NOT NULL DEFAULT 'pending', publication_attempt_count INTEGER NOT NULL DEFAULT 0, next_publish_at TEXT, last_publish_error TEXT, PRIMARY KEY (owner, repo, pull_request));");
             sql.push_str("CREATE TABLE review_history (review_run_id TEXT PRIMARY KEY, owner TEXT NOT NULL, repo TEXT NOT NULL, pull_request INTEGER NOT NULL, head_sha TEXT NOT NULL, review_generation INTEGER NOT NULL, completed_at TEXT NOT NULL, result_json TEXT NOT NULL);");
         }
@@ -521,8 +537,58 @@ fn no_live_version_flip() {
     // #295 flipped the store envelope atomically with the review
     // structures: SQLite v8, JSON v2. This pin keeps the two bumps
     // from drifting apart (or reverting) independently.
-    assert_eq!(SCHEMA_VERSION, 8);
+    // #306 bumps SQLite to v9 (review-queue blocked columns) without
+    // a JSON envelope bump — the fields are serde(default) additive.
+    assert_eq!(SCHEMA_VERSION, 9);
     assert_eq!(QUEUE_FILE_VERSION, 2);
+}
+
+#[test]
+fn v8_store_migrates_to_v9_with_blocked_columns() {
+    let dir = harness::temp_dir("v8-to-v9");
+    let path = harness::sqlite_store_at_version(&dir, 8);
+    let conn = open(&path).expect("open v8 store");
+    drop(conn);
+    harness::assert_sqlite_version(&path, SCHEMA_VERSION);
+    let conn = Connection::open(&path).expect("open raw for column check");
+    let mut cols: Vec<String> = conn
+        .prepare("PRAGMA table_info(review_queue_entries)")
+        .expect("prepare pragma")
+        .query_map([], |r| r.get::<_, String>(1))
+        .expect("query pragma")
+        .filter_map(|c| c.ok())
+        .collect();
+    drop(conn);
+    cols.sort();
+    assert!(cols.contains(&"blocked_source".to_string()));
+    assert!(cols.contains(&"blocked_recovery_hint".to_string()));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn v7_store_opens_through_v9_despite_late_review_tables() {
+    // Regression for the chain-ordering trap: `open()` runs the
+    // migration chain BEFORE `apply_schema` creates the review
+    // tables, so an m_v8_v9 step that unconditionally ALTERs
+    // `review_queue_entries` would fail with "no such table" on
+    // every real v7→current upgrade. The step must be conditional.
+    let dir = harness::temp_dir("v7-through-v9");
+    let path = harness::sqlite_store_at_version(&dir, 7);
+    let conn = open(&path).expect("v7 store must open through v9");
+    drop(conn);
+    harness::assert_sqlite_version(&path, SCHEMA_VERSION);
+    let conn = Connection::open(&path).expect("open raw for table check");
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' \
+             AND name='review_queue_entries'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("count review_queue_entries");
+    drop(conn);
+    assert_eq!(count, 1, "review tables created by apply_schema");
+    let _ = fs::remove_dir_all(&dir);
 }
 
 // -----------------------------------------------------------------------

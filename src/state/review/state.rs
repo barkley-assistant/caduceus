@@ -335,6 +335,8 @@ impl ReviewStore {
                     queued_at: now,
                     updated_at: now,
                     review_generation: generation,
+                    blocked_source: None,
+                    blocked_recovery_hint: None,
                 },
             );
             store.persist_queue(conn, &queue)?;
@@ -502,6 +504,36 @@ impl ReviewStore {
     /// reason is recorded on it (overwriting any prior `last_error`).
     pub fn skip_review(&self, claim: ReviewClaimToken, reason: &str) -> CaduceusResult<()> {
         self.terminal_review(claim, ReviewPhase::Skipped, Some(reason))
+    }
+
+    /// Terminal NeedsAttention transition (mutation violation, DAR
+    /// §8.1): phase → `NeedsAttention` with block metadata;
+    /// `attempts` is NOT incremented (retry cannot fix a contract
+    /// violation, AC4); the claim is released. The caller
+    /// (`finish_mutation_violation` / #339) must NOT tear down the
+    /// review worktree on this route — the hint points at it as
+    /// forensic evidence.
+    pub fn route_review_to_needs_attention(
+        &self,
+        claim: ReviewClaimToken,
+        error: &str,
+        source: &str,
+        recovery_hint: &str,
+    ) -> CaduceusResult<()> {
+        self.with_exclusive(|store, conn| {
+            let mut queue = store.load_queue(conn)?;
+            let entry = review_entry_for_claim(&mut queue, &claim)?;
+            entry.phase = ReviewPhase::NeedsAttention;
+            entry.last_error = Some(error.to_string());
+            entry.blocked_source = Some(source.to_string());
+            entry.blocked_recovery_hint = Some(recovery_hint.to_string());
+            entry.last_run_id = None;
+            entry.next_attempt_at = None;
+            entry.updated_at = Utc::now();
+            store.persist_queue(conn, &queue)?;
+            unlink_review_claim_best_effort(&store.claims_dir, &claim);
+            Ok(())
+        })
     }
 
     fn terminal_review(
@@ -1002,7 +1034,8 @@ fn load_queue_sqlite(
         .prepare(
             "SELECT review_key, owner, repo, pull_request, head_sha, base_sha, base_ref,
                     merge_base, phase, attempts, last_error, last_run_id, next_attempt_at,
-                    queued_at, updated_at, review_generation
+                    queued_at, updated_at, review_generation, blocked_source,
+                    blocked_recovery_hint
              FROM review_queue_entries",
         )
         .map_err(|e| {
@@ -1030,6 +1063,8 @@ fn load_queue_sqlite(
                 row.get::<_, String>(13)?,
                 row.get::<_, String>(14)?,
                 row.get::<_, i64>(15)?,
+                row.get::<_, Option<String>>(16)?,
+                row.get::<_, Option<String>>(17)?,
             ))
         })
         .map_err(|e| corrupt(&db_path, format!("cannot read review_queue_entries: {e}")))?;
@@ -1053,6 +1088,8 @@ fn load_queue_sqlite(
             queued_at,
             updated_at,
             review_generation,
+            blocked_source,
+            blocked_recovery_hint,
         ) = row.map_err(|e| corrupt(&db_path, format!("cannot decode review queue row: {e}")))?;
         let pull_request =
             parse_pr_u64(pull_request).map_err(|e| corrupt(&db_path, e.to_string()))?;
@@ -1079,6 +1116,8 @@ fn load_queue_sqlite(
             queued_at: parse_timestamp(queued_at, "queued_at", &db_path)?,
             updated_at: parse_timestamp(updated_at, "updated_at", &db_path)?,
             review_generation: parse_generation(review_generation),
+            blocked_source,
+            blocked_recovery_hint,
         };
         crate::review::validate_review_target(&entry.target)
             .map_err(|e| corrupt(&db_path, format!("review queue row invalid: {e}")))?;
@@ -1110,8 +1149,9 @@ fn persist_queue_sqlite(
             "INSERT INTO review_queue_entries
              (review_key, owner, repo, pull_request, head_sha, base_sha, base_ref,
               merge_base, phase, attempts, last_error, last_run_id, next_attempt_at,
-              queued_at, updated_at, review_generation)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+              queued_at, updated_at, review_generation, blocked_source,
+              blocked_recovery_hint)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
             params![
                 key,
                 entry.target.repository.owner.to_lowercase(),
@@ -1129,6 +1169,8 @@ fn persist_queue_sqlite(
                 entry.queued_at.to_rfc3339(),
                 entry.updated_at.to_rfc3339(),
                 entry.review_generation as i64,
+                entry.blocked_source,
+                entry.blocked_recovery_hint,
             ],
         )
         .map_err(|e| corrupt_store(format!("cannot persist review queue entry {key}: {e}")))?;

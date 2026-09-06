@@ -79,6 +79,15 @@ pub struct ReviewQueueEntry {
     /// must equal the `ReviewState` row's `review_generation`
     /// (DAR §9.4).
     pub review_generation: u64,
+    /// Stable source tag for a terminal block (e.g.
+    /// `review/mutation_violation`). Set only when the daemon routes a
+    /// refuse-to-operate condition to `NeedsAttention`.
+    #[serde(default)]
+    pub blocked_source: Option<String>,
+    /// Human-readable recovery hint for a terminal block (points at the
+    /// archived review worktree, DAR §8.1).
+    #[serde(default)]
+    pub blocked_recovery_hint: Option<String>,
 }
 
 /// Versioned review queue file (mirror of the issue queue's

@@ -44,6 +44,19 @@ fn terminal_for_claim_mismatch() {
 }
 
 #[test]
+fn terminal_for_review_source_mutation() {
+    let err = CaduceusError::ReviewSourceMutation {
+        worktree_path: std::path::PathBuf::from("/tmp/wt"),
+        detail: "tracked files modified:\n M src/lib.rs".to_string(),
+    };
+    let class = classify_error(&err);
+    assert_eq!(class, FailureClass::Terminal);
+    assert!(class.is_terminal());
+    // AC4: a contract violation must never burn the retry budget.
+    assert!(!class.counts_against_retry_budget());
+}
+
+#[test]
 fn infrastructure_still_infrastructure() {
     // Unrelated Worktree/Queue contexts remain Infrastructure.
     let worktree_other = CaduceusError::Worktree {

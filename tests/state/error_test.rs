@@ -307,6 +307,24 @@ fn scrub_helper_redacts_multiple_assignments_in_one_line() {
 }
 
 #[test]
+fn review_source_mutation_display_and_debug_render_fields() {
+    let err = CaduceusError::ReviewSourceMutation {
+        worktree_path: PathBuf::from("/tmp/review-wt"),
+        detail: "tracked files modified:\n M src/lib.rs".to_string(),
+    };
+    let display = format!("{err}");
+    assert!(
+        display.contains("review mutation violation"),
+        "got: {display}"
+    );
+    assert!(display.contains("/tmp/review-wt"), "got: {display}");
+    assert!(display.contains("src/lib.rs"), "got: {display}");
+    let debug = format!("{err:?}");
+    assert!(debug.contains("ReviewSourceMutation"), "got: {debug}");
+    assert!(debug.contains("/tmp/review-wt"), "got: {debug}");
+}
+
+#[test]
 fn symlinked_storage_root_display_contains_path() {
     let err = CaduceusError::SymlinkedStorageRoot {
         path: PathBuf::from("/tmp/linked-repos"),

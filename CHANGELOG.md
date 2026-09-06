@@ -27,6 +27,12 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
 
 ### Added
 
+- **Review mutation-violation enforcement.** A review worker that
+  modifies tracked files or daemon control files (`worker-prompt.md`,
+  `review-worktree.json`) now fails terminally: the review entry routes
+  to `NeedsAttention` with a recovery hint pointing at the preserved
+  worktree, the retry budget is not burned, and a
+  `review_mutation_violation` event is emitted. Closes #306.
 - **ReviewResult verdict-consistency validator and review result
   ingress.** The review worker's result document is now fully
   validated: `review` present iff `status` is `success`; `verdict`

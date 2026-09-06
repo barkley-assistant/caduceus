@@ -165,6 +165,19 @@ pub enum CaduceusError {
     )]
     ReviewSchemaVersion { found: u32, supported: u32 },
 
+    /// A review worker violated the read-only review contract (DAR §6.4,
+    /// §10.1, §10.2): tracked files were modified in the review
+    /// worktree, or a daemon control file (`worker-prompt.md`,
+    /// `review-worktree.json`) failed its pre/post integrity check.
+    /// Terminal (DAR §8.1): retry cannot fix a contract violation —
+    /// the entry routes to NeedsAttention with the archived worktree
+    /// path as the recovery hint, and the retry budget is not burned.
+    #[error("review mutation violation at {worktree_path}: {detail}")]
+    ReviewSourceMutation {
+        worktree_path: PathBuf,
+        detail: String,
+    },
+
     /// Reconciliation of an external side effect failed: the
     /// remote marker disagrees with the local checkpoint. The
     /// operator must inspect the run and resolve the conflict.
@@ -539,6 +552,14 @@ impl fmt::Debug for CaduceusError {
             CaduceusError::ReviewSchemaVersion { found, supported } => format!(
                 "ReviewSchemaVersion {{ found: {}, supported: {} }}",
                 found, supported
+            ),
+            CaduceusError::ReviewSourceMutation {
+                worktree_path,
+                detail,
+            } => format!(
+                "ReviewSourceMutation {{ worktree_path: {:?}, detail: {} }}",
+                worktree_path,
+                scrub(detail)
             ),
             CaduceusError::ReconciliationFailed { stage, details } => format!(
                 "ReconciliationFailed {{ stage: {:?}, details: {} }}",

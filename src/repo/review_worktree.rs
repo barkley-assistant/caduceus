@@ -41,6 +41,11 @@ use super::worktree::validate_run_id;
 /// Schema version of the review-worktree metadata sidecar.
 pub const REVIEW_WORKTREE_SCHEMA_VERSION: u32 = 1;
 
+/// Filename of the daemon-owned review-worktree metadata sidecar,
+/// written into the worktree root at materialisation. Daemon control
+/// file (DAR §10.2): the review integrity check digests it pre/post.
+pub const REVIEW_WORKTREE_METADATA_FILENAME: &str = "review-worktree.json";
+
 /// A disposable review worktree: detached HEAD at the exact PR head
 /// SHA, created against the daemon-owned bare mirror. Non-pushable by
 /// construction (no branch ref exists to push; the create flow
@@ -182,7 +187,7 @@ impl ReviewWorktree {
         }
 
         let created_at = Utc::now();
-        let metadata_path = worktree_path.join("review-worktree.json");
+        let metadata_path = worktree_path.join(REVIEW_WORKTREE_METADATA_FILENAME);
         let handle = Self {
             mirror: mirror.clone(),
             run_id: run_id.to_string(),

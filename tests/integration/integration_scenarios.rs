@@ -981,7 +981,10 @@ async fn test_scenario_10_schema_v7_idempotent() {
         v_after_open, SCHEMA_VERSION,
         "fresh DB must be at SCHEMA_VERSION"
     );
-    assert_eq!(v_after_open, 8, "v8 is the canonical current schema");
+    assert_eq!(
+        v_after_open, SCHEMA_VERSION,
+        "v9 is the canonical current schema"
+    );
 
     // Second open: idempotent — no migration, schema_version
     // table is unchanged, oci_runs table still exists.
@@ -999,8 +1002,11 @@ async fn test_scenario_10_schema_v7_idempotent() {
         )
         .expect("query oci_runs");
     drop(conn2);
-    assert_eq!(v_again, 8, "second open must remain v8 (idempotent)");
-    assert_eq!(oci_runs_count, 1, "oci_runs table must exist at v8");
+    assert_eq!(
+        v_again, SCHEMA_VERSION,
+        "second open must remain at the current schema (idempotent)"
+    );
+    assert_eq!(oci_runs_count, 1, "oci_runs table must exist");
 
     let observed = serde_json::json!({
         "schema_version_after_open": v_after_open,

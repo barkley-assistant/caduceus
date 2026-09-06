@@ -276,6 +276,10 @@ name = "worktree_review_test"
 path = "tests/repo/worktree_review_test.rs"
 
 [[test]]
+name = "review_integrity_test"
+path = "tests/repo/review_integrity_test.rs"
+
+[[test]]
 name = "worktree_remove_test"
 path = "tests/repo/worktree_remove_test.rs"
 

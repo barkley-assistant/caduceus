@@ -234,6 +234,12 @@ pub fn classify_error(err: &CaduceusError) -> FailureClass {
         // document did not execute — worker-attributable (DAR §8; the
         // wire into ExecutionStatus is #305's).
         CaduceusError::ReviewSchemaVersion { .. } => FailureClass::Worker,
+        // Review worker mutated tracked files or a daemon control file
+        // (DAR §10.1/§10.2). Terminal (DAR §8.1): retry cannot fix a
+        // contract violation; the entry routes to NeedsAttention with
+        // the archived worktree as the recovery hint. Never counts
+        // against the retry budget.
+        CaduceusError::ReviewSourceMutation { .. } => FailureClass::Terminal,
 
         // IO and JSON errors during state mutation are
         // infrastructure.
