@@ -77,7 +77,20 @@ use crate::infra::error::{store_version_guidance, CaduceusError, CaduceusResult}
 ///   in-place accept-and-upgrade of v1 files) plus three new v1-born
 ///   review sidecar files (`review_queue.json`, `review_state.json`,
 ///   `review_history.json`); see `crate::state::review`.
-pub const SCHEMA_VERSION: i64 = 8;
+///
+/// ## v9
+///
+/// - `review_queue_entries` gains `blocked_source` and
+///   `blocked_recovery_hint` (#306): Terminal-block metadata for
+///   mutation violations, mirroring the issue queue's v5→v6 shape.
+///   The v8→v9 step is CONDITIONAL: a v7 store reaches the step
+///   before `apply_schema` has created the review tables (the chain
+///   runs first, `open()` calls `apply_schema` afterwards), so the
+///   step creates the table in its v9 shape when absent and ALTERs
+///   only when it exists without the columns. The JSON counterpart
+///   needs no envelope bump: the fields are additive
+///   `#[serde(default)]` on the v1-born `review_queue.json` entries.
+pub const SCHEMA_VERSION: i64 = 9;
 
 /// The last schema version that is deliberately rejected instead of
 /// migrated. Keeping this explicit prevents a future schema bump from
@@ -187,7 +200,9 @@ CREATE TABLE IF NOT EXISTS review_queue_entries (
     next_attempt_at TEXT,
     queued_at    TEXT NOT NULL,
     updated_at   TEXT NOT NULL,
-    review_generation INTEGER NOT NULL DEFAULT 1
+    review_generation INTEGER NOT NULL DEFAULT 1,
+    blocked_source TEXT,
+    blocked_recovery_hint TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_review_queue_repo ON review_queue_entries(owner, repo, pull_request);
 CREATE INDEX IF NOT EXISTS idx_review_queue_phase ON review_queue_entries(phase);
@@ -455,6 +470,12 @@ const SQLITE_MIGRATIONS: &[Migration] = &[
         label: "review-era structures",
         apply: m_v7_v8,
     },
+    Migration {
+        from: 8,
+        to: 9,
+        label: "review_queue_entries blocked columns",
+        apply: m_v8_v9,
+    },
 ];
 
 /// Validate the registry's chain invariants (D1/D4): steps are strictly
@@ -621,6 +642,66 @@ fn m_v7_v8(tx: &Transaction) -> CaduceusResult<()> {
     // `SCHEMA_SQL`. No ALTER TABLE / data statements are needed for
     // v7→v8.
     let _ = tx;
+    Ok(())
+}
+
+/// Migrate from schema v8 to v9 by adding `blocked_source` and
+/// `blocked_recovery_hint` to `review_queue_entries` (#306; the
+/// `m_v5_v6` precedent). CONDITIONAL: a v7 store reaches this step
+/// BEFORE `apply_schema` has created the review tables (`open()` runs
+/// the chain first and calls `apply_schema` afterwards), so the table
+/// may not exist yet — in that case create it in its v9 shape here
+/// (idempotent `IF NOT EXISTS`); `apply_schema` no-ops on it.
+fn m_v8_v9(tx: &Transaction) -> CaduceusResult<()> {
+    let table_exists: bool = tx
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table'
+             AND name='review_queue_entries'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|n| n > 0)
+        .map_err(|e| CaduceusError::Other(format!("v8→v9 probe: {e}")))?;
+    if !table_exists {
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS review_queue_entries (
+                review_key   TEXT PRIMARY KEY,
+                owner        TEXT NOT NULL,
+                repo         TEXT NOT NULL,
+                pull_request INTEGER NOT NULL,
+                head_sha     TEXT NOT NULL,
+                base_sha     TEXT NOT NULL,
+                base_ref     TEXT NOT NULL,
+                merge_base   TEXT NOT NULL,
+                phase        TEXT NOT NULL,
+                attempts     INTEGER NOT NULL DEFAULT 0,
+                last_error   TEXT,
+                last_run_id  TEXT,
+                next_attempt_at TEXT,
+                queued_at    TEXT NOT NULL,
+                updated_at   TEXT NOT NULL,
+                review_generation INTEGER NOT NULL DEFAULT 1,
+                blocked_source TEXT,
+                blocked_recovery_hint TEXT
+            );",
+        )
+        .map_err(|e| CaduceusError::Other(format!("v8→v9 create review_queue_entries: {e}")))?;
+        return Ok(());
+    }
+    let has_blocked: bool = tx
+        .prepare("PRAGMA table_info(review_queue_entries)")
+        .map_err(|e| CaduceusError::Other(format!("v8→v9 pragma: {e}")))?
+        .query_map([], |r| r.get::<_, String>(1))
+        .map_err(|e| CaduceusError::Other(format!("v8→v9 pragma query: {e}")))?
+        .filter_map(|c| c.ok())
+        .any(|col| col == "blocked_recovery_hint");
+    if !has_blocked {
+        tx.execute_batch(
+            "ALTER TABLE review_queue_entries ADD COLUMN blocked_source TEXT;
+             ALTER TABLE review_queue_entries ADD COLUMN blocked_recovery_hint TEXT;",
+        )
+        .map_err(|e| CaduceusError::Other(format!("v8→v9 ALTER review_queue_entries: {e}")))?;
+    }
     Ok(())
 }
 

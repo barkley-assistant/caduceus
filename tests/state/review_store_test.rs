@@ -114,6 +114,8 @@ fn review_queue_round_trips_strict() {
             queued_at: Utc.with_ymd_and_hms(2026, 9, 5, 12, 0, 0).unwrap(),
             updated_at: Utc.with_ymd_and_hms(2026, 9, 5, 12, 0, 0).unwrap(),
             review_generation: 1,
+            blocked_source: None,
+            blocked_recovery_hint: None,
         },
     );
     let state = ReviewQueueState {
@@ -465,6 +467,96 @@ fn json_skip_review_records_reason() {
     assert_eq!(entry.phase, ReviewPhase::Skipped);
     assert_eq!(entry.last_error.as_deref(), Some("not needed"));
     let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn needs_attention_blocked_fields_round_trip_both_backends() {
+    for open_store in [
+        |dir: &std::path::Path| ReviewStore::open(dir).unwrap(),
+        |dir: &std::path::Path| ReviewStore::open_sqlite(dir).unwrap(),
+    ] {
+        let dir = tempdir("rv-blocked-rt");
+        let store = open_store(&dir);
+        store.enqueue_review(&sample_target()).unwrap();
+        let now = Utc::now();
+        let claimed = store
+            .acquire_next_review("run-na-1", 4242, now)
+            .unwrap()
+            .expect("claim");
+        store
+            .route_review_to_needs_attention(
+                claimed.claim,
+                "review mutation violation",
+                "review/mutation_violation",
+                "inspect the archived worktree at /tmp/wt",
+            )
+            .unwrap();
+        let snap = store.review_queue_snapshot().unwrap();
+        let entry = snap
+            .entries
+            .get(&review_queue_key(&sample_target()))
+            .unwrap();
+        assert_eq!(entry.phase, ReviewPhase::NeedsAttention);
+        assert_eq!(
+            entry.blocked_recovery_hint.as_deref(),
+            Some("inspect the archived worktree at /tmp/wt")
+        );
+        assert_eq!(
+            entry.blocked_source.as_deref(),
+            Some("review/mutation_violation")
+        );
+        assert_eq!(
+            entry.last_error.as_deref(),
+            Some("review mutation violation")
+        );
+        // AC4: terminal routing never touches the attempt counter.
+        assert_eq!(entry.attempts, 0);
+        assert!(entry.last_run_id.is_none());
+        assert!(entry.next_attempt_at.is_none());
+        // Claim released: nothing is re-acquirable.
+        assert!(store
+            .acquire_next_review("run-na-2", 4243, now)
+            .unwrap()
+            .is_none());
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+#[test]
+fn v1_review_queue_json_without_blocked_fields_still_parses() {
+    // The JSON envelope stays v1: an entry serialized WITHOUT the
+    // blocked fields (a #295-era file) must still parse — the fields
+    // are #[serde(default)] additive (issue-queue precedent).
+    let target = sample_target();
+    let entry_json = serde_json::json!({
+        "target": {
+            "repository": {"owner": OWNER, "repo": REPO},
+            "pull_request": PR,
+            "head_sha": SHA_A,
+            "base_sha": SHA_B,
+            "base_ref": "main",
+            "merge_base": "cccccccccccccccccccccccccccccccccccccccc",
+        },
+        "phase": "queued",
+        "attempts": 0,
+        "last_error": null,
+        "last_run_id": null,
+        "next_attempt_at": null,
+        "queued_at": "2026-09-05T12:00:00Z",
+        "updated_at": "2026-09-05T12:00:00Z",
+        "review_generation": 1,
+    });
+    let text = format!(
+        r#"{{"version":1,"entries":{{"{key}":{entry_json}}}}}"#,
+        key = review_queue_key(&target),
+    );
+    let parsed = parse_review_queue_state(&text).expect("v1 without blocked fields parses");
+    let entry = parsed
+        .entries
+        .get(&review_queue_key(&target))
+        .expect("entry present");
+    assert_eq!(entry.blocked_source, None);
+    assert_eq!(entry.blocked_recovery_hint, None);
 }
 
 #[test]
@@ -863,7 +955,11 @@ fn sqlite_unknown_version_rejected_and_v7_migrates() {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 8, "v7 migrated to v8");
+        assert_eq!(
+            version,
+            caduceus::store::SCHEMA_VERSION,
+            "v7 migrated to current"
+        );
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM queue_entries", [], |r| r.get(0))
             .unwrap();

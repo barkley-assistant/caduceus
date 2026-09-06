@@ -93,7 +93,7 @@ fn pre_295_sqlite_v7_opens_and_migrates_to_v8() {
         drop(conn);
     }
 
-    // A plain `open` runs the chain: v7 → v8 with the review tables.
+    // A plain `open` runs the chain: v7 → v8 → v9 with the review tables.
     let conn = open(&db_path).expect("open v7 store");
     drop(conn);
 
@@ -101,7 +101,7 @@ fn pre_295_sqlite_v7_opens_and_migrates_to_v8() {
     let version: i64 = conn
         .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 8);
+    assert_eq!(version, SCHEMA_VERSION);
     for table in ["review_queue_entries", "review_state", "review_history"] {
         let count: i64 = conn
             .query_row(
@@ -145,7 +145,7 @@ fn pre_295_binary_rejection_is_structural() {
     }
 
     // SQLite: same shape — a version-99 db hits the same gate a
-    // pre-#295 binary (SCHEMA_VERSION = 7) would hit on a v8 db.
+    // pre-#295 binary (SCHEMA_VERSION = 7) would hit on a current db.
     let dir = temp_dir("sqlite-future");
     let db_path = dir.join("state.db");
     {
@@ -167,7 +167,7 @@ fn pre_295_binary_rejection_is_structural() {
         } => {
             assert_eq!(backend, "sqlite");
             assert_eq!(found, 99);
-            assert_eq!(supported, 8);
+            assert_eq!(supported, SCHEMA_VERSION);
         }
         other => panic!("expected StoreVersionUnsupported; got: {other:?}"),
     }
@@ -176,12 +176,13 @@ fn pre_295_binary_rejection_is_structural() {
 
 #[test]
 fn v8_is_exactly_the_review_schema() {
-    // "v8 == implemented schema": a fresh v8 store contains exactly
-    // the pre-change table set PLUS the three review tables (and no
-    // other additions).
+    // "v8 == implemented schema": a fresh current store contains
+    // exactly the pre-#295 table set PLUS the three review tables (and
+    // no other additions). #306 (v9) only adds COLUMNS to
+    // review_queue_entries, so the table set is unchanged.
     let dir = temp_dir("v8-exact");
     let db_path = dir.join("state.db");
-    let conn = open(&db_path).expect("open fresh v8 store");
+    let conn = open(&db_path).expect("open fresh review-schema store");
     drop(conn);
 
     let conn = Connection::open(&db_path).unwrap();
@@ -214,16 +215,27 @@ fn v8_is_exactly_the_review_schema() {
     .map(|s| s.to_string())
     .collect();
     expected.sort();
-    assert_eq!(tables, expected, "v8 adds exactly the three review tables");
+    assert_eq!(
+        tables, expected,
+        "the review schema adds exactly the three review tables"
+    );
     let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
-fn registry_last_step_is_the_review_activation() {
+fn registry_last_step_reaches_current_and_review_activation_exists() {
     let chain = sqlite_migration_chain();
+    // The v7→v8 review activation step stays in the registry.
+    assert!(
+        chain
+            .iter()
+            .any(|&(from, to, label)| from == 7 && to == 8 && label == "review-era structures"),
+        "the v7→v8 review-era step (#295) must exist in the registry"
+    );
+    // The chain's last step reaches SCHEMA_VERSION (#306: 8→9).
     let (last_from, last_to, last_label) = *chain.last().unwrap();
-    assert_eq!(last_from, 7);
-    assert_eq!(last_to, 8);
-    assert_eq!(last_label, "review-era structures");
+    assert_eq!(last_from, 8);
+    assert_eq!(last_to, 9);
+    assert_eq!(last_label, "review_queue_entries blocked columns");
     assert_eq!(last_to, SCHEMA_VERSION);
 }
