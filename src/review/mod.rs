@@ -23,9 +23,7 @@
 //! no helper in this module may format a `..`/`...` range string, and
 //! `base_sha` is context, never a diff endpoint.
 //!
-//! Out of scope here (later issues): persistence (#295), migrations
-//! (#293), the full result validator — verdict/severity consistency,
-//! status/review presence, line/path semantics (#305) — executor
+//! Out of scope here (later issues): migrations (#293), executor
 //! targets (#346), CLI (#318).
 
 use chrono::{DateTime, Utc};
@@ -337,9 +335,9 @@ fn optional_string(
 /// Parse and validate a `ReviewResult` document (the v1 parser).
 ///
 /// Strict at every layer: unknown fields rejected by serde, schema
-/// version must equal [`REVIEW_SCHEMA_VERSION`], and all worker-facing
-/// caps below are enforced. Verdict/severity consistency and the
-/// status↔review presence rule are #305's validator, not this parse.
+/// version must equal [`REVIEW_SCHEMA_VERSION`], and the full
+/// validation — status↔review presence, verdict consistency, caps,
+/// path/line semantics — is enforced here (DAR §8, §10.3).
 pub fn parse_review_result(json: &str) -> CaduceusResult<ReviewResult> {
     let result: ReviewResult = serde_json::from_str(json).map_err(|err| {
         CaduceusError::Config(format!("review result: malformed document: {err}"))
@@ -361,36 +359,107 @@ pub fn review_schema_version_supported(v: u32) -> bool {
     v == REVIEW_SCHEMA_VERSION
 }
 
-/// Cap validation for a [`ReviewResult`] (exposed so #305's full
-/// validator can compose it).
+/// Full validation for a [`ReviewResult`] (DAR §8, §10.3): the
+/// status↔review presence rule, verdict consistency against the
+/// blocking-finding count, field caps, and path/line semantics.
+/// Called by [`parse_review_result`] and by the history loader
+/// (`state::review`, #295); the worker ingress
+/// (`worker::parse_review_result_file`, #305) composes it for the
+/// execution-failure classification.
 pub fn validate_review_result(result: &ReviewResult) -> CaduceusResult<()> {
-    if let Some(review) = &result.review {
-        required_string(
-            "review result",
-            "summary",
-            &review.summary,
-            MAX_REVIEW_SUMMARY_BYTES,
+    // Presence rule (DAR §3): review is present iff status Success.
+    match (result.status, &result.review) {
+        (ExecutionStatus::Success, None) => {
+            return Err(CaduceusError::Config(
+                "review result: review must be present when status is success".to_string(),
+            ));
+        }
+        (ExecutionStatus::Failure, Some(_)) => {
+            return Err(CaduceusError::Config(
+                "review result: review must be absent when status is failure".to_string(),
+            ));
+        }
+        _ => {}
+    }
+    let Some(review) = &result.review else {
+        return Ok(());
+    };
+    required_string(
+        "review result",
+        "summary",
+        &review.summary,
+        MAX_REVIEW_SUMMARY_BYTES,
+    )?;
+    if review.findings.len() > MAX_FINDINGS {
+        return Err(CaduceusError::Config(format!(
+            "review result: findings exceed limit of {MAX_FINDINGS} entries (got {})",
+            review.findings.len()
+        )));
+    }
+    for (idx, finding) in review.findings.iter().enumerate() {
+        let scope = format!("review result: finding[{idx}]");
+        required_string(&scope, "title", &finding.title, MAX_FINDING_TITLE_BYTES)?;
+        required_string(&scope, "body", &finding.body, MAX_FINDING_BODY_BYTES)?;
+        optional_string(&scope, "path", &finding.path, MAX_FINDING_PATH_BYTES)?;
+        optional_string(
+            &scope,
+            "remediation",
+            &finding.remediation,
+            MAX_FINDING_REMEDIATION_BYTES,
         )?;
-        if review.findings.len() > MAX_FINDINGS {
+        if let Some(path) = &finding.path {
+            if let Some(reason) = path_rejection_reason(path) {
+                return Err(CaduceusError::Config(format!("{scope}: {reason}")));
+            }
+        }
+        if finding.line == Some(0) {
             return Err(CaduceusError::Config(format!(
-                "review result: findings exceed limit of {MAX_FINDINGS} entries (got {})",
-                review.findings.len()
+                "{scope}: line must be 1-based (got 0)"
             )));
         }
-        for (idx, finding) in review.findings.iter().enumerate() {
-            let scope = format!("review result: finding[{idx}]");
-            required_string(&scope, "title", &finding.title, MAX_FINDING_TITLE_BYTES)?;
-            required_string(&scope, "body", &finding.body, MAX_FINDING_BODY_BYTES)?;
-            optional_string(&scope, "path", &finding.path, MAX_FINDING_PATH_BYTES)?;
-            optional_string(
-                &scope,
-                "remediation",
-                &finding.remediation,
-                MAX_FINDING_REMEDIATION_BYTES,
-            )?;
+        if finding.line.is_some() && finding.path.is_none() {
+            return Err(CaduceusError::Config(format!(
+                "{scope}: line requires a path"
+            )));
         }
     }
+    // Verdict consistency (DAR §8), checked after per-finding
+    // validity so the first reported failure is the most specific.
+    let blocking = review
+        .findings
+        .iter()
+        .filter(|f| f.severity == Severity::Blocking)
+        .count();
+    match (review.verdict, blocking) {
+        (Verdict::Fail, 0) => {
+            return Err(CaduceusError::Config(
+                "review result: verdict fail requires at least one blocking finding".to_string(),
+            ));
+        }
+        (Verdict::Pass, n) if n > 0 => {
+            return Err(CaduceusError::Config(format!(
+                "review result: verdict pass must not carry blocking findings ({n} blocking)"
+            )));
+        }
+        _ => {}
+    }
     Ok(())
+}
+
+/// Why a `Finding.path` is malformed (DAR §8): repo-relative means no
+/// leading `/`, no `..` component, and no control characters (NUL,
+/// newlines, tabs — `char::is_control` covers them all).
+fn path_rejection_reason(path: &str) -> Option<&'static str> {
+    if path.starts_with('/') {
+        return Some("path must be repo-relative (no leading '/')");
+    }
+    if path.split('/').any(|component| component == "..") {
+        return Some("path must not contain '..' components");
+    }
+    if path.chars().any(|c| c.is_control()) {
+        return Some("path contains control characters");
+    }
+    None
 }
 
 /// Cap validation for a [`ReviewTarget`] (the store calls this on

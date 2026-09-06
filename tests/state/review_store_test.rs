@@ -15,7 +15,8 @@
 //!   rejected safely on both backends.
 
 use caduceus::review::{
-    ExecutionStatus, RepositoryId, ReviewResult, ReviewState, ReviewTarget, REVIEW_SCHEMA_VERSION,
+    ExecutionStatus, RepositoryId, Review, ReviewResult, ReviewState, ReviewTarget, Verdict,
+    REVIEW_SCHEMA_VERSION,
 };
 use caduceus::state::queue::StateStore;
 use caduceus::state::review::{
@@ -69,7 +70,14 @@ fn valid_result_json(status: ExecutionStatus) -> String {
     serde_json::to_string(&ReviewResult {
         schema_version: REVIEW_SCHEMA_VERSION,
         status,
-        review: None,
+        review: match status {
+            ExecutionStatus::Success => Some(Review {
+                verdict: Verdict::Pass,
+                summary: "ok".to_string(),
+                findings: vec![],
+            }),
+            ExecutionStatus::Failure => None,
+        },
     })
     .unwrap()
 }
@@ -283,6 +291,36 @@ fn review_history_accepts_older_schema_version_blob_as_opaque() {
     };
     let text = serialize_review_history(&file).unwrap();
     parse_review_history(&text).expect("older blob is opaque");
+}
+
+#[test]
+fn review_history_rejects_semantically_invalid_current_blob() {
+    // A current-version blob that fails the #305 rules (FAIL with
+    // zero blocking findings) must fail the history load — the store
+    // composes the same domain validator as the ingress.
+    let mut row = history_row("run-bad-verdict", SHA_A, 1);
+    row.result_json = r#"{"schema_version":1,"status":"success","review":{"verdict":"fail","summary":"s","findings":[]}}"#.to_string();
+    let file = ReviewHistoryFile {
+        version: REVIEW_HISTORY_FILE_VERSION,
+        rows: vec![row],
+    };
+    let text = serialize_review_history(&file).unwrap();
+    let err = parse_review_history(&text).expect_err("inconsistent blob rejected");
+    assert!(format!("{err:?}").contains("blocking"), "got: {err:?}");
+
+    // Presence violation, same treatment.
+    let mut row = history_row("run-no-review", SHA_A, 1);
+    row.result_json = r#"{"schema_version":1,"status":"success","review":null}"#.to_string();
+    let file = ReviewHistoryFile {
+        version: REVIEW_HISTORY_FILE_VERSION,
+        rows: vec![row],
+    };
+    let text = serialize_review_history(&file).unwrap();
+    let err = parse_review_history(&text).expect_err("presence violation rejected");
+    assert!(
+        format!("{err:?}").contains("must be present"),
+        "got: {err:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
