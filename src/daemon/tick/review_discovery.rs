@@ -1,0 +1,700 @@
+//! In-tick Auto Review PR discovery + admission (issue #312, D3).
+//!
+//! Step 5.5 of the tick pipeline (between issue polling and the
+//! queue drain, DAR SS5): for each watched repo, list pull
+//! requests (`state=all`, client-side filtering per D4), classify
+//! every row through the pure eligibility predicate (D5), and
+//! admit genuinely new head revisions into the review queue.
+//!
+//! Isolation tiers (D9):
+//! - per-ROW: malformed / ineligible / git errors (incl.
+//!   `HeadShaUnavailable`, D8) log + count + continue;
+//! - per-REPO: list errors (500s, JSON parse) log + count
+//!   `failed_repos` + continue to the next repo - the issue
+//!   loop's break shape (tick/mod.rs) is NOT inherited (AC2);
+//! - step-level: rate limit + review-store write errors return
+//!   `Err` so the call site can classify and fold the error into
+//!   the tick's `last_error` - the tick NEVER returns early from
+//!   the PR step (AC3).
+//!
+//! Admission (D11): lazy mirror bootstrap per repo (D7), SHA-
+//! anchored fetch of head + base SHA (`fetch_sha`, #297),
+//! merge-base computed through the mirror and persisted on
+//! `ReviewTarget` (DAR SS2.1-2.2), then the atomic
+//! `ReviewStore::enqueue_review` (generation + queue write, #295).
+//! Nothing changed = no mirror work at all (AC7). The per-tick
+//! admission budget `max_reviews_per_tick` bounds admissions
+//! tick-wide and is checked BEFORE any git work (D10, AC6).
+//!
+//! Discovery NEVER touches the queue/state files directly and
+//! never fetches diffs or context (rate-limit discipline, D4).
+
+use tracing::{info, warn};
+
+use crate::daemon::orchestration::classify_error;
+use crate::github::pr::list_pull_requests;
+use crate::github::Client;
+use crate::infra::config::{AutoReviewConfig, Config};
+use crate::infra::error::{CaduceusError, CaduceusResult};
+
+use crate::repo::BareMirror;
+use crate::review::{RepositoryId, ReviewTarget};
+use crate::state::review::{ReviewEnqueueOutcome, ReviewStore};
+use crate::worktree::git_runner::GitRunner;
+
+// ---------------------------------------------------------------------------
+// Event constants + emission shape (DAR SS13, D2; fork-gate pattern)
+// ---------------------------------------------------------------------------
+
+/// DAR SS13 discovery event: a PR row passed eligibility (may be
+/// admitted this tick, budget permitting).
+pub const DISCOVERED_EVENT: &str = "review_discovered";
+/// DAR SS13 discovery event: `enqueue_review` inserted the target.
+pub const ADMITTED_EVENT: &str = "review_admitted";
+/// DAR SS5.1 skip event: draft PR with `draft_pull_requests: false`.
+pub const SKIPPED_DRAFT_EVENT: &str = "review_skipped_draft";
+/// DAR SS5.1 skip event: the exact head SHA is already active in the
+/// review queue or was already reviewed.
+pub const SKIPPED_ALREADY_COMPLETE_EVENT: &str = "review_skipped_already_complete";
+/// DAR SS5.1 poll event: the PR's head moved relative to a SHA the
+/// daemon held (active entry or `last_reviewed_head_sha`).
+pub const STALE_SHA_EVENT: &str = "review_stale_sha_observed";
+
+/// Emit `review_discovered` (D5 step: a row passed eligibility).
+fn emit_discovered(repo: &str, pr: u64, head_sha: &str) {
+    info!(
+        target: "caduceus",
+        event = DISCOVERED_EVENT,
+        repo = repo,
+        pr = pr,
+        head_sha = head_sha,
+        "PR revision discovered for review"
+    );
+}
+
+/// Emit `review_admitted` (D2: DAR SS13 assigns this event to
+/// discovery; fired only when `enqueue_review` returned `Inserted`).
+fn emit_admitted(repo: &str, pr: u64, head_sha: &str) {
+    info!(
+        target: "caduceus",
+        event = ADMITTED_EVENT,
+        repo = repo,
+        pr = pr,
+        head_sha = head_sha,
+        "PR revision admitted into the review queue"
+    );
+}
+
+/// Emit `review_skipped_draft` (DAR SS5.1).
+fn emit_skipped_draft(repo: &str, pr: u64, head_sha: &str) {
+    info!(
+        target: "caduceus",
+        event = SKIPPED_DRAFT_EVENT,
+        repo = repo,
+        pr = pr,
+        head_sha = head_sha,
+        "PR skipped: draft"
+    );
+}
+
+/// Emit `review_skipped_already_complete` (DAR SS5.1: dedup skip).
+fn emit_skipped_already_complete(repo: &str, pr: u64, head_sha: &str) {
+    info!(
+        target: "caduceus",
+        event = SKIPPED_ALREADY_COMPLETE_EVENT,
+        repo = repo,
+        pr = pr,
+        head_sha = head_sha,
+        "PR skipped: head SHA already queued or reviewed"
+    );
+}
+
+/// Emit `review_stale_sha_observed` (D6: the held SHA moved).
+fn emit_stale_sha(repo: &str, pr: u64, previous_sha: &str, observed_sha: &str) {
+    info!(
+        target: "caduceus",
+        event = STALE_SHA_EVENT,
+        repo = repo,
+        pr = pr,
+        previous_sha = previous_sha,
+        observed_sha = observed_sha,
+        "PR head moved since the last held revision"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Core types (plan SS4.3 contract)
+// ---------------------------------------------------------------------------
+
+/// What discovery holds for one `(repo, pr)` (D6): the head SHAs of
+/// ACTIVE queue entries and the completed-review pointer.
+///
+/// Public so integration tests can build the dedup fixtures
+/// (`classify_discovery_row_for_tests`); no behaviour surface.
+#[derive(Clone, Debug)]
+pub struct HeldShas {
+    /// Active (`Queued`/`InProgress`) queue entries' head SHAs.
+    pub active: Vec<String>,
+    /// `ReviewState.last_reviewed_head_sha` of the completed review.
+    pub last_reviewed: Option<String>,
+}
+
+/// One row's verdict (D5). `Ineligible` and `Malformed` carry NO
+/// event; `SkipDraft` / `SkipFork` / `SkipAlreadyComplete` carry
+/// their SS13 events at the emit site.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RowAction {
+    /// Admit (subject to the tick-wide budget, D10).
+    Admit,
+    /// Draft + `draft_pull_requests: false` -> `review_skipped_draft`.
+    SkipDraft,
+    /// Fork gate failed -> existing `emit_fork_gate_skip`.
+    SkipFork { head_repo: Option<String> },
+    /// Dedup hit -> `review_skipped_already_complete`.
+    SkipAlreadyComplete,
+    /// Closed / merged - never admitted, NO event (DAR SS5.1).
+    Ineligible,
+    /// Unreadable wire row - log-only, NO event (DAR SS13 defines no
+    /// malformed-row event; mirrors `IssuePollDiagnostic::Malformed`).
+    Malformed { reason: String },
+}
+
+/// One row's decision (D5 + D6).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RowDecision {
+    pub action: RowAction,
+    /// `(previous_sha, observed_sha)` when the PR's held SHA moved (D6).
+    pub stale: Option<(String, String)>,
+    /// Observed head SHA when readable.
+    pub head_sha: String,
+    pub base_sha: String,
+    pub base_ref: String,
+}
+
+/// Tick-wide discovery counters (plan SS4.3; log at step end).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ReviewDiscoveryStats {
+    pub repos_polled: u32,
+    pub discovered: u32,
+    pub admitted: u32,
+    pub skipped_draft: u32,
+    pub skipped_fork: u32,
+    pub skipped_already_complete: u32,
+    pub ineligible: u32,
+    pub malformed: u32,
+    pub stale_observed: u32,
+    pub skipped_unavailable_sha: u32,
+    pub failed_admissions: u32,
+    pub failed_repos: u32,
+    pub budget_exhausted: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Pure eligibility classifier (Task 4, D5 - no I/O, no logging, never
+// panics on any wire shape; mirrors classify_fork's contract)
+// ---------------------------------------------------------------------------
+
+/// Classify one `/pulls` row through the D5 eligibility order:
+/// malformed -> closed/merged -> draft -> fork -> dedup ->
+/// stale-observe -> admit. Pure: no I/O, no logging, never panics.
+///
+/// Public via [`classify_discovery_row_for_tests`] (the integration
+/// seam, D12); production callers use this directly.
+pub(crate) fn classify_discovery_row(
+    row: &crate::github::pr::PullRequestDetail,
+    ar: &AutoReviewConfig,
+    held: &HeldShas,
+) -> RowDecision {
+    // 2. Malformed rows (D5 step 2): missing identity or SHA context.
+    let Some(_) = row.number else {
+        return malformed("missing number");
+    };
+    let Some(base) = row.base.as_ref() else {
+        return malformed("missing base");
+    };
+    let Some(base_sha) = base.sha.as_deref() else {
+        return malformed("missing base.sha");
+    };
+    let Some(base_ref) = base.ref_name.as_deref() else {
+        return malformed("missing base.ref");
+    };
+    let Some(head) = row.head.as_ref() else {
+        return malformed("missing head");
+    };
+    let Some(head_sha) = head.sha.as_deref() else {
+        return malformed("missing head.sha");
+    };
+    if head_sha.is_empty() || base_sha.is_empty() {
+        return malformed("empty SHA");
+    }
+
+    // 3. Closed / merged rows are never admitted - NO event (DAR SS5.1).
+    if row.state.as_deref() != Some("open") || row.merged == Some(true) {
+        return RowDecision {
+            action: RowAction::Ineligible,
+            stale: None,
+            head_sha: head_sha.to_string(),
+            base_sha: base_sha.to_string(),
+            base_ref: base_ref.to_string(),
+        };
+    }
+
+    // 4. Draft gate (DAR SS5.1): `review_skipped_draft` unless the
+    //    operator opted in.
+    if row.draft && !ar.draft_pull_requests {
+        return RowDecision {
+            action: RowAction::SkipDraft,
+            stale: None,
+            head_sha: head_sha.to_string(),
+            base_sha: base_sha.to_string(),
+            base_ref: base_ref.to_string(),
+        };
+    }
+
+    // 5. Fork gate (Phase-1 contract, #316): every non-SameRepo
+    //    verdict skips with the existing SS13 event; `head.repo: null`
+    //    (deleted head branch) lands here as `HeadRepoMissing`.
+    let fork = crate::github::fork_gate::classify_fork(row);
+    if !fork.passes() {
+        return RowDecision {
+            action: RowAction::SkipFork {
+                head_repo: fork.head_repo_identity().map(str::to_string),
+            },
+            stale: None,
+            head_sha: head_sha.to_string(),
+            base_sha: base_sha.to_string(),
+            base_ref: base_ref.to_string(),
+        };
+    }
+
+    // 6. Dedup: the exact `(repo, pr, head_sha)` is already active in
+    //    the queue or already reviewed -> `review_skipped_already_
+    //    complete` (DAR SS4.3 pointer + active-only dedup; history is
+    //    never consulted).
+    let already_held = held.active.iter().any(|sha| sha == head_sha)
+        || held.last_reviewed.as_deref() == Some(head_sha);
+    if already_held {
+        return RowDecision {
+            action: RowAction::SkipAlreadyComplete,
+            stale: None,
+            head_sha: head_sha.to_string(),
+            base_sha: base_sha.to_string(),
+            base_ref: base_ref.to_string(),
+        };
+    }
+
+    // 7. Stale observation (D6): ANY other held SHA differs from the
+    //    observed head -> emit once at the emit site and CONTINUE -
+    //    the observed head is itself genuinely new and admits now.
+    let stale = held
+        .active
+        .first()
+        .cloned()
+        .or_else(|| held.last_reviewed.clone())
+        .filter(|previous| previous != head_sha)
+        .map(|previous| (previous, head_sha.to_string()));
+
+    // 8. Admit (budget permitting at the caller, D10).
+    RowDecision {
+        action: RowAction::Admit,
+        stale,
+        head_sha: head_sha.to_string(),
+        base_sha: base_sha.to_string(),
+        base_ref: base_ref.to_string(),
+    }
+}
+
+fn malformed(reason: &str) -> RowDecision {
+    RowDecision {
+        action: RowAction::Malformed {
+            reason: reason.to_string(),
+        },
+        stale: None,
+        head_sha: String::new(),
+        base_sha: String::new(),
+        base_ref: String::new(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Admission (Task 5, D11)
+// ---------------------------------------------------------------------------
+
+/// One admission: fetch head SHA, fetch base SHA, compute + persist
+/// the merge base, enqueue atomically (D11). Git errors are per-target
+/// (caller logs + continues); store-write errors propagate as
+/// step-level (D9). Returns `Ok(true)` when the target was inserted,
+/// `Ok(false)` when a concurrent admission already held it or the
+/// SHAs were unavailable (D8).
+#[allow(clippy::too_many_arguments)] // plan D11 surface: fixed 8-arg admission contract
+pub(crate) async fn admit_target(
+    runner: &GitRunner,
+    mirror: &BareMirror,
+    review_store: &ReviewStore,
+    repository: &RepositoryId,
+    pull_request: u64,
+    head_sha: &str,
+    base_sha: &str,
+    base_ref: &str,
+) -> CaduceusResult<bool> {
+    // 2. SHA-anchored head fetch (D8: unavailable -> skip, no event;
+    //    #339 owns the skip routing).
+    mirror.fetch_sha(runner, head_sha).await?;
+    // 3. Base fetch - both objects are then guaranteed present
+    //    locally (D11: do NOT rely on the base-branch fetch having
+    //    landed the wire's base.sha).
+    mirror.fetch_sha(runner, base_sha).await?;
+    // 4. Merge base (DAR SS2.1). Unrelated histories fail as
+    //    `CaduceusError::Git` -> per-target log-and-skip (caller).
+    let merge_base = mirror.merge_base(runner, base_sha, head_sha).await?;
+    // 5. Build the full ReviewTarget (merge_base populated; validation
+    //    happens inside enqueue_review).
+    let target = ReviewTarget {
+        repository: repository.clone(),
+        pull_request,
+        head_sha: head_sha.to_string(),
+        base_sha: base_sha.to_string(),
+        base_ref: base_ref.to_string(),
+        merge_base,
+    };
+    // 6. Atomic generation + queue write (#295).
+    match review_store.enqueue_review(&target)? {
+        ReviewEnqueueOutcome::Inserted => Ok(true),
+        ReviewEnqueueOutcome::AlreadyPresent => Ok(false),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The discovery loop (Task 6, D5/D9/D10/D11/D12)
+// ---------------------------------------------------------------------------
+
+/// Step 5.5 of the tick: per-repo PR discovery + admission.
+///
+/// Returns `Err` ONLY for step-level failures (rate limit while
+/// listing; review-store write errors). Everything per-repo /
+/// per-row is logged + counted (D9).
+pub(crate) async fn poll_review_step(
+    repos: &[String],
+    client: &Client,
+    cfg: &Config,
+    review_store: &ReviewStore,
+    runner: &GitRunner,
+    resolve_remote: &dyn Fn(&str, &str) -> CaduceusResult<String>,
+) -> CaduceusResult<ReviewDiscoveryStats> {
+    let ar = match cfg.auto_review() {
+        Some(ar) => ar,
+        // Whole step gated on `auto_review.enabled` (D5 step 1).
+        None => return Ok(ReviewDiscoveryStats::default()),
+    };
+    if !ar.enabled {
+        return Ok(ReviewDiscoveryStats::default());
+    }
+
+    let budget = cfg.max_reviews_per_tick;
+    let mut stats = ReviewDiscoveryStats::default();
+    // Held SHAs read once per repo via one snapshot (D11/D9: a read
+    // path over the store, no direct file access).
+    let mut mirrors: std::collections::BTreeMap<String, BareMirror> =
+        std::collections::BTreeMap::new();
+
+    for repo in repos {
+        // Parse the `owner/repo` slug. Malformed slugs cannot happen
+        // for validated config / API discovery, but a safety net
+        // keeps the row classifier total.
+        let Some((owner, name)) = repo.split_once('/') else {
+            warn!(
+                target: "caduceus",
+                repo = repo,
+                "review discovery: malformed repo slug; skipping"
+            );
+            stats.failed_repos += 1;
+            continue;
+        };
+
+        let pulls = match list_pull_requests(client, owner, name).await {
+            Ok(pulls) => pulls,
+            // Per-REPO tier (D9): list errors log + count + continue.
+            // A global rate limit is a step-level condition - later
+            // repos would fail identically, so surface it (D9).
+            Err(err @ CaduceusError::RateLimited { .. }) => return Err(err),
+            Err(err) => {
+                warn!(
+                    target: "caduceus",
+                    error = %err,
+                    repo = repo,
+                    "review discovery: PR list failed; continuing to next repo"
+                );
+                stats.failed_repos += 1;
+                continue;
+            }
+        };
+        stats.repos_polled += 1;
+
+        for row in &pulls {
+            // Budget check BEFORE any per-row work so an exhausted
+            // budget does no git work (D10). Deferred candidates are
+            // re-discovered next tick - no `review_discovered` event
+            // for them.
+            if budget != 0 && stats.admitted >= budget {
+                stats.budget_exhausted = true;
+                break;
+            }
+
+            let Some(pr_number) = row.number else {
+                stats.malformed += 1;
+                continue;
+            };
+
+            // Held SHAs for this (repo, pr): active queue entries +
+            // the completed-review pointer (D6). Read per row through
+            // the store's public read API.
+            let held = read_held_shas(review_store, owner, name, pr_number)?;
+
+            let decision = classify_discovery_row(row, ar, &held);
+
+            // Emit the stale observation BEFORE the action event so
+            // the log reads chronologically (D6).
+            if let Some((previous, observed)) = &decision.stale {
+                emit_stale_sha(repo, pr_number, previous, observed);
+                stats.stale_observed += 1;
+            }
+
+            match decision.action {
+                RowAction::Admit => {
+                    emit_discovered(repo, pr_number, &decision.head_sha);
+                    stats.discovered += 1;
+
+                    // Lazy mirror bootstrap (D7): only when this repo
+                    // has at least one candidate that passed
+                    // eligibility + budget (AC7).
+                    let mirror = match mirrors.get(repo) {
+                        Some(m) => m,
+                        None => {
+                            let remote = match resolve_remote(owner, name) {
+                                Ok(remote) => remote,
+                                Err(err) => {
+                                    warn!(
+                                        target: "caduceus",
+                                        error = %err,
+                                        repo = repo,
+                                        "review discovery: remote resolve failed; skipping repo"
+                                    );
+                                    stats.failed_repos += 1;
+                                    break;
+                                }
+                            };
+                            match BareMirror::ensure(
+                                runner,
+                                cfg,
+                                owner,
+                                name,
+                                &remote,
+                                &decision.base_ref,
+                            )
+                            .await
+                            {
+                                Ok(m) => {
+                                    mirrors.insert(repo.to_string(), m);
+                                    mirrors.get(repo).expect("just inserted")
+                                }
+                                Err(err) => {
+                                    warn!(
+                                        target: "caduceus",
+                                        error = %err,
+                                        repo = repo,
+                                        "review discovery: mirror ensure failed; skipping repo"
+                                    );
+                                    stats.failed_repos += 1;
+                                    break;
+                                }
+                            }
+                        }
+                    };
+
+                    let repository_id = RepositoryId {
+                        owner: owner.to_string(),
+                        repo: name.to_string(),
+                    };
+                    match admit_target(
+                        runner,
+                        mirror,
+                        review_store,
+                        &repository_id,
+                        pr_number,
+                        &decision.head_sha,
+                        &decision.base_sha,
+                        &decision.base_ref,
+                    )
+                    .await
+                    {
+                        Ok(true) => {
+                            emit_admitted(repo, pr_number, &decision.head_sha);
+                            stats.admitted += 1;
+                        }
+                        Ok(false) => {
+                            // A concurrent admission won the race or
+                            // the SHAs were unavailable (D8). Debug
+                            // log, no event.
+                            info!(
+                                target: "caduceus",
+                                repo = repo,
+                                pr = pr_number,
+                                "review discovery: target already present; skipping"
+                            );
+                        }
+                        Err(err) => {
+                            // Per-target git errors (incl.
+                            // HeadShaUnavailable, D8) log + count +
+                            // continue. Store-write errors propagate
+                            // as step-level (D9).
+                            let class = classify_error(&err);
+                            if matches!(
+                                class,
+                                crate::daemon::orchestration::FailureClass::Infrastructure
+                            ) && !matches!(err, CaduceusError::HeadShaUnavailable { .. })
+                            {
+                                return Err(err);
+                            }
+                            if matches!(err, CaduceusError::HeadShaUnavailable { .. }) {
+                                stats.skipped_unavailable_sha += 1;
+                                info!(
+                                    target: "caduceus",
+                                    repo = repo,
+                                    pr = pr_number,
+                                    "review discovery: head SHA unavailable; skipping (next poll retries)"
+                                );
+                            } else {
+                                warn!(
+                                    target: "caduceus",
+                                    error = %err,
+                                    repo = repo,
+                                    pr = pr_number,
+                                    "review discovery: admission failed; skipping target"
+                                );
+                                stats.failed_admissions += 1;
+                            }
+                        }
+                    }
+                }
+                RowAction::SkipDraft => {
+                    emit_skipped_draft(repo, pr_number, &decision.head_sha);
+                    stats.skipped_draft += 1;
+                }
+                RowAction::SkipFork { head_repo } => {
+                    crate::github::fork_gate::emit_fork_gate_skip(
+                        repo,
+                        pr_number,
+                        head_repo.as_deref(),
+                    );
+                    stats.skipped_fork += 1;
+                }
+                RowAction::SkipAlreadyComplete => {
+                    emit_skipped_already_complete(repo, pr_number, &decision.head_sha);
+                    stats.skipped_already_complete += 1;
+                }
+                RowAction::Ineligible => {
+                    stats.ineligible += 1;
+                }
+                RowAction::Malformed { reason } => {
+                    warn!(
+                        target: "caduceus",
+                        repo = repo,
+                        reason = reason,
+                        "review discovery: malformed PR row; skipping"
+                    );
+                    stats.malformed += 1;
+                }
+            }
+        }
+    }
+    Ok(stats)
+}
+
+/// Read the held SHAs for one `(repo, pr)` (D6): active queue
+/// entries' head SHAs + `ReviewState.last_reviewed_head_sha`.
+/// Store-read errors propagate as step-level (D9).
+fn read_held_shas(
+    review_store: &ReviewStore,
+    owner: &str,
+    name: &str,
+    pr_number: u64,
+) -> CaduceusResult<HeldShas> {
+    let repository = RepositoryId {
+        owner: owner.to_string(),
+        repo: name.to_string(),
+    };
+    let snapshot = review_store.review_queue_snapshot()?;
+    let active: Vec<String> = snapshot
+        .entries
+        .values()
+        .filter(|entry| {
+            entry.phase.is_active()
+                && entry.target.repository.owner == repository.owner
+                && entry.target.repository.repo == repository.repo
+                && entry.target.pull_request == pr_number
+        })
+        .map(|entry| entry.target.head_sha.clone())
+        .collect();
+    let state = review_store.review_state(&repository, pr_number)?;
+    let last_reviewed = state.and_then(|s| s.last_reviewed_head_sha);
+    Ok(HeldShas {
+        active,
+        last_reviewed,
+    })
+}
+
+/// Public test seam (plan SS4.3, D12): mirrors
+/// `poll_awaiting_review_entries_for_tests`. Same body as
+/// `poll_review_step`.
+pub async fn poll_review_step_for_tests(
+    repos: &[String],
+    client: &Client,
+    cfg: &Config,
+    review_store: &ReviewStore,
+    runner: &GitRunner,
+    resolve_remote: &dyn Fn(&str, &str) -> CaduceusResult<String>,
+) -> CaduceusResult<ReviewDiscoveryStats> {
+    poll_review_step(repos, client, cfg, review_store, runner, resolve_remote).await
+}
+
+/// Public test seam (D12): the pure eligibility classifier. Same body
+/// as `classify_discovery_row`.
+pub fn classify_discovery_row_for_tests(
+    row: &crate::github::pr::PullRequestDetail,
+    ar: &AutoReviewConfig,
+    held: &HeldShas,
+) -> RowDecision {
+    classify_discovery_row(row, ar, held)
+}
+
+/// Public test seam (D12): the structured `review_discovered`
+/// emitter, for event-capture tests.
+pub fn emit_discovered_for_tests(repo: &str, pr: u64, head_sha: &str) {
+    emit_discovered(repo, pr, head_sha)
+}
+
+/// Public test seam (D12): one admission (fetch head SHA, fetch base
+/// SHA, merge base, atomic enqueue). Same body as `admit_target`.
+#[allow(clippy::too_many_arguments)]
+pub async fn admit_target_for_tests(
+    runner: &GitRunner,
+    mirror: &BareMirror,
+    review_store: &ReviewStore,
+    repository: &RepositoryId,
+    pull_request: u64,
+    head_sha: &str,
+    base_sha: &str,
+    base_ref: &str,
+) -> CaduceusResult<bool> {
+    admit_target(
+        runner,
+        mirror,
+        review_store,
+        repository,
+        pull_request,
+        head_sha,
+        base_sha,
+        base_ref,
+    )
+    .await
+}

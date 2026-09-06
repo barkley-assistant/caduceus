@@ -18,6 +18,14 @@
 //! 4. Reap stale claims / abandoned worktrees.
 //! 5. Build the typed GitHub [`Client`], discover watched
 //!    repos, poll typed open issues, enqueue summaries.
+//!    Step 5.5 (issue #312, between issue polling and the
+//!    drain): when `auto_review.enabled` and not in dry
+//!    run, poll watched repos' pull requests and admit
+//!    genuinely new head revisions into the review queue:
+//!    eligibility filtering, SHA-anchored mirror fetch +
+//!    merge-base capture at admission, bounded by
+//!    `max_reviews_per_tick`. Per-repo failures
+//!    log-and-continue; the step never aborts the tick.
 //! 6. Acquire the next eligible entry. If no entry is
 //!    eligible, finish as [`TickOutcome::Idle304`] (all
 //!    responses were cached 304s) or [`TickOutcome::IdleEmpty`]
@@ -493,6 +501,57 @@ pub async fn tick(
         return Err(err);
     }
 
+    // 5.5. Auto Review PR discovery + admission (issue #312, DAR §5).
+    //      Runs only when `auto_review.enabled` (and not in dry run).
+    //      Per-repo failures log-and-continue; a step-level error is
+    //      classified, logged, and folded into the tick's final
+    //      `last_error` / `http_status` — the drain below ALWAYS runs
+    //      (AC2/AC3). Never returns early.
+    let mut pr_step_error: Option<CaduceusError> = None;
+    let ar_enabled = cfg.auto_review().map(|ar| ar.enabled).unwrap_or(false);
+    if ar_enabled && !cfg.dry_run {
+        let review_store = if use_sqlite {
+            crate::state::review::ReviewStore::open_sqlite(&state_dir)
+        } else {
+            crate::state::review::ReviewStore::open(&state_dir)
+        };
+        match review_store {
+            Ok(review_store) => {
+                let runner = GitRunner::new(&cfg);
+                let resolve = |owner: &str, repo: &str| {
+                    crate::worktree::git_https_remote(&cfg.api_base, owner, repo)
+                };
+                match review_discovery::poll_review_step(
+                    &repos,
+                    &client,
+                    &cfg,
+                    &review_store,
+                    &runner,
+                    &resolve,
+                )
+                .await
+                {
+                    Ok(stats) => info!(?stats, "review discovery complete"),
+                    Err(err) => {
+                        let class = classify_error(&err);
+                        tracing::warn!(
+                            error = %err, ?class,
+                            "review discovery failed; continuing to drain"
+                        );
+                        pr_step_error = Some(err);
+                    }
+                }
+            }
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "review store open failed; skipping PR discovery"
+                );
+                pr_step_error = Some(err);
+            }
+        }
+    }
+
     // 6. Drain the queue into a bounded `JoinSet` dispatch loop.
     //
     // Each iteration: (a) `acquire_next` under `LeaderToken::with_lock`
@@ -517,8 +576,11 @@ pub async fn tick(
     let services = Arc::new(services);
     let meta = Arc::new(meta);
     let client: Arc<Client> = Arc::clone(services.github.inner());
-    let mut http_status: Option<u16> = None;
-    let mut last_error: Option<CaduceusError> = None;
+    // The PR step's error (if any) seeds the drain's error slots so a
+    // step-level failure is persisted by the tick-finish paths (D14)
+    // while the drain itself still runs (AC3).
+    let mut http_status: Option<u16> = pr_step_error.as_ref().and_then(extract_http_status);
+    let mut last_error: Option<CaduceusError> = pr_step_error;
     let worker_parallelism = cfg.worker_parallelism.max(1) as usize;
     // Per-tick claim cap (issue #108): bounds how many queue entries
     // one tick will claim before returning. 0 == unbounded (the
@@ -764,10 +826,12 @@ pub async fn tick(
 pub mod awaiting_review;
 pub mod per_claim;
 pub mod resume;
+pub mod review_discovery;
 
 use self::awaiting_review::*;
 use self::per_claim::*;
 use self::resume::*;
+pub use self::review_discovery::*;
 
 pub use self::awaiting_review::{
     exit_code_for_tests, extract_http_status_for_tests, map_phase_to_outcome_for_tests,

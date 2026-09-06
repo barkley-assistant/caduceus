@@ -287,14 +287,48 @@ pub(crate) fn finish_tick_outcome(
     last_error: Option<&CaduceusError>,
 ) -> CaduceusResult<()> {
     let _ = _meta;
+    // The rate-limit observation is the input to the next tick's
+    // `CadenceGate::precheck` and must be persisted *before* the tick
+    // returns (D14, issue #312). The PR step folds its step-level rate
+    // limit into exactly this `last_error` slot, so extract the
+    // observation here exactly as `finish_tick_failure` does — the
+    // behavior change is strictly "observation now persisted instead
+    // of dropped".
+    let rate_limit_info: Option<RateLimitInfo> = match last_error {
+        Some(CaduceusError::RateLimited {
+            reset_at,
+            remaining,
+            limit,
+        }) => Some(RateLimitInfo {
+            remaining: *remaining,
+            limit: *limit,
+            observed_at: now,
+            reset_at_unix: now.timestamp().saturating_add(*reset_at as i64),
+        }),
+        _ => None,
+    };
     gate.record_tick_finished(
         now,
         outcome,
         http_status,
         0,
-        None,
+        rate_limit_info.as_ref(),
         last_error.map(|e| format!("{e}")),
     )
+}
+
+/// Test seam (D14): mirrors `finish_tick_outcome` exactly so
+/// integration tests can assert the rate-limit observation is
+/// persisted from `last_error`.
+pub fn finish_tick_outcome_for_tests(
+    gate: &CadenceGate,
+    meta: &MetaStore,
+    now: DateTime<Utc>,
+    outcome: TickOutcome,
+    http_status: Option<u16>,
+    last_error: Option<&CaduceusError>,
+) -> CaduceusResult<()> {
+    finish_tick_outcome(gate, meta, now, outcome, http_status, last_error)
 }
 
 pub(crate) fn finish_tick_failure(

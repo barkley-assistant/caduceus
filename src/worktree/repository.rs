@@ -245,12 +245,7 @@ pub fn parse_origin(remote_url: &str) -> CaduceusResult<(String, String)> {
 /// host. Public github.com → origin host must equal `github.com`.
 /// Enterprise → origin host must equal the api_base host verbatim.
 pub fn validate_origin_host(remote_url: &str, api_base: &str) -> CaduceusResult<()> {
-    let api_url = Url::parse(api_base)
-        .map_err(|err| CaduceusError::Config(format!("invalid api_base {api_base}: {err}")))?;
-    let api_host = api_url
-        .host_str()
-        .map(|h| h.to_ascii_lowercase())
-        .ok_or_else(|| CaduceusError::Config(format!("api_base has no host: {api_base}")))?;
+    let api_host = api_git_host(api_base)?;
     let origin_host = origin_host(remote_url)?;
     // The contract distinguishes two cases:
     //   1. Public github.com — api_base is the canonical
@@ -282,6 +277,40 @@ pub fn validate_origin_host(remote_url: &str, api_base: &str) -> CaduceusResult<
         });
     }
     Ok(())
+}
+
+/// Map the daemon's `api_base` to the git host its remotes must
+/// target: the single api-to-git host rule, shared by
+/// [`validate_origin_host`] and [`git_https_remote`] so the two
+/// cannot drift (issue #312, D7).
+///
+/// Public (`api.github.com` / `github.com`, the canonical default
+/// `https://api.github.com` URL) maps to `github.com`; enterprise
+/// maps to the api_base host verbatim (lowercased).
+pub fn api_git_host(api_base: &str) -> CaduceusResult<String> {
+    let api_url = Url::parse(api_base)
+        .map_err(|err| CaduceusError::Config(format!("invalid api_base {api_base}: {err}")))?;
+    let api_host = api_url
+        .host_str()
+        .map(|h| h.to_ascii_lowercase())
+        .ok_or_else(|| CaduceusError::Config(format!("api_base has no host: {api_base}")))?;
+    Ok(api_host)
+}
+
+/// Derive the https git remote URL for *owner/repo* from the
+/// daemon's `api_base` (issue #312, D7). Public
+/// (`api.github.com` / `github.com`) remotes target
+/// `https://github.com/{owner}/{repo}.git`; enterprise remotes
+/// target the api_base host verbatim. Auth rides the
+/// [`GitRunner`]'s `GIT_ASKPASS` credential-helper fd - no
+/// URL-embedded credentials.
+pub fn git_https_remote(api_base: &str, owner: &str, repo: &str) -> CaduceusResult<String> {
+    let api_host = api_git_host(api_base)?;
+    let is_public = api_host == "api.github.com"
+        || api_host == "github.com"
+        || api_base.trim_end_matches('/') == "https://api.github.com";
+    let git_host = if is_public { "github.com" } else { &api_host };
+    Ok(format!("https://{git_host}/{owner}/{repo}.git"))
 }
 
 /// Extract the host component of an origin URL. SSH forms
