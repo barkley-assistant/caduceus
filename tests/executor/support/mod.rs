@@ -52,6 +52,9 @@ pub fn runtime_facts(cfg: &Config, run_id: &str, worktree: &Path) -> RuntimeFact
         engine_mode: EngineMode::Rootful,
         git_shadow_kind: GitShadowKind::File,
         git_shadow_host: git_shadow_host(cfg, run_id),
+        // Issue-shaped fixture default: no review root (PR-review
+        // tests set `Some(...)` explicitly).
+        review_worktree_root: None,
     }
 }
 

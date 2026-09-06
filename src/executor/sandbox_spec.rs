@@ -448,6 +448,14 @@ pub struct RuntimeFacts {
     /// (`<state_dir>/oci-runs/<run_id>/git-shadow`), created by the
     /// pre-flight probe when `git_shadow_kind != Absent`.
     pub git_shadow_host: PathBuf,
+    /// Canonical review-worktree root
+    /// (`<repo_storage_root>/worktrees/review`, see
+    /// `repo::review_worktree::review_worktrees_root`) for PR-review
+    /// runs; `None` for issue runs. The host-path allow-list is
+    /// target-aware: PR worktrees are admitted ONLY under this root
+    /// (issue worktrees keep the `workdir_base` rule) (#303, DAR
+    /// §6.3).
+    pub review_worktree_root: Option<PathBuf>,
 }
 
 // ---------------------------------------------------------------------------
@@ -488,6 +496,78 @@ pub fn resolve(
 ) -> CaduceusResult<SandboxSpec> {
     let parent_env: BTreeMap<OsString, OsString> = std::env::vars_os().collect();
     resolve_with_env(sandbox, runtime, spec, &parent_env)
+}
+
+/// Resolve the OCI review sandbox profile (DAR §6.3-6.4): the existing
+/// primitive configured for a PR review run, with the review posture
+/// asserted on the resolved spec. Fails closed unless the target is a
+/// PR review run. See [`resolve_review_sandbox_with_env`] for the
+/// injected-env variant.
+///
+/// FLAGGED DECISIONS (issue #303):
+/// - Network mode is INHERITED from `sandbox.network` — the DAR §6.4
+///   closed two-mode enum, NOT forced to `NetworkMode::None`. The
+///   review worker shares the issue-path harness (bridge → opencode →
+///   provider API) which needs egress; `Unrestricted` renders the
+///   engine's default isolated bridge (NAT'd, never host), keeping the
+///   posture identical to the autofix path (DAR §11.1).
+/// - The image is the single digest-pinned `sandbox.image` shared with
+///   the issue path — no second config surface. Digest pinning is
+///   enforced by [`ImageRef::new`].
+/// - `--cap-drop ALL` / `no-new-privileges` / `--read-only` rootfs are
+///   renderer-unconditional; tmpfs is the exact bounded set; the
+///   workspace is hard-coded RW (DAR §6.4) — none of these are
+///   configurable here, all are structural.
+pub fn resolve_review_sandbox(
+    sandbox: &SandboxConfig,
+    runtime: &RuntimeFacts,
+    spec: &ExecutorSpec,
+) -> CaduceusResult<SandboxSpec> {
+    let parent_env: BTreeMap<OsString, OsString> = std::env::vars_os().collect();
+    resolve_review_sandbox_with_env(sandbox, runtime, spec, &parent_env)
+}
+
+/// [`resolve_review_sandbox`] with an injected parent-environment map
+/// (same contract as [`resolve_with_env`]).
+///
+/// The explicit review entry point for #339 (claim-side review
+/// dispatch): fails closed on a non-PR target, then delegates to the
+/// standard resolution (whose target-aware allow-list admits only
+/// review-root worktrees for PR targets), and finally re-asserts the
+/// DAR §6.4 review posture on the resolved spec as the documented
+/// tripwire.
+pub fn resolve_review_sandbox_with_env(
+    sandbox: &SandboxConfig,
+    runtime: &RuntimeFacts,
+    spec: &ExecutorSpec,
+    parent_env: &BTreeMap<OsString, OsString>,
+) -> CaduceusResult<SandboxSpec> {
+    if !matches!(spec.target, crate::executor::WorkTarget::PullRequest(_)) {
+        return Err(CaduceusError::Config(
+            "review sandbox profile requires a PullRequest work target".to_string(),
+        ));
+    }
+    let resolved = resolve_with_env(sandbox, runtime, spec, parent_env)?;
+    // DAR §6.4 review posture (all structurally guaranteed by
+    // resolve; asserted here as the documented tripwire):
+    // - read-only .git shadow whenever the host worktree has a .git
+    //   entry (review worktrees always do — the gitdir pointer file);
+    // - no host escalation (network closed two-mode, no engine
+    //   sockets).
+    if runtime.git_shadow_kind != GitShadowKind::Absent {
+        let shadow = resolved
+            .git_shadow()
+            .ok_or_else(|| CaduceusError::OciMountConflict {
+                detail: "review profile: .git shadow must be present".to_string(),
+            })?;
+        if !shadow.read_only {
+            return Err(CaduceusError::OciMountConflict {
+                detail: "review profile: .git shadow must be read-only".to_string(),
+            });
+        }
+    }
+    validate_no_host_escalation(&resolved)?;
+    Ok(resolved)
 }
 
 /// Newline normalization for canonical free-text values (issue
@@ -562,10 +642,26 @@ pub fn resolve_with_env(
     check_disjoint(&worktree_norm, &shadow_norm, "worktree", "git_shadow_host")?;
     check_disjoint(&output_norm, &shadow_norm, "output_dir", "git_shadow_host")?;
 
-    // 3. Host-path allow-list: the worktree lives under
-    //    `workdir_base`; the daemon-owned output dir and `.git`
-    //    shadow live under the daemon state directory.
-    if !worktree_norm.starts_with(&workdir_base_norm) {
+    // 3. Host-path allow-list — target-aware (#303, DAR §6.3):
+    //    - Issue runs: the worktree lives under `workdir_base`
+    //      (unchanged, byte-identical behaviour).
+    //    - PR review runs: the worktree lives under the
+    //      review-worktree root ONLY (`<repo_storage_root>/worktrees/
+    //      review/...`, created by `create_review` there and nowhere
+    //      else). PR runs may NOT use the issue root.
+    //    The daemon-owned output dir and `.git` shadow always live
+    //    under the daemon state directory.
+    let worktree_admitted = match (&spec.target, &runtime.review_worktree_root) {
+        (crate::executor::WorkTarget::Issue(_), _) => worktree_norm.starts_with(&workdir_base_norm),
+        (crate::executor::WorkTarget::PullRequest(_), Some(root)) => {
+            match lexical_normalize(root) {
+                Some(root_norm) => worktree_norm.starts_with(&root_norm),
+                None => false,
+            }
+        }
+        (crate::executor::WorkTarget::PullRequest(_), None) => false,
+    };
+    if !worktree_admitted {
         return Err(undeclared(&runtime.worktree));
     }
     if !output_norm.starts_with(&state_dir_norm) {

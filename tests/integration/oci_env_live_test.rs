@@ -177,7 +177,7 @@ fn live_fixture(engine: Option<SandboxEngine>, container_script: &str) -> Option
             .state_dir
             .join("oci-runs")
             .join(run_id)
-            .join("git-shadow"),
+            .join("git-shadow"),        review_worktree_root: None,
     };
     // Emulate the daemon-owned shadow artifact the pre-flight would
     // create (the test drives the engine directly, not the executor).

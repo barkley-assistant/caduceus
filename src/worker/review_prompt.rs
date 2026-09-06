@@ -88,12 +88,6 @@ pub const MAX_REVIEW_REPO_CONTEXT_BYTES: usize = 256 * 1024;
 /// PR-discussion budget (sampled comment window, fence-escaped bytes).
 pub const MAX_REVIEW_DISCUSSION_BYTES: usize = 64 * 1024;
 
-/// Trusted-section headroom used by the budget-sum test: the trusted
-/// sections 1-2 plus header/footer stay well under this (measured
-/// ~8 KiB in practice; the unit test pins the sum against
-/// [`REVIEW_MAX_PROMPT_BYTES`]).
-pub(crate) const TRUSTED_SECTION_HEADROOM_BYTES: usize = 64 * 1024;
-
 // ---------------------------------------------------------------------------
 // Oversized-PR skip event (DAR §7.1, §8.1, §13)
 // ---------------------------------------------------------------------------

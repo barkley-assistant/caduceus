@@ -152,6 +152,21 @@ pub async fn probe_runtime_facts_with_daemon_id(
 
     // 6. Assemble the extended facts.
     let target = spec.target.display();
+    // Target-aware review-worktree root (#303, DAR §6.3): PR-review
+    // runs admit their worktree only under the canonical review root
+    // (`<repo_storage_root>/worktrees/review`, single source of truth
+    // shared with `repo::review_worktree`); issue runs keep the
+    // workdir_base rule and carry no review root.
+    let review_worktree_root = if matches!(
+        spec.target,
+        crate::executor::WorkTarget::PullRequest(_)
+    ) {
+        Some(crate::repo::review_worktree::review_worktrees_root(
+            &cfg.repo_storage_root,
+        ))
+    } else {
+        None
+    };
     Ok(RuntimeFacts {
         run_id: spec.run_id.clone(),
         target,
@@ -166,6 +181,7 @@ pub async fn probe_runtime_facts_with_daemon_id(
         engine_mode,
         git_shadow_kind,
         git_shadow_host,
+        review_worktree_root,
     })
 }
 

@@ -329,6 +329,15 @@ impl ReviewWorktree {
     }
 }
 
+/// Canonical review-worktree root for a repo storage root:
+/// `<repo_storage_root>/worktrees/review`. Single source of truth for
+/// the directory shape — shared with the executor's host-path
+/// allow-list (#303, DAR §6.3), which admits PR-review worktrees only
+/// under this root.
+pub fn review_worktrees_root(repo_storage_root: &Path) -> PathBuf {
+    repo_storage_root.join("worktrees").join("review")
+}
+
 /// Resolve the review worktree path for `(owner, repo, run_id)` under
 /// the storage root derived from the mirror path:
 /// `<storage>/mirrors/<owner>/<repo>.git/` → `<storage>` →
@@ -361,9 +370,7 @@ fn review_worktree_path(
         )));
     }
 
-    Ok(storage_root
-        .join("worktrees")
-        .join("review")
+    Ok(review_worktrees_root(&storage_root)
         .join(owner)
         .join(repo)
         .join(run_id))
