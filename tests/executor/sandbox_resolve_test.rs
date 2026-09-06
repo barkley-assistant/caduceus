@@ -748,10 +748,17 @@ fn escalation_validator_is_reachable_through_resolve() {
 /// carries the PR display identity `owner/repo#pr/9`.
 #[test]
 fn pr_target_resolves_to_pr_contract_environment_and_display_label() {
-    let (cfg, worktree) = base();
-    let mut runtime = runtime_for(&cfg, &worktree);
+    let (cfg, issue_worktree) = base();
+    // PR-review worktrees live under the canonical review root (the
+    // target-aware allow-list, #303).
+    let review_root =
+        caduceus::repo::review_worktree::review_worktrees_root(&cfg.repo_storage_root);
+    let worktree = review_root.join("owner").join("repo").join("run-pr-9");
+    let mut runtime = runtime_for(&cfg, &issue_worktree);
     runtime.run_id = "run-pr-9".to_string();
     runtime.target = "owner/repo#pr/9".to_string();
+    runtime.worktree = worktree.clone();
+    runtime.review_worktree_root = Some(review_root);
     let spec_input = caduceus::executor::ExecutorSpec {
         self_exe: PathBuf::from("/proc/self/exe"),
         target: caduceus::executor::WorkTarget::PullRequest(caduceus::review::ReviewTarget {

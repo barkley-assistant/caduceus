@@ -81,6 +81,7 @@ fn fixture_with(
             .join("oci-runs")
             .join(run_id)
             .join("git-shadow"),
+        review_worktree_root: None,
     };
     let spec = caduceus::executor::sandbox_spec::resolve(
         cfg.sandbox(),
@@ -1063,8 +1064,13 @@ fn renderer_has_no_side_effect_imports() {
 fn pr_target_e_fallback_renders_pr_vars_and_no_issue_vars() {
     let root = Path::new(ROOT);
     let cfg = Config::test_defaults(root);
-    let worktree = root
-        .join("workdirs")
+    // PR-review worktrees live under the canonical review root (the
+    // target-aware allow-list, #303); the renderer test only needs the
+    // spec to resolve.
+    let worktree = cfg
+        .repo_storage_root
+        .join("worktrees")
+        .join("review")
         .join("owner")
         .join("repo")
         .join("run-pr-9");
@@ -1090,6 +1096,9 @@ fn pr_target_e_fallback_renders_pr_vars_and_no_issue_vars() {
             .join("oci-runs")
             .join("run-pr-9")
             .join("git-shadow"),
+        review_worktree_root: Some(caduceus::repo::review_worktree::review_worktrees_root(
+            &cfg.repo_storage_root,
+        )),
     };
     let spec_input = caduceus::executor::ExecutorSpec {
         self_exe: PathBuf::from("/proc/self/exe"),

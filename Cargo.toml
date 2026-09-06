@@ -544,6 +544,14 @@ name = "prompt_inline_test"
 path = "tests/worker/prompt_inline_test.rs"
 
 [[test]]
+name = "review_prompt_test"
+path = "tests/worker/review_prompt_test.rs"
+
+[[test]]
+name = "review_sandbox_test"
+path = "tests/executor/review_sandbox_test.rs"
+
+[[test]]
 name = "context_inline_test"
 path = "tests/worker/context_inline_test.rs"
 

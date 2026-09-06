@@ -9,6 +9,7 @@
 
 pub mod context;
 pub mod prompt;
+pub mod review_prompt;
 pub mod supervisor;
 pub mod worker_contract;
 

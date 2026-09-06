@@ -375,6 +375,19 @@ consume the normal worker retry budget: retrying cannot change
 deterministically-unreviewable input. Large-PR behaviour is deterministically
 tested.
 
+Phase-1 constants (implemented in `src/worker/review_prompt.rs`; all
+budgets are measured on the **fence-escaped** text — the bytes that
+actually land in the prompt — so fence-escaping expansion cannot blow
+the total):
+
+| Section | Budget | Over-budget behaviour |
+|---|---|---|
+| 4. Diff | 1 MiB | never truncated — the run is **skipped** (`review_skipped_oversized_pr`) |
+| 3. PR metadata (body) | 64 KiB | head-truncate + deterministic notice after the closing fence |
+| 5. Repository context | 256 KiB | head-truncate + deterministic notice |
+| 6. PR discussion | 64 KiB | **tail**-sample (most recent bytes kept) + deterministic notice |
+| Total prompt | 2 MiB | backstop only (existing hard prompt maximum); per-section budgets sum well below it |
+
 ---
 
 ## 8. Execution status vs verdict; retry semantics

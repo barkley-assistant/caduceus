@@ -357,12 +357,14 @@ fn push_footer(out: &mut String) {
     );
 }
 
-/// Replace every triple-backtick in *s* with the Markdown
-/// alternative-fence form ```` ``` `` `` `` so a malicious body
-/// cannot close our structural fences. The replacement is
-/// content-preserving: every occurrence is swapped, and the
-/// rest of the document is unchanged.
-fn sanitise_fences(s: &str) -> String {
+/// Replace every backtick run of length ≥ 3 in *s* with a tilde run of
+/// length `run_len + 3` (the Markdown alternative-fence form) so a
+/// malicious body cannot close our structural fences. Runs of 1-2
+/// backticks survive — they cannot close a 3-backtick fence. The
+/// replacement is content-preserving: every occurrence is swapped, and
+/// the rest of the document is unchanged. (Shared with the review
+/// prompt builder, which budgets on this escaped text.)
+pub(crate) fn sanitise_fences(s: &str) -> String {
     // Markdown alternative fences: `````` is the
     // backtick-fence prefix; to avoid colliding with it, we use
     // an extended form: ```` ` ```` tilde ```` ` ````. Any

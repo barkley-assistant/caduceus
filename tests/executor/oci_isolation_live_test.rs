@@ -237,6 +237,7 @@ fn live_fixture_with(
             .join("oci-runs")
             .join(&run_id)
             .join("git-shadow"),
+        review_worktree_root: None,
     };
     // Emulate the daemon-owned shadow artifact the pre-flight would
     // create (the tests drive the engine directly, not the executor).
@@ -865,6 +866,7 @@ fn disk_pressure_watchdog_terminates_in_flight_and_refuses_new_dispatch() {
             engine_mode,
             git_shadow_kind: GitShadowKind::File,
             git_shadow_host: shadow_host,
+            review_worktree_root: None,
         };
         let resolved = resolve(fx_cfg.sandbox(), &runtime, &spec).expect("sandbox resolves");
         let state = Arc::new(NullState);
@@ -1897,6 +1899,7 @@ fn lifecycle_harness(fx: &LiveFixture, worker_command: Vec<String>) -> Lifecycle
         engine_mode: fx.engine_mode,
         git_shadow_kind: GitShadowKind::File,
         git_shadow_host: fx.shadow_host.clone(),
+        review_worktree_root: None,
     };
     let spec_exec = caduceus::executor::ExecutorSpec {
         self_exe: std::path::PathBuf::from("/proc/self/exe"),

@@ -27,6 +27,21 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
 
 ### Added
 
+- **Review worker prompt and OCI review sandbox profile.** The review
+  worker prompt is sectioned and trust-separated in a fixed order
+  (daemon policy and output schema trusted first; PR metadata,
+  merge-base diff, repository context, and PR discussion untrusted and
+  fence-escaped), with deterministic per-section byte budgets measured
+  on fence-escaped text — a 1 MiB diff skip threshold, 64 KiB metadata,
+  256 KiB repository context, 64 KiB discussion (tail-sampled), and a
+  2 MiB total backstop. A diff over budget skips the run via the
+  structured `review_skipped_oversized_pr` event, never consuming the
+  normal worker retry budget. The OCI sandbox host-path allow-list is
+  now target-aware: PR-review worktrees are admitted only under
+  `<repo_storage_root>/worktrees/review`, and a review profile resolver
+  (`resolve_review_sandbox`) fails closed on non-PR targets while
+  asserting the DAR §6.4 posture. The dispatch wiring itself is #339.
+  Closes #303.
 - **CLI reference page.** `docs/cli.md` documents every `caduceus`
   subcommand and flag, exit codes, JSON envelope versions, locking and
   refusal semantics, and the `hermes caduceus` wrapper surface; the
