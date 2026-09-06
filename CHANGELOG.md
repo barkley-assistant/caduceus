@@ -27,6 +27,15 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
 
 ### Added
 
+- **ReviewResult verdict-consistency validator and review result
+  ingress.** The review worker's result document is now fully
+  validated: `review` present iff `status` is `success`; `verdict`
+  must be `fail` iff at least one finding is `blocking`; finding
+  paths must be repo-relative (no leading `/`, no `..`, no control
+  characters) and 1-based lines require a path. Every rejection —
+  including unknown `schema_version` values — is an execution
+  failure classified `FailureClass::Worker` and burns normal retry
+  budget (DAR §8). Closes #305.
 - **Review worker prompt and OCI review sandbox profile.** The review
   worker prompt is sectioned and trust-separated in a fixed order
   (daemon policy and output schema trusted first; PR metadata,
