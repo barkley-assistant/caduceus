@@ -253,6 +253,46 @@ struct MirrorFixture {
     head_sha: String,
 }
 
+/// Add an orphan commit (a second root, no parents) on
+/// `refs/heads/orphan` to the bare remote at `path`. The commit is
+/// fetchable (a branch tip), but has NO common ancestor with
+/// `main`, so `git merge-base main..orphan` fails — discovery
+/// surfaces that as `CaduceusError::Git` (the per-target git-error
+/// shape the D9 isolation tests need, distinct from
+/// `HeadShaUnavailable`).
+fn add_orphan_commit(path: &Path) -> String {
+    let run = |cmd: &mut Command| {
+        let output = cmd.output().expect("spawn command");
+        assert!(
+            output.status.success(),
+            "command failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    let tree = {
+        let output = Command::new("git")
+            .current_dir(path)
+            .args(["hash-object", "-w", "-t", "tree", "/dev/null"])
+            .output()
+            .expect("hash-object");
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    };
+    let output = Command::new("git")
+        .current_dir(path)
+        .args(["commit-tree", &tree, "-m", "orphan root"])
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@example.com")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@example.com")
+        .output()
+        .expect("commit-tree");
+    let orphan = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    run(Command::new("git")
+        .current_dir(path)
+        .args(["update-ref", "refs/heads/orphan", &orphan]));
+    orphan
+}
+
 /// Local bare remote + mirror with `main` fetched; `feature` tip NOT
 /// fetched (mirrors production: `ensure` fetches the base branch
 /// only).
@@ -749,6 +789,66 @@ async fn per_repo_500_does_not_stop_later_repos() {
     let entry = queue.entries.values().next().expect("entry");
     assert_eq!(entry.target.repository.owner, "owner");
     assert_eq!(entry.target.repository.repo, "b");
+}
+
+#[tokio::test]
+async fn git_admission_failure_continues_to_later_repos() {
+    let h = StepHarness::start("iso-git").await;
+    // Repo A lists one open PR whose head is a FETCHABLE orphan
+    // commit (second root): fetch succeeds, but merge-base has no
+    // common ancestor and fails as `CaduceusError::Git` — the
+    // per-target git-error shape (NOT `HeadShaUnavailable`). Repo B
+    // lists one new open PR and must still admit (D9 per-target
+    // isolation; the old code aborted the whole step here).
+    let orphan = add_orphan_commit(&h.remote_dir);
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/a/pulls"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!([h.row("a", 7, &orphan)])),
+        )
+        .mount(&h.server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/b/pulls"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!([h.row("b", 9, &h.tip_sha)])),
+        )
+        .mount(&h.server)
+        .await;
+
+    // Both repos resolve to the same local remote (which serves the
+    // orphan branch).
+    let remote_url = h.remote_url();
+    let stats = poll_review_step_for_tests(
+        &["owner/a".to_string(), "owner/b".to_string()],
+        &h.client(),
+        &h.cfg,
+        &h.store,
+        &GitRunner::new(&h.cfg),
+        &move |owner: &str, repo: &str| {
+            let _ = (owner, repo);
+            Ok(remote_url.clone())
+        },
+    )
+    .await
+    .expect("step returns Ok despite repo A's git admission failure (D9)");
+
+    assert_eq!(stats.failed_admissions, 1, "git error counted, not fatal");
+    assert_eq!(stats.admitted, 1, "repo B's PR still admitted");
+    assert_eq!(
+        stats.skipped_unavailable_sha, 0,
+        "the failure is Git, not HeadShaUnavailable"
+    );
+    let queue = h.store.review_queue_snapshot().expect("snapshot");
+    assert_eq!(queue.entries.len(), 1, "only repo B's entry queued");
+    let entry = queue.entries.values().next().expect("entry");
+    assert_eq!(entry.target.repository.owner, "owner");
+    assert_eq!(entry.target.repository.repo, "b");
+    assert_eq!(
+        entry.target.head_sha, h.tip_sha,
+        "repo B's head, not the orphan"
+    );
 }
 
 #[tokio::test]

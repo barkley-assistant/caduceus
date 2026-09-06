@@ -31,7 +31,6 @@
 
 use tracing::{info, warn};
 
-use crate::daemon::orchestration::classify_error;
 use crate::github::pr::list_pull_requests;
 use crate::github::Client;
 use crate::infra::config::{AutoReviewConfig, Config};
@@ -543,35 +542,40 @@ pub(crate) async fn poll_review_step(
                             );
                         }
                         Err(err) => {
-                            // Per-target git errors (incl.
-                            // HeadShaUnavailable, D8) log + count +
-                            // continue. Store-write errors propagate
-                            // as step-level (D9).
-                            let class = classify_error(&err);
-                            if matches!(
-                                class,
-                                crate::daemon::orchestration::FailureClass::Infrastructure
-                            ) && !matches!(err, CaduceusError::HeadShaUnavailable { .. })
-                            {
-                                return Err(err);
-                            }
-                            if matches!(err, CaduceusError::HeadShaUnavailable { .. }) {
-                                stats.skipped_unavailable_sha += 1;
-                                info!(
-                                    target: "caduceus",
-                                    repo = repo,
-                                    pr = pr_number,
-                                    "review discovery: head SHA unavailable; skipping (next poll retries)"
-                                );
-                            } else {
-                                warn!(
-                                    target: "caduceus",
-                                    error = %err,
-                                    repo = repo,
-                                    pr = pr_number,
-                                    "review discovery: admission failed; skipping target"
-                                );
-                                stats.failed_admissions += 1;
+                            // D9 per-row isolation: git errors from the
+                            // admission itself (mirror fetch, merge
+                            // base - including `HeadShaUnavailable`,
+                            // D8) log + count + continue. Only
+                            // store/state write errors (from
+                            // `enqueue_review`) and cancellation
+                            // propagate as step-level so the call
+                            // site can classify them.
+                            match err {
+                                CaduceusError::HeadShaUnavailable { .. } => {
+                                    stats.skipped_unavailable_sha += 1;
+                                    info!(
+                                        target: "caduceus",
+                                        repo = repo,
+                                        pr = pr_number,
+                                        "review discovery: head SHA unavailable; skipping (next poll retries)"
+                                    );
+                                }
+                                // Git transport / merge-base failure
+                                // for this target only (e.g. unrelated
+                                // histories): the next poll retries.
+                                CaduceusError::Git { .. } => {
+                                    warn!(
+                                        target: "caduceus",
+                                        error = %err,
+                                        repo = repo,
+                                        pr = pr_number,
+                                        "review discovery: admission failed; skipping target"
+                                    );
+                                    stats.failed_admissions += 1;
+                                }
+                                // Store/state write errors and
+                                // cancellation are step-level (D9).
+                                other => return Err(other),
                             }
                         }
                     }
