@@ -275,8 +275,8 @@ fn assert_structural_invariants(label: &str, prompt: &str, benign_fence_count: u
             if occurrences > 1 {
                 assert!(
                     pos > metadata_pos,
-                    "{label}: impersonated trusted header {trusted_needle:?} \
-                     rendered inside the trusted zone"
+                    "{label}: impersonated trusted-section header found \
+                     inside the trusted zone (byte offset {pos})"
                 );
                 let fences_before = prompt[..pos].matches("```").count();
                 assert_eq!(
