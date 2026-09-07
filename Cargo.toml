@@ -456,6 +456,14 @@ name = "review_result_validation_test"
 path = "tests/review/review_result_validation_test.rs"
 
 [[test]]
+name = "sticky_comment_renderer_test"
+path = "tests/review/sticky_comment_renderer_test.rs"
+
+[[test]]
+name = "sticky_comment_publish_test"
+path = "tests/review/sticky_comment_publish_test.rs"
+
+[[test]]
 name = "review_store_test"
 path = "tests/state/review_store_test.rs"
 

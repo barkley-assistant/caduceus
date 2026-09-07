@@ -26,6 +26,13 @@
 //! Out of scope here (later issues): migrations (#293), executor
 //! targets (#346), CLI (#318).
 
+pub mod sticky_comment;
+
+pub use sticky_comment::{
+    find_sticky_comment_by_marker, publish, render_sticky_comment, RenderInput, StickyOutcome,
+    REVIEW_MARKER, STICKY_COMMENT_MAX_BYTES, STICKY_MARKER_SEARCH_MAX_PAGES,
+};
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
