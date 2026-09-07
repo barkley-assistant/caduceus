@@ -1,0 +1,20 @@
+{
+  "number": 7,
+  "title": "Head branch deleted",
+  "body": "The head branch was deleted after merge; head.repo is null.",
+  "state": "open",
+  "draft": false,
+  "merged": false,
+  "merged_at": null,
+  "user": { "login": "octocat" },
+  "base": {
+    "ref": "main",
+    "sha": "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111",
+    "repo": { "full_name": "owner/r" }
+  },
+  "head": {
+    "ref": "feature-x",
+    "sha": "bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222",
+    "repo": null
+  }
+}

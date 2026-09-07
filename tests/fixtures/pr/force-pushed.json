@@ -1,0 +1,20 @@
+{
+  "number": 7,
+  "title": "Force-pushed revision",
+  "body": "Head moved since the last poll; the new SHA is admitted as a new target.",
+  "state": "open",
+  "draft": false,
+  "merged": false,
+  "merged_at": null,
+  "user": { "login": "octocat" },
+  "base": {
+    "ref": "main",
+    "sha": "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111",
+    "repo": { "full_name": "owner/r" }
+  },
+  "head": {
+    "ref": "feature-x",
+    "sha": "cccc3333cccc3333cccc3333cccc3333cccc3333",
+    "repo": { "full_name": "owner/r" }
+  }
+}

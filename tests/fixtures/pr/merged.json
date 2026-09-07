@@ -1,0 +1,20 @@
+{
+  "number": 7,
+  "title": "Merged contribution",
+  "body": "Merged after human review.",
+  "state": "closed",
+  "draft": false,
+  "merged": true,
+  "merged_at": "2026-09-01T12:00:00Z",
+  "user": { "login": "octocat" },
+  "base": {
+    "ref": "main",
+    "sha": "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111",
+    "repo": { "full_name": "owner/r" }
+  },
+  "head": {
+    "ref": "feature-x",
+    "sha": "bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222",
+    "repo": { "full_name": "owner/r" }
+  }
+}

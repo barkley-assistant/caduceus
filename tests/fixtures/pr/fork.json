@@ -1,0 +1,20 @@
+{
+  "number": 7,
+  "title": "Contribution from a fork",
+  "body": "PR opened from a fork repository.",
+  "state": "open",
+  "draft": false,
+  "merged": false,
+  "merged_at": null,
+  "user": { "login": "forkuser" },
+  "base": {
+    "ref": "main",
+    "sha": "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111",
+    "repo": { "full_name": "owner/r" }
+  },
+  "head": {
+    "ref": "feature-x",
+    "sha": "bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222",
+    "repo": { "full_name": "forkuser/r" }
+  }
+}

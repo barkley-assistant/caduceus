@@ -1,0 +1,22 @@
+[
+  {
+    "number": 7,
+    "title": "First page row",
+    "body": "Open PR on page 1 of the listing.",
+    "state": "open",
+    "draft": false,
+    "merged": false,
+    "merged_at": null,
+    "user": { "login": "octocat" },
+    "base": {
+      "ref": "main",
+      "sha": "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111",
+      "repo": { "full_name": "owner/r" }
+    },
+    "head": {
+      "ref": "feature-a",
+      "sha": "bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222",
+      "repo": { "full_name": "owner/r" }
+    }
+  }
+]
