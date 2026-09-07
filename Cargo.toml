@@ -754,3 +754,15 @@ path = "tests/state/review_fixture_migration_test.rs"
 [[test]]
 name = "pr_fixtures_test"
 path = "tests/github/pr_fixtures_test.rs"
+
+[[test]]
+name = "corpus_test"
+path = "tests/security/corpus_test.rs"
+
+[[test]]
+name = "fork_adversarial_test"
+path = "tests/security/fork_adversarial_test.rs"
+
+[[test]]
+name = "posture_catalogue_test"
+path = "tests/security/posture_catalogue_test.rs"

@@ -1,0 +1,6 @@
+{
+  "label": "benign-seed",
+  "targets": [],
+  "payload": { "diff": "diff --git a/x b/x\n" },
+  "expect_oversized": null
+}
