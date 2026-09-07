@@ -738,3 +738,11 @@ path = "tests/integration/oci_env_live_test.rs"
 [[test]]
 name = "review_discovery_test"
 path = "tests/daemon/review_discovery_test.rs"
+
+[[test]]
+name = "review_fixture_migration_test"
+path = "tests/state/review_fixture_migration_test.rs"
+
+[[test]]
+name = "pr_fixtures_test"
+path = "tests/github/pr_fixtures_test.rs"

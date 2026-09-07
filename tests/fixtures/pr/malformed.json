@@ -1,0 +1,8 @@
+{
+  "number": 7,
+  "title": "Malformed row",
+  "state": 7,
+  "draft": "no",
+  "base": "not-an-object",
+  "head": { "ref": 12 }
+}
