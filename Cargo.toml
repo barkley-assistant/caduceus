@@ -464,6 +464,10 @@ name = "sticky_comment_publish_test"
 path = "tests/review/sticky_comment_publish_test.rs"
 
 [[test]]
+name = "finalizer_test"
+path = "tests/review/finalizer_test.rs"
+
+[[test]]
 name = "review_store_test"
 path = "tests/state/review_store_test.rs"
 

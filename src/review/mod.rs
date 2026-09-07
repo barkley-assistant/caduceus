@@ -26,8 +26,16 @@
 //! Out of scope here (later issues): migrations (#293), executor
 //! targets (#346), CLI (#318).
 
+pub mod finalize;
 pub mod sticky_comment;
 
+pub use finalize::{
+    backoff_delay, claim_for_publication, finalize_review, DueFinalization, FinalizeOutcome,
+    EVENT_PUBLISHED, EVENT_PUBLISH_FAILED_RETRYABLE, EVENT_PUBLISH_STARTED,
+    EVENT_SKIPPED_PR_CLOSED_UNMERGED, EVENT_SUPPRESSED_STALE_GENERATION,
+    PUBLISH_ERROR_CLOSED_UNMERGED, PUBLISH_ERROR_NO_PUBLISHABLE_RESULT, PUBLISH_ERROR_PR_NOT_FOUND,
+    PUBLISH_ERROR_SUPPRESSED_STALE,
+};
 pub use sticky_comment::{
     find_sticky_comment_by_marker, publish, render_sticky_comment, RenderInput, StickyOutcome,
     REVIEW_MARKER, STICKY_COMMENT_MAX_BYTES, STICKY_MARKER_SEARCH_MAX_PAGES,

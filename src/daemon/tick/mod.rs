@@ -509,6 +509,8 @@ pub async fn tick(
     //      (AC2/AC3). Never returns early.
     let mut pr_step_error: Option<CaduceusError> = None;
     let ar_enabled = cfg.auto_review().map(|ar| ar.enabled).unwrap_or(false);
+    let mut review_store_open: Option<Result<crate::state::review::ReviewStore, CaduceusError>> =
+        None;
     if ar_enabled && !cfg.dry_run {
         let review_store = if use_sqlite {
             crate::state::review::ReviewStore::open_sqlite(&state_dir)
@@ -541,14 +543,58 @@ pub async fn tick(
                         pr_step_error = Some(err);
                     }
                 }
+                // Keep the open store for the 5.6 publication poll.
+                review_store_open = Some(Ok(review_store));
             }
             Err(err) => {
                 tracing::warn!(
                     error = %err,
                     "review store open failed; skipping PR discovery"
                 );
-                pr_step_error = Some(err);
+                review_store_open = Some(Err(err));
+                pr_step_error = review_store_open
+                    .as_mut()
+                    .and_then(|slot| slot.as_mut().err())
+                    .map(|e| {
+                        // Classify from the display form; the original
+                        // moves into the 5.6 match arm below.
+                        CaduceusError::Other(e.to_string())
+                    });
             }
+        }
+    }
+
+    // 5.6. Review publication finalization poll (issue #310, DAR
+    //      §9.1): resume-safe FSM for the sticky PR comment. Runs only
+    //      when `auto_review.enabled` (and not in dry run), after PR
+    //      discovery. Per-entry failures are logged + counted inside
+    //      the poll (isolation mirrors #312); the tick NEVER returns
+    //      early — the drain below always runs.
+    if ar_enabled && !cfg.dry_run {
+        match review_store_open {
+            Some(Ok(ref review_store)) => {
+                match review_finalize_step::poll_publication_step(&client, &cfg, review_store).await
+                {
+                    Ok(stats) => info!(?stats, "review publication finalize complete"),
+                    Err(err) => {
+                        let class = classify_error(&err);
+                        tracing::warn!(
+                            error = %err, ?class,
+                            "review publication poll failed; continuing to drain"
+                        );
+                        if pr_step_error.is_none() {
+                            pr_step_error = Some(err);
+                        }
+                    }
+                }
+            }
+            Some(Err(err)) => {
+                tracing::warn!(
+                    error = %err,
+                    "review store open failed; skipping publication finalize"
+                );
+            }
+            None => {}
         }
     }
 
@@ -827,6 +873,7 @@ pub mod awaiting_review;
 pub mod per_claim;
 pub mod resume;
 pub mod review_discovery;
+pub mod review_finalize_step;
 
 use self::awaiting_review::*;
 use self::per_claim::*;

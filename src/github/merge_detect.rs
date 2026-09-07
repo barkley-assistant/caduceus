@@ -31,11 +31,15 @@ pub async fn poll_pr_merge_status(
     pr_number: u64,
 ) -> CaduceusResult<MergeStatus> {
     let path = format!("/repos/{owner}/{repo}/pulls/{pr_number}");
-    let resp = client.get(&path, "application/vnd.github+json").await?;
+    let resp = match client.get(&path, "application/vnd.github+json").await {
+        Ok(resp) => resp,
+        // The transport surfaces a 404 as a typed error, not an
+        // `Ok` response: map it to the gone-state B input (DAR
+        // §9.3 — PR deleted; quiet skip, never recreate).
+        Err(CaduceusError::GitHubApi { status: 404, .. }) => return Ok(MergeStatus::NotFound),
+        Err(err) => return Err(err),
+    };
 
-    if resp.status == 404 {
-        return Ok(MergeStatus::NotFound);
-    }
     if !matches!(resp.status, 200) {
         return Err(CaduceusError::GitHubApi {
             status: resp.status,

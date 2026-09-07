@@ -314,6 +314,18 @@ impl ReviewStore {
                 Some(existing_state) => {
                     let generation = existing_state.review_generation + 1;
                     existing_state.review_generation = generation;
+                    // Re-arm publication for the new generation (DAR
+                    // §9.4 + #310): without the reset a `Published` row
+                    // from generation N would permanently block
+                    // generation N+1's publication, and retry debt from
+                    // the old generation would be stale. The reset is
+                    // inside the same exclusive section as the bump, so
+                    // the queue entry's generation and the reset are
+                    // atomic together.
+                    existing_state.publication_state = crate::review::PublicationState::Pending;
+                    existing_state.publication_attempt_count = 0;
+                    existing_state.next_publish_at = None;
+                    existing_state.last_publish_error = None;
                     generation
                 }
                 None => {
@@ -592,6 +604,53 @@ impl ReviewStore {
         self.with_shared(|store, conn| {
             let states = store.load_state_map(conn)?;
             Ok(states.states.get(&review_state_key(repo, pr)).cloned())
+        })
+    }
+
+    /// Finalizations due for publication (issue #310, DAR §9.1):
+    /// completed runs (history rows) whose generation is still CURRENT
+    /// for their `(repo, pr)` and whose state row is not yet finalized
+    /// (`publication_state != Published`). Each due entry carries the
+    /// completing run's generation (the stale-publication guard input)
+    /// and head SHA (the history-row lookup key).
+    ///
+    /// The scan is history-driven by design: the durable result exists
+    /// BEFORE any publication attempt (DAR §9.1), so the finalizer can
+    /// never be asked to publish a run that was never persisted. A row
+    /// whose generation was superseded is skipped here — the newer
+    /// generation owns the presentation (DAR §9.4); the older run stays
+    /// in history only. `retry_or_fail_review` failures (execution
+    /// retries) have no history row and never appear.
+    ///
+    /// Ordered oldest-first for deterministic tick behaviour.
+    pub fn due_finalizations(
+        &self,
+    ) -> CaduceusResult<Vec<crate::review::finalize::DueFinalization>> {
+        self.with_shared(|store, conn| {
+            let history = store.load_history(conn)?;
+            let states = store.load_state_map(conn)?;
+            let mut due = Vec::new();
+            for row in &history.rows {
+                let key = review_state_key(&row.repository, row.pull_request);
+                let Some(state) = states.states.get(&key) else {
+                    continue;
+                };
+                if state.publication_state == crate::review::PublicationState::Published {
+                    continue;
+                }
+                if row.review_generation != state.review_generation {
+                    // Superseded generation: suppressed by the guard at
+                    // finalize time; the poll never routes it.
+                    continue;
+                }
+                due.push(crate::review::finalize::DueFinalization {
+                    repository: row.repository.clone(),
+                    pull_request: row.pull_request,
+                    run_generation: row.review_generation,
+                    head_sha: row.head_sha.clone(),
+                });
+            }
+            Ok(due)
         })
     }
 
