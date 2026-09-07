@@ -719,6 +719,56 @@ fn git_shadow_write_rejected() {
     assert_ne!(code2, 7, "writing /workspace/.git must fail; logs: {logs2}");
 }
 
+/// `git commit`/`git push` from inside the review container fail
+/// because the `.git` shadow is read-only (DAR §6.4: mutation of git
+/// metadata is prevented by the RO `.git` shadow — no commit/push/
+/// branch-switch from inside the container). This is the denied
+/// operation a compromised worker would actually attempt; the
+/// existing `git_shadow_write_rejected` proves the shadow file is
+/// byte-identical after a direct write, this proves the *git
+/// operation* itself is denied. The real model (DAR §6.4 reality
+/// clause) is asserted, not a stronger imaginary one: `/workspace`
+/// itself is RW — only `.git` is the RO shadow.
+#[test]
+#[cfg_attr(not(env = "CADUCEUS_RUN_ISOLATION_TESTS"), ignore)]
+fn git_metadata_mutation_denied_via_ro_shadow_live() {
+    // Guard against a false pass: `git` absent would also exit
+    // non-zero, so first prove the binary IS present in the cert
+    // image (plan risk 5 — never claim a denial that is actually a
+    // missing binary).
+    let probe = live_fixture(GitShadowKind::File, "command -v git && git --version");
+    let (probe_code, probe_logs) = run_container(&probe);
+    assert_eq!(
+        probe_code, 0,
+        "cert image must ship git for this denial to be meaningful; logs: {probe_logs}"
+    );
+
+    let fx = live_fixture(
+        GitShadowKind::File,
+        "git -C /workspace add -A 2>&1; \
+         git -C /workspace commit -m pwn 2>&1; \
+         git -C /workspace push 2>&1; \
+         echo EXIT:$?",
+    );
+    let host_dot_git = fx.worktree.join(".git");
+    let before = std::fs::read(&host_dot_git).expect("read host .git");
+    let (code, logs) = run_container(&fx);
+    let after = std::fs::read(&host_dot_git).expect("read host .git after");
+    assert_eq!(
+        before, after,
+        "host .git must be byte-identical after a git-mutation attempt"
+    );
+    // The git operations must fail; "EXIT:0" would mean the last one
+    // (push) succeeded.
+    assert!(
+        !logs.contains("EXIT:0"),
+        "git commit/push must fail under the RO .git shadow; logs: {logs}"
+    );
+    // And the shadow sentinel is intact on the daemon side.
+    let shadow = std::fs::read_to_string(&fx.shadow_host).expect("read shadow");
+    assert_eq!(shadow, GIT_SHADOW_FILE_CONTENT);
+}
+
 // ---------------------------------------------------------------------------
 // Directory-shadow variant
 // ---------------------------------------------------------------------------

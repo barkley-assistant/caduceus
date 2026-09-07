@@ -21,7 +21,7 @@ Docker/Podman engine behind `CADUCEUS_RUN_ISOLATION_TESTS`.
 |---|---|---|---|
 | 1 | Cannot read host sentinel outside allowed mounts | `oci_isolation_live_test.rs::host_sentinel_unreachable_live` | Live |
 | 2 | Cannot access daemon state; cannot access other repositories | `oci_isolation_live_test.rs::daemon_state_and_other_repos_unreachable_live` | Live |
-| 3 | `.git` does not reveal daemon Git metadata (pointer + directory shadows) | `oci_isolation_live_test.rs::git_shadow_read_sees_only_shadow` + `git_shadow_write_rejected` + `git_shadow_dir_variant_is_empty_and_read_only` | Live |
+| 3 | `.git` does not reveal daemon Git metadata (pointer + directory shadows); git metadata mutation denied via the RO shadow | `oci_isolation_live_test.rs::git_shadow_read_sees_only_shadow` + `git_shadow_write_rejected` + `git_shadow_dir_variant_is_empty_and_read_only` + `git_metadata_mutation_denied_via_ro_shadow_live` | Live |
 | 4 | Workspace writable; rootfs read-only; output/result path works | `oci_isolation_live_test.rs::workspace_writable_rootfs_readonly_output_writes_live` | Live |
 | 5 | Writable mount surfaces == `{/workspace, /output}` + bounded `{/tmp, /dev/shm}` | `oci_isolation_live_test.rs::oci_mount_enumeration_two_writable_surfaces` | Live |
 | 6 | Capabilities absent (cap-drop ALL from inside); no-new-privileges holds | `oci_isolation_live_test.rs::capabilities_absent_no_new_privileges_live` | Live |
@@ -55,6 +55,35 @@ duplicated there (issue non-goal: no duplication without security
 cause). The pure `missing_pass_env_aborts_pre_create` test proves the
 frozen I9 semantics — resolution aborts with a typed error before any
 `docker create`.
+
+## Security adversarial corpus (issue #324, DAR §11.3)
+
+The prompt-side of the review isolation posture is proven hermetically
+by an enumerated corpus of prompt-injection vectors:
+
+- **Fixtures:** `tests/fixtures/adversarial/*.json` — one case per
+  vector category: fence-closing runs, long backtick runs, mixed
+  tilde/backtick fences, schema-version injection, verdict
+  force-pass/fail, blocking-count override, daemon-policy
+  impersonation, mutation-permission escalation, git-commit
+  permission, GitHub API invocation, curl egress, writes outside the
+  worktree, and operator-instruction injection.
+- **Harness:** `tests/security/corpus_test.rs` (pure, runs on every
+  CI leg) drives every fixture through
+  `build_review_prompt` and asserts the structural invariants:
+  unchanged fence count vs a benign baseline, the trusted policy and
+  schema sections intact with the daemon's accepted
+  `schema_version`, the `UNTRUSTED DATA` marker present,
+  trusted-before-untrusted ordering, fence parity for impersonated
+  headers (they may only appear inside untrusted sections' fences),
+  and no spurious daemon truncation notices.
+
+The corpus is the exhaustive superset of the scattered escaping tests
+in `tests/worker/review_prompt_test.rs` /
+`tests/worker/prompt_inline_test.rs`, which remain (they pin narrower
+invariants). The catalogue of security-relevant test names across all
+suites (corpus, live sandbox, mutation/integrity, fork gate) is
+CI-enforced by `tests/security/posture_catalogue_test.rs`.
 
 ## Engines and modes
 

@@ -29,6 +29,11 @@ const MAPPING: &[(&str, &str)] = &[
         ".git does not reveal daemon Git metadata",
         "git_shadow_read_sees_only_shadow",
     ),
+    // 3b. git commit/push denied via the RO .git shadow (DAR §6.4)
+    (
+        "git metadata mutation denied via RO .git shadow",
+        "git_metadata_mutation_denied_via_ro_shadow_live",
+    ),
     // 4. workspace writable; rootfs read-only; output/result path works
     (
         "workspace writable; rootfs read-only; output path works",
