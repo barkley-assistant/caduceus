@@ -752,7 +752,7 @@ fn git_metadata_mutation_denied_via_ro_shadow_live() {
     );
     let host_dot_git = fx.worktree.join(".git");
     let before = std::fs::read(&host_dot_git).expect("read host .git");
-    let (code, logs) = run_container(&fx);
+    let (_code, logs) = run_container(&fx);
     let after = std::fs::read(&host_dot_git).expect("read host .git after");
     assert_eq!(
         before, after,

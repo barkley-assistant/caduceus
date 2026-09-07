@@ -10,7 +10,7 @@
 
 use std::path::Path;
 
-use caduceus::config::{Config};
+use caduceus::config::Config;
 use caduceus::daemon::tick::review_discovery::poll_review_step_for_tests;
 use caduceus::error::CaduceusError;
 use caduceus::github::fork_gate::FORK_SKIP_EVENT;
