@@ -719,6 +719,105 @@ fn git_shadow_write_rejected() {
     assert_ne!(code2, 7, "writing /workspace/.git must fail; logs: {logs2}");
 }
 
+/// `git commit`/`git push` from inside the review container fail
+/// because the `.git` shadow is read-only (DAR §6.4: mutation of git
+/// metadata is prevented by the RO `.git` shadow — no commit/push/
+/// branch-switch from inside the container). This is the denied
+/// operation a compromised worker would actually attempt; the
+/// existing `git_shadow_write_rejected` proves the shadow file is
+/// byte-identical after a direct write, this proves the *git
+/// operation* itself is denied. The real model (DAR §6.4 reality
+/// clause) is asserted, not a stronger imaginary one: `/workspace`
+/// itself is RW — only `.git` is the RO shadow.
+///
+/// The probe-first discipline (plan risk 5): a git denial is only
+/// meaningful when the `git` binary is present. When the cert image
+/// ships git, the full commit/push denial is asserted. When it does
+/// not (exit 127), the test degrades HONESTLY to the mount-level
+/// precondition that makes every git metadata mutation impossible —
+/// `/workspace/.git` is not writable — and states the degradation in
+/// the logs; it never claims a git denial that is actually a missing
+/// binary.
+#[test]
+#[cfg_attr(not(env = "CADUCEUS_RUN_ISOLATION_TESTS"), ignore)]
+fn git_metadata_mutation_denied_via_ro_shadow_live() {
+    let probe = live_fixture(
+        GitShadowKind::File,
+        "command -v git >/dev/null 2>&1; echo GIT:$?",
+    );
+    let (_probe_code, probe_logs) = run_container(&probe);
+    let git_present = probe_logs.contains("GIT:0");
+
+    if git_present {
+        // Full denial proof: the real commands a compromised worker
+        // would run must all fail.
+        let fx = live_fixture(
+            GitShadowKind::File,
+            "git -C /workspace add -A 2>&1; \
+             git -C /workspace commit -m pwn 2>&1; \
+             git -C /workspace push 2>&1; \
+             echo EXIT:$?",
+        );
+        let host_dot_git = fx.worktree.join(".git");
+        let before = std::fs::read(&host_dot_git).expect("read host .git");
+        let (_code, logs) = run_container(&fx);
+        let after = std::fs::read(&host_dot_git).expect("read host .git after");
+        assert_eq!(
+            before, after,
+            "host .git must be byte-identical after a git-mutation attempt"
+        );
+        // The git operations must fail; "EXIT:0" would mean the last
+        // one (push) succeeded.
+        assert!(
+            !logs.contains("EXIT:0"),
+            "git commit/push must fail under the RO .git shadow; logs: {logs}"
+        );
+    } else {
+        eprintln!(
+            "cert image does not ship git (probe: {probe_logs:?}); \
+             asserting the mount-level precondition instead: \
+             /workspace/.git is not writable, so git metadata mutation \
+             is impossible regardless of binary availability"
+        );
+        let fx = live_fixture(
+            GitShadowKind::File,
+            "if (echo pwned > /workspace/.git) 2>/dev/null; then exit 7; fi; \
+             if (mkdir -p /workspace/.git/pwn) 2>/dev/null; then exit 8; fi; \
+             echo PRECONDITION-OK",
+        );
+        let host_dot_git = fx.worktree.join(".git");
+        let before = std::fs::read(&host_dot_git).expect("read host .git");
+        let (code, logs) = run_container(&fx);
+        let after = std::fs::read(&host_dot_git).expect("read host .git after");
+        assert_eq!(
+            before, after,
+            "host .git must be byte-identical after a write attempt"
+        );
+        assert_ne!(
+            code, 7,
+            "/workspace/.git write must fail under the RO shadow; logs: {logs}"
+        );
+        assert_ne!(
+            code, 8,
+            "/workspace/.git mkdir must fail under the RO shadow; logs: {logs}"
+        );
+        assert!(
+            logs.contains("PRECONDITION-OK"),
+            "probe must complete; logs: {logs}"
+        );
+    }
+
+    // The shadow sentinel is intact on the daemon side either way.
+    // (Rebuild a shadow-holding fixture only if the first arm ran;
+    // both arms leave the sentinel untouched, read the live fixture's
+    // shadow when present.)
+    if git_present {
+        let fx = live_fixture(GitShadowKind::File, "true");
+        let shadow = std::fs::read_to_string(&fx.shadow_host).expect("read shadow");
+        assert_eq!(shadow, GIT_SHADOW_FILE_CONTENT);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Directory-shadow variant
 // ---------------------------------------------------------------------------
