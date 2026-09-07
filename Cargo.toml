@@ -752,6 +752,10 @@ name = "review_fixture_migration_test"
 path = "tests/state/review_fixture_migration_test.rs"
 
 [[test]]
+name = "investigation_deprecation_test"
+path = "tests/state/investigation_deprecation_test.rs"
+
+[[test]]
 name = "pr_fixtures_test"
 path = "tests/github/pr_fixtures_test.rs"
 

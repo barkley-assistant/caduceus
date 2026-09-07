@@ -14,6 +14,12 @@ use crate::daemon::orchestration::Clock;
 use crate::infra::error::{CaduceusError, CaduceusResult};
 use crate::scheduler::circuit::{CircuitState, ExhaustedEntry};
 
+/// DAR §13 deprecation audit event: an Investigation entry reached a
+/// terminal and its outcome was archived. The structured event name
+/// is a stable operator-facing contract (see
+/// [`emit_investigation_archived`]).
+pub const INVESTIGATION_ARCHIVED_EVENT: &str = "investigation_archived";
+
 /// Refuse any request to enable auto-merge on a pull request.
 ///
 /// This is the runtime defence for the "Never auto-merge"
@@ -60,5 +66,24 @@ pub fn emit_needs_attention(scope: &str, scope_id: &str, reason: &str, entry: &E
         circuit.last_failure_at = entry.last_failure_at,
         circuit.opened_at = entry.opened_at,
         "circuit needs attention: circuit has been open beyond max degraded age"
+    );
+}
+
+/// DAR §13 deprecation audit: an Investigation entry completed and
+/// its outcome was archived. In release N this fires from the legacy
+/// drain path (`finish_investigation`); in N+1 it is reused by the
+/// startup reconcile pass that terminates non-terminal Investigation
+/// rows (#331). One tested code point, two callers: `source`
+/// distinguishes them in operator logs without duplicating the audit
+/// seam.
+pub fn emit_investigation_archived(repo: &str, issue: u64, source: &str, outcome: &str) {
+    info!(
+        target: "caduceus",
+        event = INVESTIGATION_ARCHIVED_EVENT,
+        repo = repo,
+        issue = issue,
+        source = source,
+        outcome = outcome,
+        "investigation entry archived under deprecation (DAR §12)"
     );
 }
