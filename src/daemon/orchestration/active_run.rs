@@ -193,6 +193,15 @@ impl ActiveRunGuard {
     pub async fn finish_investigation(&mut self) -> CaduceusResult<()> {
         let claim = self.take_claim();
         self.store.complete_investigation(claim)?;
+        // Release-N deprecation audit (DAR §12): the legacy drain
+        // path archives the outcome at the same tested code point
+        // N+1's reconcile pass will call (source literal differs).
+        crate::runtime::audit::emit_investigation_archived(
+            &self.issue_key.repo,
+            self.issue_key.number,
+            "drain/finish_investigation",
+            "done",
+        );
         self.mark_finished().await;
         Ok(())
     }
