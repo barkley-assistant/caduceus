@@ -1,5 +1,5 @@
-//! investigation finalization.
-//!
+//! Failure-comment finalization tests (the investigation-comment
+//! half was removed in N+1, issue #331).
 //!
 //! Tests cover:
 //!
@@ -7,9 +7,6 @@
 //! * existing failure marker → no POST
 //! * voice rejection before HTTP
 //! * comment API failure preserves the worker error
-//! * investigation comment is posted once
-//! * investigation label is recorded as not removed (v0.1)
-//! * retry marker reuse
 //! * no push / no PR mutation
 
 use std::collections::BTreeMap;
@@ -18,9 +15,7 @@ use std::sync::Arc;
 
 use caduceus::config::{Config, LoadContext, RawConfig};
 use caduceus::finalize::{
-    post_failure_comment, post_investigation_comment, render_failure_comment,
-    render_investigation_comment, FinalizeContext, FAILURE_MARKER_PREFIX,
-    INVESTIGATION_MARKER_PREFIX,
+    post_failure_comment, render_failure_comment, FinalizeContext, FAILURE_MARKER_PREFIX,
 };
 use caduceus::github::Client;
 use caduceus::issue::IssueDetail;
@@ -71,7 +66,7 @@ fn make_issue() -> IssueDetail {
     }
 }
 
-fn make_worker_result(investigation: bool) -> WorkerResult {
+fn make_worker_result() -> WorkerResult {
     let mut artifacts = BTreeMap::new();
     artifacts.insert("k".to_string(), json!("v"));
     WorkerResult {
@@ -80,7 +75,7 @@ fn make_worker_result(investigation: bool) -> WorkerResult {
         commit_message: "fix: sample".to_string(),
         pull_request_title: "PR".to_string(),
         artifacts,
-        investigation,
+        investigation: false,
     }
 }
 
@@ -149,7 +144,7 @@ async fn failure_fresh_post() {
     let cfg = empty_config(state_dir.path());
     let issue = make_issue();
     let ctx = make_context(&cfg, &issue, "run-fresh");
-    let wr = make_worker_result(false);
+    let wr = make_worker_result();
     let outcome = post_failure_comment(&ctx, &client, &wr)
         .await
         .expect("post");
@@ -178,7 +173,7 @@ async fn failure_existing_marker_skips_post() {
     let cfg = empty_config(state_dir.path());
     let issue = make_issue();
     let ctx = make_context(&cfg, &issue, "run-reuse");
-    let wr = make_worker_result(false);
+    let wr = make_worker_result();
     let outcome = post_failure_comment(&ctx, &client, &wr)
         .await
         .expect("post");
@@ -199,7 +194,7 @@ async fn failure_voice_rejection_prevents_http() {
     cfg.comment_forbidden_strings = vec!["forbidden-term".to_string()];
     let issue = make_issue();
     let ctx = make_context(&cfg, &issue, "run-voice");
-    let mut wr = make_worker_result(false);
+    let mut wr = make_worker_result();
     wr.summary = "summary contains forbidden-term".to_string();
     let err = post_failure_comment(&ctx, &client, &wr)
         .await
@@ -228,7 +223,7 @@ async fn failure_comment_api_failure_returns_typed_error() {
     let cfg = empty_config(state_dir.path());
     let issue = make_issue();
     let ctx = make_context(&cfg, &issue, "run-500");
-    let wr = make_worker_result(false);
+    let wr = make_worker_result();
     let err = post_failure_comment(&ctx, &client, &wr)
         .await
         .expect_err("must reject");
@@ -240,88 +235,15 @@ async fn failure_comment_api_failure_returns_typed_error() {
 }
 
 #[tokio::test]
-async fn investigation_fresh_post() {
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/repos/owner/repo/issues/1/comments"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(Vec::<serde_json::Value>::new()))
-        .expect(1)
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/repos/owner/repo/issues/1/comments"))
-        .respond_with(ResponseTemplate::new(201).set_body_json(json!({ "id": 2 })))
-        .expect(1)
-        .mount(&server)
-        .await;
-    let client = client_for(&server);
-    let state_dir = tempfile::tempdir().expect("state");
-    let cfg = empty_config(state_dir.path());
-    let issue = make_issue();
-    let ctx = make_context(&cfg, &issue, "run-inv");
-    let wr = make_worker_result(true);
-    let outcome = post_investigation_comment(&ctx, &client, &wr, "autofix-investigate")
-        .await
-        .expect("post");
-    assert!(outcome.comment_posted);
-    assert!(!outcome.label_removed, "v0.1 leaves label_removed false");
-}
-
-#[tokio::test]
-async fn investigation_existing_marker_skips_post() {
-    let server = MockServer::start().await;
-    let body = format!("{}{}\n\nsummary", INVESTIGATION_MARKER_PREFIX, "run-reuse");
-    Mock::given(method("GET"))
-        .and(path("/repos/owner/repo/issues/1/comments"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
-            { "id": 1, "body": body }
-        ])))
-        .expect(1)
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .respond_with(ResponseTemplate::new(500))
-        .expect(0)
-        .mount(&server)
-        .await;
-    let client = client_for(&server);
-    let state_dir = tempfile::tempdir().expect("state");
-    let cfg = empty_config(state_dir.path());
-    let issue = make_issue();
-    let ctx = make_context(&cfg, &issue, "run-reuse");
-    let wr = make_worker_result(true);
-    let outcome = post_investigation_comment(&ctx, &client, &wr, "autofix-investigate")
-        .await
-        .expect("post");
-    assert!(!outcome.comment_posted);
-}
-
-#[tokio::test]
 async fn failure_comment_does_not_claim_local_transcript_is_public() {
     // The failure-comment body is *generic*: it does
     // NOT link the worker's local transcript. A local
     // path that lives on the daemon host must not appear
     // in the rendered body.
-    let wr = make_worker_result(false);
+    let wr = make_worker_result();
     let body = render_failure_comment(&wr, "run-no-transcript");
     assert!(!body.contains("/tmp/wt"));
     assert!(!body.contains("/state/"));
     assert!(!body.contains(".transcript"));
     assert!(body.contains(FAILURE_MARKER_PREFIX));
-}
-
-#[test]
-fn investigation_marker_includes_run_id() {
-    let mut wr = make_worker_result(true);
-    wr.artifacts.insert("nested".to_string(), json!({"k": "v"}));
-    let body = render_investigation_comment(&wr, "run-inv-marker");
-    assert!(body.contains(INVESTIGATION_MARKER_PREFIX));
-    assert!(body.contains("run-inv-marker"));
-    assert!(body.contains("summary"));
-    // The artifact section is rendered as a JSON code
-    // fence.
-    assert!(body.contains("```json"));
-    assert!(body.contains("\"nested\""));
-    assert!(body.contains("\"k\""));
-    assert!(body.contains("\"v\""));
 }

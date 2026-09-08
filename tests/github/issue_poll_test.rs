@@ -1,6 +1,5 @@
 //! - Unicode URL encoding for label query strings
-//! - Code/investigation merge (single-label on each side)
-//! - Both-label rejection (ambiguous diagnostic)
+//! - Code poll (single-label on the code side)
 //! - Server returning an unrelated-label object (Unmatched)
 //! - PR exclusion (PullRequest diagnostic)
 //! - Empty / null body tolerance (missing title, missing labels,
@@ -11,17 +10,13 @@
 //! - No Events API fields (the typed schema decodes only the
 //!   documented fields and silently ignores Events-API noise)
 //!
-//! `query_param_is_missing("page")` matcher or the local
-//! `NoHeader` inversion, so they drop down to the underlying
-//! wiremock `MockServer` via [`fixtures::MockGitHub::server`].
+//! The investigation poll and merge were removed in N+1 (issue #331);
+//! their tests went with the feature.
 
 use caduceus::config::Config;
 use caduceus::github::{Client, HttpCache};
 use caduceus::issue::IssueKey;
-use caduceus::poll::{
-    merge_outcomes, poll_code, poll_investigation, url_encode_label, IssuePollDiagnostic,
-    IssuePollOutcome,
-};
+use caduceus::poll::{poll_code, url_encode_label, IssuePollDiagnostic};
 use caduceus::queue::TicketType;
 use wiremock::matchers::{method, path, query_param_is_missing};
 use wiremock::{Match, Mock, Request, ResponseTemplate};
@@ -34,7 +29,6 @@ use fixtures::tempdir;
 
 const TEST_TOKEN: &str = "ghp_testtoken_value_xyz";
 const CODE_LABEL: &str = "autofix";
-const INVESTIGATION_LABEL: &str = "autofix-investigate";
 
 fn mock_client(gh: &MockGitHub) -> (Client, Config) {
     let state_dir = tempdir("mock");
@@ -42,7 +36,6 @@ fn mock_client(gh: &MockGitHub) -> (Client, Config) {
     cfg.api_base = gh.uri();
     cfg.github_token = Some(TEST_TOKEN.to_string());
     cfg.ticket_label_code = CODE_LABEL.to_string();
-    cfg.ticket_label_investigation = INVESTIGATION_LABEL.to_string();
     cfg.watched_repos.clear();
     let cache = HttpCache::open(&state_dir).expect("cache opens");
     let client = Client::with_cache(&cfg, cache).expect("client builds");
@@ -145,31 +138,6 @@ async fn code_poll_returns_unique_issue_summary() {
 }
 
 #[tokio::test]
-async fn investigation_poll_returns_unique_issue_summary() {
-    let gh = MockGitHub::start().await;
-    Mock::given(method("GET"))
-        .and(path("/repos/octocat/hello-world/issues"))
-        .and(query_param_is_missing("page"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(issue_list_json(&[minimal_issue(
-                8,
-                "Investigate",
-                &[INVESTIGATION_LABEL],
-            )])),
-        )
-        .expect(1)
-        .mount(gh.server())
-        .await;
-    let (client, mut cfg) = mock_client(&gh);
-    cfg.watched_repos = vec!["octocat/hello-world".to_string()];
-    let outcome = poll_investigation(&client, &cfg, &cfg.watched_repos)
-        .await
-        .unwrap();
-    assert_eq!(outcome.summaries.len(), 1);
-    assert_eq!(outcome.summaries[0].ticket_type, TicketType::Investigation);
-}
-
-#[tokio::test]
 async fn pull_request_objects_are_excluded() {
     let gh = MockGitHub::start().await;
     Mock::given(method("GET"))
@@ -221,50 +189,6 @@ async fn unrelated_label_object_is_diagnosed_as_unmatched() {
             assert_eq!(labels, &vec!["some-other".to_string()]);
         }
         other => panic!("expected Unmatched, got {other:?}"),
-    }
-}
-
-// Ambiguous (both labels) merge
-
-#[tokio::test]
-async fn merge_marks_issue_with_both_labels_as_ambiguous() {
-    let gh = MockGitHub::start().await;
-    Mock::given(method("GET"))
-        .and(path("/repos/octocat/hello-world/issues"))
-        .and(query_param_is_missing("page"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(issue_list_json(&[minimal_issue(
-                7,
-                "Both labels",
-                &[CODE_LABEL, INVESTIGATION_LABEL],
-            )])),
-        )
-        .expect(2)
-        .mount(gh.server())
-        .await;
-    let (client, mut cfg) = mock_client(&gh);
-    cfg.watched_repos = vec!["octocat/hello-world".to_string()];
-    let code = poll_code(&client, &cfg, &cfg.watched_repos).await.unwrap();
-    let investigation = poll_investigation(&client, &cfg, &cfg.watched_repos)
-        .await
-        .unwrap();
-    assert_eq!(code.summaries.len(), 1);
-    assert_eq!(investigation.summaries.len(), 1);
-
-    let merged = merge_outcomes(code, investigation);
-    assert!(
-        merged.summaries.is_empty(),
-        "ambiguous issue must not be enqueued; got {:?}",
-        merged.summaries
-    );
-    assert_eq!(merged.diagnostics.len(), 1);
-    match &merged.diagnostics[0] {
-        IssuePollDiagnostic::Ambiguous { key, labels, .. } => {
-            assert_eq!(key, &IssueKey::parse("octocat/hello-world#7").unwrap());
-            assert!(labels.contains(&CODE_LABEL.to_string()));
-            assert!(labels.contains(&INVESTIGATION_LABEL.to_string()));
-        }
-        other => panic!("expected Ambiguous, got {other:?}"),
     }
 }
 
@@ -471,51 +395,8 @@ async fn events_api_fields_are_ignored() {
 }
 
 // from_cache AND semantics
-
-#[test]
-fn merge_outcomes_ands_from_cache_both_true() {
-    let code = IssuePollOutcome {
-        summaries: vec![],
-        diagnostics: vec![],
-        from_cache: true,
-    };
-    let investigation = IssuePollOutcome {
-        summaries: vec![],
-        diagnostics: vec![],
-        from_cache: true,
-    };
-    assert!(merge_outcomes(code, investigation).from_cache);
-}
-
-#[test]
-fn merge_outcomes_ands_from_cache_any_false() {
-    let code = IssuePollOutcome {
-        summaries: vec![],
-        diagnostics: vec![],
-        from_cache: true,
-    };
-    let investigation = IssuePollOutcome {
-        summaries: vec![],
-        diagnostics: vec![],
-        from_cache: false,
-    };
-    assert!(!merge_outcomes(code, investigation).from_cache);
-}
-
-#[test]
-fn merge_outcomes_ands_from_cache_both_false() {
-    let code = IssuePollOutcome {
-        summaries: vec![],
-        diagnostics: vec![],
-        from_cache: false,
-    };
-    let investigation = IssuePollOutcome {
-        summaries: vec![],
-        diagnostics: vec![],
-        from_cache: false,
-    };
-    assert!(!merge_outcomes(code, investigation).from_cache);
-}
+// (merge_outcomes was removed in N+1, issue #331 — there is a single
+// poll outcome now, so the AND semantics moved into `poll_repo`.)
 
 // Multiple repos
 
@@ -558,6 +439,6 @@ async fn multiple_watched_repos_each_get_their_own_poll() {
 }
 
 // (End of file. All typed imports — IssueKey, IssueSummary,
-// IssuePollDiagnostic, IssuePollOutcome, merge_outcomes, etc. —
-// are exercised by the tests above; the import list is kept
-// exhaustive as documentation of which surfaces Task 2.3 owns.)
+// IssuePollDiagnostic, IssuePollOutcome, etc. — are exercised by the
+// tests above; the import list is kept exhaustive as documentation of
+// which surfaces Task 2.3 owns.)

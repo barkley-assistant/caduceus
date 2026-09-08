@@ -148,9 +148,13 @@ fn pre_n_migration_chain_covers_v7_to_current() {
     );
 }
 
-/// AC1 (issue #327): the frozen pre-N JSON fixture is a v1 envelope
-/// that current code accept-and-upgrades to the current version
-/// without rewriting the file behind the caller's back.
+/// AC1 (issue #327) + N+1 reconcile (issue #331, DAR §4.4): the
+/// frozen pre-N JSON fixture is a v1 envelope that current code
+/// accept-and-upgrades to the current version. The `parse_queue_state`
+/// seam is pure (no file write); the real store-open path now PERSISTS
+/// when the N+1 reconcile pass terminates a live investigation row —
+/// that rewrite is the reconcile's durable archive, not a silent
+/// upgrade.
 #[test]
 fn pre_n_json_loads_and_upgrades_v1_to_current() {
     let parsed = parse_queue_state(PRE_N_JSON).expect("parse pre-N v1 state.json");
@@ -171,12 +175,25 @@ fn pre_n_json_loads_and_upgrades_v1_to_current() {
     let snap = store.snapshot().expect("snapshot");
     assert_eq!(snap.version, QUEUE_FILE_VERSION);
     assert_eq!(snap.entries.len(), parsed.entries.len());
+    drop(store);
 
-    // Parse is pure: the staged file on disk is NOT rewritten.
+    // N+1 reconcile is a persisting open for this fixture: the live
+    // investigation row (`owner/r#23`) is terminated to `skipped` and
+    // archived, so the file is rewritten at the current envelope
+    // version. Nothing is silently dropped — the code row survives.
     let on_disk = fs::read_to_string(&state_path).unwrap();
     assert!(
-        on_disk.contains(r#""version":1"#),
-        "load must not rewrite the v1 file; got: {on_disk}"
+        on_disk.contains(&format!(r#""version":{QUEUE_FILE_VERSION}"#)),
+        "reconcile must persist at the current envelope; got: {on_disk}"
+    );
+    assert!(
+        on_disk.contains(r#""ticket_type":"code""#),
+        "code row must survive the reconcile rewrite; got: {on_disk}"
+    );
+    assert!(
+        on_disk.contains(r#""ticket_type":"investigation""#)
+            && on_disk.contains(r#""phase":"skipped""#),
+        "investigation row must be terminated to skipped; got: {on_disk}"
     );
 }
 

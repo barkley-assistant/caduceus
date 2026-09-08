@@ -688,10 +688,6 @@ name = "finalize_pr_number_test"
 path = "tests/integration/finalize_pr_number_test.rs"
 
 [[test]]
-name = "investigation_finalize_checkpoint_test"
-path = "tests/integration/investigation_finalize_checkpoint_test.rs"
-
-[[test]]
 name = "code_pre_pr_checkpoint_recovery_test"
 path = "tests/integration/code_pre_pr_checkpoint_recovery_test.rs"
 
@@ -756,8 +752,8 @@ name = "review_fixture_migration_test"
 path = "tests/state/review_fixture_migration_test.rs"
 
 [[test]]
-name = "investigation_deprecation_test"
-path = "tests/state/investigation_deprecation_test.rs"
+name = "investigation_removal_test"
+path = "tests/state/investigation_removal_test.rs"
 
 [[test]]
 name = "pr_fixtures_test"

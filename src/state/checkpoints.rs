@@ -29,7 +29,9 @@
 //! `InvestigationCommented`) carry no `remote_marker` — the
 //! GitHub comment idempotency check uses the `run_id`-bearing
 //! `<!-- automation-investigation:... -->` marker on the comment
-//! itself instead.
+//! itself instead. (In N+1 these stages are retained only for
+//! parse compat with surviving N-era checkpoints; see the removal
+//! checklist in `src/state/queue/legacy_investigation.rs`.)
 //!
 //! For code tickets the queue's durable `FinalizationCheckpoint`
 //! (not just the SQLite row) is persisted at every pre-PR stage —

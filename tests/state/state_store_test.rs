@@ -192,7 +192,7 @@ fn enqueue_existing_queued_entry_is_noop() {
         .expect("enqueue1");
     assert!(matches!(outcome1, EnqueueOutcome::Inserted));
     let outcome2 = store
-        .enqueue(&key("Owner", "Repo", 1), TicketType::Investigation, false)
+        .enqueue(&key("Owner", "Repo", 1), TicketType::Code, false)
         .expect("enqueue2");
     // Existing entry: ticket_type stays as first insert.
     assert!(matches!(outcome2, EnqueueOutcome::AlreadyPresent));
@@ -583,27 +583,6 @@ fn complete_transitions_to_done_and_removes_claim() {
     let e = snap.entry(&key("Owner", "Repo", 1)).unwrap();
     assert_eq!(e.phase, Phase::Done);
     assert!(!claim_path.exists(), "claim file removed");
-}
-
-#[test]
-fn complete_investigation_transitions_to_done() {
-    let root = tempdir("complete-investigation");
-    let store = StateStore::open(&root).expect("open");
-    let now = Utc::now();
-    store
-        .enqueue(&key("Owner", "Repo", 1), TicketType::Investigation, false)
-        .unwrap();
-    let claimed = store.acquire_next("RUN1", 1, now).unwrap().unwrap();
-    store
-        .complete_investigation(claimed.claim.clone())
-        .expect("complete investigation");
-    let snap = store.snapshot().unwrap();
-    let e = snap.entry(&key("Owner", "Repo", 1)).unwrap();
-    assert_eq!(e.phase, Phase::Done);
-    let claim_path = root
-        .join("claims")
-        .join(format!("{}.claim", claimed.claim.digest()));
-    assert!(!claim_path.exists());
 }
 
 // Retry / infrastructure

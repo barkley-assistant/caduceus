@@ -56,25 +56,20 @@ pub const DEFAULT_ATTIC_RETENTION_DAYS: u64 = 30;
 pub const DEFAULT_MAX_RETRIES_PER_ISSUE: u32 = 3;
 pub const DEFAULT_RETRY_BACKOFF_SECONDS: u64 = 300;
 pub const DEFAULT_TICKET_LABEL_CODE: &str = "autofix";
-pub const DEFAULT_TICKET_LABEL_INVESTIGATION: &str = "autofix-investigate";
 
 /// Legacy emoji trigger-label values accepted at config-read time.
 /// Exact match only; no trimming, no case-folding. A value in this map
 /// is translated to its canonical replacement and a one-time notice is
 /// emitted. See docs/architecture/auto-review.md §12.
-pub const LEGACY_TICKET_LABEL_TRANSLATIONS: &[(&str, &str)] = &[
-    ("🤖 auto-fix", "autofix"),
-    ("🤖 auto-fix-investigate", "autofix-investigate"),
-    // README-documented phantom: never the code default, but the
-    // project's own docs told operators to type it for four years.
-    ("🤖 auto-fix-investigation", "autofix-investigate"),
-];
+/// (The investigation entries were removed in N+1, issue #331 — that
+/// key now produces the deliberate `from_raw` error below.)
+pub const LEGACY_TICKET_LABEL_TRANSLATIONS: &[(&str, &str)] = &[("🤖 auto-fix", "autofix")];
 
 /// Translate explicitly-configured legacy emoji trigger labels to the
 /// canonical names at read time (DAR §12). Exact match only; any other
 /// value passes through untouched. Emits a one-time warn per translated
 /// field so operators know to update their config file.
-fn translate_legacy_ticket_labels(code: &mut String, investigation: &mut String) {
+fn translate_legacy_ticket_labels(code: &mut String) {
     for (legacy, canonical) in LEGACY_TICKET_LABEL_TRANSLATIONS {
         if code.as_str() == *legacy {
             tracing::warn!(
@@ -84,15 +79,6 @@ fn translate_legacy_ticket_labels(code: &mut String, investigation: &mut String)
                  update the config file to the canonical label"
             );
             *code = canonical.to_string();
-        }
-        if investigation.as_str() == *legacy {
-            tracing::warn!(
-                from = legacy,
-                to = canonical,
-                "legacy emoji ticket_label_investigation translated at read time; \
-                 update the config file to the canonical label"
-            );
-            *investigation = canonical.to_string();
         }
     }
 }
@@ -275,7 +261,6 @@ pub struct Config {
     pub max_retries_per_issue: u32,
     pub retry_backoff_seconds: u64,
     pub ticket_label_code: String,
-    pub ticket_label_investigation: String,
     /// Whether to remove the trigger label from an issue once the
     /// run reaches a terminal-success state. Default `true`; set to
     /// `false` to keep the label for manual visibility.
@@ -404,6 +389,13 @@ pub struct RawConfig {
     pub max_retries_per_issue: Option<u32>,
     pub retry_backoff_seconds: Option<u64>,
     pub ticket_label_code: Option<String>,
+    /// RETAINED after the N+1 key removal (issue #331) so a config
+    /// that still carries `ticket_label_investigation` is
+    /// serde-recognized and produces the DELIBERATE `from_raw` error
+    /// naming the replacement — not a raw `deny_unknown_fields` dump.
+    /// Never read for a value; presence alone is the error trigger.
+    /// See the removal checklist in
+    /// `src/state/queue/legacy_investigation.rs`.
     pub ticket_label_investigation: Option<String>,
     pub remove_label_on_completion: Option<bool>,
     pub feedback_author_allowlist: Option<Vec<String>>,
@@ -790,36 +782,23 @@ impl Config {
         if ticket_label_code.trim().is_empty() {
             errors.push("ticket_label_code must not be empty".to_string());
         }
-        // `ticket_label_investigation` is DEPRECATED in release N (DAR §12):
-        // Investigation remains admitted (warning only), but the config key
-        // is on the N+1 removal path. Warn once per config load when the
-        // operator explicitly set it; the default (`autofix-investigate`)
-        // resolves silently — its deprecation surfaces per-admission (#329).
+        // `ticket_label_investigation` was REMOVED in release N+1
+        // (issue #331, DAR §12). The RawConfig key is retained
+        // (serde-known) so an operator config that still carries it
+        // gets this deliberate, documented error naming the
+        // replacement — not a raw unknown-field serde dump.
         if raw.ticket_label_investigation.is_some() {
-            tracing::warn!(
-                value = %raw.ticket_label_investigation.as_deref().unwrap_or_default(),
-                "ticket_label_investigation is deprecated and will be removed in a \
-                 future release; migrate to auto_review (docs/architecture/\
+            errors.push(
+                "ticket_label_investigation was removed in release N+1; investigations \
+                 were replaced by auto_review — remove the key (docs/architecture/\
                  auto-review.md §12)"
+                    .to_string(),
             );
-        }
-        let mut ticket_label_investigation = raw
-            .ticket_label_investigation
-            .unwrap_or_else(|| DEFAULT_TICKET_LABEL_INVESTIGATION.to_string());
-        if ticket_label_investigation.trim().is_empty() {
-            errors.push("ticket_label_investigation must not be empty".to_string());
         }
         // Translate legacy emoji trigger labels to canonical values at
         // read time (DAR §12). Exact match only; non-legacy values pass
         // through untouched. Emits a one-time warn per translated field.
-        // Runs after the empty checks and before the must-differ check so
-        // the canonical pair is what the operator must fix.
-        translate_legacy_ticket_labels(&mut ticket_label_code, &mut ticket_label_investigation);
-        if ticket_label_code == ticket_label_investigation {
-            errors.push(format!(
-            "ticket_label_code and ticket_label_investigation must differ (got {ticket_label_code:?})"
-        ));
-        }
+        translate_legacy_ticket_labels(&mut ticket_label_code);
         let remove_label_on_completion = raw.remove_label_on_completion.unwrap_or(true);
 
         let feedback_author_allowlist = raw.feedback_author_allowlist.unwrap_or_default();
@@ -947,7 +926,6 @@ impl Config {
             max_retries_per_issue,
             retry_backoff_seconds,
             ticket_label_code,
-            ticket_label_investigation,
             remove_label_on_completion,
             feedback_author_allowlist,
             comment_ignore_patterns,
@@ -1087,7 +1065,6 @@ impl Config {
             max_retries_per_issue: DEFAULT_MAX_RETRIES_PER_ISSUE,
             retry_backoff_seconds: DEFAULT_RETRY_BACKOFF_SECONDS,
             ticket_label_code: DEFAULT_TICKET_LABEL_CODE.to_string(),
-            ticket_label_investigation: DEFAULT_TICKET_LABEL_INVESTIGATION.to_string(),
             remove_label_on_completion: true,
             feedback_author_allowlist: Vec::new(),
             comment_ignore_patterns: Vec::new(),

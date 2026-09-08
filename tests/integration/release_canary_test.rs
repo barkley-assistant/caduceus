@@ -300,7 +300,7 @@ fn write_worker(dir: &Path) -> PathBuf {
         set -e\n\
         echo \"canary fix\" > ./fix.txt\n\
         cat > ./worker-result.json <<'EOF'\n\
-        {\"status\":\"success\",\"summary\":\"canary worker applied a fix\",\"commit_message\":\"canary: apply automated fix\",\"pull_request_title\":\"Canary fix for issue #47\",\"investigation\":false}\n\
+        {\"status\":\"success\",\"summary\":\"canary worker applied a fix\",\"commit_message\":\"canary: apply automated fix\",\"pull_request_title\":\"Canary fix for issue #47\"}\n\
         EOF\n\
         exit 0\n";
     fs::write(&path, body).expect("write worker.sh");
@@ -346,7 +346,9 @@ fn write_config(
         worker.display()
     ));
     yaml.push_str(&format!("  ticket_label_code: \"{}\"\n", CODE_LABEL));
-    yaml.push_str("  ticket_label_investigation: \"autofix-investigate\"\n");
+    // `ticket_label_investigation` is intentionally NOT set: the key
+    // was removed in N+1 (#331) and a config carrying it now fails
+    // the load with the deliberate removal error.
     yaml.push_str(&format!("  dry_run: {}\n", dry_run));
     yaml.push_str("  reduced_containment_acknowledged: true\n");
     fs::write(config_path, yaml).expect("write canary config");

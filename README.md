@@ -101,8 +101,8 @@ provisions a worktree, spawns
 the bridge as a child of a Rust worker supervisor (not
 systemd, not a shell), waits for exit, then finalizes:
 commit, push, find-or-create the PR, post the completion
-comment, close the issue. Investigation tickets do the
-same minus the commit/push/PR.
+comment, close the issue. (Investigation tickets were removed in
+release N+1; see docs/release-notes.md.)
 
 ## Install (Hermes)
 
@@ -472,13 +472,11 @@ separation.
 2. Put your watched repos at `~/projects/<owner>/<repo>`
    with non-interactive Git credentials (SSH key or
    credential helper).
-3. Create the two labels in each repo:
+3. Create the trigger label in each repo:
 
    ```bash
    gh label create "autofix" --repo OWNER/REPO --color 7C3AED \
      --description "Triggers Caduceus code automation"
-   gh label create "autofix-investigate" --repo OWNER/REPO \
-     --color 7C3AED --description "Triggers Caduceus investigation summary"
    ```
 
 4. Drop the label on an issue. Wait two minutes. Watch
@@ -521,16 +519,17 @@ short version with the opinions attached.
   the operator can override per environment. Lower it if you
   want; do not set it to zero and expect a polite daemon.
 - `ticket_label_code` — the GitHub label that triggers a
-  code-fixing run (default `autofix`). The investigation
-  label is `ticket_label_investigation` (default
-  `autofix-investigate`). The two labels are created in
+  code-fixing run (default `autofix`). It is created in
   step 3 of the 60-second orientation above. Legacy emoji
-  config values (`🤖 auto-fix`, `🤖 auto-fix-investigate`,
-  and the previously-documented `🤖 auto-fix-investigation`) are
-  translated to the canonical labels at read time with a one-time
-  warning; update the config file and re-label open issues to the
-  canonical names after upgrading, because the daemon only polls the
-  canonical labels.
+  config values (`🤖 auto-fix`) are translated to the
+  canonical label at read time with a one-time warning;
+  update the config file and re-label open issues to the
+  canonical name after upgrading, because the daemon only polls the
+  canonical label. (The investigation label
+  `ticket_label_investigation` was removed in release N+1; a config
+  that still carries the key fails to load — see
+  [release notes](docs/release-notes.md) and
+  [migration guide](docs/migration.md).)
 
 Everything else lives in
 [configuration](https://github.com/barkley-assistant/caduceus/wiki/Configuration).

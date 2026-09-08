@@ -479,7 +479,6 @@ def _synthesize_worker_result(
         "commit_message": last_line,
         "pull_request_title": truncate_pull_request_title(first_line),
         "artifacts": {},
-        "investigation": False,
     }
     temporary_path = result_path.with_name(result_path.name + ".tmp")
     temporary_path.write_text(

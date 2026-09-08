@@ -101,7 +101,10 @@ fn prompt_branches_are_visible_and_restricted() {
 }
 
 #[test]
-fn prompt_investigation_section_appears_for_investigation() {
+fn prompt_renders_code_contract_in_n_plus_1() {
+    // N+1 (issue #331): investigation prompts were removed; every
+    // ticket renders the code contract regardless of the retained
+    // ticket-type variant passed in.
     let p = build_prompt(
         &sample_issue(),
         TicketType::Investigation,
@@ -110,8 +113,10 @@ fn prompt_investigation_section_appears_for_investigation() {
         "",
     )
     .expect("build");
-    assert!(p.contains("investigation"));
-    assert!(p.contains("Do **not** change code"));
+    assert!(p.contains("Ticket type: **investigation**"));
+    // The body is the code contract — the investigation branch is gone.
+    assert!(p.contains("This is a code-change ticket"));
+    assert!(!p.contains("Do **not** change code"));
     assert!(p.contains("## Behavior"));
 }
 
@@ -332,17 +337,23 @@ fn prompt_lists_exact_worker_result_fields() {
         "commit_message",
         "pull_request_title",
         "artifacts",
-        "investigation",
+        // `investigation` is NOT in the schema (removed in N+1,
+        // issue #331); the field survives on the struct only for
+        // parse compat and must not be advertised to workers.
     ] {
         assert!(
             p.contains(&format!("\"{f}\":")),
             "field {f} missing in output schema"
         );
     }
+    assert!(
+        !p.contains("\"investigation\""),
+        "removed investigation key must not appear in the schema: {p}"
+    );
 }
 
 #[test]
-fn prompt_includes_exact_investigation_section_for_investigation() {
+fn prompt_includes_code_contract_for_any_retained_ticket_type() {
     let p = build_prompt(
         &sample_issue(),
         TicketType::Investigation,
@@ -351,9 +362,10 @@ fn prompt_includes_exact_investigation_section_for_investigation() {
         "",
     )
     .expect("build");
+    // The label renders verbatim (parse compat) but the body is the
+    // code contract; the investigation branch was removed in N+1.
     assert!(p.contains("Ticket type: **investigation**"));
-    assert!(p.contains("Do **not** change code"));
-    // No suggestion to write code.
+    assert!(p.contains("This is a code-change ticket"));
 }
 
 #[test]

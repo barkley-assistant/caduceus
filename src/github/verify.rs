@@ -73,21 +73,16 @@ impl SkipReason {
 /// failures (auth, rate-limit, 5xx, network, parse).
 ///
 /// The function selects the expected label from *config* by
-/// *ticket_type* — `ticket_label_code` for `Code`,
-/// `ticket_label_investigation` for `Investigation`. A
-/// `BothLabels` case (the issue carries both trigger labels)
-/// is a `Skip` because the issue is ambiguous per the polling
-/// contract.
+/// *ticket_type* — `ticket_label_code` for `Code`. (Investigation
+/// was removed in N+1, issue #331; the variant survives as
+/// terminal-never-admitted, so only the code label resolves.)
 pub async fn verify_trigger(
     client: &Client,
     key: &IssueKey,
-    ticket_type: TicketType,
+    _ticket_type: TicketType,
     config: &Config,
 ) -> CaduceusResult<VerifyOutcome> {
-    let expected_label = match ticket_type {
-        TicketType::Code => &config.ticket_label_code,
-        TicketType::Investigation => &config.ticket_label_investigation,
-    };
+    let expected_label = &config.ticket_label_code;
     let path = format!("/repos/{}/{}/issues/{}", key.owner, key.repo, key.number);
     let response = match client.get(&path, ACCEPT_VALUE).await {
         Ok(r) => r,
@@ -101,21 +96,13 @@ pub async fn verify_trigger(
     // Auth / rate-limit / 5xx are all `Err` from `get_url`; the
     // 404 special case above is the only "skip" status. Anything
     // else propagates so the caller does not consume a retry.
-    verify_response(
-        response,
-        key,
-        expected_label,
-        &config.ticket_label_code,
-        &config.ticket_label_investigation,
-    )
+    verify_response(response, key, expected_label)
 }
 
 fn verify_response(
     response: crate::github::Response,
     key: &IssueKey,
     expected_label: &str,
-    code_label: &str,
-    investigation_label: &str,
 ) -> CaduceusResult<VerifyOutcome> {
     // 404 already handled by the caller.
     if response.status == 404 {
@@ -168,19 +155,6 @@ fn verify_response(
         .into_iter()
         .map(|l| l.name.unwrap_or_default())
         .collect();
-    let has_code = labels
-        .iter()
-        .any(|name| name.eq_ignore_ascii_case(code_label));
-    let has_investigation = labels
-        .iter()
-        .any(|name| name.eq_ignore_ascii_case(investigation_label));
-    if has_code && has_investigation {
-        // Both labels on the same object — ambiguous per the
-        // polling contract.
-        return Ok(VerifyOutcome::Skip {
-            reason: SkipReason::LabelRemoved,
-        });
-    }
     if !labels
         .iter()
         .any(|name| name.eq_ignore_ascii_case(expected_label))

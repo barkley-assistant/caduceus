@@ -20,6 +20,21 @@ use crate::scheduler::circuit::{CircuitState, ExhaustedEntry};
 /// [`emit_investigation_archived`]).
 pub const INVESTIGATION_ARCHIVED_EVENT: &str = "investigation_archived";
 
+/// DAR §4.4 startup-reconcile audit event (issue #331, release N+1):
+/// a non-terminal Investigation row was terminated by the reconcile
+/// pass at store open. The structured event name is the
+/// operator-visible outcome mandated by
+/// docs/architecture/auto-review.md §4.4 (see
+/// [`emit_review_migration_terminated_investigation`]).
+pub const REVIEW_MIGRATION_TERMINATED_INVESTIGATION_EVENT: &str =
+    "review_migration_terminated_investigation";
+
+/// Queue-level admission audit event (issue #331, release N+1): a
+/// `StateStore::enqueue` call tried to admit a new Investigation
+/// entry and was rejected. Replaces the release-N deprecation warning
+/// (`investigation_admitted_deprecated`).
+pub const INVESTIGATION_ADMISSION_REJECTED_EVENT: &str = "investigation_admission_rejected";
+
 /// Refuse any request to enable auto-merge on a pull request.
 ///
 /// This is the runtime defence for the "Never auto-merge"
@@ -69,13 +84,12 @@ pub fn emit_needs_attention(scope: &str, scope_id: &str, reason: &str, entry: &E
     );
 }
 
-/// DAR §13 deprecation audit: an Investigation entry completed and
-/// its outcome was archived. In release N this fires from the legacy
-/// drain path (`finish_investigation`); in N+1 it is reused by the
-/// startup reconcile pass that terminates non-terminal Investigation
-/// rows (#331). One tested code point, two callers: `source`
-/// distinguishes them in operator logs without duplicating the audit
-/// seam.
+/// DAR §13 archive audit: an Investigation entry reached a terminal
+/// and its outcome was archived. In N+1 (issue #331) this fires from
+/// the startup reconcile pass (`source = "reconcile/startup"`) that
+/// terminates non-terminal Investigation rows at store open. The
+/// `source` parameter keeps the operator log self-describing without
+/// duplicating the audit seam.
 pub fn emit_investigation_archived(repo: &str, issue: u64, source: &str, outcome: &str) {
     info!(
         target: "caduceus",
@@ -85,5 +99,25 @@ pub fn emit_investigation_archived(repo: &str, issue: u64, source: &str, outcome
         source = source,
         outcome = outcome,
         "investigation entry archived under deprecation (DAR §12)"
+    );
+}
+
+/// DAR §4.4 startup reconcile (issue #331, release N+1): a
+/// non-terminal Investigation row was terminated by the reconcile
+/// pass at store open. `phase_before` is the phase the row carried
+/// before termination, as a stable snake_case string. Pairs with
+/// [`emit_investigation_archived`] (`source = "reconcile/startup"`)
+/// so operators see both the archive and the termination outcome for
+/// the same row.
+pub fn emit_review_migration_terminated_investigation(repo: &str, issue: u64, phase_before: &str) {
+    warn!(
+        target: "caduceus",
+        event = REVIEW_MIGRATION_TERMINATED_INVESTIGATION_EVENT,
+        repo = repo,
+        issue = issue,
+        phase_before = phase_before,
+        "investigation entry terminated by the startup reconcile pass \
+         (DAR §4.4); the work never executed — re-file as an \
+         auto_review or code ticket if still needed"
     );
 }

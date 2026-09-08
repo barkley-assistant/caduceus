@@ -203,23 +203,22 @@ fn dry_run_report_has_all_required_fields() {
 }
 
 #[test]
-fn dry_run_investigation_sets_comment_field() {
+fn dry_run_investigation_flag_is_ignored_in_n_plus_1() {
+    // The `investigation` field on `WorkerResult` is retained for
+    // parse compat (see the removal checklist in
+    // src/state/queue/legacy_investigation.rs) but is IGNORED by the
+    // dry-run renderer in N+1 (issue #331): the proposed
+    // investigation comment is always `None`.
     let base = tempfile::tempdir().expect("base");
     let _cfg = empty_config(base.path());
     let ctx = sample_context(&_cfg);
     let mut result = sample_worker_result();
     result.investigation = true;
-    // The investigation flag alone is enough; the
-    // report's `proposed_investigation_comment` is set
-    // from the summary.
     dry_run_finalize(&ctx, &result, base.path().join("r.json").as_path(), vec![]).expect("dry-run");
     let report_path = base.path().join("runs").join("run-dry.preview.json");
     let bytes = fs::read(&report_path).expect("read report");
     let report: PreviewReport = serde_json::from_slice(&bytes).expect("parse");
-    assert_eq!(
-        report.proposed_investigation_comment.as_deref(),
-        Some("summary text")
-    );
+    assert_eq!(report.proposed_investigation_comment, None);
     // Suppress unused warning.
     let _ = ctx;
 }

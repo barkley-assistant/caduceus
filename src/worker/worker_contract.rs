@@ -193,6 +193,11 @@ pub struct WorkerResult {
     pub pull_request_title: String,
     #[serde(default)]
     pub artifacts: BTreeMap<String, serde_json::Value>,
+    /// Legacy release-N field, ignored in N+1; RETAINED so a
+    /// pre-upgrade `worker-result.json` written by a crashed N-era run
+    /// still parses under `deny_unknown_fields` (the resume path reads
+    /// `result_path` from the finalization checkpoint). See the
+    /// removal checklist in `src/state/queue/legacy_investigation.rs`.
     #[serde(default)]
     pub investigation: bool,
 }
