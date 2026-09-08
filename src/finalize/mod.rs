@@ -1,4 +1,5 @@
-//! Finalization: commit, push, PR, comment/close, investigation comment.
+//! Finalization: commit, push, PR, comment/close. (The investigation
+//! findings-comment route was removed in release N+1, issue #331.)
 //!
 //! Idempotency across partial failures is the hard requirement.
 //!

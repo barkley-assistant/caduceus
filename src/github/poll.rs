@@ -2,12 +2,12 @@
 //! into the queue.
 //!
 //! [`discover_watched_repos`] returns either the configured repo list or the
-//! user's accessible, non-archived repositories. [`poll_code`] and
-//! [`poll_investigation`] each poll one trigger label across all watched
-//! repos. [`merge_outcomes`] resolves the rare case where an issue carries
-//! both trigger labels.
+//! user's accessible, non-archived repositories. [`poll_code`] polls the
+//! single `ticket_label_code` trigger label across all watched repos.
+//! Investigation polling was removed in release N+1 (issue #331); the
+//! `TicketType::Investigation` variant survives as terminal-never-admitted.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
@@ -55,13 +55,6 @@ pub struct IssueSummary {
 /// why.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IssuePollDiagnostic {
-    /// The issue matched both trigger labels. Per the polling
-    /// contract it is not enqueued until a human removes one.
-    Ambiguous {
-        key: IssueKey,
-        title: String,
-        labels: Vec<String>,
-    },
     /// The issue returned by the API carried a `pull_request`
     /// object and is therefore excluded.
     PullRequest { key: IssueKey, title: String },
@@ -83,8 +76,8 @@ pub enum IssuePollDiagnostic {
 /// Outcome of one labeled-issue poll across all watched repos.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IssuePollOutcome {
-    /// Unique issues matched exactly one of the two trigger
-    /// labels, ready for queue admission.
+    /// Unique issues matched the trigger label, ready for queue
+    /// admission.
     pub summaries: Vec<IssueSummary>,
     /// Objects the daemon intentionally skipped.
     pub diagnostics: Vec<IssuePollDiagnostic>,
@@ -263,26 +256,9 @@ pub async fn poll_code(
     poll_label(client, cfg, repos, &cfg.ticket_label_code, TicketType::Code).await
 }
 
-/// Poll for label `ticket_label_investigation` across every
-/// watched repo. Same shape as [`poll_code`].
-pub async fn poll_investigation(
-    client: &Client,
-    cfg: &Config,
-    repos: &[String],
-) -> CaduceusResult<IssuePollOutcome> {
-    poll_label(
-        client,
-        cfg,
-        repos,
-        &cfg.ticket_label_investigation,
-        TicketType::Investigation,
-    )
-    .await
-}
-
 /// Poll every repo for *label*, classifying each returned object
-/// into a unique `IssueSummary`, an ambiguous record, a
-/// pull-request skip, an unmatched skip, or a malformed skip.
+/// into a unique `IssueSummary`, a pull-request skip, an unmatched
+/// skip, or a malformed skip.
 /// Rate-limit and page-cap failures short-circuit the whole poll.
 async fn poll_label(
     client: &Client,
@@ -435,8 +411,7 @@ fn key_from_issue(repo: &str, issue: &IssueObject) -> CaduceusResult<IssueKey> {
 /// textual discriminator instead.
 fn diagnostic_key(diag: &IssuePollDiagnostic) -> String {
     match diag {
-        IssuePollDiagnostic::Ambiguous { key, .. }
-        | IssuePollDiagnostic::Unmatched { key, .. }
+        IssuePollDiagnostic::Unmatched { key, .. }
         | IssuePollDiagnostic::PullRequest { key, .. } => key.display_key(),
         IssuePollDiagnostic::Malformed { key: Some(key), .. } => key.display_key(),
         IssuePollDiagnostic::Malformed { key: None, reason } => format!("malformed:{reason}"),
@@ -447,8 +422,8 @@ fn diagnostic_key(diag: &IssuePollDiagnostic) -> String {
 /// `labels=` query parameter must be URL-encoded even when the
 /// label contains only ASCII; arbitrary operator labels (which may
 /// still be non-ASCII, e.g. emoji) MUST round-trip through a UTF-8
-/// percent-encoded form. The default trigger labels are plain ASCII
-/// (`autofix` / `autofix-investigate`) and encode to themselves.
+/// percent-encoded form. The default trigger label is plain ASCII
+/// (`autofix`) and encodes to itself.
 pub fn url_encode_label(label: &str) -> String {
     let mut out = String::with_capacity(label.len());
     for byte in label.as_bytes() {
@@ -463,46 +438,6 @@ pub fn url_encode_label(label: &str) -> String {
         }
     }
     out
-}
-
-/// Merge the code and investigation poll outcomes. Issues that
-/// appear in both with different ticket types are reported as
-/// `Ambiguous`; everything else passes through. This is the
-/// `merge_results` step the contract alludes to.
-pub fn merge_outcomes(code: IssuePollOutcome, investigation: IssuePollOutcome) -> IssuePollOutcome {
-    let mut by_key: BTreeMap<String, IssueSummary> = BTreeMap::new();
-    let mut diagnostics = code.diagnostics;
-    diagnostics.extend(investigation.diagnostics);
-
-    // Walk the code summaries first so the ticket_type the merge
-    // records for an ambiguous row is consistent across runs.
-    for summary in code.summaries {
-        by_key.insert(summary.key.display_key(), summary);
-    }
-    for summary in investigation.summaries {
-        let key = summary.key.display_key();
-        if let Some(existing) = by_key.get(&key) {
-            if existing.ticket_type != summary.ticket_type {
-                diagnostics.push(IssuePollDiagnostic::Ambiguous {
-                    key: summary.key.clone(),
-                    title: summary.title.clone(),
-                    labels: summary.labels.clone(),
-                });
-                by_key.remove(&key);
-            }
-            // Same ticket type from both queries: keep the first.
-        } else {
-            by_key.insert(key, summary);
-        }
-    }
-    let mut merged: Vec<IssueSummary> = by_key.into_values().collect();
-    merged.sort_by_key(|a| a.key.display_key());
-    diagnostics.sort_by_key(diagnostic_key);
-    IssuePollOutcome {
-        summaries: merged,
-        diagnostics,
-        from_cache: code.from_cache && investigation.from_cache,
-    }
 }
 
 /// One row of the GitHub `/repos/{slug}/issues` payload. The

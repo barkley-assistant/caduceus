@@ -37,8 +37,8 @@
 //!    the prompt.
 //! 8. Spawn the worker through the canonical supervisor and
 //!    classify every error into a [`FailureClass`].
-//! 9. On success, run code / investigation / dry-run
-//!    finalization; teardown always runs.
+//! 9. On success, run code or dry-run finalization (the
+//!    investigation route was removed in N+1); teardown always runs.
 //! 10. Persist `last_tick_finished` and the final outcome.
 
 use std::sync::atomic::{AtomicBool, Ordering};

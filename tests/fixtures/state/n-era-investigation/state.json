@@ -1,0 +1,1 @@
+{"version":2,"entries":{"owner/r#23":{"key":{"owner":"owner","repo":"r","number":23},"phase":"in_progress","ticket_type":"investigation","attempts":1,"last_error":null,"last_run_id":"RUN-N-ERA","next_attempt_at":null,"finalization":null,"queued_at":"2026-09-07T09:00:00Z","updated_at":"2026-09-07T09:05:00Z","generation":1,"blocked_source":null,"blocked_recovery_hint":null}}}

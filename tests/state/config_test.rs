@@ -7,7 +7,7 @@
 use caduceus::config::{
     expand_leading_tilde, is_valid_repo_slug, Config, LoadContext, RawConfig, RawEnv,
     DEFAULT_API_BASE, DEFAULT_MAX_REVIEWS_PER_TICK_MULTIPLIER, DEFAULT_TICKET_LABEL_CODE,
-    DEFAULT_TICKET_LABEL_INVESTIGATION, DEFAULT_WORKER_PARALLELISM,
+    DEFAULT_WORKER_PARALLELISM,
 };
 #[path = "../fixtures/mod.rs"]
 mod fixtures;
@@ -47,10 +47,6 @@ fn test_defaults_match_contract() {
     assert_eq!(cfg.max_retries_per_issue, 3);
     assert_eq!(cfg.retry_backoff_seconds, 300);
     assert_eq!(cfg.ticket_label_code, DEFAULT_TICKET_LABEL_CODE);
-    assert_eq!(
-        cfg.ticket_label_investigation,
-        DEFAULT_TICKET_LABEL_INVESTIGATION
-    );
     assert!(cfg.remove_label_on_completion);
     assert_eq!(cfg.api_base, DEFAULT_API_BASE);
     assert_eq!(cfg.state_dir, root.join("state"));
@@ -81,10 +77,6 @@ fn raw_default_parses_minimal_plugin_derived_config() {
     // Every default is filled in by ``Config::from_raw``.
     assert_eq!(cfg.poll_interval_seconds, 120);
     assert_eq!(cfg.ticket_label_code, DEFAULT_TICKET_LABEL_CODE);
-    assert_eq!(
-        cfg.ticket_label_investigation,
-        DEFAULT_TICKET_LABEL_INVESTIGATION
-    );
     assert!(cfg.remove_label_on_completion);
 }
 
@@ -101,7 +93,6 @@ fn every_default_is_independently_overridable() {
         max_retries_per_issue: 1
         retry_backoff_seconds: 60
         ticket_label_code: "code-label"
-        ticket_label_investigation: "investigate-label"
         api_base: "https://ghes.example.com/api/v3"
         worker_command: ["python3", "/path/to/bridge.py"]
         reduced_containment_acknowledged: true
@@ -121,7 +112,6 @@ fn every_default_is_independently_overridable() {
     assert_eq!(cfg.max_retries_per_issue, 1);
     assert_eq!(cfg.retry_backoff_seconds, 60);
     assert_eq!(cfg.ticket_label_code, "code-label");
-    assert_eq!(cfg.ticket_label_investigation, "investigate-label");
     assert_eq!(cfg.api_base, "https://ghes.example.com/api/v3");
     assert!(cfg.dry_run);
     assert_eq!(cfg.watched_repos, vec!["acme/widgets".to_string()]);
@@ -491,19 +481,23 @@ fn state_backend_invalid_value_is_rejected() {
     assert!(msg.contains("json") && msg.contains("sqlite"), "got: {msg}");
 }
 
+// N+1 key removal (issue #331)
+
 #[test]
-fn duplicate_trigger_labels_are_rejected() {
-    let root = tempdir("dup-labels");
+fn removed_investigation_key_produces_deliberate_error() {
+    let root = tempdir("removed-inv-key");
     let yaml = r#"
-        ticket_label_code: "auto-fix"
+        ticket_label_code: "autofix"
         ticket_label_investigation: "auto-fix"
         worker_command: ["python3", "bridge.py"]
         reduced_containment_acknowledged: true
         "#;
     let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
-    let err = Config::from_raw(raw, &ctx(&root)).expect_err("duplicate labels must fail");
+    let err = Config::from_raw(raw, &ctx(&root)).expect_err("removed key must fail the load");
     let msg = format!("{err:?}");
-    assert!(msg.contains("must differ"), "got: {msg}");
+    assert!(msg.contains("ticket_label_investigation"), "got: {msg}");
+    assert!(msg.contains("removed in release N+1"), "got: {msg}");
+    assert!(msg.contains("auto_review"), "got: {msg}");
 }
 
 // Legacy emoji label translation (DAR §12)
@@ -511,7 +505,8 @@ fn duplicate_trigger_labels_are_rejected() {
 // `from_raw` translates explicit legacy emoji trigger-label values to
 // the canonical labels at read time (docs/architecture/auto-review.md
 // §12), emitting a one-time warn. Exact match only; deliberate
-// non-legacy values pass through untouched.
+// non-legacy values pass through untouched. (The investigation-side
+// translation entries were removed with the key in N+1, issue #331.)
 
 #[test]
 fn from_raw_translates_legacy_emoji_code_label() {
@@ -524,35 +519,6 @@ fn from_raw_translates_legacy_emoji_code_label() {
     let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
     let cfg = Config::from_raw(raw, &ctx(&root)).expect("config validates");
     assert_eq!(cfg.ticket_label_code, "autofix");
-}
-
-#[test]
-fn from_raw_translates_legacy_emoji_investigation_label() {
-    let root = tempdir("legacy-inv");
-    let yaml = r#"
-        ticket_label_investigation: "🤖 auto-fix-investigate"
-        worker_command: ["python3", "bridge.py"]
-        reduced_containment_acknowledged: true
-        "#;
-    let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
-    let cfg = Config::from_raw(raw, &ctx(&root)).expect("config validates");
-    assert_eq!(cfg.ticket_label_investigation, "autofix-investigate");
-}
-
-#[test]
-fn from_raw_translates_readme_phantom_investigation_label() {
-    // README v1.0.0 documented "🤖 auto-fix-investigation"; it was never
-    // the code default. Operators following the README set it; it must
-    // translate (it was a dead label under the old defaults too).
-    let root = tempdir("legacy-phantom");
-    let yaml = r#"
-        ticket_label_investigation: "🤖 auto-fix-investigation"
-        worker_command: ["python3", "bridge.py"]
-        reduced_containment_acknowledged: true
-        "#;
-    let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
-    let cfg = Config::from_raw(raw, &ctx(&root)).expect("config validates");
-    assert_eq!(cfg.ticket_label_investigation, "autofix-investigate");
 }
 
 #[test]
@@ -575,14 +541,12 @@ fn from_raw_does_not_translate_arbitrary_custom_label() {
     let root = tempdir("custom-label");
     let yaml = r#"
         ticket_label_code: "custom-triage"
-        ticket_label_investigation: "custom-investigate"
         worker_command: ["python3", "bridge.py"]
         reduced_containment_acknowledged: true
         "#;
     let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
     let cfg = Config::from_raw(raw, &ctx(&root)).expect("config validates");
     assert_eq!(cfg.ticket_label_code, "custom-triage");
-    assert_eq!(cfg.ticket_label_investigation, "custom-investigate");
 }
 
 // Deny unknown fields

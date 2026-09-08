@@ -18,6 +18,17 @@ use rusqlite::params;
 
 use crate::github::issue::IssueKey;
 use crate::infra::error::{scrub, CaduceusError, CaduceusResult};
+use crate::runtime::audit::{
+    emit_investigation_archived, emit_review_migration_terminated_investigation,
+    INVESTIGATION_ADMISSION_REJECTED_EVENT,
+};
+
+/// Reconcile reason recorded on every row the N+1 startup pass
+/// terminates (DAR §4.4). The literal cites the issue so operators
+/// grepping logs land on the removal rationale.
+const RECONCILE_TERMINATION_REASON: &str = "investigation removed in N+1 (#331); terminated \
+                                            by the startup reconcile pass (DAR §4.4) — no \
+                                            work was executed";
 
 thread_local! {
     /// Thread-local transaction connection used by SQLite-backed
@@ -56,6 +67,11 @@ impl StateStore {
         // Force a load+validate at open so a corrupt file is
         // reported immediately rather than on the first mutation.
         store.load_validated()?;
+        // DAR §4.4 startup reconcile pass (issue #331): terminate any
+        // non-terminal Investigation row on EVERY store open,
+        // independent of the migration chain. A failed reconcile must
+        // fail the open — never silently skip termination.
+        store.reconcile_legacy_investigation()?;
         Ok(store)
     }
 
@@ -80,6 +96,10 @@ impl StateStore {
         // Like the JSON path, force a load so a corrupt/unknown
         // schema is reported at open time.
         let _ = store.load_validated()?;
+        // DAR §4.4 startup reconcile pass (issue #331): same contract
+        // as the JSON backend — fired on every store open, errors
+        // propagate and fail the open.
+        store.reconcile_legacy_investigation()?;
         Ok(store)
     }
 
@@ -141,10 +161,92 @@ impl StateStore {
         }
     }
 
+    /// DAR §4.4 startup reconcile pass (issue #331, release N+1).
+    /// Fired on EVERY store open from both constructors. Scans the
+    /// queue for non-terminal Investigation rows — pre-N stores
+    /// upgraded in place, or rows admitted during release N — and
+    /// terminates each one as `Skipped` with a recorded reason: the
+    /// work never executed, so `Done` would be dishonest (the
+    /// operator-driven [`StateStore::skip`] is the precedent shape).
+    ///
+    /// Inside one `with_exclusive` section: load, mutate every
+    /// affected row, persist once, and emit the audit pair per row
+    /// AFTER persist succeeds (`investigation_archived` with
+    /// `source=reconcile/startup` honoring the #367 seam contract,
+    /// plus `review_migration_terminated_investigation` — the DAR
+    /// §4.4-mandated operator-visible outcome).
+    ///
+    /// Idempotent by construction: terminated rows are terminal, so a
+    /// re-open scans 0 rows. Independent of the migration chain, as
+    /// DAR §4.4 demands.
+    pub fn reconcile_legacy_investigation(&self) -> CaduceusResult<usize> {
+        let mut terminated = Vec::new();
+        self.with_exclusive(|store| {
+            let mut state = store.load_validated()?;
+            for entry in state.entries.values_mut() {
+                if entry.ticket_type != TicketType::Investigation {
+                    continue;
+                }
+                // Terminal set is exactly {Done, Failed, Skipped}.
+                // `AwaitingReview` is NOT terminal and must reconcile.
+                let terminal = matches!(entry.phase, Phase::Done | Phase::Failed | Phase::Skipped);
+                if terminal {
+                    continue;
+                }
+                // Capture the phase BEFORE mutation so the audit event
+                // records what the row actually carried (e.g. `queued`,
+                // `in_progress`, `awaiting_review`), not the terminal
+                // phase it is about to become.
+                let phase_before = entry.phase.as_str().to_string();
+                entry.phase = Phase::Skipped;
+                entry.last_error = Some(RECONCILE_TERMINATION_REASON.to_string());
+                entry.next_attempt_at = None;
+                entry.updated_at = Utc::now();
+                // Mirror `skip()`: unlink the stale claim file so the
+                // reaper does not have to (plan §5 risk checkpoint).
+                let digest = display_digest(&entry.key.display_key());
+                let claim_path = store.claims_dir.join(format!("{digest}.claim"));
+                if claim_path.is_file() {
+                    if let Err(err) = fs::remove_file(&claim_path) {
+                        tracing::warn!(
+                            error = %err,
+                            path = %claim_path.display(),
+                            "reconcile claim unlink failed; reaper will clean up"
+                        );
+                    }
+                }
+                terminated.push((entry.key.clone(), phase_before));
+            }
+            if terminated.is_empty() {
+                return Ok(0);
+            }
+            store.persist(&state)?;
+            // Emit after persist succeeds — the events describe
+            // durable state, one pair per terminated row.
+            for (key, phase_before) in &terminated {
+                emit_investigation_archived(
+                    &key.repo,
+                    key.number,
+                    "reconcile/startup",
+                    "terminated",
+                );
+                emit_review_migration_terminated_investigation(&key.repo, key.number, phase_before);
+            }
+            Ok(terminated.len())
+        })
+    }
+
     /// Insert a new queue entry, no-op against an existing entry,
     /// or — when dry-run is disabled and the existing entry is
     /// `Previewed` — promote it to `Queued`. See
     /// [`EnqueueOutcome`].
+    ///
+    /// Investigation admission is REJECTED in N+1 (issue #331):
+    /// the label polling that fed Investigation admissions was
+    /// removed, and this store-level guard is the defense in depth —
+    /// no store, backend, or code path can admit a new Investigation
+    /// entry. Surviving pre-N / N-era rows still parse and load (see
+    /// `reconcile_legacy_investigation`).
     pub fn enqueue(
         &self,
         key: &IssueKey,
@@ -152,6 +254,23 @@ impl StateStore {
         dry_run: bool,
     ) -> CaduceusResult<EnqueueOutcome> {
         key.validate()?;
+        if ticket_type == TicketType::Investigation {
+            tracing::warn!(
+                target: "caduceus",
+                event = INVESTIGATION_ADMISSION_REJECTED_EVENT,
+                repo = %key.repo,
+                issue = key.number,
+                "investigation admission rejected: the ticket type was removed \
+                 in release N+1 (#331); use auto_review or a code ticket"
+            );
+            return Err(CaduceusError::Queue {
+                context: "investigation-admission-rejected",
+                stderr: format!(
+                    "investigation tickets were removed in release N+1 (#331); \
+                     admission rejected for {key} — re-file as auto_review or code"
+                ),
+            });
+        }
         self.with_exclusive(|store| {
             let mut state = store.load_validated()?;
             let now = Utc::now();
@@ -304,11 +423,6 @@ impl StateStore {
 
     /// Terminal transition for a successful code result.
     pub fn complete(&self, claim: ClaimToken) -> CaduceusResult<()> {
-        self.complete_with(claim, Phase::Done)
-    }
-
-    /// Terminal transition for a successful investigation result.
-    pub fn complete_investigation(&self, claim: ClaimToken) -> CaduceusResult<()> {
         self.complete_with(claim, Phase::Done)
     }
 

@@ -1,6 +1,6 @@
 use super::{
     extract_http_status, handle_infra_or_retry, resume_from_checkpoint, run_code_finalize,
-    run_investigation_finalize, run_resume_finalization, ResumeAction,
+    run_resume_finalization, ResumeAction,
 };
 
 use std::sync::Arc;
@@ -55,21 +55,7 @@ pub(crate) async fn run_claim(
                 issue = %claimed.entry.key.display_key(),
                 "durable Done finalization checkpoint; preserving terminal state"
             );
-            if claimed.entry.ticket_type == TicketType::Investigation {
-                guard.finish_investigation().await?;
-            } else {
-                guard.finish_success().await?;
-            }
-            return Ok(TickOutcome::Processed);
-        }
-        if fin.stage == FinalizationStage::InvestigationCommented
-            && claimed.entry.ticket_type == TicketType::Investigation
-        {
-            info!(
-                issue = %claimed.entry.key.display_key(),
-                "durable InvestigationCommented checkpoint; finishing"
-            );
-            guard.finish_investigation().await?;
+            guard.finish_success().await?;
             return Ok(TickOutcome::Processed);
         }
         if matches!(
@@ -129,14 +115,12 @@ pub(crate) async fn run_claim(
     }
 
     // 7b. Verify the trigger label.
-    let trigger_ok = match claimed.entry.ticket_type {
-        TicketType::Code => true,
-        TicketType::Investigation => true,
-    };
-    if !trigger_ok {
+    // Investigation was removed in N+1 (issue #331); every admitted
+    // entry is a code ticket, so the trigger check is unconditional.
+    if claimed.entry.ticket_type != TicketType::Code {
         let _ = guard
             .finish_skip(&format!(
-                "label not present on {}",
+                "non-code ticket on {} (investigation was removed in N+1)",
                 claimed.entry.key.display_key()
             ))
             .await;
@@ -159,13 +143,9 @@ pub(crate) async fn run_claim(
     };
 
     // 9. Verify the trigger label against the fetched labels.
-    let label_ok = match claimed.entry.ticket_type {
-        TicketType::Code => issue.labels.iter().any(|l| l == &cfg.ticket_label_code),
-        TicketType::Investigation => issue
-            .labels
-            .iter()
-            .any(|l| l == &cfg.ticket_label_investigation),
-    };
+    // Only the code label exists in N+1 (investigation removed,
+    // issue #331).
+    let label_ok = issue.labels.iter().any(|l| l == &cfg.ticket_label_code);
     if !label_ok {
         let _ = guard.finish_skip("label removed before work").await;
         return Ok(TickOutcome::Processed);
@@ -350,29 +330,10 @@ pub(crate) async fn run_claim(
         return Ok(TickOutcome::Processed);
     }
 
-    if worker_result.investigation || claimed.entry.ticket_type == TicketType::Investigation {
-        match run_investigation_finalize(
-            &final_ctx,
-            &worker_result,
-            &host_result_path,
-            client.as_ref(),
-            store,
-            &cfg.ticket_label_investigation,
-        )
-        .await
-        {
-            Ok(_) => {
-                guard.finish_investigation().await?;
-                return Ok(TickOutcome::Processed);
-            }
-            Err(err) => {
-                let class = classify_error(&err);
-                return handle_infra_or_retry(cfg, guard, &err, class).await;
-            }
-        }
-    }
-
     // Code finalization: commit, push, PR, comment, await review.
+    // (Investigation finalization was removed in N+1, issue #331;
+    // non-code tickets never reach this point — the earlier guard
+    // skips them.)
     if let Err(err) = run_code_finalize(
         &final_ctx,
         &worker_result,

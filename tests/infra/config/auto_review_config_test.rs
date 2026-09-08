@@ -1,7 +1,7 @@
 //! Config-loader tests for the `auto_review:` block, the
 //! OCI-required validation (DAR §6.3), `max_reviews_per_tick`, and
-//! the release-N `ticket_label_investigation` deprecation warning
-//! (DAR §12). Mirrors sandbox_config_test.rs: load through the
+//! the N+1 `ticket_label_investigation` removal error (issue #331,
+//! DAR §12). Mirrors sandbox_config_test.rs: load through the
 //! canonical `Config::load_from` chain, assert on message content.
 
 use caduceus::infra::config::Config;
@@ -162,126 +162,56 @@ fn unknown_auto_review_key_is_rejected() {
     assert!(err.is_err(), "Phase-2 keys must fail at parse time");
 }
 
-// --- Deprecation warning (DAR §12) + no silent translation (DAR §5) ---
+// --- `ticket_label_investigation` removal error (issue #331, AC5) ---
 //
-// SERIALIZATION RULE (#167 tracing-callsite-interest trap): any test
-// that executes the deprecation-warn callsite with NO subscriber
-// installed can poison the callsite's cached interest as
-// never-enabled, silently dropping the event for later capture tests.
-// Every test whose config sets `ticket_label_investigation` — even
-// the non-capture ones — must run #[serial_test::serial] so no
-// sibling executes the callsite concurrently unhooked. Capture tests
-// additionally run their load inside `init_for_test` so every
-// callsite execution in this binary happens under an active
-// subscriber.
-//
-// The capture assertions check the JSON line level is WARN (the
-// test subscriber runs at TRACE, so a warn line is present; the
-// level tag proves it is a warning, not an info line).
+// The release-N deprecation warning became the N+1 deliberate load
+// error. The RawConfig key stays serde-known so an operator config
+// that still carries it produces the GUIDED error naming the
+// auto_review replacement — never a raw deny_unknown_fields dump.
 
 #[test]
-#[serial_test::serial]
-fn explicit_investigation_label_emits_deprecation_warn() {
-    use caduceus::logging::init_for_test;
-    let dir = tempfile::tempdir().expect("tempdir");
-    let log = dir.path().join("warn.log");
-    let body = format!(
+fn ticket_label_investigation_removed_is_a_deliberate_error() {
+    let err = load(&format!(
         "{}ticket_label_investigation: \"autofix-investigate\"\n",
         trusted_host_base()
-    );
-    let path = dir.path().join("config.yaml");
-    let body = body.replace("__TMP__", &dir.path().to_string_lossy());
-    std::fs::write(&path, body).expect("write config");
-    init_for_test(&log, || {
-        Config::load_from(&path).expect("config loads (warning only)")
-    })
-    .expect("capture body");
-    let logged = std::fs::read_to_string(&log).expect("read log");
+    ))
+    .expect_err("the removed key must fail the load in N+1");
+    let msg = format!("{err}");
     assert!(
-        logged.contains("ticket_label_investigation is deprecated"),
-        "got: {logged}"
+        msg.contains("ticket_label_investigation"),
+        "error must name the key: {msg}"
     );
-    assert!(logged.contains("deprecated"), "got: {logged}");
     assert!(
-        logged.contains("\"level\":\"WARN\""),
-        "must be WARN level, got: {logged}"
+        msg.contains("removed in release N+1"),
+        "error must state the removal: {msg}"
+    );
+    assert!(
+        msg.contains("auto_review"),
+        "error must name the replacement: {msg}"
+    );
+    assert!(
+        msg.contains("auto-review.md"),
+        "error must cite the spec: {msg}"
     );
 }
 
 #[test]
-#[serial_test::serial]
-fn default_investigation_label_does_not_warn() {
-    use caduceus::logging::init_for_test;
-    let dir = tempfile::tempdir().expect("tempdir");
-    let log = dir.path().join("silent.log");
-    let body = trusted_host_base().replace("__TMP__", &dir.path().to_string_lossy());
-    let path = dir.path().join("config.yaml");
-    std::fs::write(&path, body).expect("write config");
-    init_for_test(&log, || Config::load_from(&path).expect("config loads")).expect("capture body");
-    let logged = std::fs::read_to_string(&log).expect("read log");
-    assert!(
-        !logged.contains("ticket_label_investigation is deprecated"),
-        "default must not warn, got: {logged}"
-    );
-    // The resolved label is still the transitional default.
-    // (Re-load outside the capture to assert the value.)
-    let cfg = Config::load_from(&path).expect("reload");
-    assert_eq!(cfg.ticket_label_investigation, "autofix-investigate");
-}
-
-#[test]
-#[serial_test::serial]
-fn legacy_emoji_investigation_label_still_translates_and_now_also_warns_deprecation() {
-    // An explicitly-set legacy emoji value hits BOTH warns: the
-    // #291 translation warn and the #320 deprecation warn.
-    use caduceus::logging::init_for_test;
-    let dir = tempfile::tempdir().expect("tempdir");
-    let log = dir.path().join("both.log");
-    let body = format!(
-        "{}ticket_label_investigation: \"🤖 auto-fix-investigate\"\n",
-        trusted_host_base()
-    )
-    .replace("__TMP__", &dir.path().to_string_lossy());
-    let path = dir.path().join("config.yaml");
-    std::fs::write(&path, body).expect("write config");
-    init_for_test(&log, || {
-        Config::load_from(&path).expect("config loads (warning only)")
-    })
-    .expect("capture body");
-    let logged = std::fs::read_to_string(&log).expect("read log");
-    assert!(
-        logged.contains("translated at read time"),
-        "#291 translation warn must fire, got: {logged}"
-    );
-    assert!(
-        logged.contains("ticket_label_investigation is deprecated"),
-        "deprecation warn must fire too, got: {logged}"
-    );
-    let cfg = Config::load_from(&path).expect("reload");
-    assert_eq!(cfg.ticket_label_investigation, "autofix-investigate");
-}
-
-#[test]
-#[serial_test::serial]
-fn investigation_config_never_feeds_auto_review() {
-    // AC5: explicit investigation config, no auto_review block ⇒
-    // cfg.auto_review is None. Investigation config has zero effect on
-    // the review block (DAR §12: never mapped). The load runs inside
-    // `init_for_test` so this callsite execution never poisons the
-    // interest cache for the sibling capture tests (#167).
-    use caduceus::logging::init_for_test;
-    let dir = tempfile::tempdir().expect("tempdir");
-    let log = dir.path().join("no-translate.log");
-    let body = format!(
-        "{}ticket_label_investigation: \"autofix-investigate\"\n",
-        trusted_host_base()
-    )
-    .replace("__TMP__", &dir.path().to_string_lossy());
-    let path = dir.path().join("config.yaml");
-    std::fs::write(&path, body).expect("write config");
-    let cfg = init_for_test(&log, || {
-        Config::load_from(&path).expect("loads with warning only")
-    })
-    .expect("capture body");
+fn ticket_label_investigation_absent_loads_cleanly() {
+    let cfg = load(&trusted_host_base()).expect("key absent = clean load");
     assert!(cfg.auto_review.is_none());
+    assert_eq!(cfg.ticket_label_code, "autofix");
+}
+
+#[test]
+fn investigation_config_never_feeds_auto_review() {
+    // The key is rejected, so a clean load can never have carried
+    // investigation config into the review block. Pin the inverse:
+    // an explicit auto_review block is the only way to enable it.
+    let cfg = load(&format!(
+        "{}auto_review:\n  enabled: false\n",
+        trusted_host_base()
+    ))
+    .expect("clean load");
+    assert!(cfg.auto_review.is_some());
+    assert!(!cfg.auto_review().expect("block").enabled);
 }

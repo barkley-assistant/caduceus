@@ -490,6 +490,10 @@ pub struct StateStore {
 mod identity;
 pub(crate) use identity::process_start_identity;
 
+/// Legacy Investigation parse-compat surface + removal checklist
+/// (issue #331, DAR §12).
+pub mod legacy_investigation;
+
 pub mod claim;
 pub mod daemon_lock;
 pub mod reaper;

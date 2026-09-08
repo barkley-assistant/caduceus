@@ -138,12 +138,11 @@ pub fn dry_run_finalize(
             }
         };
 
-    // 3. Investigation comment (or None for code tickets).
-    let proposed_investigation_comment = if worker_result.investigation {
-        Some(worker_result.summary.clone())
-    } else {
-        None
-    };
+    // 3. Investigation comment. Investigation was removed in N+1
+    //    (issue #331) — always `None` for code tickets. The report
+    //    field is RETAINED for schema stability (see the removal
+    //    checklist in `src/state/queue/legacy_investigation.rs`).
+    let proposed_investigation_comment = None;
 
     // 4. Build the report. The branch name is the
     //    worktree's branch.

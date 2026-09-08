@@ -9,18 +9,19 @@
 //! * The list of paths the worker must *not* touch:
 //!   `.git/`, `worker-prompt.md`, `worker-result.json`, the
 //!   dry-run report files. These are daemon control files.
-//! * The prohibition on `git commit`, `git push`, `git
-//!   checkout`/`git switch`/`git branch -m`. Finalization is
+//! * The prohibition on `git commit`, `git push`, `git`
+//!   `checkout`/`git switch`/`git branch -m`. Finalization is
 //!   the daemon's job; the worker only writes code and
 //!   `worker-result.json`.
-//! * Code versus investigation behavior (`TicketType::Code`
-//!   vs `TicketType::Investigation`).
 //! * A reminder that the daemon's GitHub API access is
 //!   unavailable — the worker cannot push, comment, or label
 //!   on its own.
 //! * Safe Markdown fencing so adversarial issue body and
 //!   context JSON cannot terminate the prompt's structural
 //!   sections.
+//!
+//! Investigation prompts were removed in release N+1 (issue #331);
+//! every admitted ticket is a code ticket.
 //!
 //! The encoded prompt is capped at 2 MiB; exceeding the cap is
 //! a non-retryable diagnostic returned to the daemon before
@@ -50,7 +51,9 @@ pub const PROMPT_FILENAME: &str = "worker-prompt.md";
 /// Build the canonical worker prompt.
 ///
 /// * `issue` — the fetched issue detail.
-/// * `ticket_type` — `Code` or `Investigation`.
+/// * `ticket_type` — always `Code` in N+1 (investigation removed,
+///   issue #331); the parameter stays so the prompt header can
+///   label the run.
 /// * `context_json` — the verbatim `CADUCEUS_CONTEXT_JSON`
 ///   document. The full context JSON is embedded verbatim
 ///   under a fenced JSON block; the worker can parse it
@@ -240,31 +243,15 @@ fn push_behavior(out: &mut String, ticket_type: TicketType) {
          Ticket type: **{}**.\n\n",
         ticket_type_label(ticket_type)
     );
-    match ticket_type {
-        TicketType::Code => {
-            let _ = writeln!(
-                out,
-                "This is a code-change ticket. Make the smallest correct\n\
-                 change to the worktree's code, run the existing tests\n\
-                 (and add new ones if the contract demands it), and\n\
-                 summarise what you did in `worker-result.json`.\n\n\
-                 Your summary is the only thing the daemon surfaces to\n\
-                 the operator; be specific.\n"
-            );
-        }
-        TicketType::Investigation => {
-            let _ = writeln!(
-                out,
-                "This is an investigation ticket. Do **not** change code\n\
-                 (the daemon's finalization will reject any source-tree\n\
-                 modification on an investigation). Investigate, write\n\
-                 your findings to `worker-result.json`, and stop.\n\n\
-                 A code PR is never opened for an investigation; the\n\
-                 daemon will post the findings as a comment on the\n\
-                 issue.\n"
-            );
-        }
-    }
+    let _ = writeln!(
+        out,
+        "This is a code-change ticket. Make the smallest correct\n\
+         change to the worktree's code, run the existing tests\n\
+         (and add new ones if the contract demands it), and\n\
+         summarise what you did in `worker-result.json`.\n\n\
+         Your summary is the only thing the daemon surfaces to\n\
+         the operator; be specific.\n"
+    );
 }
 
 fn push_output_schema(out: &mut String) {
@@ -283,8 +270,7 @@ shape (the daemon parses it as JSON and validates every field):
   "pull_request_title": "<= 256 chars; single line; no control characters>",
   "artifacts": {{
     "<= 128-char key>": <any JSON value>
-  }},
-  "investigation": false
+  }}
 }}
 ```
 
@@ -292,17 +278,14 @@ Notes:
 - `status`: `"success"` means the bridge can finalise. `"failure"`
   means the daemon should record the failure and retry on the
   next tick (until the retry budget is exhausted).
-- `summary` is rendered verbatim into the PR / investigation
-  comment; **no tool names leak**. Treat it as public voice.
+- `summary` is rendered verbatim into the PR comment; **no tool
+  names leak**. Treat it as public voice.
 - `commit_message` has no byte or character length cap; it may
   contain newlines but no other control characters. The PR title
   limit is 256 characters.
 - `pull_request_title` must be <= 256 characters, single line,
   and contain no control characters.
 - `artifacts` is a map with at most 100 keys, each key ≤ 128 chars.
-- `investigation`: set `true` only if you have a strong reason to
-  override the daemon's classification; usually the daemon's
-  ticket_type is authoritative.
 
 Do **not** add fields outside this schema. Do **not** write to
 any other file in the worktree unless your fix demands it.

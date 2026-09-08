@@ -316,30 +316,6 @@ fn completed_claim_is_deleted() {
 }
 
 #[test]
-fn investigation_complete_claim_is_deleted() {
-    let root = tempdir("investigation-claim");
-    let store = StateStore::open(&root).expect("open");
-    store
-        .enqueue(&key("Owner", "Repo", 1), TicketType::Investigation, false)
-        .expect("enqueue");
-    let claimed = store
-        .acquire_next("RUN-1", 1, Utc::now())
-        .expect("acquire")
-        .expect("some");
-    let claim_path = root
-        .join("claims")
-        .join(format!("{}.claim", claimed.claim.digest()));
-    assert!(claim_path.is_file());
-    store
-        .complete_investigation(claimed.claim.clone())
-        .expect("complete_investigation");
-    assert!(
-        !claim_path.is_file(),
-        "claim deleted after investigation complete"
-    );
-}
-
-#[test]
 fn skip_claim_is_deleted() {
     let root = tempdir("skip-claim");
     let store = StateStore::open(&root).expect("open");

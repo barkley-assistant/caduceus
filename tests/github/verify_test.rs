@@ -1,4 +1,4 @@
-//! - Both ticket types proceed when the label is present.
+//! - The code ticket proceeds when the label is present.
 //! - Removed label → `Skip` (label_removed).
 //! - Closed issue → `Skip` (closed).
 //! - 404 → `Skip` (not_found) without consuming a retry.
@@ -6,7 +6,9 @@
 //! - 429 → `Err` (rate-limit, retry-eligible).
 //! - Transfer (response URL points at a different owner/repo) →
 //!   `Skip` (transferred).
-//! - Both-label ambiguity → `Skip` (label_removed).
+//!
+//! (The both-label ambiguity case was removed with the investigation
+//! feature in N+1, issue #331 — a single trigger label remains.)
 
 use caduceus::config::Config;
 use caduceus::error::CaduceusError;
@@ -23,7 +25,6 @@ use fixtures::tempdir;
 
 const TEST_TOKEN: &str = "ghp_testtoken_value_xyz";
 const CODE_LABEL: &str = "autofix";
-const INVESTIGATION_LABEL: &str = "autofix-investigate";
 
 fn mock_client_with_repos(server: &MockServer) -> (Client, Config) {
     let state_dir = tempdir("mock");
@@ -31,7 +32,6 @@ fn mock_client_with_repos(server: &MockServer) -> (Client, Config) {
     cfg.api_base = server.uri();
     cfg.github_token = Some(TEST_TOKEN.to_string());
     cfg.ticket_label_code = CODE_LABEL.to_string();
-    cfg.ticket_label_investigation = INVESTIGATION_LABEL.to_string();
     let cache = HttpCache::open(&state_dir).expect("cache opens");
     let client = Client::with_cache(&cfg, cache).expect("client builds");
     (client, cfg)
@@ -77,55 +77,6 @@ async fn code_ticket_proceeds_when_code_label_is_present() {
         .await
         .expect("verification succeeds");
     assert_eq!(outcome, VerifyOutcome::Proceed);
-}
-
-#[tokio::test]
-async fn investigation_ticket_proceeds_when_investigation_label_is_present() {
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/repos/octocat/hello-world/issues/7"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(issue_body(
-            &[INVESTIGATION_LABEL],
-            "open",
-            false,
-        )))
-        .expect(1)
-        .mount(&server)
-        .await;
-
-    let (client, cfg) = mock_client_with_repos(&server);
-    let key = IssueKey::parse("octocat/hello-world#7").unwrap();
-    let outcome = caduceus::verify::verify_trigger(&client, &key, TicketType::Investigation, &cfg)
-        .await
-        .expect("verification succeeds");
-    assert_eq!(outcome, VerifyOutcome::Proceed);
-}
-
-#[tokio::test]
-async fn code_ticket_skips_when_only_investigation_label_is_present() {
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/repos/octocat/hello-world/issues/7"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(issue_body(
-            &[INVESTIGATION_LABEL],
-            "open",
-            false,
-        )))
-        .expect(1)
-        .mount(&server)
-        .await;
-
-    let (client, cfg) = mock_client_with_repos(&server);
-    let key = IssueKey::parse("octocat/hello-world#7").unwrap();
-    let outcome = caduceus::verify::verify_trigger(&client, &key, TicketType::Code, &cfg)
-        .await
-        .expect("verification succeeds");
-    assert_eq!(
-        outcome,
-        VerifyOutcome::Skip {
-            reason: SkipReason::LabelRemoved
-        }
-    );
 }
 
 // Removed label
@@ -342,35 +293,6 @@ async fn three_oh_one_to_different_repo_returns_skip_transferred() {
         outcome,
         VerifyOutcome::Skip {
             reason: SkipReason::Transferred
-        }
-    );
-}
-
-// Both-label ambiguity
-
-#[tokio::test]
-async fn both_label_ambiguity_returns_skip() {
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/repos/octocat/hello-world/issues/7"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(issue_body(
-            &[CODE_LABEL, INVESTIGATION_LABEL],
-            "open",
-            false,
-        )))
-        .expect(1)
-        .mount(&server)
-        .await;
-
-    let (client, cfg) = mock_client_with_repos(&server);
-    let key = IssueKey::parse("octocat/hello-world#7").unwrap();
-    let outcome = caduceus::verify::verify_trigger(&client, &key, TicketType::Code, &cfg)
-        .await
-        .expect("verification surfaces a result");
-    assert_eq!(
-        outcome,
-        VerifyOutcome::Skip {
-            reason: SkipReason::LabelRemoved
         }
     );
 }

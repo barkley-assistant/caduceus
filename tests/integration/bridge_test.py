@@ -1059,7 +1059,10 @@ class TestNewContract:
         )
         assert result["status"] == "success"
         assert result["pull_request_title"] == "feat(plugin): synthesized title"
-        assert result["investigation"] is False
+        # `investigation` is no longer written by the bridge (removed
+        # in N+1, issue #331); the daemon's serde default keeps old
+        # files parsing.
+        assert "investigation" not in result
 
     def test_result_synthesis_failure_exit(self, bridge_module, tmp_path):
         worktree = _make_worktree_with_prompt(tmp_path / "worktree")

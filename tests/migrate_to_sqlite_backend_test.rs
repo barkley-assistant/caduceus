@@ -57,16 +57,25 @@ fn migration_imports_queue_entries_and_metadata_to_sqlite() {
         "state_meta.json backup must remain"
     );
 
-    // SQLite store now has the entries.
+    // SQLite store now has the entries. The investigation row
+    // (`owner/repo#2`, `in_progress`) is TERMINATED by the N+1
+    // startup reconcile pass on the `open_sqlite` call below — that
+    // is the expected post-upgrade shape (issue #331), not a
+    // migration failure: the entry still parses (kept its ticket
+    // type and `last_error`) and nothing is dropped.
     let sqlite_store = StateStore::open_sqlite(&state_dir).expect("open sqlite store");
     let snap = sqlite_store.snapshot().expect("snapshot");
     assert_eq!(snap.entries.len(), 2, "must have two entries");
     let e = snap
         .entry(&caduceus::issue::IssueKey::parse("owner/repo#2").unwrap())
         .expect("owner/repo#2 present");
-    assert_eq!(e.phase, caduceus::queue::Phase::InProgress);
+    assert_eq!(e.phase, caduceus::queue::Phase::Skipped);
     assert_eq!(e.ticket_type, caduceus::queue::TicketType::Investigation);
-    assert_eq!(e.last_error.as_deref(), Some("timeout"));
+    let reason = e.last_error.as_deref().expect("reconcile reason recorded");
+    assert!(
+        reason.contains("#331"),
+        "reconcile reason cites #331: {reason}"
+    );
 
     // SQLite metadata also imported.
     let sqlite_meta = MetaStore::open_sqlite(&state_dir).expect("open sqlite meta");

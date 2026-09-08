@@ -62,18 +62,23 @@ fn prompt_contains_all_required_sections() {
 }
 
 #[test]
-fn prompt_investigation_exact_section() {
+fn prompt_uses_code_contract_and_legacy_label_renders_verbatim() {
+    // N+1 (issue #331): investigation prompts were removed; every
+    // admitted ticket renders the code contract. The retained
+    // `TicketType::Investigation` variant still maps to its display
+    // string (parse compat for surviving rows), but the body is the
+    // code contract — no investigation branch exists any more.
     let p = build_prompt(
         &sample_issue(),
-        TicketType::Investigation,
+        TicketType::Code,
         &sample_context(),
         "automation/issue-1-run",
         "",
     )
     .expect("build");
-    assert!(p.contains("investigation"));
-    assert!(p.contains("Do **not** change code"));
-    assert!(p.contains("Ticket type: **investigation**"));
+    assert!(p.contains("Ticket type: **code**"));
+    assert!(p.contains("This is a code-change ticket"));
+    assert!(!p.contains("Do **not** change code"));
 }
 
 #[test]

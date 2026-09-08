@@ -4,20 +4,15 @@ use chrono::{DateTime, Utc};
 use tracing::{info, warn};
 
 use crate::daemon::orchestration::{ActiveRunGuard, FailureClass};
-use crate::github::poll::{merge_outcomes, poll_code, poll_investigation};
+use crate::github::poll::poll_code;
 use crate::github::{Client, RateLimitInfo};
 use crate::infra::config::Config;
 use crate::infra::error::{CaduceusError, CaduceusResult};
 use crate::state::meta::{CadenceGate, MetaStore, TickOutcome};
-use crate::state::queue::{EnqueueOutcome, Phase, QueueEntry, StateStore, TicketType};
+use crate::state::queue::{Phase, QueueEntry, StateStore};
 
 // Awaiting-review poller — checks PR merge status for entries in
 // AwaitingReview phase and applies transitions.
-
-/// DAR §13 deprecation event: a new Investigation entry was admitted
-/// in release N. Investigation remains active in N (warning only);
-/// admission rejection is release N+1 (#331).
-pub const INVESTIGATION_DEPRECATED_ADMISSION_EVENT: &str = "investigation_admitted_deprecated";
 
 /// Scan the queue for entries in [`Phase::AwaitingReview`] and poll
 /// each entry's PR merge status. Applies transitions:
@@ -141,11 +136,11 @@ pub(crate) async fn poll_repo(
     store: &StateStore,
 ) -> CaduceusResult<Outcome304> {
     let repos: Vec<String> = vec![slug.to_string()];
-    let code = poll_code(client, cfg, &repos).await?;
-    let inv = poll_investigation(client, cfg, &repos).await?;
-    let merged = merge_outcomes(code, inv);
-    enqueue_summaries(store, &merged.summaries, cfg.dry_run)?;
-    Ok(Outcome304(merged.from_cache))
+    // Investigation polling was removed in N+1 (issue #331): only the
+    // code label feeds the queue now.
+    let polled = poll_code(client, cfg, &repos).await?;
+    enqueue_summaries(store, &polled.summaries, cfg.dry_run)?;
+    Ok(Outcome304(polled.from_cache))
 }
 
 pub fn enqueue_summaries(
@@ -155,25 +150,7 @@ pub fn enqueue_summaries(
 ) -> CaduceusResult<Option<DateTime<Utc>>> {
     let mut earliest: Option<DateTime<Utc>> = None;
     for summary in summaries {
-        let outcome = store.enqueue(&summary.key, summary.ticket_type, dry_run)?;
-        // A brand-new Investigation admission carries the release-N
-        // deprecation warning (DAR §12). Only `Inserted` counts:
-        // `AlreadyPresent` / `Promoted` are not new admissions and
-        // must not re-warn on every tick. Admission itself proceeds
-        // (AC4); rejection is release N+1 (#331).
-        if matches!(
-            (summary.ticket_type, outcome),
-            (TicketType::Investigation, EnqueueOutcome::Inserted)
-        ) {
-            warn!(
-                target: "caduceus",
-                event = INVESTIGATION_DEPRECATED_ADMISSION_EVENT,
-                repo = %summary.key.repo,
-                issue = summary.key.number,
-                "investigation ticket admitted under deprecation (DAR §12); \
-                 active in release N, removal in N+1 (#331)"
-            );
-        }
+        store.enqueue(&summary.key, summary.ticket_type, dry_run)?;
         // The enqueue outcome is a binary inserted/already/promoted
         // signal; the backoff window is whatever the entry's
         // existing `next_attempt_at` carries.

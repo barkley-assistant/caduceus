@@ -131,7 +131,6 @@ fn write_config(
         worker.display()
     ));
     yaml.push_str(&format!("  ticket_label_code: \"{}\"\n", CODE_LABEL));
-    yaml.push_str("  ticket_label_investigation: \"autofix-investigate\"\n");
     yaml.push_str("  dry_run: false\n");
     yaml.push_str("  reduced_containment_acknowledged: true\n");
     yaml.push_str(&format!("  max_retries_per_issue: {max_retries}\n"));

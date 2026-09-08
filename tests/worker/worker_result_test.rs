@@ -104,6 +104,11 @@ fn parse_nested_artifact_value_preserves_structure() {
 
 #[test]
 fn parse_investigation_ticket_succeeds() {
+    // Parse-compat contract (N+1, issue #331): a pre-upgrade
+    // `worker-result.json` written by a crashed N-era run still
+    // parses — the retained `investigation` field is serde-known
+    // and ignored by every consumer. See the removal checklist in
+    // `src/state/queue/legacy_investigation.rs`.
     let root = tempdir("investigation");
     let path = root.join("worker-result.json");
     let body = r#"{

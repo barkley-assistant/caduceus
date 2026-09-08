@@ -127,8 +127,8 @@ impl StateMeta {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TickOutcome {
-    /// A worker run completed successfully (code,
-    /// investigation, or dry-run preview).
+    /// A worker run completed successfully (code ticket or dry-run
+    /// preview; the investigation route was removed in N+1).
     Processed,
     /// Every poll response was a cached 304 — no eligible
     /// entry exists.

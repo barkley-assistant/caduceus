@@ -96,21 +96,17 @@ config to the host's global git config and then
 merge; the daemon emits a once-per-process WARN when the last-resort fallback
 is used.
 
-## Investigation vs. Code Tickets
+## Code Tickets
 
-The same bridge contract serves both. The bridge forwards labels via
+The bridge contract serves code tickets. The bridge forwards labels via
 `CADUCEUS_ISSUE_LABELS_JSON` and the harness decides how to branch.
 
 - **Code ticket** (`autofix`): worker success → commit + push + open
   PR + post completion comment + close issue.
-- **Investigation ticket** (`autofix-investigate`): worker success
-  → post findings comment + remove trigger label + leave issue open.
-  No commit, no push, no PR, no close.
 
-Both tickets use the same `worker-result.json` schema; for
-investigation the `commit_message` and `pull_request_title` fields are
-still required but ignored. The bridge never forks behavior — the
-harness does.
+The `worker-result.json` schema is fixed; the bridge never forks
+behavior — the harness does. (Investigation tickets were removed in
+release N+1; see docs/release-notes.md.)
 
 ## Retry Budget
 
@@ -146,9 +142,9 @@ code polls it and PR eligibility never requires it. Draft PRs are
 skipped unless `auto_review.draft_pull_requests: true`.
 `max_reviews_per_tick` (default `worker_parallelism * 4`, `0` =
 unbounded) bounds per-tick review admission. Investigation tickets
-(`ticket_label_investigation`) still work but are deprecated: explicit
-config use emits a warning, and the key will be removed in a future
-release.
+were removed in release N+1 (#331): the `ticket_label_investigation`
+config key now fails the config load, and surviving investigation
+rows are terminated and archived by the startup reconcile pass.
 
 ## State Recovery Procedure
 

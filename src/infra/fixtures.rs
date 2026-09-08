@@ -47,7 +47,6 @@ pub const CANONICAL_CONFIG_KEYS: &[&str] = &[
     "stale_run_hours",
     "state_dir",
     "ticket_label_code",
-    "ticket_label_investigation",
     "transcript_max_bytes",
     "watched_repos",
     "workdir_base",

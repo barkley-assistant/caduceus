@@ -34,7 +34,8 @@ static GIT_AUTHOR_WARNED: AtomicBool = AtomicBool::new(false);
 const QUEUE_SCHEMA_VERSION: &str = "queue/1.0";
 
 /// Caduceus v1.0.0: poll GitHub, queue one unit of work per tick, finalise
-/// code or investigation results.
+/// code results. (The investigation finalization route was removed in
+/// release N+1; see docs/release-notes.md.)
 #[derive(Debug, Parser)]
 #[command(
     name = "caduceus",
