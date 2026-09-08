@@ -29,7 +29,10 @@
 //! 6. Acquire the next eligible entry. If no entry is
 //!    eligible, finish as [`TickOutcome::Idle304`] (all
 //!    responses were cached 304s) or [`TickOutcome::IdleEmpty`]
-//!    otherwise.
+//!    otherwise. Step 6.5a (issue #339): after the issue drain,
+//!    claim eligible review entries via `acquire_next_review`
+//!    through the same worker pool and JoinSet, bounded by
+//!    `max_reviews_per_tick`.
 //! 7. If the entry has a `FinalizationCheckpoint`, jump to
 //!    the matching resume stage. Otherwise, verify the
 //!    trigger label, fetch the issue detail, build context,
@@ -48,7 +51,9 @@ use tokio_util::sync::CancellationToken;
 use tracing::info;
 use ulid::Ulid;
 
-use crate::daemon::orchestration::{classify_error, ActiveRunGuard, Services, SystemClock};
+use crate::daemon::orchestration::{
+    classify_error, ActiveRunGuard, ReviewRunGuard, Services, SystemClock,
+};
 use crate::github::poll::discover_watched_repos;
 use crate::github::Client;
 use crate::infra::config::Config;
@@ -588,7 +593,7 @@ pub async fn tick(
                     }
                 }
             }
-            Some(Err(err)) => {
+            Some(Err(ref err)) => {
                 tracing::warn!(
                     error = %err,
                     "review store open failed; skipping publication finalize"
@@ -597,6 +602,15 @@ pub async fn tick(
             None => {}
         }
     }
+
+    // The review store (when 5.5 opened one) feeds the review-claim
+    // drain below; a failed open just disables the review arm — 5.5
+    // already logged it and folded the error into the tick's
+    // `last_error` slots (AC3: the drain never starves).
+    let review_store: Option<Arc<crate::state::review::ReviewStore>> = match review_store_open {
+        Some(Ok(store)) => Some(Arc::new(store)),
+        _ => None,
+    };
 
     // 6. Drain the queue into a bounded `JoinSet` dispatch loop.
     //
@@ -815,6 +829,201 @@ pub async fn tick(
         }
     }
 
+    // 6.5a. Review-claim drain (issue #339, D3 Option 1 — strict
+    //      phase order): after the issue drain, claim eligible review
+    //      entries through the SAME worker pool (`pool.admit` — never
+    //      bypassed) and SAME JoinSet, counting against
+    //      `max_reviews_per_tick` (NOT `max_issues_per_tick`). Runs
+    //      only when `auto_review.enabled && !dry_run` (the review
+    //      store exists only then; mirror of the 5.5 gate). Each
+    //      iteration mirrors the issue arm: circuit probe → pool
+    //      admit → spawn `run_review_claim`; the same JoinSet cap
+    //      keeps `in_flight <= worker_parallelism`.
+    if let Some(review_store) = review_store.as_ref() {
+        let review_store: Arc<crate::state::review::ReviewStore> = Arc::clone(review_store);
+        let max_reviews_per_tick = cfg.max_reviews_per_tick;
+        let review_runner = services.git.runner().clone();
+        // The review claim derives the git remote exactly like the
+        // discovery step (DAR §6.3): from `cfg.api_base` (mirror of
+        // the 5.5 resolver). Tests drive the seam directly with a
+        // file:// resolver.
+        let resolve_remote: RemoteResolver = {
+            let api_base = cfg.api_base.clone();
+            Arc::new(move |owner: &str, repo: &str| {
+                crate::worktree::git_https_remote(&api_base, owner, repo)
+            })
+        };
+        let mut processed_review: u32 = 0;
+
+        'review_dispatch: loop {
+            // Per-tick review claim cap (DAR §5, #312): bounds how
+            // many review entries one tick will claim. 0 ==
+            // unbounded, mirroring `max_issues_per_tick` (#108).
+            if max_reviews_per_tick != 0 && processed_review >= max_reviews_per_tick {
+                break 'review_dispatch;
+            }
+            // 6.5a.1. Acquire the next eligible review entry under
+            //         the scheduler lock.
+            let run_id_candidate = Ulid::new().to_string();
+            let store_clone = Arc::clone(&review_store);
+            let clock_now = services.clock.now();
+            let claimed = match LeaderToken::with_lock(&state_dir, || {
+                store_clone.acquire_next_review(&run_id_candidate, std::process::id(), clock_now)
+            })? {
+                Some(c) => c,
+                None => break 'review_dispatch,
+            };
+            // Count the claim immediately (same discipline as the
+            // issue arm): circuit-blocked and pool-saturated entries
+            // still consume quota so a flood cannot starve real work.
+            processed_review += 1;
+
+            // 6.5a.2. Circuit-breaker probe (same shape as the issue
+            //         arm, keyed on the repository full name).
+            let repo_key = claimed.entry.target.repository.full_name();
+            let repo_admit =
+                circuit_store.try_admit("repository", &repo_key, services.clock.as_ref())?;
+            let provider_admit =
+                circuit_store.try_admit("provider", "github", services.clock.as_ref())?;
+
+            let circuit_blocked = matches!(
+                (&repo_admit, &provider_admit),
+                (
+                    AdmissionResult::CircuitOpen { .. } | AdmissionResult::MaxDegradedAgeExceeded,
+                    _
+                ) | (
+                    _,
+                    AdmissionResult::CircuitOpen { .. } | AdmissionResult::MaxDegradedAgeExceeded
+                )
+            );
+
+            if circuit_blocked {
+                let log_path = state_dir.join("processor.log");
+                let mut guard = ReviewRunGuard::new(
+                    claimed.claim.clone(),
+                    Arc::clone(&review_store),
+                    log_path,
+                    claimed.entry.target.clone(),
+                    review_runner.clone(),
+                );
+                let err = CaduceusError::CircuitOpen {
+                    scope: "repository",
+                    scope_id: repo_key.clone(),
+                    retry_after: 1800,
+                    probe_in_flight: false,
+                };
+                let class = classify_error(&err);
+                let outcome =
+                    handle_review_infra_or_retry(cfg.clone(), &mut guard, &err, class).await?;
+                let _ = outcome;
+                if last_error.is_none() {
+                    last_error = Some(err);
+                }
+                continue 'review_dispatch;
+            }
+
+            // 6.5a.3. Admit the entry to the worker pool. Review
+            //         claims MUST NOT bypass `pool.admit` — the
+            //         shared pool enforces `in_flight <=
+            //         worker_parallelism` and the host-wide
+            //         one-worker-per-repo lease (SCHED-001).
+            let admit = match pool.admit(&format!("repo:{repo_key}"), &repo_key).await {
+                Ok(a) => a,
+                Err(err) => {
+                    // PoolSaturated / DrainTimeout is an
+                    // infrastructure failure: requeue with backoff
+                    // and continue the drain (mirror of the issue
+                    // arm).
+                    let log_path = state_dir.join("processor.log");
+                    let mut guard = ReviewRunGuard::new(
+                        claimed.claim.clone(),
+                        Arc::clone(&review_store),
+                        log_path,
+                        claimed.entry.target.clone(),
+                        review_runner.clone(),
+                    );
+                    let class = classify_error(&err);
+                    let outcome =
+                        handle_review_infra_or_retry(cfg.clone(), &mut guard, &err, class).await?;
+                    let _ = outcome;
+                    if last_error.is_none() {
+                        last_error = Some(err);
+                    }
+                    continue 'review_dispatch;
+                }
+            };
+
+            // 6.5a.4. Spawn `run_review_claim` into the SAME JoinSet.
+            let log_path = state_dir.join("processor.log");
+            let guard = ReviewRunGuard::new(
+                claimed.claim.clone(),
+                Arc::clone(&review_store),
+                log_path,
+                claimed.entry.target.clone(),
+                review_runner.clone(),
+            );
+            let services_for_task = Arc::clone(&services);
+            let store_for_task = Arc::clone(&review_store);
+            let client_for_task = Arc::clone(&client);
+            let cfg_for_task = cfg.clone();
+            let cancellation_for_task = cancellation.clone();
+            let resolve_remote_for_task = Arc::clone(&resolve_remote);
+
+            set.spawn(async move {
+                let mut guard = guard;
+                let mut task_http_status: Option<u16> = None;
+                let outcome = run_review_claim(
+                    cfg_for_task,
+                    &services_for_task,
+                    client_for_task,
+                    store_for_task.as_ref(),
+                    claimed,
+                    &mut guard,
+                    cancellation_for_task,
+                    &mut task_http_status,
+                    // The Admission RAII guard rides into the task so
+                    // the pool permit is held for the worker's full
+                    // lifetime (per-task admission contract from #91).
+                    admit,
+                    resolve_remote_for_task,
+                )
+                .await;
+                (outcome, task_http_status)
+            });
+
+            // 6.5a.5. Same JoinSet cap as the issue arm.
+            if set.len() >= worker_parallelism {
+                if let Some(joined) = set.join_next().await {
+                    match joined {
+                        Ok((Ok(_outcome), Some(status))) => {
+                            if http_status.is_none() {
+                                http_status = Some(status);
+                            }
+                        }
+                        Ok((Ok(_outcome), None)) => {}
+                        Ok((Err(err), status_opt)) => {
+                            if let Some(s) = status_opt {
+                                if http_status.is_none() {
+                                    http_status = Some(s);
+                                }
+                            }
+                            if last_error.is_none() {
+                                last_error = Some(err);
+                            }
+                        }
+                        Err(join_err) => {
+                            if last_error.is_none() {
+                                last_error = Some(CaduceusError::Other(format!(
+                                    "review worker task join error: {join_err}"
+                                )));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // 6.6. Drain any remaining in-flight tasks. We pull from
     //      the JoinSet until empty; every per-task http_status
     //      gets folded into the outer slot, every per-task
@@ -871,12 +1080,14 @@ pub async fn tick(
 
 pub mod awaiting_review;
 pub mod per_claim;
+pub mod per_review;
 pub mod resume;
 pub mod review_discovery;
 pub mod review_finalize_step;
 
 use self::awaiting_review::*;
 use self::per_claim::*;
+use self::per_review::*;
 use self::resume::*;
 pub use self::review_discovery::*;
 

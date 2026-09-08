@@ -518,6 +518,32 @@ impl ReviewStore {
         self.terminal_review(claim, ReviewPhase::Skipped, Some(reason))
     }
 
+    /// Re-queue for non-attempt-counted reasons, mirroring the issue
+    /// queue's `requeue_infrastructure`: rate-limit observations,
+    /// GitHub/git transport failures, local I/O, operator-cancel.
+    /// Does NOT increment `attempts`; sets `next_attempt_at` to the
+    /// supplied timestamp (DAR §8.1's Infrastructure row). Releases
+    /// the claim.
+    pub fn requeue_infrastructure_review(
+        &self,
+        claim: ReviewClaimToken,
+        error: &str,
+        not_before: DateTime<Utc>,
+    ) -> CaduceusResult<()> {
+        self.with_exclusive(|store, conn| {
+            let mut queue = store.load_queue(conn)?;
+            let entry = review_entry_for_claim(&mut queue, &claim)?;
+            entry.phase = ReviewPhase::Queued;
+            entry.last_error = Some(error.to_string());
+            entry.last_run_id = None;
+            entry.next_attempt_at = Some(not_before);
+            entry.updated_at = Utc::now();
+            store.persist_queue(conn, &queue)?;
+            unlink_review_claim_best_effort(&store.claims_dir, &claim);
+            Ok(())
+        })
+    }
+
     /// Terminal NeedsAttention transition (mutation violation, DAR
     /// §8.1): phase → `NeedsAttention` with block metadata;
     /// `attempts` is NOT incremented (retry cannot fix a contract

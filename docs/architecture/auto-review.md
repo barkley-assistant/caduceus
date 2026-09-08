@@ -410,11 +410,23 @@ retry budget — correct, because a retry can produce a valid result.
 |---|---|---|
 | Mutation violation (tracked-file change detected post-run) | `Terminal` | `finish_needs_attention` + `blocked_recovery_hint` (points at archived worktree) + `review_mutation_violation`. Retry budget **not** burned. |
 | Unavailable head SHA (force-push + GC between discovery and execution) | distinct skip route | `finish_skip` (quiet: teardown, claim release) + `review_skipped_head_sha_unavailable`. Self-resolving — the successor SHA is admitted by the next poll. **Not** NeedsAttention. |
+| PR 404 / closed-unmerged between admission and claim (#339) | distinct skip route | `finish_skip` + `review_skipped_pr_gone` (`reason` = `pr_not_found` \| `closed_unmerged`). Permanently moot — the PR cannot be reviewed. **Not** NeedsAttention. |
 | Oversized PR (deterministically unreviewable) | skip route | `finish_skip` + `review_skipped_oversized_pr`. Not retry. |
 
-These are three different end states; conflating them either burns retry
+These are four different end states; conflating them either burns retry
 budget on unfixable conditions or floods NeedsAttention with self-resolving
 events.
+
+**Claim-side dispatch (#339).** The step-6.5a drain (after the issue drain,
+strict phase order) claims eligible review entries via
+`ReviewStore::acquire_next_review` and runs `run_review_claim`
+(`src/daemon/tick/per_review.rs`) through the SAME worker pool and JoinSet —
+review claims never bypass `pool.admit`. Every fallible step classifies and
+routes through `handle_review_infra_or_retry` (the §8.1 table above, review
+guard); oversized diffs skip directly at prompt build. The routing fan-out
+is shared with the issue router (`quiet_skip_kind` in
+`src/daemon/tick/awaiting_review.rs`), so the skip conditions live in one
+place.
 
 ---
 
@@ -585,6 +597,7 @@ review_execution_failed        ← infrastructure retry path                    
 review_passed / review_failed_verdict   ← deliberately distinct words          (dispatch, on validated result, #339)
 review_mutation_violation      ← Terminal → NeedsAttention                     (enforcement, #306)
 review_skipped_head_sha_unavailable                                            (dispatch skip route, #339)
+review_skipped_pr_gone           ← reason = pr_not_found | closed_unmerged     (dispatch skip route, #339)
 review_skipped_oversized_pr                                                    (prompt budget, #303)
 review_publish_started / review_published / review_publish_failed_retryable    (finalizer, #310)
 review_publication_suppressed_stale_generation                                 (monotonic guard, #310)

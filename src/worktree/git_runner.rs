@@ -239,89 +239,19 @@ impl GitRunner {
         );
         let timeout = self.inner.timeout;
         let cancelled = Arc::clone(&self.inner.cancelled);
-        let start = std::time::Instant::now();
 
         let child = command.spawn().map_err(|err| CaduceusError::Git {
             operation,
             stderr: scrub(&format!("spawn: {err}")),
         })?;
-        let pid = child.id();
 
-        // Wait loop: poll cancellation + timeout + child exit at
-        // a coarse interval. The poll granularity is small
-        // enough that operator-visible latency stays below a
-        // tick interval (the cron model is 2 min, so even 1s
-        // granularity is fine), and large enough that the wait
-        // syscall doesn't dominate runtime.
-        let mut child = child;
-        let outcome: Result<Result<std::process::Output, std::io::Error>, Outcome> = loop {
-            if cancelled.load(Ordering::SeqCst) {
-                kill_group(pid);
-                let _ = child.wait_with_output().await;
-                break Err(Outcome::Cancelled);
-            }
-            if start.elapsed() >= timeout {
-                kill_group(pid);
-                let _ = child.wait_with_output().await;
-                break Err(Outcome::TimedOut);
-            }
-            match child.try_wait() {
-                Ok(Some(_status)) => {
-                    // Process is done. `wait_with_output` would
-                    // re-wait and fail with ECHILD; instead we
-                    // reach into the pipes directly. Tokio's
-                    // `ChildStdout`/`ChildStderr` implement
-                    // `AsyncRead`; from an async context a simple
-                    // `read_to_end` via `AsyncReadExt` does the
-                    // job. We block briefly here to drain.
-                    let stdout = match child.stdout.take() {
-                        Some(mut s) => {
-                            use tokio::io::AsyncReadExt;
-                            let mut buf = Vec::new();
-                            let _ = s.read_to_end(&mut buf).await;
-                            buf
-                        }
-                        None => Vec::new(),
-                    };
-                    let stderr = match child.stderr.take() {
-                        Some(mut s) => {
-                            use tokio::io::AsyncReadExt;
-                            let mut buf = Vec::new();
-                            let _ = s.read_to_end(&mut buf).await;
-                            buf
-                        }
-                        None => Vec::new(),
-                    };
-                    let status = match child.wait().await {
-                        Ok(s) => s,
-                        Err(err) => break Err(Outcome::Error(err)),
-                    };
-                    let output = std::process::Output {
-                        status,
-                        stdout,
-                        stderr,
-                    };
-                    break Ok(Ok(output));
-                }
-                Ok(None) => tokio::time::sleep(Duration::from_millis(20)).await,
-                Err(err) => {
-                    kill_group(pid);
-                    break Err(Outcome::Error(err));
-                }
-            }
-        };
-
-        match outcome {
-            Ok(Ok(output)) => Ok(GitOutput {
+        match await_git_child(child, timeout, cancelled).await {
+            Ok(output) => Ok(GitOutput {
                 stdout: cap_text(&output.stdout),
                 stderr: redact_and_cap(&output.stderr),
                 status: output.status.code(),
                 timed_out: false,
                 cancelled: false,
-            }),
-            Ok(Err(err)) => Err(CaduceusError::Git {
-                operation,
-                stderr: scrub(&format!("wait: {err}")),
             }),
             Err(Outcome::Cancelled) => Ok(GitOutput {
                 stdout: String::new(),
@@ -366,76 +296,19 @@ impl GitRunner {
         );
         let timeout = self.inner.timeout;
         let cancelled = Arc::clone(&self.inner.cancelled);
-        let start = std::time::Instant::now();
 
         let child = command.spawn().map_err(|err| CaduceusError::Git {
             operation,
             stderr: scrub(&format!("spawn: {err}")),
         })?;
-        let pid = child.id();
 
-        let mut child = child;
-        let outcome: Result<Result<std::process::Output, std::io::Error>, Outcome> = loop {
-            if cancelled.load(Ordering::SeqCst) {
-                kill_group(pid);
-                let _ = child.wait_with_output().await;
-                break Err(Outcome::Cancelled);
-            }
-            if start.elapsed() >= timeout {
-                kill_group(pid);
-                let _ = child.wait_with_output().await;
-                break Err(Outcome::TimedOut);
-            }
-            match child.try_wait() {
-                Ok(Some(_status)) => {
-                    let stdout = match child.stdout.take() {
-                        Some(mut s) => {
-                            use tokio::io::AsyncReadExt;
-                            let mut buf = Vec::new();
-                            let _ = s.read_to_end(&mut buf).await;
-                            buf
-                        }
-                        None => Vec::new(),
-                    };
-                    let stderr = match child.stderr.take() {
-                        Some(mut s) => {
-                            use tokio::io::AsyncReadExt;
-                            let mut buf = Vec::new();
-                            let _ = s.read_to_end(&mut buf).await;
-                            buf
-                        }
-                        None => Vec::new(),
-                    };
-                    let status = match child.wait().await {
-                        Ok(s) => s,
-                        Err(err) => break Err(Outcome::Error(err)),
-                    };
-                    let output = std::process::Output {
-                        status,
-                        stdout,
-                        stderr,
-                    };
-                    break Ok(Ok(output));
-                }
-                Ok(None) => tokio::time::sleep(Duration::from_millis(20)).await,
-                Err(err) => {
-                    kill_group(pid);
-                    break Err(Outcome::Error(err));
-                }
-            }
-        };
-
-        match outcome {
-            Ok(Ok(output)) => Ok(GitOutputRaw {
+        match await_git_child(child, timeout, cancelled).await {
+            Ok(output) => Ok(GitOutputRaw {
                 stdout: output.stdout,
                 stderr: redact_and_cap(&output.stderr),
                 status: output.status.code(),
                 timed_out: false,
                 cancelled: false,
-            }),
-            Ok(Err(err)) => Err(CaduceusError::Git {
-                operation,
-                stderr: scrub(&format!("wait: {err}")),
             }),
             Err(Outcome::Cancelled) => Ok(GitOutputRaw {
                 stdout: Vec::new(),
@@ -511,6 +384,93 @@ enum Outcome {
     Cancelled,
     TimedOut,
     Error(std::io::Error),
+}
+
+/// Await one git child, draining stdout/stderr CONCURRENTLY with the
+/// wait loop.
+///
+/// The pipes are handed to two spawned reader tasks before the loop
+/// starts. Reading only AFTER the child exits deadlocks once the
+/// child's output exceeds the pipe buffer (~64 KiB on Linux): the
+/// child blocks on write while the parent blocks on `try_wait`
+/// returning `None` — the oversized-review-diff finding surfaced by
+/// issue #339. Draining concurrently also lets the timeout/cancel
+/// paths reap promptly (kill closes the write ends → readers EOF).
+async fn await_git_child(
+    mut child: tokio::process::Child,
+    timeout: Duration,
+    cancelled: Arc<AtomicBool>,
+) -> Result<std::process::Output, Outcome> {
+    let pid = child.id();
+
+    let stdout_reader = child.stdout.take().map(|mut s| {
+        tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
+            let mut buf = Vec::new();
+            let _ = s.read_to_end(&mut buf).await;
+            buf
+        })
+    });
+    let stderr_reader = child.stderr.take().map(|mut s| {
+        tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
+            let mut buf = Vec::new();
+            let _ = s.read_to_end(&mut buf).await;
+            buf
+        })
+    });
+
+    let start = std::time::Instant::now();
+    // Wait loop: poll cancellation + timeout + child exit at
+    // a coarse interval. The poll granularity is small
+    // enough that operator-visible latency stays below a
+    // tick interval (the cron model is 2 min, so even 1s
+    // granularity is fine), and large enough that the wait
+    // syscall doesn't dominate runtime.
+    let status: Result<std::process::ExitStatus, Outcome> = loop {
+        if cancelled.load(Ordering::SeqCst) {
+            kill_group(pid);
+            let _ = child.wait().await;
+            break Err(Outcome::Cancelled);
+        }
+        if start.elapsed() >= timeout {
+            kill_group(pid);
+            let _ = child.wait().await;
+            break Err(Outcome::TimedOut);
+        }
+        match child.try_wait() {
+            Ok(Some(_status)) => match child.wait().await {
+                Ok(s) => break Ok(s),
+                Err(err) => break Err(Outcome::Error(err)),
+            },
+            Ok(None) => tokio::time::sleep(Duration::from_millis(20)).await,
+            Err(err) => {
+                kill_group(pid);
+                break Err(Outcome::Error(err));
+            }
+        }
+    };
+
+    // Collect whatever the readers captured. On the success path the
+    // child exited (pipes EOF); on the timeout/cancel paths the kill
+    // closed the write ends, so both tasks complete promptly.
+    let stdout = match stdout_reader {
+        Some(task) => task.await.unwrap_or_default(),
+        None => Vec::new(),
+    };
+    let stderr = match stderr_reader {
+        Some(task) => task.await.unwrap_or_default(),
+        None => Vec::new(),
+    };
+
+    match status {
+        Ok(status) => Ok(std::process::Output {
+            status,
+            stdout,
+            stderr,
+        }),
+        Err(kind) => Err(kind),
+    }
 }
 
 /// Write a credential helper script to a temp directory and return

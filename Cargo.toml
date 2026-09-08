@@ -748,6 +748,18 @@ name = "review_discovery_test"
 path = "tests/daemon/review_discovery_test.rs"
 
 [[test]]
+name = "review_skip_route_test"
+path = "tests/tick/review_skip_route_test.rs"
+
+[[test]]
+name = "review_claim_dispatch_test"
+path = "tests/tick/review_claim_dispatch_test.rs"
+
+[[test]]
+name = "review_drain_test"
+path = "tests/tick/review_drain_test.rs"
+
+[[test]]
 name = "review_fixture_migration_test"
 path = "tests/state/review_fixture_migration_test.rs"
 

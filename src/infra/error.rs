@@ -68,6 +68,14 @@ pub enum CaduceusError {
     #[error("head SHA unavailable: {sha}")]
     HeadShaUnavailable { sha: String },
 
+    /// A PR review target is gone from the remote before execution
+    /// (DAR §8.1 fourth route): the PR fetch 404'd (`pr_not_found`)
+    /// or the PR was closed without merge (`closed_unmerged`) between
+    /// admission and claim. Quiet skip route, not NeedsAttention, not
+    /// retry — the condition is self-resolving or permanently moot.
+    #[error("review target gone: {reason}")]
+    ReviewGone { reason: String },
+
     /// GitHub API returned a non-success status.
     #[error("GitHub API status {status}: {message}")]
     GitHubApi { status: u16, message: String },
@@ -487,6 +495,9 @@ impl fmt::Debug for CaduceusError {
             }
             CaduceusError::HeadShaUnavailable { sha } => {
                 format!("HeadShaUnavailable {{ sha: {} }}", scrub(sha))
+            }
+            CaduceusError::ReviewGone { reason } => {
+                format!("ReviewGone {{ reason: {} }}", scrub(reason))
             }
             CaduceusError::GitHubApi { status, message } => format!(
                 "GitHubApi {{ status: {status}, message: {} }}",
