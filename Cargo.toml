@@ -468,12 +468,20 @@ name = "finalizer_test"
 path = "tests/review/finalizer_test.rs"
 
 [[test]]
+name = "crash_recovery_test"
+path = "tests/review/crash_recovery_test.rs"
+
+[[test]]
 name = "review_store_test"
 path = "tests/state/review_store_test.rs"
 
 [[test]]
 name = "review_activation_test"
 path = "tests/state/review_activation_test.rs"
+
+[[test]]
+name = "review_reaper_test"
+path = "tests/state/review_reaper_test.rs"
 
 [[test]]
 name = "state_store_test"
