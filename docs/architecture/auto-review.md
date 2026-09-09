@@ -605,6 +605,13 @@ review_stale_sha_observed                                                      (
 review_migration_terminated_investigation                                      (N+1 reconcile, #331)
 ```
 
+The 21 names above are pinned by
+`tests/runtime/review_event_catalog_test.rs` (issue #318, AC1), which
+reads the producing sites' `pub const … : &str` values through the
+single `caduceus::runtime::audit::review_events` seam.
+`review_skipped_pr_closed_unmerged` is a §9.3 event (finalizer quiet
+skip), not part of this catalog.
+
 `verdict FAIL` and `execution FAILED` must never be conflatable in logs.
 CLI: `caduceus review status [repo] | list | show <repo> <pr> [--json]`
 reading the review stores; per-row fields: repo, PR, base SHA, head SHA,

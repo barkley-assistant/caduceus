@@ -27,6 +27,20 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
 
 ### Added
 
+- **Review observability CLI.** `caduceus review status
+  [<owner/repo>] | list | show <owner/repo> <pr> [--json]` reads the
+  review stores (queue, per-`(repo, pr)` state, history) on BOTH state
+  backends with a versioned `review/1.0` JSON envelope and the full DAR
+  §13 per-row field set; `show` parses history `result_json` documents
+  defensively (older schema versions surface raw with a `parse_error`,
+  never back-migrated). `execution status` is derived from the latest
+  same-generation history row's `ReviewResult.status` and is
+  deliberately distinct from `verdict`. Closes #318.
+- **DAR §13 event catalog assertion.** `review_event_catalog_test`
+  pins every structured review event name to its §13 literal at one
+  seam (`caduceus::runtime::audit::review_events`), keeping
+  `review_failed_verdict` and `review_execution_failed` textually and
+  structurally distinct (AC3). Closes #318.
 - **Review mutation-violation enforcement.** A review worker that
   modifies tracked files or daemon control files (`worker-prompt.md`,
   `review-worktree.json`) now fails terminally: the review entry routes

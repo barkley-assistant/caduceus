@@ -24,6 +24,8 @@ use caduceus::queue::{
 use caduceus::readiness::{self, DiagnosticCanary, DiagnosticStatus, ReadinessVerdict};
 use caduceus::DaemonLock;
 
+mod review;
+
 static GIT_AUTHOR_WARNED: AtomicBool = AtomicBool::new(false);
 
 /// Schema version of the `queue` JSON envelope emitted by
@@ -91,6 +93,11 @@ pub enum Command {
     Queue {
         #[command(subcommand)]
         action: QueueAction,
+    },
+    /// Inspect review queue, per-PR state, and history.
+    Review {
+        #[command(subcommand)]
+        action: review::ReviewAction,
     },
     /// Migrate legacy queue state into the current schema.
     MigrateState {
@@ -221,6 +228,7 @@ pub fn run() -> CaduceusResult<()> {
                     force,
                 },
         }) => run_queue_remove(&issue, dry_run, force, json),
+        Some(Command::Review { action }) => review::run(action),
         Some(Command::WorktreeGc {
             older_than_days,
             dry_run,

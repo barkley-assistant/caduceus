@@ -496,6 +496,14 @@ name = "review_reaper_test"
 path = "tests/state/review_reaper_test.rs"
 
 [[test]]
+name = "review_event_catalog_test"
+path = "tests/runtime/review_event_catalog_test.rs"
+
+[[test]]
+name = "review_cli_test"
+path = "tests/cli/review_cli_test.rs"
+
+[[test]]
 name = "state_store_test"
 path = "tests/state/state_store_test.rs"
 

@@ -121,3 +121,40 @@ pub fn emit_review_migration_terminated_investigation(repo: &str, issue: u64, ph
          auto_review or code ticket if still needed"
     );
 }
+
+/// DAR §13 review event catalog (issue #318).
+///
+/// One seam that re-exports every structured review event name from
+/// its producing site, so the CLI, docs, and the catalog test
+/// (`tests/runtime/review_event_catalog_test.rs`) can enumerate the
+/// stable operator-facing names without depending on the producing
+/// module layout. The constants are the producing sites' own `pub
+/// const … : &str` values — this module adds no new names and no
+/// emit logic. Names are asserted against the §13 literals by the
+/// catalog test; `review_failed_verdict` and
+/// `review_execution_failed` are deliberately distinct strings and
+/// never conflated (AC3).
+///
+/// Out of catalog: `review_skipped_pr_closed_unmerged`
+/// (`crate::review::finalize::EVENT_SKIPPED_PR_CLOSED_UNMERGED`) is a
+/// §9.3 event kept for the finalizer's quiet skip; it is intentionally
+/// not listed here.
+pub mod review_events {
+    pub use super::REVIEW_MIGRATION_TERMINATED_INVESTIGATION_EVENT;
+    pub use crate::daemon::tick::per_review::{
+        REVIEW_EXECUTION_FAILED_EVENT, REVIEW_FAILED_VERDICT_EVENT, REVIEW_PASSED_EVENT,
+        REVIEW_RETRY_SCHEDULED_EVENT, REVIEW_SKIPPED_HEAD_SHA_UNAVAILABLE_EVENT,
+        REVIEW_SKIPPED_PR_GONE_EVENT, REVIEW_STARTED_EVENT, REVIEW_WORKER_COMPLETED_EVENT,
+    };
+    pub use crate::daemon::tick::review_discovery::{
+        ADMITTED_EVENT, DISCOVERED_EVENT, SKIPPED_ALREADY_COMPLETE_EVENT, SKIPPED_DRAFT_EVENT,
+        STALE_SHA_EVENT,
+    };
+    pub use crate::github::fork_gate::FORK_SKIP_EVENT;
+    pub use crate::repo::review_integrity::MUTATION_VIOLATION_EVENT;
+    pub use crate::review::finalize::{
+        EVENT_PUBLISHED, EVENT_PUBLISH_FAILED_RETRYABLE, EVENT_PUBLISH_STARTED,
+        EVENT_SUPPRESSED_STALE_GENERATION,
+    };
+    pub use crate::worker::review_prompt::OVERSIZED_PR_EVENT;
+}
