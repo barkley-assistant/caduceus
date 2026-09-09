@@ -396,6 +396,17 @@ pub async fn tick(
     )
     .await;
 
+    // 3.2b. Reap orphan REVIEW claims (issue #371): sibling pass over
+    // `review-claims/` with the same liveness rule as the issue
+    // reaper. The issue pass above never touches the review dir and
+    // this pass never touches `claims/` (sibling-queue invariant).
+    let _ = crate::state::queue::reap_stale_review_claims(
+        &state_dir,
+        services.clock.now(),
+        cfg.stale_run_hours,
+    )
+    .await;
+
     // 3.5. Reclaim stale, unclaimed worktrees (best-effort).
     if !cfg.worktree_gc_disabled {
         match DaemonLock::try_acquire(&state_dir) {

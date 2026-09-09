@@ -10,6 +10,10 @@ use chrono::{DateTime, Utc};
 use fs2::FileExt;
 
 use crate::infra::error::{CaduceusError, CaduceusResult};
+use crate::state::review::{
+    review_queue_key, ReviewClaimFileBody, ReviewPhase, ReviewStore, REVIEW_CLAIMS_DIRNAME,
+    REVIEW_CLAIM_FILE_VERSION,
+};
 use crate::worker::supervisor::process_lifecycle::IDENTITY;
 
 /// Directory under `<state_dir>/claims` where malformed/future-stamped
@@ -381,6 +385,233 @@ pub(crate) async fn reap_one_stale_claim(
     // above already happened; the queue phase is left alone.
 
     // 4. Unlink the claim file. The state is already durable
+    //    by this point; a final unlink failure surfaces as a
+    //    reaper warning, not a fatal error.
+    let _ = fs::remove_file(claim_path);
+    Ok(())
+}
+
+/// Reap stale REVIEW claims and quarantine malformed/future-stamped
+/// ones. Sibling of [`reap_stale_claims`] for the review queue
+/// (issue #371): review claim files live under
+/// `<state_dir>/review-claims/` — deliberately separate from the
+/// issue `claims/` dir — so the issue reaper never parses a review
+/// body as an issue body. The liveness rule is identical
+/// (`IDENTITY.is_alive` + [`process_start_identity`] match + age
+/// cutoff); the only divergences are the body type
+/// ([`ReviewClaimFileBody`]) and the queue lookup key
+/// (`review_queue_key(&target)`).
+///
+/// The queue mutation is serialised by the review store's exclusive
+/// `review.lock` section, matching the issue reaper's `state.lock`
+/// discipline. Runs under the tick's `LeaderToken`.
+pub async fn reap_stale_review_claims(
+    state_dir: &Path,
+    now: DateTime<Utc>,
+    stale_run_hours: u64,
+) -> CaduceusResult<ReapReport> {
+    let claims_dir = state_dir.join(REVIEW_CLAIMS_DIRNAME);
+    let mut report = ReapReport::default();
+
+    // Nothing to do if the claims dir is missing — the daemon
+    // may be starting cold.
+    if !claims_dir.is_dir() {
+        return Ok(report);
+    }
+
+    let entries = match fs::read_dir(&claims_dir) {
+        Ok(rd) => rd,
+        Err(err) => {
+            return Err(CaduceusError::Queue {
+                context: "reap-review",
+                stderr: format!("read_dir {}: {err}", claims_dir.display()),
+            });
+        }
+    };
+
+    let age_cutoff = now - chrono::Duration::seconds(stale_run_hours.saturating_mul(3600) as i64);
+    let future_cutoff = now + chrono::Duration::seconds(FUTURE_TIMESTAMP_TOLERANCE_SECS);
+
+    for entry in entries {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(err) => {
+                report.errors.push(format!("read_dir: {err}"));
+                continue;
+            }
+        };
+        let path = entry.path();
+        // Reject symlinks, exactly like the issue reaper — never
+        // follow a link out of the review claims dir.
+        let meta = match std::fs::symlink_metadata(&path) {
+            Ok(m) => m,
+            Err(err) => {
+                report
+                    .errors
+                    .push(format!("symlink_metadata {}: {err}", path.display()));
+                continue;
+            }
+        };
+        if meta.file_type().is_symlink() {
+            report
+                .errors
+                .push(format!("refusing to act on symlink: {}", path.display()));
+            continue;
+        }
+        let file_name = match path.file_name().and_then(|s| s.to_str()) {
+            Some(s) => s.to_string(),
+            None => continue,
+        };
+        // The `corrupt/` subdir is reserved for quarantine
+        // outputs, not input — never act on it.
+        if file_name == CLAIMS_CORRUPT_DIRNAME {
+            continue;
+        }
+        if !file_name.ends_with(".claim") {
+            // Unknown file: report and leave untouched.
+            report.errors.push(format!(
+                "unknown file in review claims dir: {}",
+                path.display()
+            ));
+            continue;
+        }
+
+        let bytes = match fs::read(&path) {
+            Ok(b) => b,
+            Err(err) => {
+                report
+                    .errors
+                    .push(format!("read {}: {err}", path.display()));
+                continue;
+            }
+        };
+        let body: ReviewClaimFileBody = match serde_json::from_slice(&bytes) {
+            Ok(b) => b,
+            Err(err) => {
+                let _ = quarantine_claim(
+                    &claims_dir,
+                    &path,
+                    &bytes,
+                    &format!("malformed JSON: {err}"),
+                );
+                report.quarantined += 1;
+                report.count += 1;
+                report
+                    .errors
+                    .push(format!("malformed {} → quarantined: {err}", path.display()));
+                continue;
+            }
+        };
+        if body.version != REVIEW_CLAIM_FILE_VERSION {
+            let _ = quarantine_claim(
+                &claims_dir,
+                &path,
+                &bytes,
+                &format!("unsupported claim version {}", body.version),
+            );
+            report.quarantined += 1;
+            report.count += 1;
+            report.errors.push(format!(
+                "version mismatch in {}: got {}, expected {}",
+                path.display(),
+                body.version,
+                REVIEW_CLAIM_FILE_VERSION
+            ));
+            continue;
+        }
+        if body.started_at > future_cutoff {
+            let _ = quarantine_claim(
+                &claims_dir,
+                &path,
+                &bytes,
+                &format!(
+                    "started_at {} is more than {FUTURE_TIMESTAMP_TOLERANCE_SECS}s in the future",
+                    body.started_at
+                ),
+            );
+            report.quarantined += 1;
+            report.count += 1;
+            report.errors.push(format!(
+                "future started_at in {}: {}",
+                path.display(),
+                body.started_at
+            ));
+            continue;
+        }
+        // Recent enough that the staleness rule does not
+        // apply — leave alone, regardless of process identity.
+        if body.started_at > age_cutoff {
+            continue;
+        }
+        // Old claim: only stale if the recorded process is
+        // dead OR the start identity has changed (pid reuse).
+        let recorded_pid_alive = IDENTITY.is_alive(body.pid as i32);
+        let recorded_start_matches =
+            process_start_identity(state_dir, body.pid) == body.process_start_identity;
+        if recorded_pid_alive && recorded_start_matches {
+            // Live worker — the claim is valid even if it
+            // has been running longer than the threshold.
+            continue;
+        }
+        // Stale. Reap.
+        match reap_one_stale_review_claim(&claims_dir, &path, &body, now).await {
+            Ok(()) => {
+                report.stale_reaped += 1;
+                report.count += 1;
+            }
+            Err(err) => {
+                report
+                    .errors
+                    .push(format!("stale reap failed for {}: {err}", path.display()));
+            }
+        }
+    }
+
+    Ok(report)
+}
+
+/// Reap a single stale review claim. The caller has already
+/// determined staleness; this is the per-file teardown. The queue
+/// revert mirrors `reap_one_stale_claim`: an `InProgress` entry is
+/// returned to `Queued` with `next_attempt_at = now` and `attempts`
+/// untouched (no retry-budget burn). For any other phase the claim
+/// is just residue — it is unlinked and the phase is left alone.
+///
+/// No worktree teardown here (issue #371, Decision 4): review
+/// worktrees are reclaimed by the step-3.5 `gc_review_worktrees`
+/// sweep (#297/#299), so the reaper stays `&Config`-free.
+async fn reap_one_stale_review_claim(
+    claims_dir: &Path,
+    claim_path: &Path,
+    body: &ReviewClaimFileBody,
+    now: DateTime<Utc>,
+) -> CaduceusResult<()> {
+    // 1. Find the queue entry. If no entry exists, the claim is
+    //    orphaned — there is nothing to revert. Unlink the
+    //    claim and return.
+    let parent = claims_dir.parent().unwrap_or(claims_dir);
+    let store = ReviewStore::open(parent)?;
+    let snapshot = store.review_queue_snapshot()?;
+    let key = review_queue_key(&body.target);
+    let entry = match snapshot.entries.get(&key) {
+        Some(e) => e,
+        None => {
+            // Orphaned claim with no queue entry. Unlink and
+            // continue.
+            let _ = fs::remove_file(claim_path);
+            return Ok(());
+        }
+    };
+
+    // 2. Update the queue. If the entry is `InProgress`, return
+    //    to `Queued` without incrementing attempts. For any
+    //    other phase, leave the phase alone (the entry is
+    //    already durable) — the claim file is just residue.
+    if entry.phase == ReviewPhase::InProgress {
+        store.revert_stale_claim_for_reap(&key, &body.run_id, now)?;
+    }
+
+    // 3. Unlink the claim file. The state is already durable
     //    by this point; a final unlink failure surfaces as a
     //    reaper warning, not a fatal error.
     let _ = fs::remove_file(claim_path);
