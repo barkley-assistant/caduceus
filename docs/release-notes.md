@@ -5,7 +5,8 @@
 ### Auto Review (new)
 
 - Automated PR code review on every eligible PR revision in watched
-  repositories. Canonical spec: [docs/architecture/auto-review.md](architecture/auto-review.md).
+  repositories. Canonical spec:
+  [docs/architecture/auto-review.md](architecture/auto-review.md).
 - Requires OCI execution (`executor_mode: oci` + `sandbox:` block with
   a digest-pinned image). Run `caduceus doctor` to check readiness.
 

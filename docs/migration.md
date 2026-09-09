@@ -10,7 +10,7 @@ work in N (DAR §4.4). Auto Review is available and optional.
 ### Before you upgrade (pre-N → N)
 
 1. Stop the daemon.
-2. `caduceus queue --show` — note investigation entries; they keep
+2. `caduceus queue show` — note investigation entries; they keep
    running under N.
 3. Optional: set up OCI (`executor_mode: oci` + `sandbox:`) and
    `auto_review.enabled: true` to start reviewing PRs. Run

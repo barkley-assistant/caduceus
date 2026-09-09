@@ -32,7 +32,8 @@ full non-goal list.
 
 ## Enabling Auto Review
 
-Auto Review requires OCI execution in Phase 1. The minimal config looks like this:
+Auto Review requires OCI execution in Phase 1. The minimal config looks
+like this:
 
 ```yaml
 executor_mode: oci
@@ -208,7 +209,7 @@ with a digest-pinned image. Run `caduceus doctor` to verify readiness.
 Checklist:
 
 1. Is `auto_review.enabled: true` present in the config?
-2. Does `caduceus doctor` report `Available`?
+2. Does `caduceus doctor` report `READY` or `UNAVAILABLE`?
 3. Does `caduceus review status` show queued or in-progress entries?
 4. Are PRs open, non-draft (or `draft_pull_requests: true` set), and
    not forks?
