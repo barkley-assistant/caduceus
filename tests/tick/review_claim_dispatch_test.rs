@@ -26,9 +26,14 @@ use std::process::Command;
 use std::sync::Arc;
 
 use caduceus::config::{AutoReviewConfig, Config};
+use caduceus::daemon::tick::per_review::{
+    REVIEW_EXECUTION_FAILED_EVENT, REVIEW_FAILED_VERDICT_EVENT, REVIEW_PASSED_EVENT,
+    REVIEW_RETRY_SCHEDULED_EVENT, REVIEW_STARTED_EVENT, REVIEW_WORKER_COMPLETED_EVENT,
+};
 use caduceus::error::{CaduceusError, CaduceusResult};
 use caduceus::executor::{Executor, ExecutorOutcome, ExecutorSpec};
 use caduceus::github::{Client, HttpCache};
+use caduceus::infra::logging::build_test_subscriber;
 use caduceus::meta::TickOutcome;
 use caduceus::orchestration::{
     GitRunnerAdapter, GithubClientAdapter, ReviewRunGuard, Services, SystemClock,
@@ -451,6 +456,7 @@ fn fresh_remote(label: &str) -> (PathBuf, String, String, String) {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[serial_test::serial]
 async fn happy_pass_completes_done_with_history() {
     let (remote_dir, base_sha, _mid, head_sha) = fresh_remote("claim-pass-git");
     let mock: Arc<dyn Executor> = Arc::new(MockExecutor {
@@ -494,6 +500,7 @@ async fn happy_pass_completes_done_with_history() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn happy_fail_verdict_completes_done_with_history() {
     let (remote_dir, base_sha, _mid, head_sha) = fresh_remote("claim-fail-git");
     let mock: Arc<dyn Executor> = Arc::new(MockExecutor {
@@ -532,6 +539,7 @@ async fn happy_fail_verdict_completes_done_with_history() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn oci_result_path_variant_reads_mode_correct_path() {
     let (remote_dir, base_sha, _mid, head_sha) = fresh_remote("claim-oci-git");
     let state_dir =
@@ -576,6 +584,7 @@ async fn oci_result_path_variant_reads_mode_correct_path() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[serial_test::serial]
 async fn missing_result_retries_with_budget() {
     let (remote_dir, base_sha, _mid, head_sha) = fresh_remote("claim-missing-git");
     let mock: Arc<dyn Executor> = Arc::new(MockExecutor {
@@ -617,6 +626,7 @@ async fn missing_result_retries_with_budget() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn invalid_result_retries_with_budget() {
     let (remote_dir, base_sha, _mid, head_sha) = fresh_remote("claim-invalid-git");
     let mock: Arc<dyn Executor> = Arc::new(MockExecutor {
@@ -652,6 +662,7 @@ async fn invalid_result_retries_with_budget() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[serial_test::serial]
 async fn mutation_is_terminal_and_worktree_kept() {
     let (remote_dir, base_sha, _mid, head_sha) = fresh_remote("claim-mutation-git");
     let mock: Arc<dyn Executor> = Arc::new(MockExecutor {
@@ -709,6 +720,7 @@ async fn mutation_is_terminal_and_worktree_kept() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[serial_test::serial]
 async fn head_sha_unavailable_is_quiet_skip() {
     // The PR row is open and reachable, but the seeded head SHA is
     // NOT in the mirror/remote (force-push + GC): the SHA-anchored
@@ -739,6 +751,7 @@ async fn head_sha_unavailable_is_quiet_skip() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn oversized_diff_is_direct_skip() {
     // The remote's head commit carries a >1 MiB file, so the
     // merge-base diff exceeds the review budget: deterministically
@@ -775,6 +788,207 @@ async fn oversized_diff_is_direct_skip() {
             .unwrap_or_default()
             .contains("oversized"),
         "skip reason must record the oversized diff"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// DAR §13 dispatch-event capture (issue #318: per-transition emission
+// tests). AC3's never-interchange is enforced at PATH level here: each
+// capture asserts the transition's own event is present AND the other
+// verdict/execution event is absent, so a future swap of the two emit
+// sites cannot pass silently.
+//
+// EVERY test in this binary that runs `run_review_claim` is serial
+// (the #167 finding): `tracing_core` caches callsite interest
+// process-wide, and a sibling running the same event callsites without
+// a subscriber installed would register them as never-enabled and
+// silently drop the capture (same discipline as
+// orchestration_active_run_inline_test.rs:723-735).
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[serial_test::serial]
+async fn happy_pass_captures_dispatch_events() {
+    let (remote_dir, base_sha, _mid, head_sha) = fresh_remote("claim-pass-event-git");
+    let mock: Arc<dyn Executor> = Arc::new(MockExecutor {
+        f: move |spec: &ExecutorSpec| {
+            let result_path = spec.worktree.join("worker-result.json");
+            std::fs::write(&result_path, result_json_pass().to_string()).expect("write result");
+            ok_outcome(result_path)
+        },
+    });
+    let fixture = claim_fixture(
+        "claim-pass-event",
+        remote_dir,
+        base_sha,
+        head_sha.clone(),
+        pr_row_open(&head_sha),
+    )
+    .await;
+    let mut guard = fixture.new_guard();
+
+    let capture = fixture.cfg.state_dir.join("events.log");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&capture)
+        .expect("open capture file");
+    let (writer, appender_guard) = tracing_appender::non_blocking(file);
+    let subscriber = build_test_subscriber(writer);
+
+    let outcome = {
+        let _guard = tracing::subscriber::set_default(subscriber);
+        run_claim_for(&fixture, &mut guard, mock)
+            .await
+            .expect("claim runs")
+    };
+    drop(appender_guard);
+
+    assert_eq!(outcome, TickOutcome::Processed);
+    assert_eq!(queue_entry(&fixture.store).phase, ReviewPhase::Done);
+
+    let body = std::fs::read_to_string(&capture).expect("read capture file");
+    // The pass transition emits started → worker_completed → passed.
+    for expected in [
+        REVIEW_STARTED_EVENT,
+        REVIEW_WORKER_COMPLETED_EVENT,
+        REVIEW_PASSED_EVENT,
+    ] {
+        assert!(body.contains(expected), "missing {expected}: {body}");
+    }
+    // AC3: the verdict and execution-failure events never leak into
+    // the pass path.
+    for absent in [REVIEW_FAILED_VERDICT_EVENT, REVIEW_EXECUTION_FAILED_EVENT] {
+        assert!(!body.contains(absent), "unexpected {absent}: {body}");
+    }
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn happy_fail_verdict_captures_verdict_not_execution_failed() {
+    let (remote_dir, base_sha, _mid, head_sha) = fresh_remote("claim-fail-event-git");
+    let mock: Arc<dyn Executor> = Arc::new(MockExecutor {
+        f: move |spec: &ExecutorSpec| {
+            let result_path = spec.worktree.join("worker-result.json");
+            std::fs::write(&result_path, result_json_fail().to_string()).expect("write result");
+            ok_outcome(result_path)
+        },
+    });
+    let fixture = claim_fixture(
+        "claim-fail-event",
+        remote_dir,
+        base_sha,
+        head_sha.clone(),
+        pr_row_open(&head_sha),
+    )
+    .await;
+    let mut guard = fixture.new_guard();
+
+    let capture = fixture.cfg.state_dir.join("events.log");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&capture)
+        .expect("open capture file");
+    let (writer, appender_guard) = tracing_appender::non_blocking(file);
+    let subscriber = build_test_subscriber(writer);
+
+    let outcome = {
+        let _guard = tracing::subscriber::set_default(subscriber);
+        run_claim_for(&fixture, &mut guard, mock)
+            .await
+            .expect("claim runs")
+    };
+    drop(appender_guard);
+
+    assert_eq!(outcome, TickOutcome::Processed);
+    assert_eq!(queue_entry(&fixture.store).phase, ReviewPhase::Done);
+
+    let body = std::fs::read_to_string(&capture).expect("read capture file");
+    // The fail-verdict transition emits started → worker_completed →
+    // failed_verdict (execution succeeded; only the verdict is Fail).
+    for expected in [
+        REVIEW_STARTED_EVENT,
+        REVIEW_WORKER_COMPLETED_EVENT,
+        REVIEW_FAILED_VERDICT_EVENT,
+    ] {
+        assert!(body.contains(expected), "missing {expected}: {body}");
+    }
+    // AC3: `review_failed_verdict` must NEVER be interchangeable with
+    // `review_execution_failed` — a valid run that fails the code is
+    // not an execution failure.
+    assert!(
+        !body.contains(REVIEW_EXECUTION_FAILED_EVENT),
+        "execution-failed leaked into the fail-verdict path: {body}"
+    );
+    assert!(
+        !body.contains(REVIEW_PASSED_EVENT),
+        "pass leaked into the fail-verdict path: {body}"
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn execution_failed_and_retry_scheduled_capture_on_retry() {
+    let (remote_dir, base_sha, _mid, head_sha) = fresh_remote("claim-retry-event-git");
+    let mock: Arc<dyn Executor> = Arc::new(MockExecutor {
+        f: move |_spec: &ExecutorSpec| {
+            // No result file: an execution failure through the retry
+            // budget (DAR §6.2), NOT a failed verdict.
+            ok_outcome(PathBuf::from("/dev/null/does-not-exist.result.json"))
+        },
+    });
+    let fixture = claim_fixture(
+        "claim-retry-event",
+        remote_dir,
+        base_sha,
+        head_sha.clone(),
+        pr_row_open(&head_sha),
+    )
+    .await;
+    let mut guard = fixture.new_guard();
+
+    let capture = fixture.cfg.state_dir.join("events.log");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&capture)
+        .expect("open capture file");
+    let (writer, appender_guard) = tracing_appender::non_blocking(file);
+    let subscriber = build_test_subscriber(writer);
+
+    let outcome = {
+        let _guard = tracing::subscriber::set_default(subscriber);
+        run_claim_for(&fixture, &mut guard, mock)
+            .await
+            .expect("claim runs")
+    };
+    drop(appender_guard);
+
+    assert_eq!(outcome, TickOutcome::Processed);
+    let entry = queue_entry(&fixture.store);
+    assert_eq!(entry.phase, ReviewPhase::Queued);
+    assert_eq!(entry.attempts, 1);
+
+    let body = std::fs::read_to_string(&capture).expect("read capture file");
+    // The retry route emits started → execution_failed →
+    // retry_scheduled.
+    for expected in [
+        REVIEW_STARTED_EVENT,
+        REVIEW_EXECUTION_FAILED_EVENT,
+        REVIEW_RETRY_SCHEDULED_EVENT,
+    ] {
+        assert!(body.contains(expected), "missing {expected}: {body}");
+    }
+    // AC3: an execution failure is NOT a failed verdict, and no
+    // terminal verdict was produced.
+    assert!(
+        !body.contains(REVIEW_FAILED_VERDICT_EVENT),
+        "failed-verdict leaked into the execution-failed path: {body}"
+    );
+    assert!(
+        !body.contains(REVIEW_PASSED_EVENT),
+        "pass leaked into the execution-failed path: {body}"
     );
 }
 

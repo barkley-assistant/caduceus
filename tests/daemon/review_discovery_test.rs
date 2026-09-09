@@ -28,9 +28,10 @@ use std::sync::Arc;
 
 use caduceus::config::{AutoReviewConfig, Config, LoadContext, RawConfig};
 use caduceus::daemon::tick::review_discovery::{
-    admit_target_for_tests, classify_discovery_row_for_tests, poll_review_step_for_tests,
-    ADMITTED_EVENT, DISCOVERED_EVENT, SKIPPED_ALREADY_COMPLETE_EVENT, SKIPPED_DRAFT_EVENT,
-    STALE_SHA_EVENT,
+    admit_target_for_tests, classify_discovery_row_for_tests, emit_admitted_for_tests,
+    emit_skipped_already_complete_for_tests, emit_skipped_draft_for_tests,
+    emit_stale_sha_for_tests, poll_review_step_for_tests, ADMITTED_EVENT, DISCOVERED_EVENT,
+    SKIPPED_ALREADY_COMPLETE_EVENT, SKIPPED_DRAFT_EVENT, STALE_SHA_EVENT,
 };
 use caduceus::error::CaduceusError;
 use caduceus::github::fork_gate::FORK_SKIP_EVENT;
@@ -366,6 +367,127 @@ fn discovered_event_emits_structured_line() {
     assert!(body.contains("\"repo\":\"o/r\""), "got: {body}");
     assert!(body.contains("\"pr\":7"), "got: {body}");
     assert!(body.contains("\"head_sha\":\"abc\""), "got: {body}");
+}
+
+/// Capture `emit_admitted` (the `review_admitted` transition) through
+/// the same serial + `tracing_appender::non_blocking` discipline.
+#[test]
+#[serial_test::serial]
+fn admitted_event_emits_structured_line() {
+    let root = tempdir("admission-event");
+    let log_path = root.join("admission.log");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .expect("open capture file");
+    let (writer, guard) = tracing_appender::non_blocking(file);
+    let subscriber = build_test_subscriber(writer);
+
+    tracing::subscriber::with_default(subscriber, || {
+        emit_admitted_for_tests("o/r", 7, "abc");
+    });
+    drop(guard);
+
+    let body = std::fs::read_to_string(&log_path).expect("read capture file");
+    assert!(
+        body.contains(&format!("\"event\":\"{ADMITTED_EVENT}\"")),
+        "event name missing: {body}"
+    );
+    assert!(body.contains("\"repo\":\"o/r\""), "got: {body}");
+    assert!(body.contains("\"pr\":7"), "got: {body}");
+    assert!(body.contains("\"head_sha\":\"abc\""), "got: {body}");
+}
+
+/// Capture `emit_skipped_draft` (the `review_skipped_draft` skip
+/// transition).
+#[test]
+#[serial_test::serial]
+fn skipped_draft_event_emits_structured_line() {
+    let root = tempdir("draft-skip-event");
+    let log_path = root.join("draft-skip.log");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .expect("open capture file");
+    let (writer, guard) = tracing_appender::non_blocking(file);
+    let subscriber = build_test_subscriber(writer);
+
+    tracing::subscriber::with_default(subscriber, || {
+        emit_skipped_draft_for_tests("o/r", 7, "abc");
+    });
+    drop(guard);
+
+    let body = std::fs::read_to_string(&log_path).expect("read capture file");
+    assert!(
+        body.contains(&format!("\"event\":\"{SKIPPED_DRAFT_EVENT}\"")),
+        "event name missing: {body}"
+    );
+    assert!(body.contains("\"repo\":\"o/r\""), "got: {body}");
+    assert!(body.contains("\"pr\":7"), "got: {body}");
+    assert!(body.contains("\"head_sha\":\"abc\""), "got: {body}");
+}
+
+/// Capture `emit_skipped_already_complete` (the dedup skip
+/// transition).
+#[test]
+#[serial_test::serial]
+fn skipped_already_complete_event_emits_structured_line() {
+    let root = tempdir("dedup-skip-event");
+    let log_path = root.join("dedup-skip.log");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .expect("open capture file");
+    let (writer, guard) = tracing_appender::non_blocking(file);
+    let subscriber = build_test_subscriber(writer);
+
+    tracing::subscriber::with_default(subscriber, || {
+        emit_skipped_already_complete_for_tests("o/r", 7, "abc");
+    });
+    drop(guard);
+
+    let body = std::fs::read_to_string(&log_path).expect("read capture file");
+    assert!(
+        body.contains(&format!("\"event\":\"{SKIPPED_ALREADY_COMPLETE_EVENT}\"")),
+        "event name missing: {body}"
+    );
+    assert!(body.contains("\"repo\":\"o/r\""), "got: {body}");
+    assert!(body.contains("\"pr\":7"), "got: {body}");
+    assert!(body.contains("\"head_sha\":\"abc\""), "got: {body}");
+}
+
+/// Capture `emit_stale_sha` (the `review_stale_sha_observed` poll
+/// transition), including the held→observed SHA pair.
+#[test]
+#[serial_test::serial]
+fn stale_sha_event_emits_structured_line() {
+    let root = tempdir("stale-sha-event");
+    let log_path = root.join("stale-sha.log");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .expect("open capture file");
+    let (writer, guard) = tracing_appender::non_blocking(file);
+    let subscriber = build_test_subscriber(writer);
+
+    tracing::subscriber::with_default(subscriber, || {
+        emit_stale_sha_for_tests("o/r", 7, "prev", "next");
+    });
+    drop(guard);
+
+    let body = std::fs::read_to_string(&log_path).expect("read capture file");
+    assert!(
+        body.contains(&format!("\"event\":\"{STALE_SHA_EVENT}\"")),
+        "event name missing: {body}"
+    );
+    assert!(body.contains("\"repo\":\"o/r\""), "got: {body}");
+    assert!(body.contains("\"pr\":7"), "got: {body}");
+    assert!(body.contains("\"previous_sha\":\"prev\""), "got: {body}");
+    assert!(body.contains("\"observed_sha\":\"next\""), "got: {body}");
 }
 
 // ---------------------------------------------------------------------------

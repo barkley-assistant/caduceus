@@ -15,6 +15,9 @@ caduceus queue reset <owner/repo#n> [--dry-run] [--json]
               [--force-finalization-reset]
 caduceus queue reprocess <owner/repo#n> [--dry-run]
 caduceus queue remove <owner/repo#n> [--dry-run] [--force] [--json]
+caduceus review status [<owner/repo>] [--json]
+caduceus review list [--json]
+caduceus review show <owner/repo> <pr> [--json]
 caduceus migrate-state --from <path> [--dry-run]
 caduceus migrate-state --to-sqlite [--dry-run]
 caduceus setup [--dry-run]
@@ -29,8 +32,8 @@ caduceus setup [--dry-run]
   resolution chain (`Config::load`).
 - `--json` output is a versioned envelope: the queue commands emit
   `schema: "queue/1.0"` with `app_version`, `state_dir`,
-  `diagnostic`, and `payload` fields; `status` emits its own
-  `version` field.
+  `diagnostic`, and `payload` fields; the review commands emit
+  `schema: "review/1.0"`; `status` emits its own `version` field.
 - Exit codes:
 
 | Command | Exit codes |
@@ -117,6 +120,42 @@ the next poll re-enqueues a fresh entry; that is documented behaviour,
 not a bug (remove the label first to keep the issue out of the
 queue). The live path takes the daemon lock; `--dry-run` mirrors the
 same guards read-only.
+
+## review status [<owner/repo>] [--json]
+
+Report the review queue: aggregate phase counts (queued, in_progress,
+done, failed, skipped, needs_attention) plus one line per entry, with
+the repository rendered in its canonical lowercase form. An optional
+`owner/repo` filter restricts the report to one repository. Read-only:
+the daemon lock is never taken and state is never written. `--json`
+emits the `review/1.0` envelope with `counts` and the full per-row
+field set — repo, PR, base SHA, head SHA, merge base, review state,
+run id, review generation, execution attempts, execution status,
+verdict, last error, reviewed-at, publication state, publication
+attempt count, next publication attempt. `execution status` is a
+derived presentation field (parsed from the latest same-generation
+history row's durable `ReviewResult.status`), not a stored column;
+`verdict` holds the outcome. On a corrupt review store the JSON path
+emits `diagnostic: "corrupt_review_state"` with a non-zero exit.
+
+## review list [--json]
+
+List every review queue entry as a table (key, phase, attempts,
+generation, verdict, publication, run id). `--json` emits the
+`review/1.0` envelope with the full per-row field set (see
+`review status`). An empty queue prints `review queue: no entries`.
+
+## review show <owner/repo> <pr> [--json]
+
+Print full detail for one pull request plus its run history: the
+queue entry joined with the per-`(repo, pr)` state row (verdict,
+reviewed-at, publication fields) and every history row (run id, head
+SHA, generation, completed time, parsed status/verdict/summary).
+History `result_json` documents are parsed defensively: current
+schema versions surface their parsed fields; older versions surface
+the raw document with a `parse_error` and are never back-migrated.
+A missing entry errors on the human path and emits a `"no_entry"`
+diagnostic (non-zero exit) with `--json`.
 
 ## migrate-state --from <path> [--dry-run]
 

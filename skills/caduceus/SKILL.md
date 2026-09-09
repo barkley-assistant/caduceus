@@ -146,6 +146,32 @@ were removed in release N+1 (#331): the `ticket_label_investigation`
 config key now fails the config load, and surviving investigation
 rows are terminated and archived by the startup reconcile pass.
 
+Review observability (issue #318, DAR §13):
+
+- `caduceus review status [OWNER/REPO] [--json]` — aggregate review
+  queue phase counts plus one line per entry; an optional repository
+  filter narrows the report. `--json` emits the `review/1.0` envelope
+  with `counts` and the full per-row field set (repo, PR, base SHA,
+  head SHA, merge base, review state, run id, review generation,
+  execution attempts, execution status, verdict, last error,
+  reviewed-at, publication state, publication attempt count, next
+  publication attempt).
+- `caduceus review list [--json]` — every review queue entry as a
+  table (full per-row fields in JSON).
+- `caduceus review show OWNER/REPO PR [--json]` — full detail plus
+  run history for one PR; history `result_json` documents are parsed
+  defensively (older schema versions surface raw with a
+  `parse_error`, never back-migrated). A missing entry yields a
+  `"no_entry"` diagnostic on the JSON path.
+
+All three read BOTH state backends (they branch on
+`state_backend == "sqlite"` like the daemon, not like the JSON-only
+`queue` CLI), never take the daemon lock, and never write state.
+`execution status` is a derived presentation field parsed from the
+latest same-generation history row's `ReviewResult.status` — it
+describes execution, not outcome (`verdict` holds the outcome; a
+failed-verdict run is still `execution status: success`).
+
 ## State Recovery Procedure
 
 Both `state.json` and `state_meta.json` use temp-file + `fsync` + atomic

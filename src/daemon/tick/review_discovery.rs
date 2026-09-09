@@ -677,6 +677,31 @@ pub fn emit_discovered_for_tests(repo: &str, pr: u64, head_sha: &str) {
     emit_discovered(repo, pr, head_sha)
 }
 
+/// Public test seam (D12): the structured `review_admitted` emitter,
+/// for event-capture tests.
+pub fn emit_admitted_for_tests(repo: &str, pr: u64, head_sha: &str) {
+    emit_admitted(repo, pr, head_sha)
+}
+
+/// Public test seam (D12): the structured `review_skipped_draft`
+/// emitter, for event-capture tests.
+pub fn emit_skipped_draft_for_tests(repo: &str, pr: u64, head_sha: &str) {
+    emit_skipped_draft(repo, pr, head_sha)
+}
+
+/// Public test seam (D12): the structured
+/// `review_skipped_already_complete` emitter, for event-capture
+/// tests.
+pub fn emit_skipped_already_complete_for_tests(repo: &str, pr: u64, head_sha: &str) {
+    emit_skipped_already_complete(repo, pr, head_sha)
+}
+
+/// Public test seam (D12): the structured `review_stale_sha_observed`
+/// emitter, for event-capture tests.
+pub fn emit_stale_sha_for_tests(repo: &str, pr: u64, previous_sha: &str, observed_sha: &str) {
+    emit_stale_sha(repo, pr, previous_sha, observed_sha)
+}
+
 /// Public test seam (D12): one admission (fetch head SHA, fetch base
 /// SHA, merge base, atomic enqueue). Same body as `admit_target`.
 #[allow(clippy::too_many_arguments)]
