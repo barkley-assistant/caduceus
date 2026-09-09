@@ -17,6 +17,9 @@
 use caduceus::config::Config;
 use caduceus::github::{Client, HttpCache};
 use caduceus::infra::logging::build_test_subscriber;
+use caduceus::review::finalize::{
+    EVENT_PUBLISHED, EVENT_PUBLISH_FAILED_RETRYABLE, EVENT_PUBLISH_STARTED,
+};
 use caduceus::review::sticky_comment::{render_sticky_comment, RenderInput, REVIEW_MARKER};
 use caduceus::review::{
     backoff_delay, claim_for_publication, finalize_review, DueFinalization, ExecutionStatus,
@@ -657,4 +660,105 @@ fn backoff_schedule_is_exponential_with_one_hour_cap() {
     assert_eq!(backoff_delay(7), chrono::Duration::seconds(3600));
     assert_eq!(backoff_delay(12), chrono::Duration::seconds(3600));
     assert_eq!(backoff_delay(50), chrono::Duration::seconds(3600));
+}
+
+// ---------------------------------------------------------------------------
+// DAR §13 publish-event capture (issue #318: per-transition emission
+// tests). Serial discipline: tracing callsite interest is cached
+// process-wide; the subscriber is installed for the current thread
+// only, and the #[tokio::test] runtime drives the future on it.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[serial_test::serial]
+async fn publish_started_and_published_emit_on_happy_path() {
+    let gh = MockGitHub::start().await;
+    mount_publish_open(&gh, 777).await;
+    let (client, cfg) = mock_client(&gh);
+    let (store, dir) = seeded_store("fin-publish-event", 1, PublicationState::Pending);
+
+    let capture = dir.join("events.log");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&capture)
+        .expect("open capture file");
+    let (writer, appender_guard) = tracing_appender::non_blocking(file);
+    let subscriber = build_test_subscriber(writer);
+
+    let outcome = {
+        let _guard = tracing::subscriber::set_default(subscriber);
+        finalize_review(&client, &cfg, &store, &due(1), now())
+            .await
+            .expect("finalize succeeds")
+    };
+    drop(appender_guard);
+
+    assert_eq!(outcome, FinalizeOutcome::Published);
+
+    let body = std::fs::read_to_string(&capture).expect("read capture file");
+    // The publish transition emits started → published.
+    for expected in [EVENT_PUBLISH_STARTED, EVENT_PUBLISHED] {
+        assert!(body.contains(expected), "missing {expected}: {body}");
+    }
+    assert!(
+        !body.contains(EVENT_PUBLISH_FAILED_RETRYABLE),
+        "retryable-failure leaked into the published path: {body}"
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn publish_failed_retryable_emits_on_github_failure() {
+    let gh = MockGitHub::start().await;
+    gh.mount(
+        "GET",
+        &format!("/repos/{OWNER}/{REPO}/pulls/{PR}"),
+        serde_json::json!({ "state": "open", "merged": false }),
+    )
+    .await;
+    gh.mount_paged(
+        &format!("/repos/{OWNER}/{REPO}/issues/{PR}/comments"),
+        vec![serde_json::json!([])],
+    )
+    .await;
+    gh.mount_status(
+        "POST",
+        &format!("/repos/{OWNER}/{REPO}/issues/{PR}/comments"),
+        503,
+        serde_json::json!({ "message": "unavailable" }),
+    )
+    .await;
+    let (client, cfg) = mock_client(&gh);
+    let (store, dir) = seeded_store("fin-fail-event", 1, PublicationState::Pending);
+
+    let capture = dir.join("events.log");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&capture)
+        .expect("open capture file");
+    let (writer, appender_guard) = tracing_appender::non_blocking(file);
+    let subscriber = build_test_subscriber(writer);
+
+    let outcome = {
+        let _guard = tracing::subscriber::set_default(subscriber);
+        finalize_review(&client, &cfg, &store, &due(1), now())
+            .await
+            .expect("finalize succeeds")
+    };
+    drop(appender_guard);
+
+    assert!(matches!(outcome, FinalizeOutcome::FailedRetryable { .. }));
+
+    let body = std::fs::read_to_string(&capture).expect("read capture file");
+    // The retryable-failure transition emits started →
+    // publish_failed_retryable; the comment was never published.
+    for expected in [EVENT_PUBLISH_STARTED, EVENT_PUBLISH_FAILED_RETRYABLE] {
+        assert!(body.contains(expected), "missing {expected}: {body}");
+    }
+    assert!(
+        !body.contains(EVENT_PUBLISHED),
+        "published leaked into the failed path: {body}"
+    );
 }
