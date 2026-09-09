@@ -32,12 +32,15 @@
 
 pub mod active_run;
 pub mod failure_class;
+pub mod review_run;
 pub mod services;
 
 use self::active_run::*;
 use self::failure_class::*;
+use self::review_run::*;
 use self::services::*;
 
 pub use active_run::*;
 pub use failure_class::*;
+pub use review_run::*;
 pub use services::*;

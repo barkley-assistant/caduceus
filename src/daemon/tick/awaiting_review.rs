@@ -191,12 +191,51 @@ fn terminal_error_details(err: &CaduceusError) -> Option<(&'static str, &str)> {
     }
 }
 
+/// Which quiet-skip route a review error takes (issue #339, DAR §8.1
+/// fourth route). These conditions are NOT NeedsAttention and do NOT
+/// burn the retry budget: they are self-resolving (the successor SHA
+/// is admitted by the next poll) or permanently moot (the PR is
+/// gone). The match lives in ONE place — both the issue router and
+/// the review router consult it before the three-route fan-out.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum QuietSkipKind {
+    /// Head SHA unavailable at mirror fetch (force-push + GC) —
+    /// `review_skipped_head_sha_unavailable` (DAR §13).
+    HeadShaUnavailable,
+    /// PR 404 / closed-unmerged between admission and claim —
+    /// builder-chosen `review_skipped_pr_gone` event (DAR §13 does
+    /// not name it; the reason distinguishes the two).
+    PrGone { reason: String },
+}
+
+/// Classify an error into the DAR §8.1 fourth route, or `None` when
+/// the error is not a quiet-skip condition. Typed-variant match only
+/// — never message text.
+pub(crate) fn quiet_skip_kind(err: &CaduceusError) -> Option<QuietSkipKind> {
+    match err {
+        CaduceusError::HeadShaUnavailable { .. } => Some(QuietSkipKind::HeadShaUnavailable),
+        CaduceusError::ReviewGone { reason } => Some(QuietSkipKind::PrGone {
+            reason: reason.clone(),
+        }),
+        _ => None,
+    }
+}
+
 pub(crate) async fn handle_infra_or_retry(
     cfg: Config,
     guard: &mut ActiveRunGuard,
     err: &CaduceusError,
     class: FailureClass,
 ) -> CaduceusResult<TickOutcome> {
+    // Fourth route (issue #339): quiet skip BEFORE the three-route
+    // fan-out. `HeadShaUnavailable` (force-push + GC) and `ReviewGone`
+    // (PR 404 / closed-unmerged) are self-resolving or moot review
+    // conditions — the successor SHA is admitted by the next poll
+    // (DAR §8.1). Not NeedsAttention; not retry-budget-consuming.
+    if quiet_skip_kind(err).is_some() {
+        let _ = guard.finish_skip(&err.to_string()).await;
+        return Ok(TickOutcome::Processed);
+    }
     if class.is_terminal() {
         let error_text = err.to_string();
         match terminal_error_details(err) {

@@ -152,6 +152,11 @@ pub fn classify_error(err: &CaduceusError) -> FailureClass {
         // count against the worker retry budget. #339 owns the actual
         // skip routing and matches on the variant before this default.
         CaduceusError::HeadShaUnavailable { .. } => FailureClass::Infrastructure,
+        // Gone review target (PR 404 / closed-unmerged between
+        // admission and claim): self-resolving or permanently moot —
+        // the #339 fourth route matches on the variant before this
+        // default and skips; the class keeps it off the retry budget.
+        CaduceusError::ReviewGone { .. } => FailureClass::Infrastructure,
         CaduceusError::Push { .. } => FailureClass::Infrastructure,
         CaduceusError::PushCollision { .. } => FailureClass::Infrastructure,
         CaduceusError::Worktree { context, .. }
