@@ -1,5 +1,43 @@
 # Migration Guide
 
+## Upgrading to Release N (Investigation deprecated, Auto Review available)
+
+Release N deprecates Investigation but keeps it active: admissions
+continue with deprecation warnings, in-flight work drains through the
+normal runtime loop. No startup termination of ordinary Investigation
+work in N (DAR §4.4). Auto Review is available and optional.
+
+### Before you upgrade (pre-N → N)
+
+1. Stop the daemon.
+2. `caduceus queue show` — note investigation entries; they keep
+   running under N.
+3. Optional: set up OCI (`executor_mode: oci` + `sandbox:`) and
+   `auto_review.enabled: true` to start reviewing PRs. Run
+   `caduceus doctor` first.
+
+### What happens at first open (pre-N → N)
+
+- Structural migration: SQLite v7 → v8, JSON envelope bump.
+- Non-terminal Investigation rows are NOT terminated or reconciled.
+- Investigation admissions keep working with deprecation warnings.
+
+### Label standardisation (#291)
+
+- `autofix` (code tickets), `autofix-investigate` (investigation),
+  `autoreview` (reserved-inert, Phase 1 — no dispatch effect).
+- Legacy emoji labels (`🤖 auto-fix`) are translated at read time to
+  the canonical name with a one-time warning. Update the config and
+  re-label open issues to the canonical name.
+
+## Direct upgrade pre-N → N+1 (skipping N)
+
+Operators upgrading directly from pre-N to N+1 get identical handling
+of pre-N rows: the startup reconcile pass (independent of the migration
+chain) terminates and archives non-terminal investigation entries on
+first open. See the N+1 section below and the N+1 release notes for
+the direct-upgrade callout.
+
 ## Upgrading to Release N+1 (Investigation removed)
 
 Release N+1 removes the Investigation feature. This guide covers every

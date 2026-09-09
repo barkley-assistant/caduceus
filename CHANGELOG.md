@@ -77,6 +77,11 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
   README CLI section and the Operator's Manual index link to it. The
   plugin skill now covers all four queue actions including `queue
   reprocess`. Closes #264.
+- **Auto Review documentation.** User guide, config reference,
+  migration guide, operator recovery cookbook, and release notes for
+  Auto Review (PR-revision code review). The canonical engineering
+  spec is `docs/architecture/auto-review.md`; the new operator page is
+  `docs/auto-review.md`. Closes #325.
 - **Queue inspection and removal CLI.** `caduceus queue show
   [<owner/repo#n>] [--json]` lists every entry as a human table (or
   full detail including the finalization checkpoint) with a versioned

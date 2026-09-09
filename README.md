@@ -104,6 +104,10 @@ commit, push, find-or-create the PR, post the completion
 comment, close the issue. (Investigation tickets were removed in
 release N+1; see docs/release-notes.md.)
 
+When Auto Review is enabled, the tick also polls pull requests in
+watched repositories and runs an isolated review worker against each
+new head revision. See [docs/auto-review.md](docs/auto-review.md).
+
 ## Install (Hermes)
 
 ```bash
@@ -530,6 +534,9 @@ short version with the opinions attached.
   that still carries the key fails to load — see
   [release notes](docs/release-notes.md) and
   [migration guide](docs/migration.md).)
+  `auto_review.enabled` enables automatic PR review on eligible
+  revisions (requires `executor_mode: oci` and a valid `sandbox:`
+  block); see [docs/auto-review.md](docs/auto-review.md).
 
 Everything else lives in
 [configuration](https://github.com/barkley-assistant/caduceus/wiki/Configuration).
@@ -539,7 +546,7 @@ surface; the daemon ignores it, which is the honest answer to
 
 ## CLI reference
 
-The `caduceus` binary exposes seven top-level commands. A bare
+The `caduceus` binary exposes eight top-level commands. A bare
 `caduceus` invocation is rewritten to `caduceus run` so the cron
 contract (silent on success) holds. `--json` output uses a versioned
 envelope; the queue commands emit `schema: "queue/1.0"` and
@@ -552,6 +559,8 @@ caduceus doctor [...]                 # live OCI readiness check
 caduceus worktree-gc [...]            # sweep stale worktrees
 caduceus queue <action>               # manage the work queue
                                       # (show, reset, reprocess, remove)
+caduceus review <action>              # inspect review state
+                                      # (status, list, show)
 caduceus migrate-state [...]          # migrate legacy JSON in, or to SQLite
 caduceus setup [--dry-run]            # generate minimal non-secret config
 ```
@@ -586,6 +595,8 @@ front door; the manual is in the
 - [cli reference](docs/cli.md) — every `caduceus` subcommand and
   flag, exit codes, and the `hermes caduceus` wrapper surface
   (in-repo page).
+- [auto review](docs/auto-review.md) — operator guide, config
+  reference, and troubleshooting for automated PR code review.
 
 ### Transcripts
 

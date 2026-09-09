@@ -157,6 +157,9 @@ the raw document with a `parse_error` and are never back-migrated.
 A missing entry errors on the human path and emits a `"no_entry"`
 diagnostic (non-zero exit) with `--json`.
 
+All structured review events are listed in DAR §13 (see
+[docs/architecture/auto-review.md](architecture/auto-review.md)).
+
 ## migrate-state --from <path> [--dry-run]
 
 Import a legacy v0 JSON state file into the current schema under
