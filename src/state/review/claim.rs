@@ -8,8 +8,9 @@
 //!   directories never mix;
 //! - the body's identity is a [`ReviewTarget`], not an `IssueKey`.
 //!
-//! The reaping of stale review claims is dispatch's problem
-//! (#312/#339); this change ships the acquire/release primitives.
+//! The reaping of stale review claims lives in the state reaper
+//! (`crate::state::queue::reap_stale_review_claims`, issue #371);
+//! this module ships the acquire/release primitives.
 
 use std::path::PathBuf;
 

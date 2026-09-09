@@ -282,6 +282,36 @@ impl ReviewStore {
         self.with_shared(|store, conn| store.load_queue(conn))
     }
 
+    /// Reaper-only revert (issue #371): return an `InProgress` review
+    /// entry to `Queued` with `next_attempt_at = now` and `attempts`
+    /// deliberately UNCHANGED — the stale-claim reaper never burns
+    /// retry budget. The caller has already determined staleness;
+    /// this is the queue-mutation half of the orphan-claim reap.
+    /// Runs inside the store's exclusive section (`review.lock`
+    /// flock / `BEGIN IMMEDIATE`) so the mutation is serialised with
+    /// normal store operations. If no entry matches `key` the
+    /// persist is a no-op (the claim is orphan residue; the caller
+    /// unlinks it).
+    pub(crate) fn revert_stale_claim_for_reap(
+        &self,
+        key: &str,
+        run_id: &str,
+        now: DateTime<Utc>,
+    ) -> CaduceusResult<()> {
+        self.with_exclusive(|store, conn| {
+            let mut queue = store.load_queue(conn)?;
+            if let Some(e) = queue.entries.get_mut(key) {
+                e.phase = ReviewPhase::Queued;
+                e.last_run_id = None;
+                e.last_error = Some(format!("reaper: stale claim for run {run_id}"));
+                e.next_attempt_at = Some(now);
+                e.updated_at = now;
+            }
+            store.persist_queue(conn, &queue)?;
+            Ok(())
+        })
+    }
+
     /// Enqueue a new review target. Assigns
     /// `review_generation = current ReviewState generation + 1`
     /// (or 1 when none), upserts the `ReviewState` row's generation,
