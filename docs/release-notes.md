@@ -1,5 +1,42 @@
 # Release Notes
 
+## Release N — Auto Review available, Investigation deprecated
+
+### Auto Review (new)
+
+- Automated PR code review on every eligible PR revision in watched
+  repositories. Canonical spec: [docs/architecture/auto-review.md](architecture/auto-review.md).
+- Requires OCI execution (`executor_mode: oci` + `sandbox:` block with
+  a digest-pinned image). Run `caduceus doctor` to check readiness.
+
+### OCI-only behaviour change for default installs
+
+Default installs run TrustedHost. Auto Review is rejected at config
+load with an actionable error when `auto_review.enabled: true` is set
+without OCI:
+
+```text
+auto_review.enabled requires OCI execution: set executor_mode: oci
+and provide a valid sandbox: section (digest-pinned image).
+TrustedHost offers no containment for reviewing untrusted PR
+content. Run `caduceus doctor` or see the configuration docs
+```
+
+This is a deliberate behaviour change for default installs (DAR §6.3).
+
+### Investigation deprecated
+
+Investigation remains active but deprecated; admissions carry
+deprecation warnings. Removed in N+1 (see below).
+
+### Label standardisation (#291)
+
+- Canonical labels: `autofix` (code tickets), `autofix-investigate`
+  (investigation, removed in N+1), `autoreview` (reserved-inert in
+  Phase 1 — no daemon code polls it and no dispatch effect).
+- Legacy emoji labels (`🤖 auto-fix`) are translated at read time to
+  the canonical name with a one-time warning.
+
 ## Release N+1 — Investigation removed
 
 Investigation is no longer an active feature. The `autofix-investigate`
