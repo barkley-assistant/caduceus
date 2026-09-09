@@ -480,6 +480,10 @@ name = "out_of_order_test"
 path = "tests/review/out_of_order_test.rs"
 
 [[test]]
+name = "lifecycle_test"
+path = "tests/review/lifecycle_test.rs"
+
+[[test]]
 name = "terminal_paths_test"
 path = "tests/review/terminal_paths_test.rs"
 

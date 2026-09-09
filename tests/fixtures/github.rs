@@ -246,6 +246,37 @@ impl MockGitHub {
             .await;
     }
 
+    /// Same as [`mount_status`] but pins the wiremock priority.
+    /// `1` is the highest priority and beats the default `5`, so a
+    /// later mount with priority `1` takes precedence over an earlier
+    /// default mount for the same matcher (wiremock falls back to
+    /// insertion order only when priorities tie). The response still
+    /// flows through the shared `CountingResponder`, so `counts()` and
+    /// `received_requests()` stay accurate.
+    pub async fn mount_status_priority<B>(
+        &self,
+        method: &str,
+        path_pattern: &str,
+        status: u16,
+        priority: u8,
+        body: B,
+    ) where
+        B: Serialize,
+    {
+        let counted = CountingResponder {
+            counts: Arc::clone(&self.counts),
+            log: Arc::clone(&self.log),
+            method_label: method.to_string(),
+            inner: ResponseTemplate::new(status).set_body_json(body),
+        };
+        Mock::given(wiremock::matchers::method(method))
+            .and(wiremock::matchers::path(path_pattern))
+            .respond_with(counted)
+            .with_priority(priority)
+            .mount(&self.inner)
+            .await;
+    }
+
     /// Escape hatch: build a fully custom `Mock` and mount it
     /// directly. Useful when a test needs request-body matchers,
     /// conditional state, or a non-standard response shape that
