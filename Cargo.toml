@@ -472,6 +472,18 @@ name = "crash_recovery_test"
 path = "tests/review/crash_recovery_test.rs"
 
 [[test]]
+name = "claim_uniqueness_test"
+path = "tests/review/claim_uniqueness_test.rs"
+
+[[test]]
+name = "out_of_order_test"
+path = "tests/review/out_of_order_test.rs"
+
+[[test]]
+name = "terminal_paths_test"
+path = "tests/review/terminal_paths_test.rs"
+
+[[test]]
 name = "review_store_test"
 path = "tests/state/review_store_test.rs"
 
