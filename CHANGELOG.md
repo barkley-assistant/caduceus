@@ -153,6 +153,15 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
   uniqueness constraint. Known follow-up (owned by the Auto Review
   epic): `migrate-state --to-sqlite` does not carry the JSON review
   sidecar files across a backend switch. Closes #295.
+- **Review claim-uniqueness and crash-recovery verification.** New
+  integration tests prove the review pipeline's concurrency and
+  crash-recovery guarantees: single claim per `ReviewTarget` under
+  concurrent admission; container-kill recovery with no orphan review
+  claims (issue #371); restart-mid-publish with no duplicate comment;
+  out-of-order completion with stale-generation suppression; and
+  terminal paths (mutation violation / head-SHA gone / PR gone /
+  oversized diff) that survive restart without burning the worker
+  retry budget. Closes #314.
 
 ### Fixed
 
