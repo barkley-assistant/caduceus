@@ -37,6 +37,7 @@ fn discovery_config(root: &Path, api_base: &str) -> Config {
     cfg.auto_review = Some(caduceus::config::AutoReviewConfig {
         enabled: true,
         draft_pull_requests: false,
+        rerun_command: "/caduceus review".to_string(),
     });
     cfg
 }

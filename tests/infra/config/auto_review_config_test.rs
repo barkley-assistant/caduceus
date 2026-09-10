@@ -215,3 +215,65 @@ fn investigation_config_never_feeds_auto_review() {
     assert!(cfg.auto_review.is_some());
     assert!(!cfg.auto_review().expect("block").enabled);
 }
+
+// --- `rerun_command` (DAR §17, issue #335) ---
+
+#[test]
+fn rerun_command_defaults_to_caduceus_review() {
+    let cfg = load(&format!(
+        "{}auto_review:\n  enabled: false\n",
+        trusted_host_base()
+    ))
+    .expect("config loads");
+    let ar = cfg.auto_review().expect("block present");
+    assert_eq!(ar.rerun_command, "/caduceus review");
+}
+
+#[test]
+fn rerun_command_empty_rejected() {
+    let err = load(&format!(
+        "{}auto_review:\n  rerun_command: \"\"\n",
+        trusted_host_base()
+    ))
+    .expect_err("empty rerun_command must fail config load");
+    let msg = format!("{err}");
+    assert!(msg.contains("rerun_command"), "got: {msg}");
+    assert!(msg.contains("must not be empty"), "got: {msg}");
+}
+
+#[test]
+fn rerun_command_without_slash_rejected() {
+    let err = load(&format!(
+        "{}auto_review:\n  rerun_command: \"review\"\n",
+        trusted_host_base()
+    ))
+    .expect_err("non-slash rerun_command must fail config load");
+    let msg = format!("{err}");
+    assert!(msg.contains("rerun_command"), "got: {msg}");
+    assert!(msg.contains("must start with '/'"), "got: {msg}");
+}
+
+#[test]
+fn rerun_command_custom_accepted() {
+    let cfg = load(&format!(
+        "{}auto_review:\n  rerun_command: \"/rerun\"\n",
+        trusted_host_base()
+    ))
+    .expect("custom command loads");
+    let ar = cfg.auto_review().expect("block present");
+    assert_eq!(ar.rerun_command, "/rerun");
+}
+
+#[test]
+fn rerun_command_invalid_plus_enabled_trusted_host_names_both_errors() {
+    // Validation errors join the shared `errors` vec, so a bad command
+    // AND a TrustedHost+enabled config fail together with both named.
+    let err = load(&format!(
+        "{}auto_review:\n  enabled: true\n  rerun_command: \"review\"\n",
+        trusted_host_base()
+    ))
+    .expect_err("both conditions must fail together");
+    let msg = format!("{err}");
+    assert!(msg.contains("rerun_command"), "got: {msg}");
+    assert!(msg.contains("auto_review.enabled"), "got: {msg}");
+}
