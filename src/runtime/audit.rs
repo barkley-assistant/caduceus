@@ -151,7 +151,7 @@ pub mod review_events {
         STALE_SHA_EVENT,
     };
     pub use crate::daemon::tick::review_rerun::{
-        RERUN_REQUESTED_EVENT, RERUN_SKIPPED_UNTRUSTED_EVENT,
+        RERUN_REQUESTED_EVENT, RERUN_SKIPPED_IN_PROGRESS_EVENT, RERUN_SKIPPED_UNTRUSTED_EVENT,
     };
     pub use crate::github::fork_gate::FORK_SKIP_EVENT;
     pub use crate::repo::review_integrity::MUTATION_VIOLATION_EVENT;

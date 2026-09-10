@@ -4,7 +4,8 @@
 
 use caduceus::daemon::tick::review_rerun::{
     comment_matches_rerun_command, emit_rerun_requested_for_tests,
-    emit_rerun_skipped_untrusted_for_tests, is_trusted_author, RERUN_REQUESTED_EVENT,
+    emit_rerun_skipped_in_progress_for_tests, emit_rerun_skipped_untrusted_for_tests,
+    is_trusted_author, RERUN_REQUESTED_EVENT, RERUN_SKIPPED_IN_PROGRESS_EVENT,
     RERUN_SKIPPED_UNTRUSTED_EVENT,
 };
 
@@ -82,6 +83,36 @@ fn does_not_match_empty_or_blank_body() {
 }
 
 #[test]
+fn does_not_match_inside_fenced_code_block() {
+    // Review feedback (#335): an allowlisted author quoting the
+    // command in a code sample must not false-trigger. Fences are
+    // toggled the way GitHub's renderer toggles them.
+    assert!(!comment_matches_rerun_command(
+        "```\n/caduceus review\n```",
+        DEFAULT_COMMAND
+    ));
+    assert!(!comment_matches_rerun_command(
+        "```rust\n/caduceus review\n```",
+        DEFAULT_COMMAND
+    ));
+    assert!(!comment_matches_rerun_command(
+        "~~~\n/caduceus review\n~~~",
+        DEFAULT_COMMAND
+    ));
+    // A command BEFORE a fence still matches (the fence only guards
+    // the lines inside it).
+    assert!(comment_matches_rerun_command(
+        "/caduceus review\n```\n/caduceus review\n```",
+        DEFAULT_COMMAND
+    ));
+    // A command AFTER a closing fence matches too.
+    assert!(comment_matches_rerun_command(
+        "```\nnot the trigger\n```\n/caduceus review",
+        DEFAULT_COMMAND
+    ));
+}
+
+#[test]
 fn does_not_match_empty_command() {
     // An empty / whitespace-only configured command matches nothing.
     assert!(!comment_matches_rerun_command("/caduceus review", ""));
@@ -117,6 +148,10 @@ fn event_names_match_dar_13_catalog() {
     assert_eq!(
         RERUN_SKIPPED_UNTRUSTED_EVENT,
         "review_rerun_skipped_untrusted"
+    );
+    assert_eq!(
+        RERUN_SKIPPED_IN_PROGRESS_EVENT,
+        "review_rerun_skipped_in_progress"
     );
 }
 
@@ -180,5 +215,34 @@ fn rerun_skipped_untrusted_event_emits_structured_line() {
     assert!(body.contains("\"repo\":\"o/r\""), "got: {body}");
     assert!(body.contains("\"pr\":7"), "got: {body}");
     assert!(body.contains("\"author\":\"mallory\""), "got: {body}");
+    assert!(body.contains("\"head_sha\":\"abc\""), "got: {body}");
+}
+
+#[test]
+#[serial_test::serial]
+fn rerun_skipped_in_progress_event_emits_structured_line() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let log_path = root.path().join("rerun-in-progress.log");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .expect("open capture file");
+    let (writer, guard) = tracing_appender::non_blocking(file);
+    let subscriber = caduceus::infra::logging::build_test_subscriber(writer);
+
+    tracing::subscriber::with_default(subscriber, || {
+        emit_rerun_skipped_in_progress_for_tests("o/r", 7, "alice", "abc");
+    });
+    drop(guard);
+
+    let body = std::fs::read_to_string(&log_path).expect("read capture file");
+    assert!(
+        body.contains(&format!("\"event\":\"{RERUN_SKIPPED_IN_PROGRESS_EVENT}\"")),
+        "event name missing: {body}"
+    );
+    assert!(body.contains("\"repo\":\"o/r\""), "got: {body}");
+    assert!(body.contains("\"pr\":7"), "got: {body}");
+    assert!(body.contains("\"author\":\"alice\""), "got: {body}");
     assert!(body.contains("\"head_sha\":\"abc\""), "got: {body}");
 }

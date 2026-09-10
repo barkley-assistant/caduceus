@@ -19,14 +19,31 @@
 //! `enqueue_review_with_reason(..., ExplicitUserRequest)` directly,
 //! bypassing the comment-scan listener entirely.
 //!
+//! Exactly-once trigger semantics (review feedback, #335): a trigger
+//! comment fires at most once, across ticks AND restarts. The
+//! consumed-trigger watermark compares each trigger comment's
+//! `created_at` against the review queue entry's `queued_at`: an
+//! entry queued AFTER a comment proves that comment already fired, so
+//! the listener skips it (`skipped_no_trigger`). A comment posted
+//! after the entry is fresh and fires. Converges to one run per
+//! trigger comment; a NEW comment on the same PR fires a new run.
+//!
+//! A fresh trigger whose review is already `InProgress` is skipped
+//! with `review_rerun_skipped_in_progress`: the explicit path never
+//! replaces an in-flight entry (that would orphan the digest-keyed
+//! claim file and permanently wedge the re-review — the
+//! `enqueue_review_with_reason` InProgress guard). The trigger
+//! re-fires on a later tick once the active run completes.
+//!
 //! Isolation tiers (mirrors #312's D9): per-PR errors (comment-list
 //! HTTP, current-PR fetch, git fetch/merge-base, trust check, matcher)
 //! log + count + continue to the next PR; step-level errors (rate
-//! limit while listing comments, review-store write errors) return
-//! `Err` so the tick folds them into `last_error`.
+//! limit while listing comments, review-store read/write errors)
+//! return `Err` so the tick folds them into `last_error`.
 
 use std::collections::{BTreeMap, HashSet};
 
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use tracing::{info, warn};
 use url::Url;
@@ -41,7 +58,7 @@ use crate::infra::error::{CaduceusError, CaduceusResult};
 use crate::repo::BareMirror;
 use crate::review::sticky_comment::STICKY_MARKER_SEARCH_MAX_PAGES;
 use crate::review::RepositoryId;
-use crate::state::review::{EnqueueReason, ReviewEnqueueOutcome, ReviewStore};
+use crate::state::review::{EnqueueReason, ReviewEnqueueOutcome, ReviewQueueState, ReviewStore};
 use crate::worktree::git_runner::GitRunner;
 
 // ---------------------------------------------------------------------------
@@ -54,6 +71,11 @@ pub const RERUN_REQUESTED_EVENT: &str = "review_rerun_requested";
 /// DAR §13 rerun event: a trigger comment from an author NOT on the
 /// `feedback_author_allowlist` was ignored (AC2).
 pub const RERUN_SKIPPED_UNTRUSTED_EVENT: &str = "review_rerun_skipped_untrusted";
+/// DAR §13 rerun event: a fresh trusted trigger was skipped because
+/// the review for that `(repo, pr, head_sha)` is already `InProgress`
+/// — the explicit path never replaces an in-flight entry (the
+/// orphaned-claim wedge fix); the trigger fires once the run completes.
+pub const RERUN_SKIPPED_IN_PROGRESS_EVENT: &str = "review_rerun_skipped_in_progress";
 
 /// Emit `review_rerun_requested` (trusted trigger → enqueue attempted).
 fn emit_rerun_requested(repo: &str, pr: u64, author: &str, head_sha: &str) {
@@ -81,6 +103,20 @@ fn emit_rerun_skipped_untrusted(repo: &str, pr: u64, author: &str, head_sha: &st
     );
 }
 
+/// Emit `review_rerun_skipped_in_progress` (fresh trusted trigger,
+/// review already running — benign skip, re-fires after completion).
+fn emit_rerun_skipped_in_progress(repo: &str, pr: u64, author: &str, head_sha: &str) {
+    info!(
+        target: "caduceus",
+        event = RERUN_SKIPPED_IN_PROGRESS_EVENT,
+        repo = repo,
+        pr = pr,
+        author = author,
+        head_sha = head_sha,
+        "rerun trigger skipped: review already in progress"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Pure matcher + trust check (Task 2, DAR §17 — no I/O, no logging)
 // ---------------------------------------------------------------------------
@@ -102,17 +138,33 @@ fn normalize_line(line: &str) -> String {
 /// Exact-line match ONLY (DAR §17 decision): `/caduceus review please`
 /// does NOT match — the line must equal the command after
 /// normalization. This prevents matching inside a longer sentence
-/// (no substring classification) and inside fenced code blocks that
-/// happen to contain the command on their own line is still a match
-/// (the body is plain text to us; a spoof that requires GitHub to
-/// render differently is out of scope — the trust gate is the author
-/// allowlist, not the renderer).
+/// (no substring classification).
+///
+/// Lines inside fenced code blocks (``` or ~~~, toggled the way
+/// GitHub's renderer toggles them) are SKIPPED: an allowlisted author
+/// quoting the command in a code sample must not false-trigger
+/// (review feedback — the fence is a spoof vector even though the
+/// trust gate blocks untrusted abuse).
 pub fn comment_matches_rerun_command(body: &str, command: &str) -> bool {
     let needle = normalize_line(command);
     if needle.is_empty() {
         return false;
     }
-    body.lines().any(|line| normalize_line(line) == needle)
+    let mut in_fence = false;
+    for line in body.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        if normalize_line(line) == needle {
+            return true;
+        }
+    }
+    false
 }
 
 /// True when `author` is on the allowlist. Fail-closed: an EMPTY
@@ -141,6 +193,7 @@ pub struct ReviewRerunStats {
     pub trigger_matched: u32,
     pub enqueued: u32,
     pub skipped_untrusted: u32,
+    pub skipped_in_progress: u32,
     pub skipped_no_trigger: u32,
     pub failed_prs: u32,
     pub failed_repos: u32,
@@ -163,17 +216,26 @@ pub fn emit_rerun_skipped_untrusted_for_tests(repo: &str, pr: u64, author: &str,
     emit_rerun_skipped_untrusted(repo, pr, author, head_sha)
 }
 
+/// Public test seam (D12): the structured
+/// `review_rerun_skipped_in_progress` emitter, for event-capture tests.
+pub fn emit_rerun_skipped_in_progress_for_tests(repo: &str, pr: u64, author: &str, head_sha: &str) {
+    emit_rerun_skipped_in_progress(repo, pr, author, head_sha)
+}
+
 // ---------------------------------------------------------------------------
 // Comment listing (bounded pagination, §3.1)
 // ---------------------------------------------------------------------------
 
 /// One comment row from `/issues/{n}/comments` — only the fields the
 /// rerun listener needs. Deliberately NOT `MarkerCommentWire`
-/// (sticky_comment.rs) which lacks `user.login`.
+/// (sticky_comment.rs) which lacks `user.login`. `created_at` feeds
+/// the consumed-trigger watermark (review feedback, #335): a comment
+/// older than the queue entry's `queued_at` already fired.
 #[derive(Debug, Deserialize)]
 pub(crate) struct PrCommentWire {
     pub user: Option<PrCommentUserWire>,
     pub body: Option<String>,
+    pub created_at: Option<DateTime<Utc>>,
 }
 
 /// The `user` object inside a comment row; `login` is `None` for
@@ -183,11 +245,12 @@ pub(crate) struct PrCommentUserWire {
     pub login: Option<String>,
 }
 
-/// One decoded PR comment: author login + body.
+/// One decoded PR comment: author login, body, and creation time.
 #[derive(Debug, Clone)]
 pub(crate) struct PrComment {
     pub author: String,
     pub body: String,
+    pub created_at: Option<DateTime<Utc>>,
 }
 
 /// List a PR's issue comments (the same endpoint the sticky-marker
@@ -220,6 +283,7 @@ pub(crate) async fn list_pr_comments(
             all.push(PrComment {
                 author: comment.user.and_then(|u| u.login).unwrap_or_default(),
                 body: comment.body.unwrap_or_default(),
+                created_at: comment.created_at,
             });
         }
         url = next_page_url(&response, page as u32 + 1);
@@ -269,6 +333,30 @@ fn row_head_sha(row: &PullRequestDetail) -> &str {
         .unwrap_or("")
 }
 
+/// Consumed-trigger watermark (review feedback, #335): true when the
+/// review queue already holds an entry for `(repo, pr)` whose
+/// `queued_at` is LATER than the comment's `created_at`. An entry
+/// queued after a comment proves that comment already fired on an
+/// earlier tick — re-firing it would re-enqueue the same re-review
+/// forever (the every-tick re-admission loop). A comment whose
+/// `created_at` is unknown (`None`, e.g. a fixture or an API that
+/// omits the field) is NEVER assumed consumed — it may fire.
+fn trigger_already_consumed(
+    snapshot: &ReviewQueueState,
+    repo: &str,
+    pr: u64,
+    comment_created_at: Option<DateTime<Utc>>,
+) -> bool {
+    match comment_created_at {
+        None => false,
+        Some(created_at) => snapshot.entries.values().any(|e| {
+            e.target.repository.full_name() == repo
+                && e.target.pull_request == pr
+                && e.queued_at > created_at
+        }),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The listener step (Task 4, D9 isolation tiers)
 // ---------------------------------------------------------------------------
@@ -284,13 +372,23 @@ fn row_head_sha(row: &PullRequestDetail) -> &str {
 /// review is for the head at enqueue time, AC1). Untrusted authors
 /// are ignored with `review_rerun_skipped_untrusted` (AC2).
 ///
+/// Exactly-once per trigger comment: a comment whose `created_at`
+/// predates the queue entry's `queued_at` already fired and is
+/// skipped (`skipped_no_trigger`); matching comments are scanned
+/// NEWEST-first so a consumed older trigger cannot shadow a fresh
+/// one. A fresh trusted trigger whose review is already `InProgress`
+/// is skipped with `review_rerun_skipped_in_progress` (the explicit
+/// path never replaces an in-flight entry) and re-fires after the
+/// active run completes.
+///
 /// Explicit requests do NOT consume `max_reviews_per_tick` (the
 /// auto-discovery budget, DAR §5); they are capped at
 /// [`RERUN_PER_TICK_BUDGET`] per tick (§3.5).
 ///
 /// Returns `Err` ONLY for step-level failures (rate limit while
-/// listing comments or pulls; review-store write errors). Everything
-/// per-repo / per-PR is logged + counted (D9 isolation tiers).
+/// listing comments or pulls; review-store read/write errors).
+/// Everything per-repo / per-PR is logged + counted (D9 isolation
+/// tiers).
 pub(crate) async fn poll_rerun_step(
     repos: &[String],
     client: &Client,
@@ -309,15 +407,19 @@ pub(crate) async fn poll_rerun_step(
         return Ok(ReviewRerunStats::default());
     }
 
+    // One queue snapshot per tick, shared by every PR's
+    // consumed-trigger watermark check. A store read failure is a
+    // step-level condition (D9): the whole step folds it into
+    // `last_error` rather than silently skipping every trigger.
+    let queue_snapshot = review_store.review_queue_snapshot()?;
+
     let mut stats = ReviewRerunStats::default();
     // Lazy per-repo mirror cache (D7 pattern, same as discovery).
     let mut mirrors: BTreeMap<String, BareMirror> = BTreeMap::new();
     // Per-tick dedup: one enqueue per `(repo, pr)` per tick (§3.5).
-    // The first-match-wins comment scan already limits one trigger per
-    // PR; this guards the theoretical duplicate-row case and keeps the
-    // explicit-path side effect (generation bump + publication re-arm)
-    // to once per PR per tick. Not persisted — the next tick re-scans
-    // by design (the PR may have a new head SHA by then).
+    // The watermark above is the PERSISTED dedup (across ticks and
+    // restarts); this HashSet only prevents two enqueues in the SAME
+    // tick when duplicate trigger rows exist.
     let mut enqueued_this_tick: HashSet<(String, u64)> = HashSet::new();
 
     for repo in repos {
@@ -383,22 +485,54 @@ pub(crate) async fn poll_rerun_step(
                 }
             };
 
-            // 2. First matching line wins (exact-line matcher, §3.2).
-            let Some(trigger) = comments.iter().find_map(|c| {
-                comment_matches_rerun_command(&c.body, &ar.rerun_command).then(|| c.author.clone())
-            }) else {
+            // 2. Matching comments (exact-line matcher, §3.2). Scanned
+            //    NEWEST-first so a consumed older trigger cannot
+            //    shadow a fresh one (review feedback, #335).
+            let matching: Vec<&PrComment> = comments
+                .iter()
+                .filter(|c| comment_matches_rerun_command(&c.body, &ar.rerun_command))
+                .collect();
+            if matching.is_empty() {
                 stats.skipped_no_trigger += 1;
                 continue;
-            };
+            }
             stats.trigger_matched += 1;
 
-            // 3. Trust gate (§3.3): ONLY allowlisted authors; empty
-            //    allowlist = no trusted triggers possible (fail-closed).
-            if !is_trusted_author(&trigger, &cfg.feedback_author_allowlist) {
-                emit_rerun_skipped_untrusted(repo, pr_number, &trigger, row_head_sha(row));
-                stats.skipped_untrusted += 1;
-                continue;
+            // 3. Pick the trigger: the newest matching comment that is
+            //    BOTH fresh (not already consumed by an earlier
+            //    enqueue) AND trusted. Consumed comments are skipped
+            //    silently — they already fired. An untrusted FRESH
+            //    comment is skipped WITH the untrusted event (AC2) and
+            //    does not block an older trusted fresh trigger.
+            let mut trigger: Option<&PrComment> = None;
+            let mut untrusted_seen = false;
+            for comment in matching.iter().rev() {
+                if trigger_already_consumed(&queue_snapshot, repo, pr_number, comment.created_at) {
+                    // Newest consumed ⇒ every older matching comment is
+                    // consumed too (older `created_at` ≤ newest ≤ the
+                    // entry's `queued_at`); nothing left to fire.
+                    break;
+                }
+                if !is_trusted_author(&comment.author, &cfg.feedback_author_allowlist) {
+                    emit_rerun_skipped_untrusted(
+                        repo,
+                        pr_number,
+                        &comment.author,
+                        row_head_sha(row),
+                    );
+                    stats.skipped_untrusted += 1;
+                    untrusted_seen = true;
+                    continue;
+                }
+                trigger = Some(comment);
+                break;
             }
+            let Some(trigger) = trigger else {
+                if !untrusted_seen {
+                    stats.skipped_no_trigger += 1;
+                }
+                continue;
+            };
 
             // 4. Resolve the CURRENT head/base at trigger time (AC1).
             //    A 404 (gone PR) surfaces as `Ok(None)` — log and skip.
@@ -508,20 +642,19 @@ pub(crate) async fn poll_rerun_step(
                 .enqueue_review_with_reason(&target, EnqueueReason::ExplicitUserRequest)
             {
                 Ok(ReviewEnqueueOutcome::Inserted) => {
-                    emit_rerun_requested(repo, pr_number, &trigger, head_sha);
+                    emit_rerun_requested(repo, pr_number, &trigger.author, head_sha);
                     stats.enqueued += 1;
                 }
                 Ok(ReviewEnqueueOutcome::AlreadyPresent) => {
-                    // Unreachable on the explicit path (the bypass
-                    // replaces the active entry), but keep the match
-                    // total.
-                    warn!(
-                        target: "caduceus",
-                        repo = repo,
-                        pr = pr_number,
-                        "review rerun: explicit enqueue reported already present"
-                    );
-                    stats.failed_prs += 1;
+                    // Benign skip (review feedback, #335): the review
+                    // for this (repo, pr, head_sha) is already
+                    // InProgress and the explicit path never replaces
+                    // an in-flight entry (that would orphan the
+                    // digest-keyed claim file and permanently wedge
+                    // the re-review). The trigger re-fires on a later
+                    // tick once the active run completes.
+                    emit_rerun_skipped_in_progress(repo, pr_number, &trigger.author, head_sha);
+                    stats.skipped_in_progress += 1;
                 }
                 Err(err) => return Err(err),
             }

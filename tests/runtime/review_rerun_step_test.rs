@@ -27,7 +27,7 @@ use caduceus::review::{
 };
 use caduceus::state::review::{ReviewHistoryRow, ReviewPhase, ReviewStore};
 use caduceus::worktree::GitRunner;
-use chrono::{TimeZone, Utc};
+use chrono::{Duration, TimeZone, Utc};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -238,6 +238,18 @@ impl StepHarness {
 
     fn comment(author: &str, body: &str) -> serde_json::Value {
         serde_json::json!({"id": 1, "user": {"login": author}, "body": body})
+    }
+
+    /// A comment row carrying `created_at` (RFC 3339) — required to
+    /// exercise the consumed-trigger watermark (review feedback,
+    /// #335).
+    fn comment_at(author: &str, body: &str, created_at: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": 1,
+            "user": {"login": author},
+            "body": body,
+            "created_at": created_at
+        })
     }
 
     async fn run_rerun(&self) -> ReviewRerunStats {
@@ -551,4 +563,186 @@ async fn no_trigger_comment_means_no_enqueue() {
             .len(),
         0
     );
+}
+
+// ---------------------------------------------------------------------------
+// Persisted trigger dedup (review feedback, #335 — MUST FIX 1)
+// ---------------------------------------------------------------------------
+
+/// The past timestamp used for "already-consumed" trigger comments.
+const TRIGGER_CREATED_AT_PAST: &str = "2026-09-05T12:00:00Z";
+
+#[tokio::test]
+async fn same_trigger_fires_exactly_once_across_ticks() {
+    // The every-tick re-admission loop regression: one trusted trigger
+    // comment must enqueue EXACTLY ONCE, not once per poll forever.
+    let h = StepHarness::start(&["alice"]).await;
+    h.mount_prs(vec![h.pr_row(&h.tip_sha)]).await;
+    h.mount_pr_fetch(h.pr_row(&h.tip_sha)).await;
+    h.mount_comments(vec![StepHarness::comment_at(
+        "alice",
+        "/caduceus review",
+        TRIGGER_CREATED_AT_PAST,
+    )])
+    .await;
+
+    // Tick 1: fresh trigger → enqueued.
+    let stats1 = h.run_rerun().await;
+    assert_eq!(stats1.enqueued, 1, "first tick enqueues the re-review");
+    let q = h.store.review_queue_snapshot().expect("snapshot");
+    assert_eq!(q.entries.len(), 1);
+    assert_eq!(q.entries.values().next().unwrap().review_generation, 1);
+
+    // Tick 2 (same comment still present): the entry's `queued_at` is
+    // AFTER the comment's `created_at` → the trigger is consumed →
+    // skipped, NOT re-enqueued. This is the exact MUST FIX 1 bug.
+    let stats2 = h.run_rerun().await;
+    assert_eq!(stats2.enqueued, 0, "second tick must not re-enqueue");
+    assert_eq!(stats2.trigger_matched, 1, "comment still matches");
+    assert_eq!(stats2.skipped_no_trigger, 1, "consumed trigger skipped");
+    let q = h.store.review_queue_snapshot().expect("snapshot");
+    let entry = q.entries.values().next().expect("entry");
+    assert_eq!(
+        entry.review_generation, 1,
+        "generation untouched by the consumed trigger"
+    );
+    assert!(
+        entry.phase.is_active(),
+        "the queued review is still waiting to run"
+    );
+}
+
+#[tokio::test]
+async fn new_trigger_comment_fires_after_old_consumed() {
+    // A genuinely NEW comment must fire even while an older consumed
+    // trigger comment is still present — the newest-first scan must
+    // not let the stale comment shadow the fresh one.
+    let h = StepHarness::start(&["alice"]).await;
+    h.mount_prs(vec![h.pr_row(&h.tip_sha)]).await;
+    h.mount_pr_fetch(h.pr_row(&h.tip_sha)).await;
+    h.mount_comments(vec![StepHarness::comment_at(
+        "alice",
+        "/caduceus review",
+        TRIGGER_CREATED_AT_PAST,
+    )])
+    .await;
+
+    let stats1 = h.run_rerun().await;
+    assert_eq!(stats1.enqueued, 1);
+
+    // A second trigger comment posted AFTER the first review was
+    // queued (future-dated so it is unambiguously fresh relative to
+    // `queued_at`). The old comment is still on the thread.
+    h.server.reset().await;
+    h.mount_prs(vec![h.pr_row(&h.tip_sha)]).await;
+    h.mount_pr_fetch(h.pr_row(&h.tip_sha)).await;
+    let fresh = Utc::now() + Duration::seconds(3600);
+    h.mount_comments(vec![
+        StepHarness::comment_at("alice", "/caduceus review", TRIGGER_CREATED_AT_PAST),
+        StepHarness::comment_at("alice", "/caduceus review", &fresh.to_rfc3339()),
+    ])
+    .await;
+
+    let stats2 = h.run_rerun().await;
+    assert_eq!(stats2.enqueued, 1, "new comment fires a new re-review");
+    let q = h.store.review_queue_snapshot().expect("snapshot");
+    let entry = q.entries.values().next().expect("entry");
+    assert_eq!(
+        entry.review_generation, 2,
+        "new trigger bumps the generation"
+    );
+}
+
+#[tokio::test]
+async fn consumed_trigger_does_not_shadow_untrusted_fresh_comment() {
+    // Security posture: an untrusted FRESH comment is skipped with
+    // the untrusted event and does not suppress an older TRUSTED
+    // fresh trigger — but it can never enqueue anything.
+    let h = StepHarness::start(&["alice"]).await;
+    h.mount_prs(vec![h.pr_row(&h.tip_sha)]).await;
+    h.mount_pr_fetch(h.pr_row(&h.tip_sha)).await;
+    // GitHub lists comments oldest-first; the newest (untrusted,
+    // fresh) comment is scanned first and skipped with the untrusted
+    // event, and must NOT suppress the older TRUSTED fresh trigger.
+    let fresh = Utc::now() + Duration::seconds(3600);
+    h.mount_comments(vec![
+        StepHarness::comment_at("alice", "/caduceus review", TRIGGER_CREATED_AT_PAST),
+        StepHarness::comment_at("mallory", "/caduceus review", &fresh.to_rfc3339()),
+    ])
+    .await;
+
+    let stats = h.run_rerun().await;
+    assert_eq!(stats.enqueued, 1, "trusted fresh trigger still fires");
+    assert_eq!(stats.skipped_untrusted, 1, "untrusted comment emitted");
+    assert_eq!(stats.trigger_matched, 1);
+}
+
+// ---------------------------------------------------------------------------
+// Explicit re-enqueue while InProgress (review feedback, #335 — MUST
+// FIX 2): no replacement, no claim orphan, next-tick enqueue after
+// completion.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn trigger_while_in_progress_skips_then_fires_after_completion() {
+    let h = StepHarness::start(&["alice"]).await;
+    let store = &h.store;
+
+    // Pre-seed an auto-discovered review and claim it: the entry is
+    // now InProgress with a live digest-keyed claim file.
+    assert!(matches!(
+        store.enqueue_review(&h.target(&h.tip_sha)).unwrap(),
+        caduceus::state::review::ReviewEnqueueOutcome::Inserted
+    ));
+    let now = Utc.with_ymd_and_hms(2026, 9, 5, 12, 0, 0).unwrap();
+    let claimed = store
+        .acquire_next_review("run-inprog-1", 4242, now)
+        .unwrap()
+        .expect("claim");
+    assert_eq!(claimed.entry.phase, ReviewPhase::InProgress);
+
+    // A fresh trusted trigger arrives while the review is running
+    // (future-dated so it is unambiguously newer than `queued_at`).
+    h.mount_prs(vec![h.pr_row(&h.tip_sha)]).await;
+    h.mount_pr_fetch(h.pr_row(&h.tip_sha)).await;
+    let fresh = Utc::now() + Duration::seconds(3600);
+    h.mount_comments(vec![StepHarness::comment_at(
+        "alice",
+        "/caduceus review",
+        &fresh.to_rfc3339(),
+    )])
+    .await;
+
+    // Tick 1: the explicit enqueue is REFUSED (InProgress) — benign
+    // skip with the dedicated event, NO replacement, NO claim orphan.
+    let stats = h.run_rerun().await;
+    assert_eq!(stats.enqueued, 0, "in-flight review is never replaced");
+    assert_eq!(stats.skipped_in_progress, 1, "dedicated skip event");
+    assert_eq!(stats.failed_prs, 0, "benign skip, not a PR failure");
+    let q = store.review_queue_snapshot().unwrap();
+    let entry = q.entries.values().next().expect("entry");
+    assert_eq!(entry.phase, ReviewPhase::InProgress, "entry not replaced");
+    assert_eq!(entry.review_generation, 1, "generation not bumped");
+    assert_eq!(
+        entry.last_run_id.as_deref(),
+        Some("run-inprog-1"),
+        "running claim identity intact"
+    );
+
+    // The running claim still completes cleanly — no
+    // `review-claim-terminal-mismatch` (the wedge would have made
+    // this fail and stranded the claim file).
+    store.complete_review(claimed.claim).unwrap();
+
+    // Tick 2: after completion the same fresh trigger fires — the
+    // requested re-review is NOT wedged.
+    let stats2 = h.run_rerun().await;
+    assert_eq!(stats2.enqueued, 1, "re-review runs after completion");
+    let q = store.review_queue_snapshot().unwrap();
+    let entry = q.entries.values().next().expect("entry");
+    assert_eq!(
+        entry.review_generation, 2,
+        "generation bumped after completion"
+    );
+    assert!(entry.phase.is_active());
 }
