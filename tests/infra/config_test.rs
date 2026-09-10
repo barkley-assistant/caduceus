@@ -110,3 +110,97 @@ fn git_author_config_trims_values_and_treats_empty_as_absent() {
     assert_eq!(cfg.git_author_name.as_deref(), Some("Ops Bot"));
     assert_eq!(cfg.git_author_email, None);
 }
+
+#[test]
+fn circuit_zero_failure_threshold_is_rejected() {
+    let raw = RawConfig {
+        circuit_failure_threshold: Some(0),
+        worker_command: Some(vec!["/bin/true".to_string()]),
+        reduced_containment_acknowledged: Some(true),
+        ..Default::default()
+    };
+    let err = Config::from_raw(raw, &LoadContext::default()).expect_err("zero must fail");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("circuit_failure_threshold must be > 0"),
+        "unexpected error: {msg}"
+    );
+}
+
+#[test]
+fn circuit_empty_backoff_seconds_is_rejected() {
+    let raw = RawConfig {
+        circuit_backoff_seconds: Some(vec![]),
+        worker_command: Some(vec!["/bin/true".to_string()]),
+        reduced_containment_acknowledged: Some(true),
+        ..Default::default()
+    };
+    let err = Config::from_raw(raw, &LoadContext::default()).expect_err("empty must fail");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("circuit_backoff_seconds must not be empty"),
+        "unexpected error: {msg}"
+    );
+}
+
+#[test]
+fn circuit_zero_open_interval_is_rejected() {
+    let raw = RawConfig {
+        circuit_open_interval_seconds: Some(0),
+        worker_command: Some(vec!["/bin/true".to_string()]),
+        reduced_containment_acknowledged: Some(true),
+        ..Default::default()
+    };
+    let err = Config::from_raw(raw, &LoadContext::default()).expect_err("zero must fail");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("circuit_open_interval_seconds must be > 0"),
+        "unexpected error: {msg}"
+    );
+}
+
+#[test]
+fn circuit_zero_max_degraded_is_rejected() {
+    let raw = RawConfig {
+        circuit_max_degraded_seconds: Some(0),
+        worker_command: Some(vec!["/bin/true".to_string()]),
+        reduced_containment_acknowledged: Some(true),
+        ..Default::default()
+    };
+    let err = Config::from_raw(raw, &LoadContext::default()).expect_err("zero must fail");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("circuit_max_degraded_seconds must be > 0"),
+        "unexpected error: {msg}"
+    );
+}
+
+#[test]
+fn circuit_explicit_values_resolve_and_defaults_load() {
+    let raw = RawConfig {
+        circuit_failure_threshold: Some(5),
+        circuit_backoff_seconds: Some(vec![10, 20]),
+        circuit_open_interval_seconds: Some(60),
+        circuit_max_degraded_seconds: Some(120),
+        worker_command: Some(vec!["/bin/true".to_string()]),
+        reduced_containment_acknowledged: Some(true),
+        ..Default::default()
+    };
+    let cfg = Config::from_raw(raw, &LoadContext::default()).expect("config");
+    assert_eq!(cfg.circuit_failure_threshold, 5);
+    assert_eq!(cfg.circuit_backoff_seconds, vec![10, 20]);
+    assert_eq!(cfg.circuit_open_interval_seconds, 60);
+    assert_eq!(cfg.circuit_max_degraded_seconds, 120);
+
+    // Absent fields fall back to the documented defaults and still load.
+    let raw_defaults = RawConfig {
+        worker_command: Some(vec!["/bin/true".to_string()]),
+        reduced_containment_acknowledged: Some(true),
+        ..Default::default()
+    };
+    let defaults = Config::from_raw(raw_defaults, &LoadContext::default()).expect("config");
+    assert_eq!(defaults.circuit_failure_threshold, 3);
+    assert_eq!(defaults.circuit_backoff_seconds, vec![30, 120, 600]);
+    assert_eq!(defaults.circuit_open_interval_seconds, 1800);
+    assert_eq!(defaults.circuit_max_degraded_seconds, 86400);
+}
