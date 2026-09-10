@@ -154,8 +154,8 @@ fn corpus_loads_every_fixture_and_neutralises_each_vector() {
     let benign = benign_fence_count();
     let cases = list_cases();
     assert!(
-        cases.len() >= 14,
-        "the corpus must enumerate the DAR §11.3 vectors; found {}",
+        cases.len() >= 17,
+        "the corpus must enumerate the DAR §11.3 vectors (incl. #337 fork vectors 15-17); found {}",
         cases.len()
     );
     for path in cases {
