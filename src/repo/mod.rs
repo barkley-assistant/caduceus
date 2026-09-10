@@ -2,12 +2,14 @@
 //!
 //! Every git subprocess created here goes through the hardened `GitRunner`.
 
+pub mod fork_quarantine;
 pub mod mirror;
 pub mod review_integrity;
 pub mod review_worktree;
 pub mod storage;
 pub mod worktree;
 
+pub use fork_quarantine::ForkQuarantine;
 pub use mirror::BareMirror;
 pub use review_integrity::{
     capture_control_file_digests, check_tracked_files_clean, emit_review_mutation_violation,
