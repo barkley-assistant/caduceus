@@ -580,6 +580,32 @@ pub(crate) async fn run_review_claim(
         return handle_review_infra_or_retry(cfg, guard, &err, class).await;
     }
 
+    // 11.5. Persist the completion observation BEFORE the terminal
+    //      transition (gate #333 finding 1). Discovery dedup reads
+    //      `ReviewState.last_reviewed_head_sha` (DAR §4.3), which the
+    //      finalizer only writes at publication. Without this write,
+    //      the moment an entry completes (Done + history row) the NEXT
+    //      tick's 5.5 re-admits the identical head SHA — generation
+    //      bump + publication reset — `due_finalizations` suppresses
+    //      the completed row, and the worker re-runs forever with no
+    //      sticky comment ever published. Writing here makes dedup
+    //      hold from completion onward: `save_review_state`
+    //      CAS-rejects generation regressions, so a late-completing
+    //      older run cannot regress the pointer (DAR §9.4); the
+    //      finalizer's later saves are idempotent overwrites.
+    if let Some(mut current) = review_store.review_state(&target.repository, target.pull_request)? {
+        if current.review_generation == claimed.entry.review_generation {
+            current.last_reviewed_head_sha = Some(target.head_sha.clone());
+            current.last_reviewed_at = Some(services.clock.now());
+            current.last_run_id = Some(run_id.clone());
+            current.last_verdict = result.review.as_ref().map(|r| r.verdict);
+            if let Err(err) = review_store.save_review_state(&current) {
+                let class = classify_error(&err);
+                return handle_review_infra_or_retry(cfg, guard, &err, class).await;
+            }
+        }
+    }
+
     // 12. Terminal success: the entry moves to Done and the claim is
     //     released. The verdict drives the distinct completion event
     //     (`review_passed` vs `review_failed_verdict` — never
