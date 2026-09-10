@@ -26,6 +26,10 @@
 //!    merge-base capture at admission, bounded by
 //!    `max_reviews_per_tick`. Per-repo failures
 //!    log-and-continue; the step never aborts the tick.
+//!    Step 5.55 (issue #335, between discovery and the
+//!    publication poll): scan open PRs' comments for the
+//!    configured `rerun_command` and enqueue an explicit
+//!    same-SHA re-review when an allowlisted author asked.
 //! 6. Acquire the next eligible entry. If no entry is
 //!    eligible, finish as [`TickOutcome::Idle304`] (all
 //!    responses were cached 304s) or [`TickOutcome::IdleEmpty`]
@@ -557,6 +561,39 @@ pub async fn tick(
                             "review discovery failed; continuing to drain"
                         );
                         pr_step_error = Some(err);
+                    }
+                }
+                // 5.55. Trusted-comment re-review listener (issue #335,
+                //      DAR §17): a `/caduceus review` comment from an
+                //      allowlisted author enqueues an explicit
+                //      re-review of the current head SHA. Runs only
+                //      when discovery itself succeeded — a
+                //      rate-limited or store-broken discovery makes
+                //      the listener's extra HTTP pointless (it would
+                //      fail identically). Per-repo/PR failures
+                //      log-and-continue; a step-level error folds into
+                //      the tick's final `last_error` without aborting
+                //      the drain below.
+                if pr_step_error.is_none() {
+                    match review_rerun::poll_rerun_step(
+                        &repos,
+                        &client,
+                        &cfg,
+                        &review_store,
+                        &runner,
+                        &resolve,
+                    )
+                    .await
+                    {
+                        Ok(stats) => info!(?stats, "review rerun listener complete"),
+                        Err(err) => {
+                            let class = classify_error(&err);
+                            tracing::warn!(
+                                error = %err, ?class,
+                                "review rerun listener failed; continuing to drain"
+                            );
+                            pr_step_error = Some(err);
+                        }
                     }
                 }
                 // Keep the open store for the 5.6 publication poll.
@@ -1095,12 +1132,14 @@ pub mod per_review;
 pub mod resume;
 pub mod review_discovery;
 pub mod review_finalize_step;
+pub mod review_rerun;
 
 use self::awaiting_review::*;
 use self::per_claim::*;
 use self::per_review::*;
 use self::resume::*;
 pub use self::review_discovery::*;
+pub use self::review_rerun::*;
 
 pub use self::awaiting_review::{
     exit_code_for_tests, extract_http_status_for_tests, map_phase_to_outcome_for_tests,

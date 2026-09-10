@@ -108,6 +108,18 @@ impl ReviewQueueState {
     }
 }
 
+/// Why a review was enqueued. Phase-2 explicit requests bypass the
+/// auto-discovery dedup (DAR §4.3 + §17); auto-discovery never sets
+/// `ExplicitUserRequest`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnqueueReason {
+    /// Auto-discovery admission (DAR §5, #312).
+    AutoDiscovery,
+    /// Trusted-comment `/caduceus review` (DAR §17, #335).
+    ExplicitUserRequest,
+}
+
 /// Outcome of a review enqueue. Review-local by design — the issue
 /// queue's `EnqueueOutcome::Promoted` is `Previewed`-specific and has
 /// no review meaning.

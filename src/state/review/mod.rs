@@ -43,7 +43,9 @@ use crate::review::{
 
 pub use claim::{ClaimedReview, ReviewClaimFileBody, ReviewClaimToken};
 pub use history::{ReviewHistoryFile, ReviewHistoryRow};
-pub use queue::{ReviewEnqueueOutcome, ReviewPhase, ReviewQueueEntry, ReviewQueueState};
+pub use queue::{
+    EnqueueReason, ReviewEnqueueOutcome, ReviewPhase, ReviewQueueEntry, ReviewQueueState,
+};
 pub use state::{
     parse_review_history, parse_review_queue_state, parse_review_state_map,
     serialize_review_history, serialize_review_queue_state, serialize_review_state_map,

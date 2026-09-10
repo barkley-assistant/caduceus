@@ -126,6 +126,7 @@ fn ar_config(enabled: bool) -> AutoReviewConfig {
     AutoReviewConfig {
         enabled,
         draft_pull_requests: false,
+        rerun_command: "/caduceus review".to_string(),
     }
 }
 
@@ -133,6 +134,7 @@ fn ar_config_drafts(enabled: bool, drafts: bool) -> AutoReviewConfig {
     AutoReviewConfig {
         enabled,
         draft_pull_requests: drafts,
+        rerun_command: "/caduceus review".to_string(),
     }
 }
 

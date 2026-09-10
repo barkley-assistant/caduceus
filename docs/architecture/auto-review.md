@@ -602,10 +602,12 @@ review_skipped_oversized_pr                                                    (
 review_publish_started / review_published / review_publish_failed_retryable    (finalizer, #310)
 review_publication_suppressed_stale_generation                                 (monotonic guard, #310)
 review_stale_sha_observed                                                      (poll on moved PR, #312)
+review_rerun_requested / review_rerun_skipped_untrusted / review_rerun_skipped_in_progress
+                                                                                 (trusted-comment rerun, #335)
 review_migration_terminated_investigation                                      (N+1 reconcile, #331)
 ```
 
-The 21 names above are pinned by
+The 24 names above are pinned by
 `tests/runtime/review_event_catalog_test.rs` (issue #318, AC1), which
 reads the producing sites' `pub const … : &str` values through the
 single `caduceus::runtime::audit::review_events` seam.
@@ -708,9 +710,46 @@ block the Phase-1 gate). Gate criteria:
 
 ## 17. Phase-2 extension seams
 
-- Same-SHA re-review via `/caduceus review` (trusted-comment matcher is new
-  logic on the allowlist model; appends history rows — no schema change
-  needed, §4.3).
+- Same-SHA re-review via `/caduceus review`: the tick step 5.55
+  (`src/daemon/tick/review_rerun.rs`, `poll_rerun_step`) scans each
+  open PR's issue comments for the configured `auto_review.rerun_command`
+  (default `/caduceus review`). The matcher is an exact-line,
+  case-insensitive, whitespace-normalized comparison — no substring
+  classification — and lines inside fenced code blocks are skipped
+  (an allowlisted author quoting the command in a code sample must
+  not false-trigger). Only authors on `feedback_author_allowlist` may
+  trigger (empty allowlist = no trusted triggers, fail-closed);
+  untrusted authors are ignored with `review_rerun_skipped_untrusted`.
+  A trusted trigger enqueues an explicit re-review of the CURRENT head
+  SHA through `ReviewStore::enqueue_review_with_reason(…,
+  ExplicitUserRequest)`, deliberately bypassing the auto-discovery
+  dedup so the same SHA can be re-reviewed on demand. Auto-discovery
+  polling NEVER triggers same-SHA re-review: it always enqueues with
+  `AutoDiscovery` and always hits the dedup (§4.3 + the #377
+  completion-gated write). Per-run history identity by `review_run_id`
+  means each explicit run appends its own history row — no schema
+  change, §4.3. Explicit requests do not consume
+  `max_reviews_per_tick`; they are capped at a small per-tick constant
+  (`RERUN_PER_TICK_BUDGET`, 8) to prevent trigger floods.
+- Exactly-once trigger semantics (review feedback, #335): each trigger
+  comment fires AT MOST ONCE, across ticks and restarts. The listener
+  takes one review-queue snapshot per tick and compares each matching
+  comment's `created_at` against the queue entry's `queued_at`: an
+  entry queued AFTER a comment proves that comment already fired, so
+  it is skipped (`skipped_no_trigger`); a comment posted after the
+  entry is fresh and fires. Matching comments are scanned newest-first
+  so a consumed older trigger cannot shadow a fresh one. A fresh
+  trusted trigger whose review is already `InProgress` is skipped with
+  `review_rerun_skipped_in_progress`: `enqueue_review_with_reason`
+  NEVER replaces an in-flight entry (replacing it would orphan the
+  digest-keyed claim file and permanently wedge the re-review until
+  daemon restart); the trigger re-fires once the active run completes.
+- The GitHub App seam: a future App webhook / Checks API re-run handler
+  calls the same `enqueue_review_with_reason(…, ExplicitUserRequest)`
+  directly, bypassing the comment-scan listener entirely. The listener
+  is the Phase-2 boundary where re-run controls integrate; the App
+  itself is out of scope. Comment-list pagination is bounded by
+  `STICKY_MARKER_SEARCH_MAX_PAGES`.
 - Fork trust policy + `allow_fork_prs`-style opt-in + quarantine fetch
   (§11.2).
 - GitHub App webhook transport, Checks API, line annotations,

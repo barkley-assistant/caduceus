@@ -105,6 +105,8 @@ pub const DEFAULT_CIRCUIT_BACKOFF_SECONDS: &[u64] = &[30, 120, 600];
 pub const DEFAULT_CIRCUIT_OPEN_INTERVAL_SECONDS: u64 = 1800;
 pub const DEFAULT_CIRCUIT_MAX_DEGRADED_SECONDS: u64 = 86400;
 pub const DEFAULT_DISCOVERY_MAX_PAGES: u32 = 20;
+/// Default trusted-comment re-review trigger (DAR §17, #335).
+pub const DEFAULT_RERUN_COMMAND: &str = "/caduceus review";
 pub const DEFAULT_REPO_STORAGE_ROOT: &str = "repos";
 pub const DEFAULT_STATE_BACKEND: &str = "json";
 pub const DEFAULT_EXECUTOR_MODE: crate::executor::ExecutorKind =
@@ -215,6 +217,13 @@ pub struct AutoReviewConfig {
     /// Review draft PRs. Default `false` (drafts are skipped with
     /// `review_skipped_draft` per DAR §5.1).
     pub draft_pull_requests: bool,
+    /// Trigger command for trusted-comment re-review (DAR §17, #335).
+    /// A PR comment line equal to this (case-insensitive,
+    /// whitespace-normalized) from a `feedback_author_allowlist`
+    /// author enqueues an explicit re-review of the current head SHA.
+    /// Default `/caduceus review`. Validated non-empty and must start
+    /// with `/`.
+    pub rerun_command: String,
 }
 
 /// Raw layer — mirrors the schema with all-`Option` fields.
@@ -223,6 +232,7 @@ pub struct AutoReviewConfig {
 pub struct RawAutoReviewConfig {
     pub enabled: Option<bool>,
     pub draft_pull_requests: Option<bool>,
+    pub rerun_command: Option<String>,
 }
 
 /// Caduceus configuration. Field semantics are pinned here.
@@ -865,9 +875,30 @@ impl Config {
         // Resolution order: block first, then the OCI-required check, so
         // a TrustedHost+enabled config fails with BOTH required changes
         // named before any other surface reads it.
-        let auto_review = raw.auto_review.map(|raw_ar| AutoReviewConfig {
-            enabled: raw_ar.enabled.unwrap_or(false),
-            draft_pull_requests: raw_ar.draft_pull_requests.unwrap_or(false),
+        let auto_review = raw.auto_review.map(|raw_ar| {
+            let rerun_command = raw_ar
+                .rerun_command
+                .unwrap_or_else(|| DEFAULT_RERUN_COMMAND.to_string());
+            // Validation (DAR §17, #335): the command must be a
+            // non-empty slash command. The `/` prefix mirrors the
+            // slash-command convention and prevents an operator from
+            // setting a bare word (`review`) that would match inside
+            // prose. No length cap and no forbidden-char check: the
+            // matcher normalizes whitespace, any other char is fine.
+            if rerun_command.is_empty() {
+                errors.push("auto_review.rerun_command must not be empty".to_string());
+            }
+            if !rerun_command.starts_with('/') {
+                errors.push(
+                    "auto_review.rerun_command must start with '/' (e.g. /caduceus review)"
+                        .to_string(),
+                );
+            }
+            AutoReviewConfig {
+                enabled: raw_ar.enabled.unwrap_or(false),
+                draft_pull_requests: raw_ar.draft_pull_requests.unwrap_or(false),
+                rerun_command,
+            }
         });
         if let Some(ar) = &auto_review {
             if ar.enabled && matches!(executor_mode, crate::executor::ExecutorKind::TrustedHost) {

@@ -15,16 +15,16 @@
 //!   rejected safely on both backends.
 
 use caduceus::review::{
-    ExecutionStatus, RepositoryId, Review, ReviewResult, ReviewState, ReviewTarget, Verdict,
-    REVIEW_SCHEMA_VERSION,
+    ExecutionStatus, PublicationState, RepositoryId, Review, ReviewResult, ReviewState,
+    ReviewTarget, Verdict, REVIEW_SCHEMA_VERSION,
 };
 use caduceus::state::queue::StateStore;
 use caduceus::state::review::{
     parse_review_history, parse_review_queue_state, parse_review_state_map, review_queue_key,
     review_state_key, serialize_review_history, serialize_review_queue_state,
-    serialize_review_state_map, ReviewEnqueueOutcome, ReviewHistoryFile, ReviewHistoryRow,
-    ReviewPhase, ReviewQueueState, ReviewStateMap, ReviewStore, REVIEW_HISTORY_FILE_VERSION,
-    REVIEW_QUEUE_FILE_VERSION, REVIEW_STATE_FILE_VERSION,
+    serialize_review_state_map, EnqueueReason, ReviewEnqueueOutcome, ReviewHistoryFile,
+    ReviewHistoryRow, ReviewPhase, ReviewQueueState, ReviewStateMap, ReviewStore,
+    REVIEW_HISTORY_FILE_VERSION, REVIEW_QUEUE_FILE_VERSION, REVIEW_STATE_FILE_VERSION,
 };
 use chrono::{TimeZone, Utc};
 #[path = "../fixtures/mod.rs"]
@@ -374,6 +374,171 @@ fn json_enqueue_same_target_twice_is_already_present() {
         .unwrap()
         .unwrap();
     assert_eq!(st.review_generation, 1, "generation NOT bumped on dup");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn explicit_reason_bypasses_active_entry_dedup_and_bumps_generation() {
+    // AC1/AC3 (issue #335): a trusted-author explicit request enqueues
+    // a NEW run for the SAME SHA even when an active entry exists —
+    // the entry is REPLACED in place (same key, bumped generation),
+    // never duplicated.
+    let dir = tempdir("rv-explicit");
+    let store = ReviewStore::open(&dir).unwrap();
+    assert!(matches!(
+        store.enqueue_review(&sample_target()).unwrap(),
+        ReviewEnqueueOutcome::Inserted
+    ));
+    assert!(matches!(
+        store
+            .enqueue_review_with_reason(&sample_target(), EnqueueReason::ExplicitUserRequest)
+            .unwrap(),
+        ReviewEnqueueOutcome::Inserted
+    ));
+    let q = store.review_queue_snapshot().unwrap();
+    assert_eq!(
+        q.entries.len(),
+        1,
+        "explicit re-enqueue replaces, not appends"
+    );
+    let entry = q.entries.get(&review_queue_key(&sample_target())).unwrap();
+    assert_eq!(
+        entry.review_generation, 2,
+        "generation bumped by explicit re-enqueue"
+    );
+    assert!(entry.phase.is_active());
+    let st = store
+        .review_state(&sample_repository(), PR)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        st.review_generation, 2,
+        "state generation follows the queue"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn explicit_reason_refuses_in_progress_entry() {
+    // Review feedback (#335), MUST FIX 2: an explicit re-enqueue while
+    // a review is InProgress must NOT replace the entry — replacing it
+    // orphans the running claim (terminal mismatch + a never-unlinked
+    // digest-keyed claim file) and permanently wedges the re-review
+    // until daemon restart. The enqueue is refused with
+    // `AlreadyPresent`; the running claim stays valid and the same
+    // request succeeds once the run completes.
+    let dir = tempdir("rv-explicit-inprogress");
+    let store = ReviewStore::open(&dir).unwrap();
+    store.enqueue_review(&sample_target()).unwrap();
+    let now = Utc.with_ymd_and_hms(2026, 9, 5, 12, 0, 0).unwrap();
+    let claimed = store
+        .acquire_next_review("run-ip-1", 4242, now)
+        .unwrap()
+        .expect("claim");
+    assert_eq!(claimed.entry.phase, ReviewPhase::InProgress);
+
+    // 1. Explicit re-enqueue while InProgress → refused, no
+    //    replacement, no generation bump, claim untouched.
+    assert!(matches!(
+        store
+            .enqueue_review_with_reason(&sample_target(), EnqueueReason::ExplicitUserRequest)
+            .unwrap(),
+        ReviewEnqueueOutcome::AlreadyPresent
+    ));
+    let q = store.review_queue_snapshot().unwrap();
+    let entry = q.entries.get(&review_queue_key(&sample_target())).unwrap();
+    assert_eq!(entry.phase, ReviewPhase::InProgress, "entry not replaced");
+    assert_eq!(entry.review_generation, 1, "generation not bumped");
+    assert_eq!(entry.last_run_id.as_deref(), Some("run-ip-1"));
+
+    // 2. The running claim still completes cleanly — no
+    //    `review-claim-terminal-mismatch`, claim file unlinked.
+    store.complete_review(claimed.claim).unwrap();
+    let claim_path = store.claims_dir().join(format!(
+        "{}.claim",
+        caduceus::state::review::review_claim_digest(&review_queue_key(&sample_target()))
+    ));
+    assert!(!claim_path.exists(), "claim file unlinked after completion");
+
+    // 3. The SAME explicit request now succeeds (the trigger re-fires
+    //    after completion — the listener's next-tick behaviour).
+    assert!(matches!(
+        store
+            .enqueue_review_with_reason(&sample_target(), EnqueueReason::ExplicitUserRequest)
+            .unwrap(),
+        ReviewEnqueueOutcome::Inserted
+    ));
+    let q = store.review_queue_snapshot().unwrap();
+    let entry = q.entries.get(&review_queue_key(&sample_target())).unwrap();
+    assert_eq!(
+        entry.review_generation, 2,
+        "generation bumped after completion"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn auto_discovery_reason_returns_already_present_for_active_entry() {
+    // AC2 (issue #335): the auto-discovery reason never bypasses the
+    // active-entry dedup — polling can NEVER trigger same-SHA
+    // re-review.
+    let dir = tempdir("rv-auto-dup");
+    let store = ReviewStore::open(&dir).unwrap();
+    assert!(matches!(
+        store
+            .enqueue_review_with_reason(&sample_target(), EnqueueReason::AutoDiscovery)
+            .unwrap(),
+        ReviewEnqueueOutcome::Inserted
+    ));
+    assert!(matches!(
+        store
+            .enqueue_review_with_reason(&sample_target(), EnqueueReason::AutoDiscovery)
+            .unwrap(),
+        ReviewEnqueueOutcome::AlreadyPresent
+    ));
+    assert_eq!(store.review_queue_snapshot().unwrap().entries.len(), 1);
+    let st = store
+        .review_state(&sample_repository(), PR)
+        .unwrap()
+        .unwrap();
+    assert_eq!(st.review_generation, 1, "generation NOT bumped on auto dup");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn explicit_reason_resets_publication_state() {
+    // An explicit re-enqueue re-arms publication: a `Published` state
+    // row from generation N must not block generation N+1's
+    // publication (DAR §9.4).
+    let dir = tempdir("rv-explicit-pub");
+    let store = ReviewStore::open(&dir).unwrap();
+    store.enqueue_review(&sample_target()).unwrap();
+    // Progress the publication FSM so the reset is observable: mark
+    // the state Published with retry debt, exactly as a completed
+    // generation-N run would leave it.
+    let mut st = store
+        .review_state(&sample_repository(), PR)
+        .unwrap()
+        .unwrap();
+    st.publication_state = PublicationState::Published;
+    st.publication_attempt_count = 3;
+    st.next_publish_at = Some(Utc.with_ymd_and_hms(2026, 9, 5, 12, 0, 0).unwrap());
+    store.save_review_state(&st).unwrap();
+
+    assert!(matches!(
+        store
+            .enqueue_review_with_reason(&sample_target(), EnqueueReason::ExplicitUserRequest)
+            .unwrap(),
+        ReviewEnqueueOutcome::Inserted
+    ));
+    let after = store
+        .review_state(&sample_repository(), PR)
+        .unwrap()
+        .unwrap();
+    assert_eq!(after.review_generation, 2);
+    assert_eq!(after.publication_state, PublicationState::Pending);
+    assert_eq!(after.publication_attempt_count, 0);
+    assert_eq!(after.next_publish_at, None);
     let _ = fs::remove_dir_all(&dir);
 }
 

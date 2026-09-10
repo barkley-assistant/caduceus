@@ -239,6 +239,7 @@ impl LifecycleHarness {
         cfg.auto_review = Some(AutoReviewConfig {
             enabled: true,
             draft_pull_requests: false,
+            rerun_command: "/caduceus review".to_string(),
         });
         cfg.state_backend = backend.state_backend().to_string();
         cfg.repo_storage_root = root.join("repos");

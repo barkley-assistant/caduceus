@@ -294,6 +294,7 @@ async fn claim_fixture(
     cfg.auto_review = Some(AutoReviewConfig {
         enabled: true,
         draft_pull_requests: false,
+        rerun_command: "/caduceus review".to_string(),
     });
     cfg.git_timeout_seconds = 30;
 

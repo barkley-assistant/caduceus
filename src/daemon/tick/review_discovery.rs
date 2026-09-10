@@ -319,12 +319,49 @@ fn malformed(reason: &str) -> RowDecision {
 // Admission (Task 5, D11)
 // ---------------------------------------------------------------------------
 
-/// One admission: fetch head SHA, fetch base SHA, compute + persist
-/// the merge base, enqueue atomically (D11). Git errors are per-target
-/// (caller logs + continues); store-write errors propagate as
-/// step-level (D9). Returns `Ok(true)` when the target was inserted,
-/// `Ok(false)` when a concurrent admission already held it or the
-/// SHAs were unavailable (D8).
+/// Prepare a full [`ReviewTarget`] for one PR revision: SHA-anchored
+/// fetch of head + base into the mirror, then merge-base computation
+/// (DAR §2.1). Git errors propagate as per-target (caller logs +
+/// continues). Shared by auto-discovery (`admit_target`) and the
+/// trusted-comment re-review listener (#335, DAR §17) so the mirror
+/// fetch + merge-base logic cannot diverge between the two paths.
+#[allow(clippy::too_many_arguments)] // fixed 7-arg preparation contract
+pub(crate) async fn prepare_review_target(
+    runner: &GitRunner,
+    mirror: &BareMirror,
+    repository: &RepositoryId,
+    pull_request: u64,
+    head_sha: &str,
+    base_sha: &str,
+    base_ref: &str,
+) -> CaduceusResult<ReviewTarget> {
+    // 2. SHA-anchored head fetch (D8: unavailable -> skip, no event;
+    //    #339 owns the skip routing).
+    mirror.fetch_sha(runner, head_sha).await?;
+    // 3. Base fetch - both objects are then guaranteed present
+    //    locally (D11: do NOT rely on the base-branch fetch having
+    //    landed the wire's base.sha).
+    mirror.fetch_sha(runner, base_sha).await?;
+    // 4. Merge base (DAR §2.1). Unrelated histories fail as
+    //    `CaduceusError::Git` -> per-target log-and-skip (caller).
+    let merge_base = mirror.merge_base(runner, base_sha, head_sha).await?;
+    // 5. Build the full ReviewTarget (merge_base populated; validation
+    //    happens inside enqueue_review).
+    Ok(ReviewTarget {
+        repository: repository.clone(),
+        pull_request,
+        head_sha: head_sha.to_string(),
+        base_sha: base_sha.to_string(),
+        base_ref: base_ref.to_string(),
+        merge_base,
+    })
+}
+
+/// One admission: prepare the target, enqueue atomically (D11). Git
+/// errors are per-target (caller logs + continues); store-write
+/// errors propagate as step-level (D9). Returns `Ok(true)` when the
+/// target was inserted, `Ok(false)` when a concurrent admission
+/// already held it or the SHAs were unavailable (D8).
 #[allow(clippy::too_many_arguments)] // plan D11 surface: fixed 8-arg admission contract
 pub(crate) async fn admit_target(
     runner: &GitRunner,
@@ -336,26 +373,16 @@ pub(crate) async fn admit_target(
     base_sha: &str,
     base_ref: &str,
 ) -> CaduceusResult<bool> {
-    // 2. SHA-anchored head fetch (D8: unavailable -> skip, no event;
-    //    #339 owns the skip routing).
-    mirror.fetch_sha(runner, head_sha).await?;
-    // 3. Base fetch - both objects are then guaranteed present
-    //    locally (D11: do NOT rely on the base-branch fetch having
-    //    landed the wire's base.sha).
-    mirror.fetch_sha(runner, base_sha).await?;
-    // 4. Merge base (DAR SS2.1). Unrelated histories fail as
-    //    `CaduceusError::Git` -> per-target log-and-skip (caller).
-    let merge_base = mirror.merge_base(runner, base_sha, head_sha).await?;
-    // 5. Build the full ReviewTarget (merge_base populated; validation
-    //    happens inside enqueue_review).
-    let target = ReviewTarget {
-        repository: repository.clone(),
+    let target = prepare_review_target(
+        runner,
+        mirror,
+        repository,
         pull_request,
-        head_sha: head_sha.to_string(),
-        base_sha: base_sha.to_string(),
-        base_ref: base_ref.to_string(),
-        merge_base,
-    };
+        head_sha,
+        base_sha,
+        base_ref,
+    )
+    .await?;
     // 6. Atomic generation + queue write (#295).
     match review_store.enqueue_review(&target)? {
         ReviewEnqueueOutcome::Inserted => Ok(true),
