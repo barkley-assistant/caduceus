@@ -484,6 +484,10 @@ name = "lifecycle_test"
 path = "tests/review/lifecycle_test.rs"
 
 [[test]]
+name = "completion_dedup_tick_test"
+path = "tests/review/completion_dedup_tick_test.rs"
+
+[[test]]
 name = "terminal_paths_test"
 path = "tests/review/terminal_paths_test.rs"
 

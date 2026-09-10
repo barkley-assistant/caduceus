@@ -203,6 +203,17 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
   child environment only when the variable is unset; explicit overrides
   (multi-profile hosts) are preserved and a deliberately-empty value
   still reaches the binary's guard. Closes #263.
+- **Completion-gated discovery dedup for Auto Review.** The daemon now
+  persists `ReviewState.last_reviewed_head_sha` when a review COMPLETES
+  (in `run_review_claim`, before the terminal `Done` transition), not
+  only at publication finalization. Previously the tick's 5.6 finalizer
+  ran before the drain completed the review, so the next tick's 5.5
+  discovery re-admitted the identical head SHA (generation bump +
+  publication reset), the completed row was suppressed by the
+  stale-generation guard, and the worker re-ran the same SHA every tick
+  with no sticky comment ever published. Dedup now holds from completion
+  onward and the next tick publishes the run it was built for. Closes
+  #333.
 
 ## [1.0.0] - 2026-08-08
 
