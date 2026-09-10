@@ -224,6 +224,26 @@ pub struct AutoReviewConfig {
     /// Default `/caduceus review`. Validated non-empty and must start
     /// with `/`.
     pub rerun_command: String,
+    /// Per-repo fork trust policy (issue #337, Phase 2). `None` =
+    /// block absent = default OFF: every fork PR is skipped with
+    /// `review_skipped_fork_unsupported` (Phase-1 behaviour, DAR
+    /// §11.2). `Some` = the operator declared a `fork_policy:`
+    /// block; the resolved `allow_fork_prs` list names the watched
+    /// repos opted INTO fork PR review via the quarantine fetch path.
+    pub fork_policy: Option<ForkPolicy>,
+}
+
+/// Per-repo fork trust policy (issue #337, Phase 2). Default OFF:
+/// an absent or empty `allow_fork_prs` list means "no fork PRs
+/// allowed anywhere" — Phase-1 behaviour is preserved byte-for-byte
+/// for every repo not listed.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ForkPolicy {
+    /// Repos (`owner/repo` slugs) opted into fork PR review via the
+    /// quarantine fetch path. Every slug must also appear in the
+    /// top-level `watched_repos` (validated in `from_raw`).
+    pub allow_fork_prs: Vec<String>,
 }
 
 /// Raw layer — mirrors the schema with all-`Option` fields.
@@ -233,6 +253,14 @@ pub struct RawAutoReviewConfig {
     pub enabled: Option<bool>,
     pub draft_pull_requests: Option<bool>,
     pub rerun_command: Option<String>,
+    pub fork_policy: Option<RawForkPolicy>,
+}
+
+/// Raw layer — mirrors the schema with all-`Option` fields.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawForkPolicy {
+    pub allow_fork_prs: Option<Vec<String>>,
 }
 
 /// Caduceus configuration. Field semantics are pinned here.
@@ -894,10 +922,38 @@ impl Config {
                         .to_string(),
                 );
             }
+            // Fork trust policy (issue #337, Phase 2): resolve the
+            // per-repo opt-in list. Absent block => None (default
+            // OFF, Phase-1 behaviour). Every slug must be
+            // `owner/repo` shaped AND already listed in
+            // `watched_repos` — an operator cannot opt a repo into
+            // fork review the daemon never polls.
+            let fork_policy = raw_ar.fork_policy.map(|raw_fp| {
+                let allow_fork_prs = raw_fp.allow_fork_prs.unwrap_or_default();
+                for slug in &allow_fork_prs {
+                    let well_formed = slug
+                        .split_once('/')
+                        .map(|(owner, repo)| !owner.is_empty() && !repo.is_empty())
+                        .unwrap_or(false);
+                    if !well_formed {
+                        errors.push(format!(
+                            "auto_review.fork_policy.allow_fork_prs lists malformed slug \
+                             '{slug}' (expected owner/repo)"
+                        ));
+                    } else if !watched_repos.iter().any(|w| w == slug) {
+                        errors.push(format!(
+                            "auto_review.fork_policy.allow_fork_prs lists '{slug}' which \
+                             is not in watched_repos"
+                        ));
+                    }
+                }
+                ForkPolicy { allow_fork_prs }
+            });
             AutoReviewConfig {
                 enabled: raw_ar.enabled.unwrap_or(false),
                 draft_pull_requests: raw_ar.draft_pull_requests.unwrap_or(false),
                 rerun_command,
+                fork_policy,
             }
         });
         if let Some(ar) = &auto_review {

@@ -820,6 +820,10 @@ name = "corpus_test"
 path = "tests/security/corpus_test.rs"
 
 [[test]]
+name = "fork_policy_test"
+path = "tests/config/fork_policy_test.rs"
+
+[[test]]
 name = "fork_adversarial_test"
 path = "tests/security/fork_adversarial_test.rs"
 

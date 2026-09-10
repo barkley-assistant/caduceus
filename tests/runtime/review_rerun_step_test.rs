@@ -56,6 +56,7 @@ fn ar_config() -> AutoReviewConfig {
         enabled: true,
         draft_pull_requests: false,
         rerun_command: "/caduceus review".to_string(),
+        fork_policy: None,
     }
 }
 

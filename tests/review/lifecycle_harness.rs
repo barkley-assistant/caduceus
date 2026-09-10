@@ -240,6 +240,7 @@ impl LifecycleHarness {
             enabled: true,
             draft_pull_requests: false,
             rerun_command: "/caduceus review".to_string(),
+            fork_policy: None,
         });
         cfg.state_backend = backend.state_backend().to_string();
         cfg.repo_storage_root = root.join("repos");
