@@ -443,6 +443,7 @@ impl LifecycleHarness {
             self.store.as_ref(),
             &self.runner,
             &move |_owner: &str, _repo: &str| Ok(remote_url.clone()),
+            &|_repository: &caduceus::review::RepositoryId, _head_repo: &str| None,
         )
         .await
         .expect("discovery step succeeds")

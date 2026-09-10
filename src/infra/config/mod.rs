@@ -246,6 +246,16 @@ pub struct ForkPolicy {
     pub allow_fork_prs: Vec<String>,
 }
 
+impl ForkPolicy {
+    /// Whether the fork `owner/repo` full name is trusted. Slugs are
+    /// matched exactly (GitHub slugs are lower-case; watched-repo
+    /// validation in `from_raw` rejects case variants). An empty
+    /// allow-list denies everything — default OFF.
+    pub fn is_allowed(&self, full_name: &str) -> bool {
+        self.allow_fork_prs.iter().any(|slug| slug == full_name)
+    }
+}
+
 /// Raw layer — mirrors the schema with all-`Option` fields.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]

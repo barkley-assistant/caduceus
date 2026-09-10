@@ -1,12 +1,19 @@
-//! Phase-1 fork gate for PR discovery (issue #316).
+//! Fork gate for PR discovery (issue #316, Phase 2 #337).
 //!
 //! Fork pull requests are **unsupported** in Phase 1 (DAR §5.1, §11.2):
 //! discovery skips them unconditionally because the daemon's
 //! single-origin mirror cannot check out fork SHAs. This module owns
 //! the eligibility predicate and the structured skip event; #312 wires
-//! them into the discovery loop. There is deliberately **no config
-//! knob** — dead config would advertise a posture the system cannot
-//! deliver (DAR §11.2).
+//! them into the discovery loop.
+//!
+//! Phase 2 (issue #337) adds the operator opt-in
+//! `auto_review.fork_policy.allow_fork_prs` (default empty →
+//! fail-closed). The predicate AND the skip event in this module are
+//! unchanged; the *routing site* in `review_discovery.rs` consults the
+//! policy: an allowed fork's row bypasses the skip and enters the
+//! per-PR quarantine-fetch path (`RowAction::AdmitFork`), while every
+//! denied / non-opted fork keeps the exact Phase-1
+//! [`FORK_SKIP_EVENT`] byte-for-byte (DAR §11.2).
 //!
 //! The predicate is fail-closed by construction: only a *proven*
 //! same-repo row passes the gate. Every other wire shape — fork,

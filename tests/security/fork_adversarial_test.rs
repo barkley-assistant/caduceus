@@ -86,6 +86,7 @@ fn fork_pr_fixture_never_enqueued() {
                     "resolver must not be called for a fork: {owner}/{repo}"
                 )))
             },
+            &|_repository: &caduceus::review::RepositoryId, _head_repo: &str| None,
         )
         .await
         .expect("fork skip is not a step error");

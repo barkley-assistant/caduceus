@@ -543,6 +543,15 @@ pub async fn tick(
                 let resolve = |owner: &str, repo: &str| {
                     crate::worktree::git_https_remote(&cfg.api_base, owner, repo)
                 };
+                // #337 Phase 2 resolver seam: maps the fork's
+                // `owner/repo` to the fork's git URL for the
+                // quarantine fetch. Wired to the GitHub REST
+                // `repos/{owner}/{repo}` lookup once the daemon-side
+                // lookup lands; until then an allowed fork is
+                // discovered but deferred (next-poll retry), never
+                // admitted through the wrong remote.
+                let resolve_fork_remote =
+                    |_repository: &crate::review::RepositoryId, _head_repo: &str| None;
                 match review_discovery::poll_review_step(
                     &repos,
                     &client,
@@ -550,6 +559,7 @@ pub async fn tick(
                     &review_store,
                     &runner,
                     &resolve,
+                    &resolve_fork_remote,
                 )
                 .await
                 {
