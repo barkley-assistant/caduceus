@@ -997,6 +997,34 @@ impl Config {
             .max_reviews_per_tick
             .unwrap_or(worker_parallelism.saturating_mul(DEFAULT_MAX_REVIEWS_PER_TICK_MULTIPLIER));
 
+        // Circuit breaker config. Resolved and validated here so a
+        // zero/empty value fails config load instead of loading
+        // silently (issue #357).
+        let circuit_failure_threshold = raw
+            .circuit_failure_threshold
+            .unwrap_or(DEFAULT_CIRCUIT_FAILURE_THRESHOLD);
+        if circuit_failure_threshold == 0 {
+            errors.push("circuit_failure_threshold must be > 0".to_string());
+        }
+        let circuit_backoff_seconds = raw
+            .circuit_backoff_seconds
+            .unwrap_or_else(|| DEFAULT_CIRCUIT_BACKOFF_SECONDS.to_vec());
+        if circuit_backoff_seconds.is_empty() {
+            errors.push("circuit_backoff_seconds must not be empty".to_string());
+        }
+        let circuit_open_interval_seconds = raw
+            .circuit_open_interval_seconds
+            .unwrap_or(DEFAULT_CIRCUIT_OPEN_INTERVAL_SECONDS);
+        if circuit_open_interval_seconds == 0 {
+            errors.push("circuit_open_interval_seconds must be > 0".to_string());
+        }
+        let circuit_max_degraded_seconds = raw
+            .circuit_max_degraded_seconds
+            .unwrap_or(DEFAULT_CIRCUIT_MAX_DEGRADED_SECONDS);
+        if circuit_max_degraded_seconds == 0 {
+            errors.push("circuit_max_degraded_seconds must be > 0".to_string());
+        }
+
         if !errors.is_empty() {
             return Err(CaduceusError::Config(errors.join("; ")));
         }
@@ -1073,43 +1101,10 @@ impl Config {
                 .backpressure_budget_ms
                 .unwrap_or(DEFAULT_BACKPRESSURE_BUDGET_MS),
 
-            // Circuit breaker config
-            circuit_failure_threshold: {
-                let v = raw
-                    .circuit_failure_threshold
-                    .unwrap_or(DEFAULT_CIRCUIT_FAILURE_THRESHOLD);
-                if v == 0 {
-                    errors.push("circuit_failure_threshold must be > 0".to_string());
-                }
-                v
-            },
-            circuit_backoff_seconds: {
-                let v = raw
-                    .circuit_backoff_seconds
-                    .unwrap_or_else(|| DEFAULT_CIRCUIT_BACKOFF_SECONDS.to_vec());
-                if v.is_empty() {
-                    errors.push("circuit_backoff_seconds must not be empty".to_string());
-                }
-                v
-            },
-            circuit_open_interval_seconds: {
-                let v = raw
-                    .circuit_open_interval_seconds
-                    .unwrap_or(DEFAULT_CIRCUIT_OPEN_INTERVAL_SECONDS);
-                if v == 0 {
-                    errors.push("circuit_open_interval_seconds must be > 0".to_string());
-                }
-                v
-            },
-            circuit_max_degraded_seconds: {
-                let v = raw
-                    .circuit_max_degraded_seconds
-                    .unwrap_or(DEFAULT_CIRCUIT_MAX_DEGRADED_SECONDS);
-                if v == 0 {
-                    errors.push("circuit_max_degraded_seconds must be > 0".to_string());
-                }
-                v
-            },
+            circuit_failure_threshold,
+            circuit_backoff_seconds,
+            circuit_open_interval_seconds,
+            circuit_max_degraded_seconds,
             repo_storage_root,
             executor_mode,
             reduced_containment_acknowledged,
