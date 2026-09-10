@@ -21,7 +21,7 @@ use rusqlite::params;
 
 use super::{
     require_review_file_version, review_queue_key, review_state_key, validate_history_row,
-    validated_review_state, ClaimedReview, ReviewClaimFileBody, ReviewClaimToken,
+    validated_review_state, ClaimedReview, EnqueueReason, ReviewClaimFileBody, ReviewClaimToken,
     ReviewEnqueueOutcome, ReviewHistoryFile, ReviewHistoryRow, ReviewPhase, ReviewQueueEntry,
     ReviewQueueState, REVIEW_CLAIMS_DIRNAME, REVIEW_CLAIM_FILE_VERSION, REVIEW_HISTORY_FILENAME,
     REVIEW_HISTORY_FILE_VERSION, REVIEW_LOCK_FILENAME, REVIEW_QUEUE_FILENAME,
@@ -312,20 +312,40 @@ impl ReviewStore {
         })
     }
 
-    /// Enqueue a new review target. Assigns
-    /// `review_generation = current ReviewState generation + 1`
-    /// (or 1 when none), upserts the `ReviewState` row's generation,
-    /// and inserts the queue entry at phase `Queued`. Returns
-    /// [`ReviewEnqueueOutcome::AlreadyPresent`] when an ACTIVE
-    /// (`Queued`/`InProgress`) entry already exists for the same
-    /// canonical review key.
+    /// Enqueue a new review target with the auto-discovery reason.
+    /// See [`Self::enqueue_review_with_reason`] for the explicit
+    /// same-SHA re-review path.
+    pub fn enqueue_review(&self, target: &ReviewTarget) -> CaduceusResult<ReviewEnqueueOutcome> {
+        self.enqueue_review_with_reason(target, EnqueueReason::AutoDiscovery)
+    }
+
+    /// Enqueue a new review target with an explicit reason. When
+    /// `reason == EnqueueReason::ExplicitUserRequest`, the active-entry
+    /// dedup is BYPASSED: a new queue entry is inserted (generation
+    /// bumped, publication re-armed) even when an ACTIVE
+    /// (`Queued`/`InProgress`) entry for the same key already exists —
+    /// the existing entry is replaced in place. This is the deliberate
+    /// same-SHA re-review path (DAR §17, #335).
+    ///
+    /// For `EnqueueReason::AutoDiscovery` the behaviour is exactly the
+    /// legacy `enqueue_review`: returns
+    /// [`ReviewEnqueueOutcome::AlreadyPresent`] when an ACTIVE entry
+    /// already exists for the same canonical review key.
     ///
     /// The queue entry and the state row always carry the SAME
     /// `review_generation`: both writes happen inside one exclusive
     /// section (one flock / one transaction), so a crash between the
     /// two writes is impossible. This is the load-bearing invariant
     /// for the stale-publication guard (DAR §9.4).
-    pub fn enqueue_review(&self, target: &ReviewTarget) -> CaduceusResult<ReviewEnqueueOutcome> {
+    ///
+    /// This method is also the integration seam for future GitHub App
+    /// re-run controls (DAR §17): an App webhook handler calls it with
+    /// the same reason, bypassing the comment-scan listener entirely.
+    pub fn enqueue_review_with_reason(
+        &self,
+        target: &ReviewTarget,
+        reason: EnqueueReason,
+    ) -> CaduceusResult<ReviewEnqueueOutcome> {
         crate::review::validate_review_target(target)?;
         self.with_exclusive(|store, conn| {
             let mut queue = store.load_queue(conn)?;
@@ -333,9 +353,18 @@ impl ReviewStore {
             let now = Utc::now();
             let key = review_queue_key(target);
 
-            if let Some(existing) = queue.entries.get(&key) {
-                if existing.phase.is_active() {
-                    return Ok(ReviewEnqueueOutcome::AlreadyPresent);
+            // Active-entry dedup (DAR §4.3 pointer + active-only
+            // dedup). `ExplicitUserRequest` deliberately bypasses it:
+            // the existing entry is REPLACED below (same key, new
+            // generation) instead of returning `AlreadyPresent`. The
+            // auto path always sets `AutoDiscovery` and always hits
+            // this check (AC2: polling never triggers same-SHA
+            // re-review).
+            if reason == EnqueueReason::AutoDiscovery {
+                if let Some(existing) = queue.entries.get(&key) {
+                    if existing.phase.is_active() {
+                        return Ok(ReviewEnqueueOutcome::AlreadyPresent);
+                    }
                 }
             }
 
