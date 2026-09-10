@@ -26,14 +26,21 @@ use crate::worktree::GitRunner;
 ///   evidence, DAR §8.1),
 /// * the optional [`ForkQuarantine`] (set after
 ///   `attach_quarantine` on fork runs, #337 Phase 2), torn down on
-///   EVERY `finish_*` route — including the Terminal NeedsAttention
-///   routes. The quarantine is a throwaway object store (DAR §11.2,
-///   #337 Phase 2) and must not linger past the run; per plan §3.2
-///   its removal also force-removes any worktree registered to it,
-///   so a fork run that lands in NeedsAttention loses the worktree
-///   files with the quarantine (the "preserved worktree" forensic
-///   property above applies to same-repo runs, whose worktree is
-///   registered to the production mirror) — and
+///   the TERMINAL `finish_*` routes only — Done, Skipped,
+///   NeedsAttention, mutation-violation, and the terminal `Failed`
+///   arm of `finish_retry`. The requeue routes (retry→Queued,
+///   infrastructure, cancellation) deliberately KEEP the
+///   quarantine: removing it on a non-terminal route would make the
+///   retried fork claim fall back to the production-mirror path
+///   (DAR §11.2, plan §3.2 — the quarantine is removed at terminal
+///   status; the production mirror is never consulted for fork
+///   runs). The quarantine is a throwaway object store (#337 Phase
+///   2) and must not linger past the run; per plan §3.2 its removal
+///   also force-removes any worktree registered to it, so a fork
+///   run that lands in NeedsAttention loses the worktree files with
+///   the quarantine (the "preserved worktree" forensic property
+///   above applies to same-repo runs, whose worktree is registered
+///   to the production mirror) — and
 /// * the target identity for event emission and store routing.
 ///
 /// The async `finish_*` methods perform explicit state transitions
@@ -131,8 +138,10 @@ impl ReviewRunGuard {
     }
 
     /// Persist the fork-quarantine handle on the guard (fork runs,
-    /// #337 Phase 2). Every `finish_*` route tears it down via
-    /// [`Self::teardown_quarantine_if_attached`].
+    /// #337 Phase 2). The TERMINAL `finish_*` routes tear it down
+    /// via [`Self::teardown_quarantine_if_attached`]; the requeue
+    /// routes keep it so a retried fork claim reuses the quarantine
+    /// (DAR §11.2, plan §3.2).
     pub async fn attach_quarantine(&self, quarantine: ForkQuarantine) {
         let mut slot = self.quarantine.lock().await;
         *slot = Some(quarantine);
@@ -183,9 +192,16 @@ impl ReviewRunGuard {
     /// returned so the orchestrator can log without re-reading state.
     pub async fn finish_retry(&mut self, error: &str, budget: u32) -> CaduceusResult<ReviewPhase> {
         self.teardown_worktree_if_attached().await;
-        self.teardown_quarantine_if_attached().await;
         let claim = self.take_claim();
         let new_phase = self.store.retry_or_fail_review(claim, error, budget)?;
+        // Terminal-only quarantine teardown (DAR §11.2, plan §3.2):
+        // a requeued retry (`Queued`) must KEEP the quarantine clone
+        // so the next claim reuses it instead of falling back to the
+        // production-mirror path; only the terminal `Failed`
+        // transition removes it.
+        if new_phase == ReviewPhase::Failed {
+            self.teardown_quarantine_if_attached().await;
+        }
         self.mark_finished().await;
         Ok(new_phase)
     }
@@ -207,13 +223,15 @@ impl ReviewRunGuard {
     /// transport, filesystem, etc.). The worktree is torn down and
     /// the claim is released. `not_before` is the configured
     /// `retry_backoff_seconds` window; `attempts` is NOT incremented.
+    /// The fork quarantine is deliberately KEPT on this requeue
+    /// route (DAR §11.2, plan §3.2): a retried fork claim must reuse
+    /// the clone, never the production mirror.
     pub async fn finish_infrastructure(
         &mut self,
         error: &str,
         not_before: chrono::DateTime<chrono::Utc>,
     ) -> CaduceusResult<()> {
         self.teardown_worktree_if_attached().await;
-        self.teardown_quarantine_if_attached().await;
         let claim = self.take_claim();
         self.store
             .requeue_infrastructure_review(claim, error, not_before)?;
@@ -266,10 +284,11 @@ impl ReviewRunGuard {
     /// Cancellation transition. Operator SIGINT/SIGTERM or a
     /// timeout-driven drain lands here. The worktree is torn down;
     /// the entry is requeued with `not_before = now` so the next tick
-    /// is immediately eligible.
+    /// is immediately eligible. The fork quarantine is deliberately
+    /// KEPT (DAR §11.2, plan §3.2): the requeue is non-terminal, so
+    /// the retried fork claim must still find and reuse the clone.
     pub async fn finish_cancelled(&mut self) -> CaduceusResult<()> {
         self.teardown_worktree_if_attached().await;
-        self.teardown_quarantine_if_attached().await;
         let now = chrono::Utc::now();
         let claim = self.take_claim();
         self.store
@@ -279,13 +298,19 @@ impl ReviewRunGuard {
     }
 
     /// Tear down the attached fork quarantine (if any) via
-    /// [`ForkQuarantine::remove`]. Runs on EVERY `finish_*` route —
-    /// including the Terminal NeedsAttention routes where the
-    /// worktree itself is preserved for forensics: the quarantine
-    /// clone is a throwaway object store (DAR §11.2, #337 Phase 2),
-    /// not evidence, and must not linger past the run. Idempotent:
-    /// a missing clone or no attached quarantine is silently
-    /// tolerated; a typed failure surfaces as a warning.
+    /// [`ForkQuarantine::remove`]. Runs ONLY on the terminal
+    /// `finish_*` routes — Done, Skipped, NeedsAttention,
+    /// mutation-violation, and the terminal `Failed` arm of
+    /// `finish_retry`. The requeue routes (retry→Queued,
+    /// infrastructure, cancellation) deliberately do NOT call this:
+    /// removing the quarantine on a non-terminal route would make
+    /// the retried fork claim fall back to the production-mirror
+    /// path (DAR §11.2, plan §3.2). On the terminal routes the
+    /// worktree itself is preserved for forensics (NeedsAttention)
+    /// while the quarantine clone — a throwaway object store, not
+    /// evidence — is removed. Idempotent: a missing clone or no
+    /// attached quarantine is silently tolerated; a typed failure
+    /// surfaces as a warning.
     async fn teardown_quarantine_if_attached(&self) {
         let quarantine = {
             let mut slot = self.quarantine.lock().await;

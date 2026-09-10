@@ -38,10 +38,12 @@ use caduceus::meta::TickOutcome;
 use caduceus::orchestration::{
     GitRunnerAdapter, GithubClientAdapter, ReviewRunGuard, Services, SystemClock,
 };
+use caduceus::repo::ForkQuarantine;
 use caduceus::review::{RepositoryId, ReviewTarget};
 use caduceus::scheduler::{DrainConfig, Pool};
 use caduceus::state::review::{
-    ClaimedReview, ReviewHistoryRow, ReviewPhase, ReviewQueueEntry, ReviewStore,
+    ClaimedReview, EnqueueReason, ReviewEnqueueOutcome, ReviewHistoryRow, ReviewPhase,
+    ReviewQueueEntry, ReviewStore,
 };
 use caduceus::worker::prompt::PROMPT_FILENAME;
 use caduceus::worker::supervisor::SupervisorOutcome;
@@ -412,11 +414,14 @@ fn result_json_fail() -> serde_json::Value {
     })
 }
 
-/// Run the claim seam against the fixture with the given executor.
-async fn run_claim_for(
+/// Run the claim seam against the fixture with the given executor,
+/// claimed review, and remote resolver.
+async fn run_claim_for_claimed(
     fixture: &ClaimFixture,
+    claimed: &ClaimedReview,
     guard: &mut ReviewRunGuard,
     executor: Arc<dyn Executor>,
+    resolve_remote: caduceus::daemon::tick::per_review::RemoteResolver,
 ) -> CaduceusResult<TickOutcome> {
     let services = Services::for_tests(
         Arc::new(SystemClock),
@@ -435,11 +440,28 @@ async fn run_claim_for(
         &services,
         Arc::clone(&fixture.client),
         fixture.store.as_ref(),
-        fixture.claimed.clone(),
+        claimed.clone(),
         guard,
         CancellationToken::new(),
         &mut None,
         admit,
+        resolve_remote,
+    )
+    .await
+}
+
+/// Run the claim seam against the fixture's first claim with the
+/// fixture's default resolver.
+async fn run_claim_for(
+    fixture: &ClaimFixture,
+    guard: &mut ReviewRunGuard,
+    executor: Arc<dyn Executor>,
+) -> CaduceusResult<TickOutcome> {
+    run_claim_for_claimed(
+        fixture,
+        &fixture.claimed,
+        guard,
+        executor,
         fixture.resolve_remote(),
     )
     .await
@@ -991,6 +1013,321 @@ async fn execution_failed_and_retry_scheduled_capture_on_retry() {
     assert!(
         !body.contains(REVIEW_PASSED_EVENT),
         "pass leaked into the execution-failed path: {body}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Fork-quarantine lifecycle (issue #337 Phase 2, PR #379 must-fix 1)
+// ---------------------------------------------------------------------------
+
+/// Build a fresh store + claimed entry + guard with a REAL fork
+/// quarantine clone attached under the store's state dir (base
+/// objects cloned from `base_url`). Returns the guard and the
+/// quarantine directory path.
+async fn guarded_fork_run(label: &str, base_url: &str) -> (ReviewRunGuard, PathBuf) {
+    let root = tempdir(label);
+    let cfg = Config::test_defaults(&root);
+    let store = Arc::new(ReviewStore::open(&cfg.state_dir).expect("review store opens"));
+    let target = ReviewTarget {
+        repository: repo_id(),
+        pull_request: 7,
+        head_sha: "a".repeat(40),
+        base_sha: "b".repeat(40),
+        base_ref: "main".to_string(),
+        merge_base: "b".repeat(40),
+    };
+    store.enqueue_review(&target).expect("seed entry");
+    let claimed = store
+        .acquire_next_review("run-q", std::process::id(), chrono::Utc::now())
+        .expect("acquire succeeds")
+        .expect("entry claimable");
+    let runner = GitRunner::new(&cfg);
+    let guard = ReviewRunGuard::new(
+        claimed.claim.clone(),
+        store,
+        cfg.state_dir.join("processor.log"),
+        claimed.entry.target.clone(),
+        runner.clone(),
+    );
+    let quarantine = ForkQuarantine::create(
+        &runner,
+        &cfg.state_dir,
+        "owner",
+        "r",
+        7,
+        &target.head_sha,
+        &target.base_sha,
+        base_url,
+        "forkuser/r",
+    )
+    .await
+    .expect("quarantine clone created");
+    let dir = quarantine.path().to_path_buf();
+    assert!(dir.join("HEAD").exists(), "quarantine clone materialised");
+    guard.attach_quarantine(quarantine).await;
+    (guard, dir)
+}
+
+/// The fork quarantine teardown contract is TERMINAL-ONLY (DAR
+/// §11.2, plan §3.2): the requeue routes — retry→Queued,
+/// infrastructure, cancellation — keep the clone so a retried fork
+/// claim reuses it, while every terminal route (Done, Skipped,
+/// NeedsAttention, and the terminal Failed arm of finish_retry)
+/// removes it. Regression for PR #379 must-fix 1: the guard used to
+/// tear the quarantine down on non-terminal routes, so a retried
+/// fork claim silently fell back to the production-mirror path.
+#[tokio::test]
+#[serial_test::serial]
+async fn fork_quarantine_teardown_is_terminal_only() {
+    let (remote_dir, _base, _mid, _tip) = fresh_remote("q-teardown-git");
+    let base_url = format!("file://{}", remote_dir.display());
+
+    // Non-terminal requeue routes KEEP the quarantine clone.
+    {
+        let (mut guard, dir) = guarded_fork_run("q-teardown-retry", &base_url).await;
+        let phase = guard
+            .finish_retry("worker failure", 3)
+            .await
+            .expect("retry requeues");
+        assert_eq!(phase, ReviewPhase::Queued, "attempts < budget requeues");
+        assert!(
+            dir.join("HEAD").exists(),
+            "retry→Queued must KEEP the quarantine clone"
+        );
+    }
+    {
+        let (mut guard, dir) = guarded_fork_run("q-teardown-infra", &base_url).await;
+        guard
+            .finish_infrastructure("git transport", chrono::Utc::now())
+            .await
+            .expect("infrastructure requeues");
+        assert!(
+            dir.join("HEAD").exists(),
+            "infrastructure requeue must KEEP the quarantine clone"
+        );
+    }
+    {
+        let (mut guard, dir) = guarded_fork_run("q-teardown-cancel", &base_url).await;
+        guard
+            .finish_cancelled()
+            .await
+            .expect("cancellation requeues");
+        assert!(
+            dir.join("HEAD").exists(),
+            "cancellation requeue must KEEP the quarantine clone"
+        );
+    }
+
+    // Terminal routes REMOVE the quarantine clone.
+    {
+        let (mut guard, dir) = guarded_fork_run("q-teardown-failed", &base_url).await;
+        let phase = guard
+            .finish_retry("worker failure", 1)
+            .await
+            .expect("retry fails");
+        assert_eq!(phase, ReviewPhase::Failed, "attempts >= budget fails");
+        assert!(
+            !dir.exists(),
+            "the terminal Failed arm must REMOVE the quarantine clone"
+        );
+    }
+    {
+        let (mut guard, dir) = guarded_fork_run("q-teardown-done", &base_url).await;
+        guard.finish_done().await.expect("done");
+        assert!(!dir.exists(), "Done must REMOVE the quarantine clone");
+    }
+    {
+        let (mut guard, dir) = guarded_fork_run("q-teardown-skip", &base_url).await;
+        guard
+            .finish_skip("head sha unavailable")
+            .await
+            .expect("skip");
+        assert!(!dir.exists(), "Skipped must REMOVE the quarantine clone");
+    }
+    {
+        let (mut guard, dir) = guarded_fork_run("q-teardown-na", &base_url).await;
+        guard
+            .finish_needs_attention("terminal error", "test", "hint")
+            .await
+            .expect("needs attention");
+        assert!(
+            !dir.exists(),
+            "NeedsAttention must REMOVE the quarantine clone"
+        );
+    }
+}
+
+/// Claim-level retry-reuse regression (PR #379 must-fix 1, DAR
+/// §11.2 / plan §3.2): a fork run that fails through the retry
+/// budget keeps its quarantine clone, and the RETRIED claim finds
+/// and reuses the SAME clone — the production-mirror resolver is
+/// never consulted (a panicking resolver proves the mirror branch
+/// is dead on the fork path). The clone is only removed at the
+/// terminal Done transition.
+#[tokio::test]
+#[serial_test::serial]
+async fn fork_retry_reuses_quarantine_production_mirror_never_consulted() {
+    let (remote_dir, base_sha, _mid, head_sha) = fresh_remote("claim-fork-retry-git");
+    // The fork remote: a bare clone of the base serving the fork PR
+    // head SHA (the quarantine fetch story, #337 Phase 2).
+    let root = tempdir("claim-fork-retry-fork");
+    let fork_dir = root.join("fork.git");
+    let clone = Command::new("git")
+        .args(["clone", "--bare"])
+        .arg(&remote_dir)
+        .arg(&fork_dir)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .expect("clone fork remote");
+    assert!(
+        clone.status.success(),
+        "fork remote clone failed: {}",
+        String::from_utf8_lossy(&clone.stderr)
+    );
+    let fork_url = format!("file://{}", fork_dir.display());
+
+    let fixture = claim_fixture(
+        "claim-fork-retry",
+        remote_dir,
+        base_sha.clone(),
+        head_sha.clone(),
+        pr_row_open(&head_sha),
+    )
+    .await;
+
+    // The quarantine clone exactly as discovery's `admit_fork_target`
+    // creates it: base objects from the TRUSTED base URL, the fork
+    // head SHA fetched SHA-anchored from the fork URL, merge base
+    // computed inside the quarantine.
+    let quarantine = ForkQuarantine::create(
+        &fixture.runner,
+        &fixture.cfg.state_dir,
+        "owner",
+        "r",
+        7,
+        &head_sha,
+        &base_sha,
+        &format!("file://{}", fixture.remote_dir.display()),
+        "forkuser/r",
+    )
+    .await
+    .expect("quarantine clone created");
+    quarantine
+        .fetch_fork_sha(&fixture.runner, &fork_url, &head_sha)
+        .await
+        .expect("fork head sha fetched into the quarantine");
+    let _merge_base = quarantine
+        .merge_base(&fixture.runner, &base_sha, &head_sha)
+        .await
+        .expect("merge base computed inside the quarantine");
+    let quarantine_dir = fixture
+        .cfg
+        .state_dir
+        .join("fork-quarantine")
+        .join("owner")
+        .join("r")
+        .join(format!("7@{head_sha}"));
+    assert!(
+        quarantine_dir.join("HEAD").exists(),
+        "quarantine clone materialised"
+    );
+
+    // The production-mirror resolver must NEVER run for a fork run —
+    // with the quarantine present, the mirror branch is dead code.
+    let never_mirror: caduceus::daemon::tick::per_review::RemoteResolver =
+        Arc::new(|_owner: &str, _repo: &str| -> CaduceusResult<String> {
+            unreachable!("production-mirror resolver must never run for a fork run")
+        });
+
+    // Claim #1: the worker fails to produce a result → execution
+    // failure through the retry budget → requeue. The guard must NOT
+    // tear down the quarantine on this non-terminal route.
+    let failing_executor: Arc<dyn Executor> = Arc::new(MockExecutor {
+        f: move |_spec: &ExecutorSpec| {
+            ok_outcome(PathBuf::from("/dev/null/does-not-exist.result.json"))
+        },
+    });
+    let mut guard = fixture.new_guard();
+    let outcome = run_claim_for_claimed(
+        &fixture,
+        &fixture.claimed,
+        &mut guard,
+        failing_executor,
+        never_mirror.clone(),
+    )
+    .await
+    .expect("claim 1 runs");
+    assert_eq!(outcome, TickOutcome::Processed);
+    let entry = queue_entry(&fixture.store);
+    assert_eq!(
+        entry.phase,
+        ReviewPhase::Queued,
+        "attempts < budget requeues"
+    );
+    assert_eq!(entry.attempts, 1);
+    assert!(
+        quarantine_dir.join("HEAD").exists(),
+        "a retried fork claim must KEEP the quarantine clone"
+    );
+
+    // Re-arm the entry for the retried claim via the documented
+    // same-SHA explicit re-review path (replaces the Queued entry in
+    // place; eligibility is immediate, generation is bumped).
+    let target = ReviewTarget {
+        repository: repo_id(),
+        pull_request: 7,
+        head_sha: head_sha.clone(),
+        base_sha: base_sha.clone(),
+        base_ref: "main".to_string(),
+        merge_base: base_sha.clone(),
+    };
+    let outcome = fixture
+        .store
+        .enqueue_review_with_reason(&target, EnqueueReason::ExplicitUserRequest)
+        .expect("re-enqueue the retried claim");
+    assert!(matches!(outcome, ReviewEnqueueOutcome::Inserted));
+    let claimed2 = fixture
+        .store
+        .acquire_next_review("RUN-2", std::process::id(), chrono::Utc::now())
+        .expect("acquire succeeds")
+        .expect("re-armed entry is eligible");
+
+    // Claim #2 (the RETRY): must find and reuse the SAME quarantine
+    // clone (find_for_target), complete through the terminal Done
+    // transition, and only THEN remove it.
+    let passing_executor: Arc<dyn Executor> = Arc::new(MockExecutor {
+        f: move |spec: &ExecutorSpec| {
+            let result_path = spec.worktree.join("worker-result.json");
+            std::fs::write(&result_path, result_json_pass().to_string()).expect("write result");
+            ok_outcome(result_path)
+        },
+    });
+    let mut guard2 = ReviewRunGuard::new(
+        claimed2.claim.clone(),
+        Arc::clone(&fixture.store),
+        fixture.cfg.state_dir.join("processor.log"),
+        claimed2.entry.target.clone(),
+        fixture.runner.clone(),
+    );
+    let outcome2 = run_claim_for_claimed(
+        &fixture,
+        &claimed2,
+        &mut guard2,
+        passing_executor,
+        never_mirror,
+    )
+    .await
+    .expect("claim 2 runs");
+    assert_eq!(outcome2, TickOutcome::Processed);
+    assert_eq!(
+        queue_entry(&fixture.store).phase,
+        ReviewPhase::Done,
+        "the reused-quarantine run completes"
+    );
+    assert!(
+        !quarantine_dir.exists(),
+        "terminal Done must REMOVE the quarantine after the reused run"
     );
 }
 
