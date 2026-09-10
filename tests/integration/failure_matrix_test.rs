@@ -528,7 +528,7 @@ async fn test_git_failures_bounded_secret_free() {
         let scrubbed = scrub(payload);
         assert!(
             !scrubbed.contains("ghp_leaked_secret"),
-            "scrub() must redact {payload}, got: {scrubbed}"
+            "scrub() failed to redact a secret payload"
         );
     }
 

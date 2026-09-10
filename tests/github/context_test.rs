@@ -149,7 +149,10 @@ fn trusted_comments_subset_of_comments() {
         .map(|c| (c.author.clone(), c.body.clone()))
         .collect();
     for k in &trusted_keys {
-        assert!(all_keys.contains(k), "trusted key {:?} not in comments", k);
+        assert!(
+            all_keys.contains(k),
+            "a trusted comment key is missing from the full comment set"
+        );
     }
 }
 
