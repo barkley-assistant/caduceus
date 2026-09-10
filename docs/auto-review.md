@@ -114,7 +114,8 @@ by commenting the trigger command on the PR:
   `auto_review.rerun_command` to change it. Matching is
   case-insensitive and whitespace-tolerant, but the command must be
   its own line — `/caduceus review` inside a longer sentence does
-  **not** match.
+  **not** match, and a line inside a fenced code block (```` ``` ````
+  or `~~~`) is ignored.
 - Only authors on the top-level `feedback_author_allowlist` can
   trigger. An untrusted author's trigger is ignored and recorded as
   `review_rerun_skipped_untrusted`; with an empty allowlist no
@@ -122,9 +123,15 @@ by commenting the trigger command on the PR:
 - A trusted trigger enqueues an explicit re-review of the PR's
   **current** head SHA — even if that SHA was already reviewed. Each
   explicit run appends its own history row for the same SHA; no
-  schema change is involved. Re-running while a review is active
-  starts a new review (new generation) and lets the old run finish
-  silently — its publication is suppressed as stale.
+  schema change is involved. Each trigger comment fires **exactly
+  once**: once a review has been queued for it, the same comment is
+  ignored on later polls (`skipped_no_trigger`), so a persistent
+  comment cannot re-enqueue the same review every tick. Posting a
+  **new** trigger comment starts a new review.
+- While a review is already running (`InProgress`), a fresh trigger is
+  skipped with `review_rerun_skipped_in_progress` instead of
+  replacing the active run — the request fires once the current
+  review finishes. Re-running never abandons a running review.
 - Polling never does this: automatic discovery still skips
   already-reviewed SHAs with `review_skipped_already_complete`.
 
