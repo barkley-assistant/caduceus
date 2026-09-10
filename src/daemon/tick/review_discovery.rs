@@ -458,9 +458,9 @@ pub(crate) async fn admit_fork_target(
         &repository.repo,
         pull_request,
         head_sha,
+        base_sha,
         base_url,
         head_repo,
-        base_sha,
     )
     .await?;
 

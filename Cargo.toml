@@ -828,6 +828,10 @@ name = "fork_quarantine_test"
 path = "tests/repo/fork_quarantine_test.rs"
 
 [[test]]
+name = "fork_quarantine_sweep_test"
+path = "tests/repo/fork_quarantine_sweep_test.rs"
+
+[[test]]
 name = "fork_routing_test"
 path = "tests/daemon/fork_routing_test.rs"
 

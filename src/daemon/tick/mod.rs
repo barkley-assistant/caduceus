@@ -1080,6 +1080,51 @@ pub async fn tick(
                 }
             }
         }
+
+        // 6.5b. Quarantine orphan sweep (issue #337, Phase 2): the
+        //      crash-recovery backstop for per-PR fork-quarantine
+        //      clones. A clone whose review queue key
+        //      (`owner/repo#pr@head_sha`) is not in any queued or
+        //      in-progress review entry is removed with a forensic
+        //      `.removed` marker — the guard normally removes clones
+        //      at terminal status; this sweep catches clones whose
+        //      daemon crashed before the guard ran. Best-effort:
+        //      log-and-continue, never aborts the tick.
+        let active_keys: Vec<String> = match review_store.review_queue_snapshot() {
+            Ok(snapshot) => snapshot
+                .entries
+                .values()
+                .filter(|entry| entry.phase.is_active())
+                .map(|entry| crate::state::review::review_queue_key(&entry.target))
+                .collect(),
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "review quarantine sweep: queue snapshot failed; skipping sweep"
+                );
+                Vec::new()
+            }
+        };
+        let sweep_runner = services.git.runner().clone();
+        match crate::repo::fork_quarantine::ForkQuarantine::sweep(
+            &state_dir,
+            &sweep_runner,
+            &active_keys,
+        )
+        .await
+        {
+            Ok(removed) => {
+                if removed > 0 {
+                    info!(removed, "fork quarantine sweep removed orphan clones");
+                }
+            }
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "fork quarantine sweep failed; continuing tick"
+                );
+            }
+        }
     }
 
     // 6.6. Drain any remaining in-flight tasks. We pull from
