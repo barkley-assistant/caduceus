@@ -13,7 +13,9 @@
 //!   admits, a same-repo row is never `AdmitFork`, and a row with no
 //!   head repo (deleted head branch) can never admit.
 
+use std::future::Future;
 use std::path::Path;
+use std::pin::Pin;
 
 use caduceus::config::{AutoReviewConfig, Config, ForkPolicy};
 use caduceus::daemon::tick::review_discovery::{
@@ -246,7 +248,10 @@ fn denied_fork_emit_payload_matches_phase1() {
                     "resolver must not be called for a denied fork: {owner}/{repo}"
                 )))
             },
-            &|_repository: &caduceus::review::RepositoryId, _head_repo: &str| None,
+            &|_repository: &caduceus::review::RepositoryId, _head_repo: &str| {
+                Box::pin(async { None })
+                    as Pin<Box<dyn Future<Output = Option<String>> + Send + 'static>>
+            },
         )
         .await
         .expect("fork skip is not a step error");
@@ -289,7 +294,10 @@ fn denied_fork_emit_payload_matches_phase1() {
                 &store,
                 &GitRunner::new(&cfg),
                 &|_o, _r| Err(CaduceusError::Config("unused".to_string())),
-                &|_repository: &caduceus::review::RepositoryId, _head_repo: &str| None,
+                &|_repository: &caduceus::review::RepositoryId, _head_repo: &str| {
+                    Box::pin(async { None })
+                        as Pin<Box<dyn Future<Output = Option<String>> + Send + 'static>>
+                },
             )
             .await
             .expect("step returns Ok");

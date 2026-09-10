@@ -38,6 +38,8 @@ use crate::github::pr::fetch_pull_request;
 use crate::github::Client;
 use crate::infra::config::Config;
 use crate::infra::error::{CaduceusError, CaduceusResult};
+use crate::repo::fork_quarantine::ForkQuarantine;
+use crate::repo::review_worktree::review_worktree_path_from_root;
 use crate::repo::{capture_control_file_digests, BareMirror, ReviewWorktree};
 use crate::review::{ExecutionStatus, ReviewTarget, Verdict};
 use crate::state::meta::TickOutcome;
@@ -327,45 +329,79 @@ pub(crate) async fn run_review_claim(
         return handle_review_infra_or_retry(cfg, guard, &err, class).await;
     }
 
-    // 2. Ensure the daemon-owned bare mirror (lazy bootstrap, DAR
-    //    §6.3 host-path discipline). The SHA-anchored fetch happens
-    //    inside `ReviewWorktree::create_review` and surfaces
-    //    `HeadShaUnavailable` there (DAR §8.1 fourth route).
-    let remote = match resolve_remote(&target.repository.owner, &target.repository.repo) {
-        Ok(remote) => remote,
-        Err(err) => {
-            let class = classify_error(&err);
-            return handle_review_infra_or_retry(cfg, guard, &err, class).await;
-        }
-    };
-    let mirror = match BareMirror::ensure(
-        &runner,
-        &cfg,
-        &target.repository.owner,
-        &target.repository.repo,
-        &remote,
-        &target.base_ref,
-    )
-    .await
-    {
-        Ok(mirror) => mirror,
-        Err(err) => {
-            let class = classify_error(&err);
-            return handle_review_infra_or_retry(cfg, guard, &err, class).await;
-        }
-    };
+    // 2. Resolve the mirror that materialises the review worktree.
+    //    A fork run (#337 Phase 2) routes through the per-PR
+    //    quarantine clone: `ForkQuarantine::find_for_target` locates
+    //    the clone under `<state_dir>/fork-quarantine/` created at
+    //    admission; the worktree is created against it at the
+    //    canonical `<repo_storage_root>/worktrees/review/...` path,
+    //    and the quarantine is attached to the guard so every
+    //    terminal route removes it. Non-fork runs keep the Phase-1
+    //    single-origin mirror path (DAR §11.2, byte-for-byte).
+    let quarantine = ForkQuarantine::find_for_target(guard.state_dir(), &target);
 
-    // 3. Materialise the review worktree: detached HEAD at the exact
-    //    head SHA (DAR §2.3). `HeadShaUnavailable` surfaces at the
-    //    SHA-anchored fetch inside `create_review`.
-    let worktree = match ReviewWorktree::create_review(&runner, &mirror, &run_id, &target).await {
-        Ok(wt) => wt,
-        Err(err) => {
-            let class = classify_error(&err);
-            return handle_review_infra_or_retry(cfg, guard, &err, class).await;
+    let worktree = if let Some(quarantine) = &quarantine {
+        // The quarantine clone is the mirror: `git worktree add`
+        // against it materialises the fork head into the canonical
+        // review worktree location.
+        let mirror = quarantine.as_bare_mirror();
+        let worktree_path = review_worktree_path_from_root(
+            &cfg.repo_storage_root,
+            &target.repository.owner,
+            &target.repository.repo,
+            &run_id,
+        );
+        match ReviewWorktree::create_review_at_path(
+            &runner,
+            &mirror,
+            worktree_path,
+            &run_id,
+            &target,
+        )
+        .await
+        {
+            Ok(wt) => wt,
+            Err(err) => {
+                let class = classify_error(&err);
+                return handle_review_infra_or_retry(cfg, guard, &err, class).await;
+            }
+        }
+    } else {
+        let remote = match resolve_remote(&target.repository.owner, &target.repository.repo) {
+            Ok(remote) => remote,
+            Err(err) => {
+                let class = classify_error(&err);
+                return handle_review_infra_or_retry(cfg, guard, &err, class).await;
+            }
+        };
+        let mirror = match BareMirror::ensure(
+            &runner,
+            &cfg,
+            &target.repository.owner,
+            &target.repository.repo,
+            &remote,
+            &target.base_ref,
+        )
+        .await
+        {
+            Ok(mirror) => mirror,
+            Err(err) => {
+                let class = classify_error(&err);
+                return handle_review_infra_or_retry(cfg, guard, &err, class).await;
+            }
+        };
+        match ReviewWorktree::create_review(&runner, &mirror, &run_id, &target).await {
+            Ok(wt) => wt,
+            Err(err) => {
+                let class = classify_error(&err);
+                return handle_review_infra_or_retry(cfg, guard, &err, class).await;
+            }
         }
     };
     guard.attach_worktree(worktree.clone()).await;
+    if let Some(quarantine) = &quarantine {
+        guard.attach_quarantine(quarantine.clone()).await;
+    }
 
     // 4. Compute the merge-base diff (DAR §2.2): review scope is
     //    ALWAYS `git diff <merge_base> <head_sha>`. The RAW runner

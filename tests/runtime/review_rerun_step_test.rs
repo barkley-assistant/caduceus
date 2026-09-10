@@ -14,7 +14,9 @@
 //! - Auto-discovery polling never triggers same-SHA re-review; the
 //!   explicit path does (AC2).
 
+use std::future::Future;
 use std::path::Path;
+use std::pin::Pin;
 use std::process::Command;
 
 use caduceus::config::{AutoReviewConfig, Config};
@@ -415,7 +417,10 @@ async fn polling_never_triggers_same_sha_rerun() {
         store,
         &GitRunner::new(&h.cfg),
         &move |_owner: &str, _repo: &str| Ok(remote_url.clone()),
-        &|_repository: &caduceus::review::RepositoryId, _head_repo: &str| None,
+        &|_repository: &caduceus::review::RepositoryId, _head_repo: &str| {
+            Box::pin(async { None })
+                as Pin<Box<dyn Future<Output = Option<String>> + Send + 'static>>
+        },
     )
     .await
     .expect("discovery step returns Ok");

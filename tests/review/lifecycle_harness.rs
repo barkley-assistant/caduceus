@@ -25,7 +25,13 @@
 //! real subprocess and still asserts the real prompt's §1–§6 order
 //! and schema version before writing the real result file.
 
+// Shared harness module: different consumers use different subsets
+// of the helpers (the same pattern as `tests/fixtures/git_daemon.rs`).
+#![allow(dead_code)]
+
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::process::Command;
 use std::sync::Arc;
 
@@ -132,6 +138,27 @@ fn init_bare_remote_with_feature(path: &std::path::Path) -> (String, String, Str
     (commit_a, commit_b, commit_c)
 }
 
+/// The fork remote (issue #337 Phase 2): a bare clone of the base
+/// remote. It can serve the fork PR's head SHA (the fork's objects)
+/// while the base repo stays the trusted origin the quarantine
+/// clones from.
+fn fork_remote_fixture(base_dir: &std::path::Path, fork_dir: &std::path::Path) {
+    let output = Command::new("git")
+        .args(["clone", "--bare"])
+        .arg(base_dir)
+        .arg(fork_dir)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .expect("git clone fork remote");
+    assert!(
+        output.status.success(),
+        "git clone fork remote failed ({}); stderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 /// A `/pulls` row (also served as the single-PR fetch row) whose
 /// SHAs are the REAL commits of the local remote — never the literal
 /// fixture SHAs (`bbbb2222…`, `cccc3333…`), which do not exist in the
@@ -148,6 +175,24 @@ fn pr_wire_row(base_sha: &str, head_sha: &str) -> serde_json::Value {
         "user": { "login": "octocat" },
         "base": { "ref": "main", "sha": base_sha, "repo": { "full_name": "owner/r" } },
         "head": { "ref": "feature-x", "sha": head_sha, "repo": { "full_name": "owner/r" } }
+    })
+}
+
+/// A FORK `/pulls` row (issue #337 Phase 2): the base repo is the
+/// trusted `owner/r`; the head repo is the attacker-controlled
+/// `forkuser/r` fork carrying the PR head SHA.
+fn fork_pr_wire_row(base_sha: &str, head_sha: &str) -> serde_json::Value {
+    serde_json::json!({
+        "number": PR,
+        "title": "fork PR",
+        "body": "Fork lifecycle fixture for issue #337.",
+        "state": "open",
+        "draft": false,
+        "merged": false,
+        "merged_at": null,
+        "user": { "login": "octocat" },
+        "base": { "ref": "main", "sha": base_sha, "repo": { "full_name": "owner/r" } },
+        "head": { "ref": "feature-x", "sha": head_sha, "repo": { "full_name": "forkuser/r" } }
     })
 }
 
@@ -207,6 +252,9 @@ pub struct LifecycleHarness {
     pub runner: GitRunner,
     pub services: Services,
     pub remote_dir: PathBuf,
+    /// The fork remote (issue #337 Phase 2): a bare clone of the base
+    /// remote serving the fork PR head SHA under `forkuser/r`.
+    pub fork_dir: PathBuf,
     /// Real fixture SHAs: base (A, on main), mid (B, feature~1 — the
     /// FAIL revision head), tip (C, the feature tip — the PASS
     /// revision head).
@@ -224,6 +272,12 @@ impl LifecycleHarness {
 
         let remote_dir = root.join("origin.git");
         let (base_sha, mid_sha, tip_sha) = init_bare_remote_with_feature(&remote_dir);
+
+        // The fork remote (issue #337 Phase 2): a bare clone of the
+        // base so it can serve the fork PR head SHA, while the base
+        // repo stays the trusted origin the quarantine clones from.
+        let fork_dir = root.join("fork.git");
+        fork_remote_fixture(&remote_dir, &fork_dir);
 
         let harness_py = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/review_harness.py");
@@ -305,6 +359,7 @@ impl LifecycleHarness {
             runner,
             services,
             remote_dir,
+            fork_dir,
             base_sha,
             mid_sha,
             tip_sha,
@@ -325,6 +380,12 @@ impl LifecycleHarness {
         format!("file://{}", self.remote_dir.display())
     }
 
+    /// The fork remote's `file://` URL (issue #337 Phase 2) — the
+    /// URL the fork-URL resolver returns for `forkuser/r`.
+    pub fn fork_url(&self) -> String {
+        format!("file://{}", self.fork_dir.display())
+    }
+
     // --- wiremock mounts ---------------------------------------------------
 
     /// Mount `/repos/owner/r/pulls` to serve one open PR whose head is
@@ -336,6 +397,31 @@ impl LifecycleHarness {
                 "GET",
                 "/repos/owner/r/pulls",
                 serde_json::json!([pr_wire_row(&self.base_sha, head_sha)]),
+            )
+            .await;
+    }
+
+    /// Mount `/repos/owner/r/pulls` to serve one open FORK PR (head
+    /// repo `forkuser/r`, issue #337 Phase 2).
+    pub async fn mount_pulls_fork(&self, head_sha: &str) {
+        self.gh
+            .mount(
+                "GET",
+                "/repos/owner/r/pulls",
+                serde_json::json!([fork_pr_wire_row(&self.base_sha, head_sha)]),
+            )
+            .await;
+    }
+
+    /// Mount the fork-URL resolver endpoint (`GET /repos/forkuser/r`)
+    /// the tick's quarantine seam uses to map the fork's `full_name`
+    /// to its `clone_url`.
+    pub async fn mount_fork_remote_lookup(&self, fork_url: &str) {
+        self.gh
+            .mount(
+                "GET",
+                "/repos/forkuser/r",
+                serde_json::json!({ "clone_url": fork_url }),
             )
             .await;
     }
@@ -443,10 +529,50 @@ impl LifecycleHarness {
             self.store.as_ref(),
             &self.runner,
             &move |_owner: &str, _repo: &str| Ok(remote_url.clone()),
-            &|_repository: &caduceus::review::RepositoryId, _head_repo: &str| None,
+            &|_repository: &caduceus::review::RepositoryId, _head_repo: &str| {
+                Box::pin(async { None })
+                    as Pin<Box<dyn Future<Output = Option<String>> + Send + 'static>>
+            },
         )
         .await
         .expect("discovery step succeeds")
+    }
+
+    /// Fork discovery + admission (issue #337 Phase 2): the same step
+    /// driven with the quarantine resolvers — the base remote for the
+    /// trusted-origin clone and the REAL GitHub REST
+    /// `repos/{owner}/{repo}` lookup (via the wiremock mount) for the
+    /// fork URL — exactly the seam the production tick wires.
+    pub async fn drive_discovery_fork(
+        &self,
+    ) -> caduceus::daemon::tick::review_discovery::ReviewDiscoveryStats {
+        let remote_url = self.remote_url();
+        let client = Arc::clone(&self.client);
+        caduceus::daemon::tick::review_discovery::poll_review_step_for_tests(
+            &["owner/r".to_string()],
+            self.client.as_ref(),
+            &self.cfg,
+            self.store.as_ref(),
+            &self.runner,
+            &move |_owner: &str, _repo: &str| Ok(remote_url.clone()),
+            &move |_repository: &caduceus::review::RepositoryId, head_repo: &str| {
+                let client = Arc::clone(&client);
+                let head_repo = head_repo.to_string();
+                Box::pin(async move {
+                    let response = client
+                        .get(
+                            &format!("/repos/{head_repo}"),
+                            caduceus::github::ACCEPT_VALUE,
+                        )
+                        .await
+                        .ok()?;
+                    let repo: serde_json::Value = serde_json::from_slice(&response.body).ok()?;
+                    repo.get("clone_url")?.as_str().map(str::to_string)
+                }) as Pin<Box<dyn Future<Output = Option<String>> + Send + 'static>>
+            },
+        )
+        .await
+        .expect("fork discovery step succeeds")
     }
 
     /// Phase 2/5: claim + full dispatch through the real supervisor +

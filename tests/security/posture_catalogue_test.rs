@@ -92,6 +92,14 @@ const SECURITY_TESTS: &[(&str, &str, &str)] = &[
         "tests/security/fork_adversarial_test.rs",
         "fork_pr_fixture_never_enqueued",
     ),
+    // Fork quarantine lifecycle (#337 Phase 2): the full allowed-fork
+    // path — discovery → quarantine fetch → worktree → terminal →
+    // quarantine removal.
+    (
+        "fork-quarantine-lifecycle",
+        "tests/integration/fork_review_lifecycle_test.rs",
+        "fork_review_lifecycle_end_to_end",
+    ),
 ];
 
 #[test]

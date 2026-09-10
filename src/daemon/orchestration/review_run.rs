@@ -5,6 +5,7 @@ use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 use crate::infra::error::CaduceusResult;
+use crate::repo::fork_quarantine::ForkQuarantine;
 use crate::repo::review_worktree::ReviewWorktree;
 use crate::review::ReviewTarget;
 use crate::state::review::{ReviewClaimToken, ReviewPhase, ReviewStore};
@@ -22,7 +23,17 @@ use crate::worktree::GitRunner;
 /// * the optional [`ReviewWorktree`] (set after `attach_worktree`),
 ///   torn down on every `finish_*` route EXCEPT the Terminal
 ///   NeedsAttention routes (the preserved worktree is forensic
-///   evidence, DAR §8.1), and
+///   evidence, DAR §8.1),
+/// * the optional [`ForkQuarantine`] (set after
+///   `attach_quarantine` on fork runs, #337 Phase 2), torn down on
+///   EVERY `finish_*` route — including the Terminal NeedsAttention
+///   routes. The quarantine is a throwaway object store (DAR §11.2,
+///   #337 Phase 2) and must not linger past the run; per plan §3.2
+///   its removal also force-removes any worktree registered to it,
+///   so a fork run that lands in NeedsAttention loses the worktree
+///   files with the quarantine (the "preserved worktree" forensic
+///   property above applies to same-repo runs, whose worktree is
+///   registered to the production mirror) — and
 /// * the target identity for event emission and store routing.
 ///
 /// The async `finish_*` methods perform explicit state transitions
@@ -35,6 +46,7 @@ pub struct ReviewRunGuard {
     target: ReviewTarget,
     runner: GitRunner,
     worktree: Mutex<Option<ReviewWorktree>>,
+    quarantine: Mutex<Option<ForkQuarantine>>,
     finished: Mutex<bool>,
     log_path: PathBuf,
     state_dir: PathBuf,
@@ -79,6 +91,7 @@ impl ReviewRunGuard {
             target,
             runner,
             worktree: Mutex::new(None),
+            quarantine: Mutex::new(None),
             finished: Mutex::new(false),
             log_path,
             state_dir,
@@ -117,6 +130,14 @@ impl ReviewRunGuard {
         *slot = Some(worktree);
     }
 
+    /// Persist the fork-quarantine handle on the guard (fork runs,
+    /// #337 Phase 2). Every `finish_*` route tears it down via
+    /// [`Self::teardown_quarantine_if_attached`].
+    pub async fn attach_quarantine(&self, quarantine: ForkQuarantine) {
+        let mut slot = self.quarantine.lock().await;
+        *slot = Some(quarantine);
+    }
+
     /// Path to the structured log file (test seam).
     pub fn log_path(&self) -> &Path {
         &self.log_path
@@ -149,6 +170,7 @@ impl ReviewRunGuard {
     /// durably in history; nothing to preserve).
     pub async fn finish_done(&mut self) -> CaduceusResult<()> {
         self.teardown_worktree_if_attached().await;
+        self.teardown_quarantine_if_attached().await;
         let claim = self.take_claim();
         self.store.complete_review(claim)?;
         self.mark_finished().await;
@@ -161,6 +183,7 @@ impl ReviewRunGuard {
     /// returned so the orchestrator can log without re-reading state.
     pub async fn finish_retry(&mut self, error: &str, budget: u32) -> CaduceusResult<ReviewPhase> {
         self.teardown_worktree_if_attached().await;
+        self.teardown_quarantine_if_attached().await;
         let claim = self.take_claim();
         let new_phase = self.store.retry_or_fail_review(claim, error, budget)?;
         self.mark_finished().await;
@@ -172,6 +195,7 @@ impl ReviewRunGuard {
     /// before the claim is released.
     pub async fn finish_skip(&mut self, reason: &str) -> CaduceusResult<()> {
         self.teardown_worktree_if_attached().await;
+        self.teardown_quarantine_if_attached().await;
         let claim = self.take_claim();
         self.store.skip_review(claim, reason)?;
         self.mark_finished().await;
@@ -189,6 +213,7 @@ impl ReviewRunGuard {
         not_before: chrono::DateTime<chrono::Utc>,
     ) -> CaduceusResult<()> {
         self.teardown_worktree_if_attached().await;
+        self.teardown_quarantine_if_attached().await;
         let claim = self.take_claim();
         self.store
             .requeue_infrastructure_review(claim, error, not_before)?;
@@ -208,6 +233,7 @@ impl ReviewRunGuard {
         source: &str,
         recovery_hint: &str,
     ) -> CaduceusResult<()> {
+        self.teardown_quarantine_if_attached().await;
         let claim = self.take_claim();
         self.store
             .route_review_to_needs_attention(claim, error, source, recovery_hint)?;
@@ -225,6 +251,7 @@ impl ReviewRunGuard {
         &mut self,
         err: &crate::infra::error::CaduceusError,
     ) -> CaduceusResult<()> {
+        self.teardown_quarantine_if_attached().await;
         let claim = self.take_claim();
         crate::repo::review_integrity::finish_mutation_violation(
             self.store.as_ref(),
@@ -242,12 +269,37 @@ impl ReviewRunGuard {
     /// is immediately eligible.
     pub async fn finish_cancelled(&mut self) -> CaduceusResult<()> {
         self.teardown_worktree_if_attached().await;
+        self.teardown_quarantine_if_attached().await;
         let now = chrono::Utc::now();
         let claim = self.take_claim();
         self.store
             .requeue_infrastructure_review(claim, "operator cancellation", now)?;
         self.mark_finished().await;
         Ok(())
+    }
+
+    /// Tear down the attached fork quarantine (if any) via
+    /// [`ForkQuarantine::remove`]. Runs on EVERY `finish_*` route —
+    /// including the Terminal NeedsAttention routes where the
+    /// worktree itself is preserved for forensics: the quarantine
+    /// clone is a throwaway object store (DAR §11.2, #337 Phase 2),
+    /// not evidence, and must not linger past the run. Idempotent:
+    /// a missing clone or no attached quarantine is silently
+    /// tolerated; a typed failure surfaces as a warning.
+    async fn teardown_quarantine_if_attached(&self) {
+        let quarantine = {
+            let mut slot = self.quarantine.lock().await;
+            slot.take()
+        };
+        if let Some(quarantine) = quarantine {
+            if let Err(err) = ForkQuarantine::remove(&quarantine, &self.runner).await {
+                warn!(
+                    error = %err,
+                    quarantine = %quarantine.path.display(),
+                    "review run guard: fork quarantine teardown failed during cleanup"
+                );
+            }
+        }
     }
 
     /// Tear down the attached review worktree (if any) via

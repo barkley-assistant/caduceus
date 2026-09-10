@@ -8,7 +8,9 @@
 //! THIS test proves the end-to-end discovery loop holds against the
 //! #327 `fork.json` wire fixture.
 
+use std::future::Future;
 use std::path::Path;
+use std::pin::Pin;
 
 use caduceus::config::Config;
 use caduceus::daemon::tick::review_discovery::poll_review_step_for_tests;
@@ -86,7 +88,10 @@ fn fork_pr_fixture_never_enqueued() {
                     "resolver must not be called for a fork: {owner}/{repo}"
                 )))
             },
-            &|_repository: &caduceus::review::RepositoryId, _head_repo: &str| None,
+            &|_repository: &caduceus::review::RepositoryId, _head_repo: &str| {
+                Box::pin(async { None })
+                    as Pin<Box<dyn Future<Output = Option<String>> + Send + 'static>>
+            },
         )
         .await
         .expect("fork skip is not a step error");

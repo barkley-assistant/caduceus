@@ -29,6 +29,9 @@
 //! Discovery NEVER touches the queue/state files directly and
 //! never fetches diffs or context (rate-limit discipline, D4).
 
+use std::future::Future;
+use std::pin::Pin;
+
 use tracing::{info, warn};
 
 use crate::github::pr::list_pull_requests;
@@ -41,6 +44,14 @@ use crate::repo::mirror::BareMirror;
 use crate::review::{RepositoryId, ReviewTarget};
 use crate::state::review::{ReviewEnqueueOutcome, ReviewStore};
 use crate::worktree::git_runner::GitRunner;
+
+/// Resolver seam that maps a fork PR's `head.repo.full_name` (e.g.
+/// `forkuser/r`) to the fork's git clone URL for the quarantine
+/// fetch (issue #337 Phase 2). The tick wires the GitHub REST
+/// `repos/{owner}/{repo}` lookup; tests wire local fixtures.
+pub type ForkRemoteResolver = dyn Fn(&RepositoryId, &str) -> Pin<Box<dyn Future<Output = Option<String>> + Send + 'static>>
+    + Send
+    + Sync;
 
 // ---------------------------------------------------------------------------
 // Event constants + emission shape (DAR SS13, D2; fork-gate pattern)
@@ -489,7 +500,10 @@ pub(crate) async fn admit_fork_target(
     match review_store.enqueue_review(&target) {
         Ok(ReviewEnqueueOutcome::Inserted) => Ok(true),
         Ok(ReviewEnqueueOutcome::AlreadyPresent) => {
-            let _ = ForkQuarantine::remove(&quarantine, runner).await;
+            // The run may already be claimed/in-flight and still
+            // needs the quarantine mirror for its worktree; leave the
+            // clone in place (the guard tears it down at terminal
+            // status, the orphan sweep is the crash backstop).
             Ok(false)
         }
         Err(err) => {
@@ -515,7 +529,7 @@ pub(crate) async fn poll_review_step(
     review_store: &ReviewStore,
     runner: &GitRunner,
     resolve_remote: &dyn Fn(&str, &str) -> CaduceusResult<String>,
-    resolve_fork_remote: &dyn Fn(&RepositoryId, &str) -> Option<String>,
+    resolve_fork_remote: &ForkRemoteResolver,
 ) -> CaduceusResult<ReviewDiscoveryStats> {
     let ar = match cfg.auto_review() {
         Some(ar) => ar,
@@ -744,7 +758,8 @@ pub(crate) async fn poll_review_step(
                     // unresolvable fork is a per-row skip with the
                     // existing unavailable-SHA event — the next poll
                     // retries.
-                    let Some(fork_url) = resolve_fork_remote(&repository_id, &head_repo) else {
+                    let Some(fork_url) = resolve_fork_remote(&repository_id, &head_repo).await
+                    else {
                         stats.skipped_unavailable_sha += 1;
                         info!(
                             target: "caduceus",
@@ -887,7 +902,7 @@ pub async fn poll_review_step_for_tests(
     review_store: &ReviewStore,
     runner: &GitRunner,
     resolve_remote: &dyn Fn(&str, &str) -> CaduceusResult<String>,
-    resolve_fork_remote: &dyn Fn(&RepositoryId, &str) -> Option<String>,
+    resolve_fork_remote: &ForkRemoteResolver,
 ) -> CaduceusResult<ReviewDiscoveryStats> {
     poll_review_step(
         repos,

@@ -35,7 +35,6 @@ use caduceus::state::review::ReviewPhase;
 #[path = "../fixtures/mod.rs"]
 mod fixtures;
 #[path = "lifecycle_harness.rs"]
-#[allow(dead_code)] // shared harness: only the subset this binary drives is used
 mod harness;
 
 use fixtures::GitDaemon;
