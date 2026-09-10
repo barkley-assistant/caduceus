@@ -150,6 +150,9 @@ pub mod review_events {
         ADMITTED_EVENT, DISCOVERED_EVENT, SKIPPED_ALREADY_COMPLETE_EVENT, SKIPPED_DRAFT_EVENT,
         STALE_SHA_EVENT,
     };
+    pub use crate::daemon::tick::review_rerun::{
+        RERUN_REQUESTED_EVENT, RERUN_SKIPPED_UNTRUSTED_EVENT,
+    };
     pub use crate::github::fork_gate::FORK_SKIP_EVENT;
     pub use crate::repo::review_integrity::MUTATION_VIOLATION_EVENT;
     pub use crate::review::finalize::{
