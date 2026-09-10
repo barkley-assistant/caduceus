@@ -1095,12 +1095,14 @@ pub mod per_review;
 pub mod resume;
 pub mod review_discovery;
 pub mod review_finalize_step;
+pub mod review_rerun;
 
 use self::awaiting_review::*;
 use self::per_claim::*;
 use self::per_review::*;
 use self::resume::*;
 pub use self::review_discovery::*;
+pub use self::review_rerun::*;
 
 pub use self::awaiting_review::{
     exit_code_for_tests, extract_http_status_for_tests, map_phase_to_outcome_for_tests,

@@ -508,6 +508,10 @@ name = "review_event_catalog_test"
 path = "tests/runtime/review_event_catalog_test.rs"
 
 [[test]]
+name = "review_rerun_test"
+path = "tests/runtime/review_rerun_test.rs"
+
+[[test]]
 name = "review_cli_test"
 path = "tests/cli/review_cli_test.rs"
 
