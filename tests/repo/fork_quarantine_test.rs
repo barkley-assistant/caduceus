@@ -114,11 +114,17 @@ fn add_commit(path: &Path, branch: &str, parent: &str, message: &str) -> String 
 }
 
 fn git_config_get(repo: &Path, key: &str) -> String {
+    // Scope to the clone's OWN config (`--local`): the daemon never
+    // persists a credential.helper in the quarantine clone, but
+    // `git config --get` without a scope reads the merged global /
+    // system config — CI runners (e.g. macOS `osxkeychain`) ship a
+    // global credential.helper, which would trip the posture assert
+    // on a clone that is actually clean.
     let output = Command::new("git")
         .current_dir(repo)
-        .args(["config", "--get", key])
+        .args(["config", "--local", "--get", key])
         .output()
-        .expect("git config --get");
+        .expect("git config --local --get");
     String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
