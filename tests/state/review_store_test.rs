@@ -396,15 +396,25 @@ fn explicit_reason_bypasses_active_entry_dedup_and_bumps_generation() {
         ReviewEnqueueOutcome::Inserted
     ));
     let q = store.review_queue_snapshot().unwrap();
-    assert_eq!(q.entries.len(), 1, "explicit re-enqueue replaces, not appends");
+    assert_eq!(
+        q.entries.len(),
+        1,
+        "explicit re-enqueue replaces, not appends"
+    );
     let entry = q.entries.get(&review_queue_key(&sample_target())).unwrap();
-    assert_eq!(entry.review_generation, 2, "generation bumped by explicit re-enqueue");
+    assert_eq!(
+        entry.review_generation, 2,
+        "generation bumped by explicit re-enqueue"
+    );
     assert!(entry.phase.is_active());
     let st = store
         .review_state(&sample_repository(), PR)
         .unwrap()
         .unwrap();
-    assert_eq!(st.review_generation, 2, "state generation follows the queue");
+    assert_eq!(
+        st.review_generation, 2,
+        "state generation follows the queue"
+    );
     let _ = fs::remove_dir_all(&dir);
 }
 
