@@ -101,9 +101,42 @@ impl ReviewWorktree {
     /// `git -C <path> rev-parse HEAD` (AC 1 enforcement at runtime);
     /// (8) return the handle. A failure between (5) and (7) tears the
     /// worktree down — no half-materialised state.
+    /// Create a review worktree against `mirror` at the standard
+    /// storage-root path (DAR §8.1 layout). Same-repo runs use this
+    /// entry point; fork runs (issue #337 Phase 2) use
+    /// [`Self::create_review_at_path`] so the quarantine mirror can
+    /// materialise the worktree at the same canonical location.
     pub async fn create_review(
         runner: &GitRunner,
         mirror: &BareMirror,
+        run_id: &str,
+        target: &ReviewTarget,
+    ) -> CaduceusResult<Self> {
+        // D3: resolve the namespaced review dir under the storage root.
+        let worktree_path = review_worktree_path(
+            mirror,
+            &target.repository.owner,
+            &target.repository.repo,
+            run_id,
+        )?;
+        Self::create_review_at_path(runner, mirror, worktree_path, run_id, target).await
+    }
+
+    /// Create a review worktree at an EXPLICIT path — the seam the
+    /// fork-quarantine dispatch uses (issue #337 Phase 2): the
+    /// quarantine clone sits under `<state_dir>/fork-quarantine/...`
+    /// and cannot satisfy `review_worktree_path`'s mirror layout
+    /// check, so the caller computes the canonical worktree path
+    /// under `<repo_storage_root>/worktrees/review/...` via
+    /// [`review_worktree_path_from_root`] and passes it here. The
+    /// materialisation contract is identical to
+    /// [`Self::create_review`]: SHA-anchored fetch, refuse-reuse,
+    /// `git worktree add --detach`, metadata sidecar, HEAD
+    /// verification.
+    pub async fn create_review_at_path(
+        runner: &GitRunner,
+        mirror: &BareMirror,
+        worktree_path: PathBuf,
         run_id: &str,
         target: &ReviewTarget,
     ) -> CaduceusResult<Self> {
@@ -113,14 +146,6 @@ impl ReviewWorktree {
         // D5: the SHA-anchored re-fetch happens before any path work;
         // HeadShaUnavailable surfaces at this boundary (AC 4).
         mirror.fetch_sha(runner, &target.head_sha).await?;
-
-        // D3: resolve the namespaced review dir under the storage root.
-        let worktree_path = review_worktree_path(
-            mirror,
-            &target.repository.owner,
-            &target.repository.repo,
-            run_id,
-        )?;
 
         // D4: refuse to reuse a path from a prior attempt.
         if worktree_path.exists() {
@@ -341,6 +366,26 @@ impl ReviewWorktree {
 /// under this root.
 pub fn review_worktrees_root(repo_storage_root: &Path) -> PathBuf {
     repo_storage_root.join("worktrees").join("review")
+}
+
+/// Resolve the canonical review worktree path from an explicit
+/// storage root: `<repo_storage_root>/worktrees/review/<owner>/<repo>/
+/// <run_id>/`. The fork-quarantine dispatch (issue #337 Phase 2) uses
+/// this because the quarantine mirror lives under
+/// `<state_dir>/fork-quarantine/...` — outside the mirror layout
+/// `review_worktree_path` requires — while the worktree must still
+/// land in the canonical review-worktree root (the executor's
+/// host-path allow-list admits only that root, DAR §6.3).
+pub fn review_worktree_path_from_root(
+    repo_storage_root: &Path,
+    owner: &str,
+    repo: &str,
+    run_id: &str,
+) -> PathBuf {
+    review_worktrees_root(repo_storage_root)
+        .join(owner)
+        .join(repo)
+        .join(run_id)
 }
 
 /// Resolve the review worktree path for `(owner, repo, run_id)` under

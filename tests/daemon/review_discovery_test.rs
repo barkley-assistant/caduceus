@@ -22,7 +22,9 @@
 //!   dry-run skip, corrupt review store does not starve the drain
 //!   (AC3), and the D14 rate-limit observation regression.
 
+use std::future::Future;
 use std::path::Path;
+use std::pin::Pin;
 use std::process::Command;
 use std::sync::Arc;
 
@@ -127,6 +129,7 @@ fn ar_config(enabled: bool) -> AutoReviewConfig {
         enabled,
         draft_pull_requests: false,
         rerun_command: "/caduceus review".to_string(),
+        fork_policy: None,
     }
 }
 
@@ -135,6 +138,7 @@ fn ar_config_drafts(enabled: bool, drafts: bool) -> AutoReviewConfig {
         enabled,
         draft_pull_requests: drafts,
         rerun_command: "/caduceus review".to_string(),
+        fork_policy: None,
     }
 }
 
@@ -901,6 +905,10 @@ async fn per_repo_500_does_not_stop_later_repos() {
             let _ = (owner, repo);
             Ok(remote_url.clone())
         },
+        &|_repository: &caduceus::review::RepositoryId, _head_repo: &str| {
+            Box::pin(async { None })
+                as Pin<Box<dyn Future<Output = Option<String>> + Send + 'static>>
+        },
     )
     .await
     .expect("step returns Ok despite repo A's 500 (AC2)");
@@ -954,6 +962,10 @@ async fn git_admission_failure_continues_to_later_repos() {
             let _ = (owner, repo);
             Ok(remote_url.clone())
         },
+        &|_repository: &caduceus::review::RepositoryId, _head_repo: &str| {
+            Box::pin(async { None })
+                as Pin<Box<dyn Future<Output = Option<String>> + Send + 'static>>
+        },
     )
     .await
     .expect("step returns Ok despite repo A's git admission failure (D9)");
@@ -991,6 +1003,10 @@ async fn malformed_json_body_is_per_repo_continue() {
         &h.store,
         &GitRunner::new(&h.cfg),
         &|_o, _r| Err(CaduceusError::Config("unused".to_string())),
+        &|_repository: &caduceus::review::RepositoryId, _head_repo: &str| {
+            Box::pin(async { None })
+                as Pin<Box<dyn Future<Output = Option<String>> + Send + 'static>>
+        },
     )
     .await
     .expect("step returns Ok (per-repo tier)");
@@ -1026,6 +1042,10 @@ async fn rate_limit_surfaces_as_step_error() {
         &h.store,
         &GitRunner::new(&h.cfg),
         &|_o, _r| Err(CaduceusError::Config("unused".to_string())),
+        &|_repository: &caduceus::review::RepositoryId, _head_repo: &str| {
+            Box::pin(async { None })
+                as Pin<Box<dyn Future<Output = Option<String>> + Send + 'static>>
+        },
     )
     .await
     .expect_err("exhausted quota is a step-level error (D9)");
@@ -1062,6 +1082,10 @@ async fn budget_caps_admissions_across_repos() {
         &h.store,
         &GitRunner::new(&cfg),
         &move |_o, _r| Ok(remote_url.clone()),
+        &|_repository: &caduceus::review::RepositoryId, _head_repo: &str| {
+            Box::pin(async { None })
+                as Pin<Box<dyn Future<Output = Option<String>> + Send + 'static>>
+        },
     )
     .await
     .expect("budgeted step succeeds");
@@ -1105,6 +1129,10 @@ async fn no_new_shas_means_no_mirror_and_no_writes() {
             Err(CaduceusError::Config(
                 "resolver must not be called".to_string(),
             ))
+        },
+        &|_repository: &caduceus::review::RepositoryId, _head_repo: &str| {
+            Box::pin(async { None })
+                as Pin<Box<dyn Future<Output = Option<String>> + Send + 'static>>
         },
     )
     .await
@@ -1153,6 +1181,10 @@ async fn stale_sha_event_then_admission() {
         &h.store,
         &GitRunner::new(&h.cfg),
         &move |_o, _r| Ok(remote_url.clone()),
+        &|_repository: &caduceus::review::RepositoryId, _head_repo: &str| {
+            Box::pin(async { None })
+                as Pin<Box<dyn Future<Output = Option<String>> + Send + 'static>>
+        },
     )
     .await
     .expect("stale path admits");
@@ -1204,6 +1236,10 @@ async fn pagination_follows_link_header() {
         &h.store,
         &GitRunner::new(&h.cfg),
         &move |_o, _r| Ok(remote_url.clone()),
+        &|_repository: &caduceus::review::RepositoryId, _head_repo: &str| {
+            Box::pin(async { None })
+                as Pin<Box<dyn Future<Output = Option<String>> + Send + 'static>>
+        },
     )
     .await
     .expect("paginated listing works");
@@ -1238,6 +1274,10 @@ async fn admission_follows_wire_order() {
         &h.store,
         &GitRunner::new(&cfg),
         &move |_o, _r| Ok(remote_url.clone()),
+        &|_repository: &caduceus::review::RepositoryId, _head_repo: &str| {
+            Box::pin(async { None })
+                as Pin<Box<dyn Future<Output = Option<String>> + Send + 'static>>
+        },
     )
     .await
     .expect("ordered admissions");
@@ -1279,6 +1319,10 @@ async fn draft_pr_skips_with_event_and_no_admission() {
         &h.store,
         &GitRunner::new(&h.cfg),
         &|_o, _r| Err(CaduceusError::Config("resolver must not run".to_string())),
+        &|_repository: &caduceus::review::RepositoryId, _head_repo: &str| {
+            Box::pin(async { None })
+                as Pin<Box<dyn Future<Output = Option<String>> + Send + 'static>>
+        },
     )
     .await
     .expect("draft skip is not an error");
@@ -1308,6 +1352,10 @@ async fn closed_pr_is_ineligible_never_admitted() {
         &h.store,
         &GitRunner::new(&h.cfg),
         &|_o, _r| Err(CaduceusError::Config("resolver must not run".to_string())),
+        &|_repository: &caduceus::review::RepositoryId, _head_repo: &str| {
+            Box::pin(async { None })
+                as Pin<Box<dyn Future<Output = Option<String>> + Send + 'static>>
+        },
     )
     .await
     .expect("closed rows are not errors");
@@ -1337,6 +1385,10 @@ async fn disabled_auto_review_makes_no_requests() {
         &h.store,
         &GitRunner::new(&cfg),
         &|_o, _r| Err(CaduceusError::Config("resolver must not run".to_string())),
+        &|_repository: &caduceus::review::RepositoryId, _head_repo: &str| {
+            Box::pin(async { None })
+                as Pin<Box<dyn Future<Output = Option<String>> + Send + 'static>>
+        },
     )
     .await
     .expect("disabled step is a no-op");

@@ -146,6 +146,31 @@ were removed in release N+1 (#331): the `ticket_label_investigation`
 config key now fails the config load, and surviving investigation
 rows are terminated and archived by the startup reconcile pass.
 
+### Fork PR review (issue #337, Phase 2)
+
+Fork PRs are skipped by default (`review_skipped_fork_unsupported`).
+To review forks of a watched repo, list the repo slug under
+`auto_review.fork_policy.allow_fork_prs`:
+
+```yaml
+auto_review:
+  enabled: true
+  fork_policy:
+    allow_fork_prs:
+      - owner/repo
+```
+
+- The list is a per-repo **opt-in** (default empty → fail-closed);
+  slugs must be watched repos (config load rejects unknown slugs).
+- Allowed forks are reviewed through a **per-PR quarantine clone**
+  under `<state_dir>/fork-quarantine/`, never a second remote on the
+  production mirror; the clone is removed at terminal status or by
+  the per-tick orphan sweep.
+- **Private forks**: listing a repo means the daemon's PAT read scope
+  is acceptable for that fork's visibility. See
+  `docs/security/fork-trust-posture.md`.
+- Denied forks keep the Phase-1 skip event byte-for-byte.
+
 Review observability (issue #318, DAR §13):
 
 - `caduceus review status [OWNER/REPO] [--json]` — aggregate review

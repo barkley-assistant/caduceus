@@ -522,22 +522,44 @@ defence. Review security posture is at least as strict as the `autofix`
 path, and stricter in effect because PR review naturally executes
 third-party code.
 
-### 11.2 Fork policy (Phase 1)
+### 11.2 Fork policy (Phase 1 → Phase 2, #337)
 
-Forks are **unsupported**: a first-class, unit-tested predicate
-(`head.repo.full_name != base.repo.full_name`) gates discovery;
-`head.repo: null` is optional-shaped. No config knob exists in Phase 1 (dead
-config would advertise a posture the system cannot deliver — the
-single-origin mirror cannot checkout fork SHAs). Phase 2 fork review is a
-**quarantine remote fetch story** (per-PR ephemeral remotes or a quarantined
-mirror), never a second remote on the persistent daemon mirror.
+Phase 1: forks are **unsupported** — a first-class, unit-tested
+predicate (`head.repo.full_name != base.repo.full_name`) gates
+discovery; `head.repo: null` is optional-shaped. No config knob exists
+in Phase 1 (dead config would advertise a posture the system cannot
+deliver — the single-origin mirror cannot checkout fork SHAs).
+
+Phase 2 (issue #337): the hard gate is replaced by an explicit,
+per-repo opt-in trust policy (`auto_review.fork_policy.allow_fork_prs`,
+default empty → fail-closed). Allowed forks are fetched through a
+**per-PR quarantine clone** — a throwaway leaf under
+`<state_dir>/fork-quarantine/` cloned from the trusted base URL, with a
+SHA-anchored fetch from the fork URL, merge-base computed inside, and
+removal at terminal status (or the per-tick orphan sweep). Fork review
+is **never** a second remote on the persistent daemon mirror. Denied
+forks keep the Phase-1 behaviour byte-for-byte
+(`review_skipped_fork_unsupported`). Security posture:
+[docs/security/fork-trust-posture.md](../security/fork-trust-posture.md).
 
 ### 11.3 Prompt injection
 
 Structural escaping (existing prompt machinery) covers all untrusted
 sections; the adversarial corpus tests (prompt, diff, repo content, discussion
 vectors) certify that no injection can change permissions, schema, mutation
-policy, GitHub access, sandbox rules, or verdict semantics.
+policy, GitHub access, sandbox rules, or verdict semantics. Fork-specific
+vectors (head-SHA content, fork repo metadata, merge-base poisoning) are
+certified by corpus fixtures `15-17`.
+
+### 11.4 Fork trust posture
+
+Fork review executes attacker-controlled content (fork head SHA, diff,
+repo metadata). The containment, credential-path analysis, and the
+operator opt-in contract are documented in
+[docs/security/fork-trust-posture.md](../security/fork-trust-posture.md):
+quarantine clone per PR, no second remote on the production mirror,
+PAT-scope statement implied by listing a repo in `allow_fork_prs`
+(private-fork case included).
 
 ---
 

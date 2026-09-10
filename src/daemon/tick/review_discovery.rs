@@ -29,6 +29,9 @@
 //! Discovery NEVER touches the queue/state files directly and
 //! never fetches diffs or context (rate-limit discipline, D4).
 
+use std::future::Future;
+use std::pin::Pin;
+
 use tracing::{info, warn};
 
 use crate::github::pr::list_pull_requests;
@@ -36,10 +39,19 @@ use crate::github::Client;
 use crate::infra::config::{AutoReviewConfig, Config};
 use crate::infra::error::{CaduceusError, CaduceusResult};
 
-use crate::repo::BareMirror;
+use crate::repo::fork_quarantine::ForkQuarantine;
+use crate::repo::mirror::BareMirror;
 use crate::review::{RepositoryId, ReviewTarget};
 use crate::state::review::{ReviewEnqueueOutcome, ReviewStore};
 use crate::worktree::git_runner::GitRunner;
+
+/// Resolver seam that maps a fork PR's `head.repo.full_name` (e.g.
+/// `forkuser/r`) to the fork's git clone URL for the quarantine
+/// fetch (issue #337 Phase 2). The tick wires the GitHub REST
+/// `repos/{owner}/{repo}` lookup; tests wire local fixtures.
+pub type ForkRemoteResolver = dyn Fn(&RepositoryId, &str) -> Pin<Box<dyn Future<Output = Option<String>> + Send + 'static>>
+    + Send
+    + Sync;
 
 // ---------------------------------------------------------------------------
 // Event constants + emission shape (DAR SS13, D2; fork-gate pattern)
@@ -149,6 +161,9 @@ pub enum RowAction {
     SkipDraft,
     /// Fork gate failed -> existing `emit_fork_gate_skip`.
     SkipFork { head_repo: Option<String> },
+    /// Fork gate failed BUT `fork_policy` allows the fork -> admit
+    /// through the quarantine fetch path (#337, Phase 2).
+    AdmitFork { head_repo: String },
     /// Dedup hit -> `review_skipped_already_complete`.
     SkipAlreadyComplete,
     /// Closed / merged - never admitted, NO event (DAR SS5.1).
@@ -252,13 +267,42 @@ pub(crate) fn classify_discovery_row(
 
     // 5. Fork gate (Phase-1 contract, #316): every non-SameRepo
     //    verdict skips with the existing SS13 event; `head.repo: null`
-    //    (deleted head branch) lands here as `HeadRepoMissing`.
+    //    (deleted head branch) lands here as `HeadRepoMissing`. Phase 2
+    //    (#337): when the gate DENIES but the BASE (watched) repo is
+    //    in `fork_policy.allow_fork_prs`, the row admits through the
+    //    quarantine path instead (`RowAction::AdmitFork`). The
+    //    allow-list names WATCHED BASE repo slugs — the fork's head
+    //    repo identity is attacker-controlled and never consulted for
+    //    the policy decision, only for the `AdmitFork` payload. The
+    //    gate itself stays pure and unchanged.
     let fork = crate::github::fork_gate::classify_fork(row);
     if !fork.passes() {
+        let head_repo = fork.head_repo_identity().map(str::to_string);
+        let base_identity = row
+            .base
+            .as_ref()
+            .and_then(|b| b.repo.as_ref())
+            .and_then(|r| r.full_name.as_deref());
+        let base_allowed = base_identity.is_some_and(|identity| {
+            ar.fork_policy
+                .as_ref()
+                .is_some_and(|p| p.is_allowed(identity))
+        });
+        if let Some(head_repo) = head_repo.as_deref() {
+            if base_allowed {
+                return RowDecision {
+                    action: RowAction::AdmitFork {
+                        head_repo: head_repo.to_string(),
+                    },
+                    stale: None,
+                    head_sha: head_sha.to_string(),
+                    base_sha: base_sha.to_string(),
+                    base_ref: base_ref.to_string(),
+                };
+            }
+        }
         return RowDecision {
-            action: RowAction::SkipFork {
-                head_repo: fork.head_repo_identity().map(str::to_string),
-            },
+            action: RowAction::SkipFork { head_repo },
             stale: None,
             head_sha: head_sha.to_string(),
             base_sha: base_sha.to_string(),
@@ -390,6 +434,85 @@ pub(crate) async fn admit_target(
     }
 }
 
+/// One quarantine-path admission for an ALLOWED fork PR (#337,
+/// Phase 2). Analogue of [`admit_target`] with the fork fetch story
+/// swapped in: the base objects come from `git clone --bare
+/// --no-tags <base_url>` (the TRUSTED origin), the fork head SHA is
+/// fetched SHA-anchored from the fork URL into the quarantine clone,
+/// and the merge base is computed INSIDE the quarantine — the
+/// production mirror is never consulted for fork runs (§11.2). The
+/// enqueued `ReviewTarget` is the same shape, so downstream
+/// review-worktree creation reuses the existing code with the
+/// quarantine clone as its `BareMirror`.
+///
+/// Cleanup: on ANY failure here (fetch, merge-base, enqueue), the
+/// quarantine clone is removed immediately — no attacker-triggerable
+/// accumulation. The per-tick orphan sweep is the crash backstop.
+#[allow(clippy::too_many_arguments)] // fixed fork admission contract (#337 §3.2)
+pub(crate) async fn admit_fork_target(
+    runner: &GitRunner,
+    review_store: &ReviewStore,
+    repository: &RepositoryId,
+    pull_request: u64,
+    head_sha: &str,
+    base_sha: &str,
+    base_ref: &str,
+    head_repo: &str,
+    fork_url: &str,
+    base_url: &str,
+) -> CaduceusResult<bool> {
+    let state_dir = review_store.state_dir().to_path_buf();
+    let quarantine = ForkQuarantine::create(
+        runner,
+        &state_dir,
+        &repository.owner,
+        &repository.repo,
+        pull_request,
+        head_sha,
+        base_sha,
+        base_url,
+        head_repo,
+    )
+    .await?;
+
+    if let Err(err) = quarantine.fetch_fork_sha(runner, fork_url, head_sha).await {
+        let _ = ForkQuarantine::remove(&quarantine, runner).await;
+        return Err(err);
+    }
+
+    let merge_base = match quarantine.merge_base(runner, base_sha, head_sha).await {
+        Ok(mb) => mb,
+        Err(err) => {
+            let _ = ForkQuarantine::remove(&quarantine, runner).await;
+            return Err(err);
+        }
+    };
+
+    let target = ReviewTarget {
+        repository: repository.clone(),
+        pull_request,
+        head_sha: head_sha.to_string(),
+        base_sha: base_sha.to_string(),
+        base_ref: base_ref.to_string(),
+        merge_base,
+    };
+
+    match review_store.enqueue_review(&target) {
+        Ok(ReviewEnqueueOutcome::Inserted) => Ok(true),
+        Ok(ReviewEnqueueOutcome::AlreadyPresent) => {
+            // The run may already be claimed/in-flight and still
+            // needs the quarantine mirror for its worktree; leave the
+            // clone in place (the guard tears it down at terminal
+            // status, the orphan sweep is the crash backstop).
+            Ok(false)
+        }
+        Err(err) => {
+            let _ = ForkQuarantine::remove(&quarantine, runner).await;
+            Err(err)
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The discovery loop (Task 6, D5/D9/D10/D11/D12)
 // ---------------------------------------------------------------------------
@@ -406,6 +529,7 @@ pub(crate) async fn poll_review_step(
     review_store: &ReviewStore,
     runner: &GitRunner,
     resolve_remote: &dyn Fn(&str, &str) -> CaduceusResult<String>,
+    resolve_fork_remote: &ForkRemoteResolver,
 ) -> CaduceusResult<ReviewDiscoveryStats> {
     let ar = match cfg.auto_review() {
         Some(ar) => ar,
@@ -619,6 +743,100 @@ pub(crate) async fn poll_review_step(
                     );
                     stats.skipped_fork += 1;
                 }
+                RowAction::AdmitFork { head_repo } => {
+                    emit_discovered(repo, pr_number, &decision.head_sha);
+                    stats.discovered += 1;
+
+                    let repository_id = RepositoryId {
+                        owner: owner.to_string(),
+                        repo: name.to_string(),
+                    };
+
+                    // The fork URL comes from the resolver seam (the
+                    // daemon wires the GitHub REST `repos/{owner}/
+                    // {repo}` lookup; tests wire local fixtures). An
+                    // unresolvable fork is a per-row skip with the
+                    // existing unavailable-SHA event — the next poll
+                    // retries.
+                    let Some(fork_url) = resolve_fork_remote(&repository_id, &head_repo).await
+                    else {
+                        stats.skipped_unavailable_sha += 1;
+                        info!(
+                            target: "caduceus",
+                            repo = repo,
+                            pr = pr_number,
+                            fork_repo = head_repo,
+                            "review discovery: fork remote unresolvable; skipping (next poll retries)"
+                        );
+                        continue;
+                    };
+
+                    // Base URL for the trusted-origin clone. Same
+                    // repo-level failure contract as mirror ensure.
+                    let base_url = match resolve_remote(owner, name) {
+                        Ok(remote) => remote,
+                        Err(err) => {
+                            warn!(
+                                target: "caduceus",
+                                error = %err,
+                                repo = repo,
+                                "review discovery: remote resolve failed; skipping repo"
+                            );
+                            stats.failed_repos += 1;
+                            break;
+                        }
+                    };
+
+                    match admit_fork_target(
+                        runner,
+                        review_store,
+                        &repository_id,
+                        pr_number,
+                        &decision.head_sha,
+                        &decision.base_sha,
+                        &decision.base_ref,
+                        &head_repo,
+                        &fork_url,
+                        &base_url,
+                    )
+                    .await
+                    {
+                        Ok(true) => {
+                            emit_admitted(repo, pr_number, &decision.head_sha);
+                            stats.admitted += 1;
+                        }
+                        Ok(false) => {
+                            info!(
+                                target: "caduceus",
+                                repo = repo,
+                                pr = pr_number,
+                                "review discovery: fork target already present; skipping"
+                            );
+                        }
+                        Err(err) => match err {
+                            CaduceusError::HeadShaUnavailable { .. } => {
+                                stats.skipped_unavailable_sha += 1;
+                                info!(
+                                    target: "caduceus",
+                                    repo = repo,
+                                    pr = pr_number,
+                                    "review discovery: fork head SHA unavailable; skipping (next poll retries)"
+                                );
+                            }
+                            CaduceusError::Git { .. } => {
+                                warn!(
+                                    target: "caduceus",
+                                    error = %err,
+                                    repo = repo,
+                                    pr = pr_number,
+                                    "review discovery: fork admission failed; skipping target"
+                                );
+                                stats.failed_admissions += 1;
+                            }
+                            other => return Err(other),
+                        },
+                    }
+                }
                 RowAction::SkipAlreadyComplete => {
                     emit_skipped_already_complete(repo, pr_number, &decision.head_sha);
                     stats.skipped_already_complete += 1;
@@ -684,8 +902,18 @@ pub async fn poll_review_step_for_tests(
     review_store: &ReviewStore,
     runner: &GitRunner,
     resolve_remote: &dyn Fn(&str, &str) -> CaduceusResult<String>,
+    resolve_fork_remote: &ForkRemoteResolver,
 ) -> CaduceusResult<ReviewDiscoveryStats> {
-    poll_review_step(repos, client, cfg, review_store, runner, resolve_remote).await
+    poll_review_step(
+        repos,
+        client,
+        cfg,
+        review_store,
+        runner,
+        resolve_remote,
+        resolve_fork_remote,
+    )
+    .await
 }
 
 /// Public test seam (D12): the pure eligibility classifier. Same body

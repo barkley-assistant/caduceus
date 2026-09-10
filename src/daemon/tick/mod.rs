@@ -48,6 +48,8 @@
 //!    investigation route was removed in N+1); teardown always runs.
 //! 10. Persist `last_tick_finished` and the final outcome.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -543,6 +545,38 @@ pub async fn tick(
                 let resolve = |owner: &str, repo: &str| {
                     crate::worktree::git_https_remote(&cfg.api_base, owner, repo)
                 };
+                // #337 Phase 2 resolver seam: maps the fork's `owner/repo` to
+                // the fork's git URL for the quarantine fetch via the
+                // GitHub REST `repos/{owner}/{repo}` lookup
+                // (clone_url). `None` (404/5xx/parse) skips the row
+                // with the unavailable-SHA event; the next poll
+                // retries. Only ever called for rows the policy
+                // already admitted as `AdmitFork`.
+                let resolve_fork_remote = {
+                    let client = Arc::clone(&client);
+                    move |_repository: &crate::review::RepositoryId, head_repo: &str| {
+                        let client = Arc::clone(&client);
+                        let head_repo = head_repo.to_string();
+                        let fut: Pin<Box<dyn Future<Output = Option<String>> + Send + 'static>> =
+                            Box::pin(async move {
+                                let path = format!("/repos/{head_repo}");
+                                let response =
+                                    match client.get(&path, crate::github::ACCEPT_VALUE).await {
+                                        Ok(response) => response,
+                                        Err(_) => return None,
+                                    };
+                                let repo: serde_json::Value =
+                                    match serde_json::from_slice(&response.body) {
+                                        Ok(repo) => repo,
+                                        Err(_) => return None,
+                                    };
+                                repo.get("clone_url")
+                                    .and_then(|url| url.as_str())
+                                    .map(str::to_string)
+                            });
+                        fut
+                    }
+                };
                 match review_discovery::poll_review_step(
                     &repos,
                     &client,
@@ -550,6 +584,7 @@ pub async fn tick(
                     &review_store,
                     &runner,
                     &resolve,
+                    &resolve_fork_remote,
                 )
                 .await
                 {
@@ -1068,6 +1103,51 @@ pub async fn tick(
                         }
                     }
                 }
+            }
+        }
+
+        // 6.5b. Quarantine orphan sweep (issue #337, Phase 2): the
+        //      crash-recovery backstop for per-PR fork-quarantine
+        //      clones. A clone whose review queue key
+        //      (`owner/repo#pr@head_sha`) is not in any queued or
+        //      in-progress review entry is removed with a forensic
+        //      `.removed` marker — the guard normally removes clones
+        //      at terminal status; this sweep catches clones whose
+        //      daemon crashed before the guard ran. Best-effort:
+        //      log-and-continue, never aborts the tick.
+        let active_keys: Vec<String> = match review_store.review_queue_snapshot() {
+            Ok(snapshot) => snapshot
+                .entries
+                .values()
+                .filter(|entry| entry.phase.is_active())
+                .map(|entry| crate::state::review::review_queue_key(&entry.target))
+                .collect(),
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "review quarantine sweep: queue snapshot failed; skipping sweep"
+                );
+                Vec::new()
+            }
+        };
+        let sweep_runner = services.git.runner().clone();
+        match crate::repo::fork_quarantine::ForkQuarantine::sweep(
+            &state_dir,
+            &sweep_runner,
+            &active_keys,
+        )
+        .await
+        {
+            Ok(removed) => {
+                if removed > 0 {
+                    info!(removed, "fork quarantine sweep removed orphan clones");
+                }
+            }
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "fork quarantine sweep failed; continuing tick"
+                );
             }
         }
     }

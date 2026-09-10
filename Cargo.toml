@@ -820,6 +820,26 @@ name = "corpus_test"
 path = "tests/security/corpus_test.rs"
 
 [[test]]
+name = "fork_policy_test"
+path = "tests/config/fork_policy_test.rs"
+
+[[test]]
+name = "fork_quarantine_test"
+path = "tests/repo/fork_quarantine_test.rs"
+
+[[test]]
+name = "fork_review_lifecycle_test"
+path = "tests/integration/fork_review_lifecycle_test.rs"
+
+[[test]]
+name = "fork_quarantine_sweep_test"
+path = "tests/repo/fork_quarantine_sweep_test.rs"
+
+[[test]]
+name = "fork_routing_test"
+path = "tests/daemon/fork_routing_test.rs"
+
+[[test]]
 name = "fork_adversarial_test"
 path = "tests/security/fork_adversarial_test.rs"
 

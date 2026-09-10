@@ -75,7 +75,10 @@ A PR is admitted for review only when **all** of the following hold:
 - The PR is open.
 - The PR is not a draft, unless `draft_pull_requests: true` is set.
 - The head SHA has not been reviewed before and is not already queued.
-- The PR is not a fork (`head.repo.full_name != base.repo.full_name`).
+- The PR is not a fork, unless the base repo is listed in
+  `auto_review.fork_policy.allow_fork_prs` (Phase 2, #337). Allowed
+  forks are reviewed through a per-PR quarantine clone; see
+  [docs/security/fork-trust-posture.md](security/fork-trust-posture.md).
 
 When a PR does not qualify, the daemon emits a structured skip event
 rather than silently ignoring it (DAR §5.1):
@@ -83,7 +86,7 @@ rather than silently ignoring it (DAR §5.1):
 | Condition | Event |
 |---|---|
 | Draft PR | `review_skipped_draft` |
-| Fork PR | `review_skipped_fork_unsupported` |
+| Fork PR (not in `allow_fork_prs`) | `review_skipped_fork_unsupported` |
 | Already-reviewed SHA | `review_skipped_already_complete` |
 | Closed or merged PR | Never admitted |
 

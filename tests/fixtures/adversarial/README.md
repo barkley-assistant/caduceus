@@ -21,6 +21,10 @@ header.
 
 - `01-08`: schema escape + verdict manipulation
 - `09-14`: mutation-policy + GitHub-access + sandbox-escape
+- `15-17`: fork vectors (#337 Phase 2) — attacker-controlled fork
+  head-SHA content, fork repo metadata, and merge-base-poisoned
+  diffs; all delivered through the rendered untrusted fields the
+  corpus harness can drive (`diff`, `pr_body`, `discussion`).
 
 Payloads are deliberately small (<4 KiB): the corpus targets
 invariant preservation, not budget behaviour (budgets are covered
