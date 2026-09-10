@@ -26,9 +26,10 @@ is the operator-facing reference; the architecture doc is the deep-dive.
 - Re-reviews new revisions automatically; no manual trigger is needed.
 
 What it does **not** do in Phase 1: no GitHub Checks API, no inline
-comments, no auto-merge, no fork-PR review, no same-SHA explicit
-re-review, no coalescing of intermediate revisions. See DAR §1 for the
-full non-goal list.
+comments, no auto-merge, no fork-PR review, no coalescing of
+intermediate revisions. Same-SHA explicit re-review arrives in Phase 2
+via a trusted PR comment (see below). See DAR §1 for the full
+non-goal list.
 
 ## Enabling Auto Review
 
@@ -100,6 +101,35 @@ a new review. The old review against the old SHA stays valid and
 finalizable; the new review is a separate run. The head SHA is frozen
 at discovery and never re-resolved (DAR §2.1).
 
+### Explicit re-review via a trusted comment (Phase 2)
+
+An allowlisted author can request a re-review of the current head SHA
+by commenting the trigger command on the PR:
+
+```text
+/caduceus review
+```
+
+- The default command is `/caduceus review`; configure
+  `auto_review.rerun_command` to change it. Matching is
+  case-insensitive and whitespace-tolerant, but the command must be
+  its own line — `/caduceus review` inside a longer sentence does
+  **not** match.
+- Only authors on the top-level `feedback_author_allowlist` can
+  trigger. An untrusted author's trigger is ignored and recorded as
+  `review_rerun_skipped_untrusted`; with an empty allowlist no
+  trigger is ever accepted (fail-closed).
+- A trusted trigger enqueues an explicit re-review of the PR's
+  **current** head SHA — even if that SHA was already reviewed. Each
+  explicit run appends its own history row for the same SHA; no
+  schema change is involved. Re-running while a review is active
+  starts a new review (new generation) and lets the old run finish
+  silently — its publication is suppressed as stale.
+- Polling never does this: automatic discovery still skips
+  already-reviewed SHAs with `review_skipped_already_complete`.
+
+See DAR §17 for the full design.
+
 ### Draft behaviour
 
 By default, draft PRs are skipped with `review_skipped_draft`. Set
@@ -154,13 +184,14 @@ typo'd key is a load failure, not a silent ignore.
 
 | Key (YAML) | Type | Default | Source | Notes |
 |---|---|---|---|---|
-| `auto_review` | block | absent (disabled) | `src/infra/config/mod.rs:358` | Absent means disabled; no downstream code may read it |
-| `auto_review.enabled` | `bool` | `false` | `:214` | Explicit Phase-1 opt-in |
-| `auto_review.draft_pull_requests` | `bool` | `false` | `:217` | When `false`, drafts skip with `review_skipped_draft` |
-| `max_reviews_per_tick` | `u32` | `worker_parallelism × 4` | `:293` | Top-level; `0` = unbounded |
-| `state_backend` | `String` | `"json"` | `:234` | `"json"` or `"sqlite"`; review supports both |
-| `executor_mode` | `ExecutorKind` | `TrustedHost` | `:831` | Auto Review requires `oci` |
-| `sandbox` | block | absent | `:348-353` | Required when `executor_mode: oci` |
+| `auto_review` | block | absent (disabled) | `src/infra/config/mod.rs:213` | Absent means disabled; no downstream code may read it |
+| `auto_review.enabled` | `bool` | `false` | `:216` | Explicit Phase-1 opt-in |
+| `auto_review.draft_pull_requests` | `bool` | `false` | `:219` | When `false`, drafts skip with `review_skipped_draft` |
+| `auto_review.rerun_command` | `string` | `/caduceus review` | `:226` | Trusted-comment re-review trigger (DAR §17); must be non-empty and start with `/` |
+| `max_reviews_per_tick` | `u32` | `worker_parallelism × 4` | `:303` | Top-level; `0` = unbounded |
+| `state_backend` | `String` | `"json"` | `:244` | `"json"` or `"sqlite"`; review supports both |
+| `executor_mode` | `ExecutorKind` | `TrustedHost` | `:841` | Auto Review requires `oci` |
+| `sandbox` | block | absent | `:860-865` | Required when `executor_mode: oci` |
 
 ### The `autoreview` label
 
@@ -177,7 +208,7 @@ spec for this distinction is DAR §5.2.
 
 ## Observability
 
-Auto Review emits 21 structured event names during discovery,
+Auto Review emits 23 structured event names during discovery,
 dispatch, execution, finalization, and migration. They are listed in
 DAR §13 and pinned by `review_event_catalog_test`; the authoritative
 list lives in the architecture doc and should be read there rather than
