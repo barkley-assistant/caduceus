@@ -419,6 +419,65 @@ fn explicit_reason_bypasses_active_entry_dedup_and_bumps_generation() {
 }
 
 #[test]
+fn explicit_reason_refuses_in_progress_entry() {
+    // Review feedback (#335), MUST FIX 2: an explicit re-enqueue while
+    // a review is InProgress must NOT replace the entry — replacing it
+    // orphans the running claim (terminal mismatch + a never-unlinked
+    // digest-keyed claim file) and permanently wedges the re-review
+    // until daemon restart. The enqueue is refused with
+    // `AlreadyPresent`; the running claim stays valid and the same
+    // request succeeds once the run completes.
+    let dir = tempdir("rv-explicit-inprogress");
+    let store = ReviewStore::open(&dir).unwrap();
+    store.enqueue_review(&sample_target()).unwrap();
+    let now = Utc.with_ymd_and_hms(2026, 9, 5, 12, 0, 0).unwrap();
+    let claimed = store
+        .acquire_next_review("run-ip-1", 4242, now)
+        .unwrap()
+        .expect("claim");
+    assert_eq!(claimed.entry.phase, ReviewPhase::InProgress);
+
+    // 1. Explicit re-enqueue while InProgress → refused, no
+    //    replacement, no generation bump, claim untouched.
+    assert!(matches!(
+        store
+            .enqueue_review_with_reason(&sample_target(), EnqueueReason::ExplicitUserRequest)
+            .unwrap(),
+        ReviewEnqueueOutcome::AlreadyPresent
+    ));
+    let q = store.review_queue_snapshot().unwrap();
+    let entry = q.entries.get(&review_queue_key(&sample_target())).unwrap();
+    assert_eq!(entry.phase, ReviewPhase::InProgress, "entry not replaced");
+    assert_eq!(entry.review_generation, 1, "generation not bumped");
+    assert_eq!(entry.last_run_id.as_deref(), Some("run-ip-1"));
+
+    // 2. The running claim still completes cleanly — no
+    //    `review-claim-terminal-mismatch`, claim file unlinked.
+    store.complete_review(claimed.claim).unwrap();
+    let claim_path = store.claims_dir().join(format!(
+        "{}.claim",
+        caduceus::state::review::review_claim_digest(&review_queue_key(&sample_target()))
+    ));
+    assert!(!claim_path.exists(), "claim file unlinked after completion");
+
+    // 3. The SAME explicit request now succeeds (the trigger re-fires
+    //    after completion — the listener's next-tick behaviour).
+    assert!(matches!(
+        store
+            .enqueue_review_with_reason(&sample_target(), EnqueueReason::ExplicitUserRequest)
+            .unwrap(),
+        ReviewEnqueueOutcome::Inserted
+    ));
+    let q = store.review_queue_snapshot().unwrap();
+    let entry = q.entries.get(&review_queue_key(&sample_target())).unwrap();
+    assert_eq!(
+        entry.review_generation, 2,
+        "generation bumped after completion"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn auto_discovery_reason_returns_already_present_for_active_entry() {
     // AC2 (issue #335): the auto-discovery reason never bypasses the
     // active-entry dedup — polling can NEVER trigger same-SHA

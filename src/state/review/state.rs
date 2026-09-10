@@ -321,11 +321,23 @@ impl ReviewStore {
 
     /// Enqueue a new review target with an explicit reason. When
     /// `reason == EnqueueReason::ExplicitUserRequest`, the active-entry
-    /// dedup is BYPASSED: a new queue entry is inserted (generation
-    /// bumped, publication re-armed) even when an ACTIVE
-    /// (`Queued`/`InProgress`) entry for the same key already exists —
-    /// the existing entry is replaced in place. This is the deliberate
-    /// same-SHA re-review path (DAR §17, #335).
+    /// dedup is BYPASSED for `Queued` entries: a new queue entry is
+    /// inserted (generation bumped, publication re-armed) even when a
+    /// `Queued` entry for the same key already exists — the existing
+    /// entry is replaced in place. This is the deliberate same-SHA
+    /// re-review path (DAR §17, #335).
+    ///
+    /// An `InProgress` entry is NEVER replaced, for EITHER reason
+    /// (review feedback, #335): the replacement would orphan the
+    /// running claim — the terminal transition would fail
+    /// `review-claim-terminal-mismatch`, the digest-keyed claim file
+    /// would never be unlinked, and every later `acquire_next_review`
+    /// would hit the `O_EXCL` `AlreadyExists` on the same claim file,
+    /// permanently wedging the requested re-review until daemon
+    /// restart. Instead the enqueue returns
+    /// [`ReviewEnqueueOutcome::AlreadyPresent`]; the caller (the
+    /// trusted-comment listener) treats that as a benign skip and the
+    /// trigger re-fires once the active run completes.
     ///
     /// For `EnqueueReason::AutoDiscovery` the behaviour is exactly the
     /// legacy `enqueue_review`: returns
@@ -353,13 +365,25 @@ impl ReviewStore {
             let now = Utc::now();
             let key = review_queue_key(target);
 
+            // In-flight guard (review feedback, #335): never replace
+            // an InProgress entry, for either reason. Replacing it
+            // orphans the running claim (terminal mismatch + a
+            // never-unlinked digest-keyed claim file) and wedges the
+            // re-review until daemon restart. `AlreadyPresent` lets
+            // the caller skip benignly and re-fire after completion.
+            if let Some(existing) = queue.entries.get(&key) {
+                if existing.phase == ReviewPhase::InProgress {
+                    return Ok(ReviewEnqueueOutcome::AlreadyPresent);
+                }
+            }
+
             // Active-entry dedup (DAR §4.3 pointer + active-only
-            // dedup). `ExplicitUserRequest` deliberately bypasses it:
-            // the existing entry is REPLACED below (same key, new
-            // generation) instead of returning `AlreadyPresent`. The
-            // auto path always sets `AutoDiscovery` and always hits
-            // this check (AC2: polling never triggers same-SHA
-            // re-review).
+            // dedup). `ExplicitUserRequest` deliberately bypasses it
+            // for Queued entries: the existing entry is REPLACED below
+            // (same key, new generation) instead of returning
+            // `AlreadyPresent`. The auto path always sets
+            // `AutoDiscovery` and always hits this check (AC2: polling
+            // never triggers same-SHA re-review).
             if reason == EnqueueReason::AutoDiscovery {
                 if let Some(existing) = queue.entries.get(&key) {
                     if existing.phase.is_active() {
