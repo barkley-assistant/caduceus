@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
 
 ## [Unreleased]
 
+### Security
+
+- **Fork trust posture documented.** Fork review executes
+  attacker-controlled content (fork head SHA, diff, repo metadata);
+  the containment, credential-path analysis, and the operator opt-in
+  contract (including the private-fork case) are documented in
+  `docs/security/fork-trust-posture.md`, with DAR §11.2 updated and a
+  new §11.4 pointer. Corpus fixtures `15-17` certify the fork
+  injection vectors through the existing adversarial-escape harness.
+  Closes #337.
+
 ### Changed
 
 - **Configurable git author identity.** `git_author_name` and
@@ -27,6 +38,15 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
 
 ### Added
 
+- **Fork trust policy + quarantine fetch.** `auto_review.fork_policy.allow_fork_prs`
+  (per-repo opt-in list, default empty → fail-closed) lets opted-in
+  repos review fork PRs through a per-PR quarantine clone: cloned from
+  the trusted base URL, SHA-anchored fetch from the fork URL, merge
+  base computed inside, removed at terminal status or by a per-tick
+  orphan sweep with a forensic `.removed` marker. The Phase-1
+  single-origin mirror path for non-fork PRs is unchanged, and denied
+  forks keep the Phase-1 `review_skipped_fork_unsupported` event
+  byte-for-byte. Closes #337.
 - **Review observability CLI.** `caduceus review status
   [<owner/repo>] | list | show <owner/repo> <pr> [--json]` reads the
   review stores (queue, per-`(repo, pr)` state, history) on BOTH state
