@@ -1643,6 +1643,7 @@ fn finish_tick_outcome_persists_rate_limit_from_last_error() {
         now,
         TickOutcome::IdleEmpty,
         None,
+        120,
         Some(&err),
     )
     .expect("finish succeeds");

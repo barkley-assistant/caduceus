@@ -204,6 +204,14 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
 
 ### Fixed
 
+- **Successful ticks now project the real next-allowed-poll time.**
+  The tick's success path recorded `next_allowed_poll_at` with a
+  hard-coded poll interval of 0, so after every successful tick
+  `caduceus status` showed a "next allowed poll" in the past — the
+  tick's own start time. The configured `poll_interval_seconds` is
+  now threaded through, so the field shows when the cadence gate
+  actually opens next. Display-only: the gate itself reads
+  `last_tick_finished`, never `next_allowed_poll_at`.
 - **Cadence-skipped ticks no longer slide the poll gate.** A tick
   skipped by the cadence gate recorded its own timestamp as
   `last_tick_finished`, re-arming the window from the skip: with the

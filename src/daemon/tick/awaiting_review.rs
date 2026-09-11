@@ -323,6 +323,7 @@ pub(crate) fn finish_tick_outcome(
     now: DateTime<Utc>,
     outcome: TickOutcome,
     http_status: Option<u16>,
+    poll_interval_seconds: u64,
     last_error: Option<&CaduceusError>,
 ) -> CaduceusResult<()> {
     let _ = _meta;
@@ -350,7 +351,7 @@ pub(crate) fn finish_tick_outcome(
         now,
         outcome,
         http_status,
-        0,
+        poll_interval_seconds,
         rate_limit_info.as_ref(),
         last_error.map(|e| format!("{e}")),
     )
@@ -365,9 +366,18 @@ pub fn finish_tick_outcome_for_tests(
     now: DateTime<Utc>,
     outcome: TickOutcome,
     http_status: Option<u16>,
+    poll_interval_seconds: u64,
     last_error: Option<&CaduceusError>,
 ) -> CaduceusResult<()> {
-    finish_tick_outcome(gate, meta, now, outcome, http_status, last_error)
+    finish_tick_outcome(
+        gate,
+        meta,
+        now,
+        outcome,
+        http_status,
+        poll_interval_seconds,
+        last_error,
+    )
 }
 
 pub(crate) fn finish_tick_failure(

@@ -488,7 +488,15 @@ pub async fn tick(
         }
     };
     if repos.is_empty() {
-        finish_tick_outcome(&gate, &meta, now, TickOutcome::IdleEmpty, None, None)?;
+        finish_tick_outcome(
+            &gate,
+            &meta,
+            now,
+            TickOutcome::IdleEmpty,
+            None,
+            cfg.poll_interval_seconds,
+            None,
+        )?;
         return Ok(TickOutcome::IdleEmpty);
     }
 
@@ -1198,6 +1206,7 @@ pub async fn tick(
         now,
         outcome,
         http_status,
+        cfg.poll_interval_seconds,
         last_error.as_ref(),
     )?;
     Ok(outcome)
