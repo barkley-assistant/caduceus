@@ -66,7 +66,9 @@ pub enum ReviewAction {
 
 /// One §13 per-row view: the queue entry joined with its `(repo, pr)`
 /// state row and, for terminal rows, the latest same-generation
-/// history row's execution status. The same field set is rendered by
+/// history row's execution status and verdict (the entry's own run
+/// outcome — the per-PR last verdict is only a fallback for entries
+/// with no run, issue #387). The same field set is rendered by
 /// the human and JSON paths (`--json` only changes the rendering).
 #[derive(Serialize)]
 struct ReviewRow {
@@ -80,6 +82,9 @@ struct ReviewRow {
     review_generation: u64,
     execution_attempts: u32,
     execution_status: Option<String>,
+    /// Entry's own run verdict (latest same-generation history row);
+    /// falls back to the PR's last verdict only when the entry has
+    /// no completed run (issue #387).
     verdict: Option<String>,
     last_error: Option<String>,
     reviewed_at: Option<String>,
@@ -302,9 +307,7 @@ fn row_for(
         review_generation: entry.review_generation,
         execution_attempts: entry.attempts,
         execution_status: derive_execution_status(entry, history),
-        verdict: state
-            .and_then(|s| s.last_verdict)
-            .map(|v| verdict_label(v).to_string()),
+        verdict: derive_verdict(entry, history, state),
         last_error: entry.last_error.clone(),
         reviewed_at: state
             .and_then(|s| s.last_reviewed_at)
@@ -330,10 +333,46 @@ fn derive_execution_status(
     entry: &ReviewQueueEntry,
     history: &[ReviewHistoryRow],
 ) -> Option<String> {
+    latest_same_generation_row(entry, history)
+        .and_then(|row| parse_result_document(&row.result_json).0)
+}
+
+/// The history row that owns this entry's outcome: the latest (append
+/// order) row for the entry's own generation, or `None` while the
+/// entry has no completed run. Generation matching implies head-SHA
+/// matching: every admission bumps the per-PR generation (a same-SHA
+/// re-review replaces the entry under a new one), and a run completes
+/// under the claimed entry's own target (DAR §9.4).
+fn latest_same_generation_row<'a>(
+    entry: &ReviewQueueEntry,
+    history: &'a [ReviewHistoryRow],
+) -> Option<&'a ReviewHistoryRow> {
     history
         .iter()
         .rfind(|row| row.review_generation == entry.review_generation)
-        .and_then(|row| parse_result_document(&row.result_json).0)
+}
+
+/// Per-entry verdict (issue #387): an entry that HAS a completed run
+/// shows that run's verdict — the latest same-generation history
+/// row's `ReviewResult.review.verdict` — never the PR's current
+/// verdict, so a superseded FAIL review no longer displays as PASS.
+/// When the row's document cannot be read (old schema version,
+/// malformed document, or an execution failure with no review
+/// payload) the defensive-parse contract (DAR §4.3) surfaces `None`;
+/// the PR-level verdict is NOT substituted for a run that exists.
+/// Only entries with no same-generation run (queued, in-progress)
+/// fall back to the PR-level `ReviewState.last_verdict`.
+fn derive_verdict(
+    entry: &ReviewQueueEntry,
+    history: &[ReviewHistoryRow],
+    state: Option<&ReviewState>,
+) -> Option<String> {
+    match latest_same_generation_row(entry, history) {
+        Some(row) => parse_result_document(&row.result_json).1,
+        None => state
+            .and_then(|s| s.last_verdict)
+            .map(|v| verdict_label(v).to_string()),
+    }
 }
 
 /// Render one history row's `result_json` into the defensively parsed

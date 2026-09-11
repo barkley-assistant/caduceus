@@ -196,6 +196,12 @@ All three read BOTH state backends (they branch on
 latest same-generation history row's `ReviewResult.status` — it
 describes execution, not outcome (`verdict` holds the outcome; a
 failed-verdict run is still `execution status: success`).
+`verdict` is per-entry too: parsed from the SAME latest
+same-generation history row's `ReviewResult.review.verdict`, so
+superseded SHA entries show their own outcome; only entries with no
+completed run fall back to the PR-level last verdict (#387).
+Unparsable result documents surface `-`/null, never the PR-level
+verdict.
 
 ## State Recovery Procedure
 

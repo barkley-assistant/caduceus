@@ -204,6 +204,14 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
 
 ### Fixed
 
+- **`review list` and `review status` now show each entry's own
+  verdict.** The verdict column is derived from the entry's latest
+  same-generation history row's `ReviewResult` document (mirroring the
+  derived execution status), so superseded SHA entries no longer
+  display the PR's current verdict — historical FAIL reviews render as
+  `fail`. Entries with no completed run fall back to the PR's last
+  verdict; unreadable (old-schema or malformed) result documents
+  surface as `-`/null per the defensive-parse contract. Closes #387.
 - **E2E fixtures no longer orphan `git daemon` processes on interrupted
   runs.** `GitDaemon::start` now holds an exclusive `flock` on
   `<fixture-root>/git-daemon.lock` for the daemon's lifetime and writes
