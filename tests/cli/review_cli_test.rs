@@ -42,6 +42,9 @@ const OWNER_C: &str = "New";
 const REPO_C: &str = "Repo";
 const PR_C: u64 = 3;
 const SHA_C: &str = "cccccccccccccccccccccccccccccccccccccccc";
+const SHA_OLD: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const SHA_NEW: &str = "dddddddddddddddddddddddddddddddddddddddd";
+const SHA_PENDING: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Backend {
@@ -203,6 +206,38 @@ fn seed_old_history(dir: &Path, backend: Backend) -> ReviewStore {
     store
 }
 
+/// One PR with three SHA entries (the #387 shape): OLD completed
+/// FAIL (generation 1), NEW completed PASS (generation 2), PENDING
+/// queued with no run (generation 3). The PR-level state ends with
+/// `last_verdict = pass` (written by NEW's completion), so OLD's
+/// own verdict (fail) disagrees with the PR's current verdict.
+fn seed_multi_sha_pr(dir: &Path, backend: Backend) -> ReviewStore {
+    let store = open_store(dir, backend);
+    let repository = repo(OWNER_A, REPO_A);
+    seed_completed_run(
+        &store,
+        &repository,
+        PR_A,
+        SHA_OLD,
+        "RUN-OLD",
+        Verdict::Fail,
+        result_doc(Verdict::Fail),
+    );
+    seed_completed_run(
+        &store,
+        &repository,
+        PR_A,
+        SHA_NEW,
+        "RUN-NEW",
+        Verdict::Pass,
+        result_doc(Verdict::Pass),
+    );
+    store
+        .enqueue_review(&target(&repository, PR_A, SHA_PENDING))
+        .unwrap();
+    store
+}
+
 /// Run the CLI binary as a subprocess against `dir` with a
 /// `$CADUCEUS_CONFIG` whose `state_dir` is `dir` (and
 /// `state_backend: sqlite` for the SQLite backend).
@@ -253,6 +288,16 @@ fn row_by_pr(entries: &serde_json::Value, pr: u64) -> serde_json::Value {
         .iter()
         .find(|row| row["pr"].as_u64() == Some(pr))
         .unwrap_or_else(|| panic!("no row for pr {pr} in {entries}"))
+        .clone()
+}
+
+fn row_by_head_sha(entries: &serde_json::Value, head_sha: &str) -> serde_json::Value {
+    entries
+        .as_array()
+        .expect("entries must be an array")
+        .iter()
+        .find(|row| row["head_sha"].as_str() == Some(head_sha))
+        .unwrap_or_else(|| panic!("no row for head {head_sha} in {entries}"))
         .clone()
 }
 
@@ -452,6 +497,106 @@ fn empty_store_lists_placeholder() {
 }
 
 // ---------------------------------------------------------------------------
+// per-SHA verdict (issue #387)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn list_and_status_render_each_entrys_own_verdict() {
+    for backend in [Backend::Json, Backend::Sqlite] {
+        let dir = tempdir(&format!("review-per-sha-verdict-{backend:?}"));
+        seed_multi_sha_pr(&dir, backend);
+
+        // JSON rows (list and status render the same ReviewRow).
+        for subcommand in ["list", "status"] {
+            let output = run_cli(&dir, backend, &["review", subcommand, "--json"]);
+            assert_success(&output);
+            let envelope = parse_json(&output);
+            let entries = &envelope["payload"]["entries"];
+
+            // OLD: its own run says FAIL even though the PR's current
+            // verdict is pass — the #387 regression.
+            let old = row_by_head_sha(entries, SHA_OLD);
+            assert_eq!(old["review_generation"], 1);
+            assert_eq!(old["execution_status"], "success");
+            assert_eq!(
+                old["verdict"], "fail",
+                "superseded FAIL entry must render its own verdict, not the PR's current pass"
+            );
+
+            // NEW: the current run — pass, same as before.
+            let new = row_by_head_sha(entries, SHA_NEW);
+            assert_eq!(new["verdict"], "pass");
+
+            // PENDING: no completed run, so it falls back to the
+            // PR-level last verdict (issue-Expected fallback).
+            let pending = row_by_head_sha(entries, SHA_PENDING);
+            assert_eq!(pending["execution_status"], serde_json::Value::Null);
+            assert_eq!(
+                pending["verdict"], "pass",
+                "entry with no run falls back to the PR last verdict"
+            );
+        }
+
+        // Human renderers carry the same columns.
+        let output = run_cli(&dir, backend, &["review", "list"]);
+        assert_success(&output);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("owner/repo#42@aaaaaaaaaaaa\tdone\t0\t1\tfail\t"),
+            "OLD list row must show its own fail verdict: {stdout}"
+        );
+        assert!(
+            stdout.contains("owner/repo#42@eeeeeeeeeeee\tqueued\t0\t3\tpass\t"),
+            "PENDING list row must fall back to the PR verdict: {stdout}"
+        );
+
+        let output = run_cli(&dir, backend, &["review", "status"]);
+        assert_success(&output);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("owner/repo#42@aaaaaaaaaaaa  phase=done attempts=0 gen=1 verdict=fail"),
+            "OLD status line must show its own fail verdict: {stdout}"
+        );
+        assert!(
+            stdout
+                .contains("owner/repo#42@eeeeeeeeeeee  phase=queued attempts=0 gen=3 verdict=pass"),
+            "PENDING status line must fall back to the PR verdict: {stdout}"
+        );
+    }
+}
+
+#[test]
+fn list_and_status_surface_unparsable_result_as_null_verdict() {
+    for backend in [Backend::Json, Backend::Sqlite] {
+        let dir = tempdir(&format!("review-old-doc-verdict-{backend:?}"));
+        seed_old_history(&dir, backend);
+
+        for subcommand in ["list", "status"] {
+            let output = run_cli(&dir, backend, &["review", subcommand, "--json"]);
+            // No panic, exit 0 — the defensive-parse contract.
+            assert_success(&output);
+            let envelope = parse_json(&output);
+            let entries = &envelope["payload"]["entries"];
+            let row = row_by_head_sha(entries, &"d".repeat(40));
+            // The entry HAS a run (an old-schema one): the verdict
+            // surfaces the defensive-parse null — DAR §4.3, never
+            // back-migrated, never the PR-level substitution (#387).
+            assert_eq!(row["verdict"], serde_json::Value::Null);
+            assert_eq!(row["execution_status"], serde_json::Value::Null);
+        }
+
+        // Human render: "-" in the verdict column, no crash.
+        let output = run_cli(&dir, backend, &["review", "list"]);
+        assert_success(&output);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("legacy/repo#5@dddddddddddd\tdone\t0\t1\t-\t"),
+            "old-schema entry must render '-' for the verdict: {stdout}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // show
 // ---------------------------------------------------------------------------
 
@@ -543,8 +688,14 @@ fn show_surfaces_old_schema_result_json_defensively() {
         let raw_doc: serde_json::Value =
             serde_json::from_str(row["result_json"].as_str().unwrap()).unwrap();
         assert_eq!(raw_doc["schema_version"], 99, "raw doc kept: {row}");
-        // The entry row itself still works (state-joined fields).
-        assert_eq!(envelope["payload"]["entry"]["verdict"], "pass");
+        // The entry row itself still works (queue + state-joined
+        // fields). The verdict column surfaces the defensive-parse
+        // null because this entry HAS a run (an old-schema one) —
+        // no PR-level substitution (issue #387).
+        assert_eq!(
+            envelope["payload"]["entry"]["verdict"],
+            serde_json::Value::Null
+        );
     }
 }
 
