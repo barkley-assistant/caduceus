@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 use caduceus::config::{Config, LoadContext, RawConfig};
 use caduceus::finalize::find_or_create_pull_request;
-use caduceus::github::Client;
+use caduceus::github::{Client, HttpCache};
 use caduceus::issue::IssueDetail;
 use caduceus::queue::ClaimToken;
 use caduceus::worker::{WorkerResult, WorkerStatus};
@@ -30,14 +30,15 @@ use caduceus::worktree::Worktree;
 use chrono::Utc;
 use serde_json::json;
 use wiremock::matchers::{header, method, path, query_param};
-use wiremock::{Mock, ResponseTemplate};
+use wiremock::{Match, Mock, Request, ResponseTemplate};
 
 #[path = "../fixtures/mod.rs"]
 mod fixtures;
 
-use fixtures::MockGitHub;
+use fixtures::{tempdir, MockGitHub};
 
 const TEST_TOKEN: &str = "ghp_testtoken_value_xyz";
+const ETAG: &str = "\"abc\"";
 
 /// Build an inert `Arc<Client>` for tests that construct a
 /// `FinalizeContext` but never call any HTTP method. The base
@@ -134,6 +135,58 @@ fn client_for(gh: &MockGitHub) -> Client {
     cfg.api_base = gh.uri();
     cfg.github_token = Some(TEST_TOKEN.to_string());
     Client::with_config(&cfg).expect("client")
+}
+
+/// Cache-backed client for the 304-replay test. The cache must live
+/// in an owned `PathBuf` (`fixtures::tempdir`, no auto-cleanup) so it
+/// survives past the helper's return — the `client_for` helper drops
+/// its `TempDir` (and the cache DB) before any HTTP call.
+fn cached_client_for(gh: &MockGitHub) -> Client {
+    let state_dir = tempdir("pr-304");
+    let mut cfg = empty_config(&state_dir);
+    cfg.api_base = gh.uri();
+    cfg.github_token = Some(TEST_TOKEN.to_string());
+    let cache = HttpCache::open(&state_dir).expect("cache opens");
+    Client::with_cache(&cfg, cache).expect("client builds")
+}
+
+/// Matches requests that do NOT carry the named header. The first
+/// (unconditional) GET has no `If-None-Match`; the second does. This
+/// disambiguates the two mocks on the same path — same pattern as
+/// `tests/github/merge_detect_test.rs`.
+struct NoHeader(&'static str);
+
+impl Match for NoHeader {
+    fn matches(&self, req: &Request) -> bool {
+        !req.headers.contains_key(self.0)
+    }
+}
+
+/// Mount the two-arm conditional-GET sequence on the open-PR list
+/// endpoint: 200 + ETag for the unconditional GET, 304 for the
+/// re-GET. Query matching mirrors the existing list tests: path +
+/// `state=open` only, never the percent-encoded head/base params.
+async fn mount_pulls_two_arm(gh: &MockGitHub, pr_body: serde_json::Value) {
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/pulls"))
+        .and(query_param("state", "open"))
+        .and(NoHeader("if-none-match"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("etag", ETAG)
+                .set_body_json(pr_body),
+        )
+        .expect(1)
+        .mount(gh.server())
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/pulls"))
+        .and(query_param("state", "open"))
+        .and(header("if-none-match", ETAG))
+        .respond_with(ResponseTemplate::new(304))
+        .expect(1)
+        .mount(gh.server())
+        .await;
 }
 
 #[tokio::test]
@@ -386,4 +439,42 @@ async fn pr_post_body_carries_exact_title_and_head() {
         .await
         .expect("find or create");
     assert_eq!(pr.number, 8);
+}
+
+#[tokio::test]
+async fn pr_list_304_replay_reuses_cached_pr() {
+    // The ETag-cached second list GET replies 304 and the client
+    // replays the cached body. The list must be parsed like a 200
+    // and the existing PR reused — on current main the second call
+    // returns Err(GitHubApi { status: 304 }).
+    let gh = MockGitHub::start().await;
+    mount_pulls_two_arm(
+        &gh,
+        serde_json::json!([
+            { "number": 7, "html_url": "https://github.com/owner/repo/pull/7" }
+        ]),
+    )
+    .await;
+    // No POST should occur — the cached body already lists the PR.
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(gh.server())
+        .await;
+    let client = cached_client_for(&gh);
+    let state_dir = tempdir("pr-304-cfg");
+    let cfg = empty_config(&state_dir);
+    let issue = make_issue();
+    let ctx = make_context(&cfg, &issue, "run-reuse-304");
+    let result = make_worker_result("summary", "PR title");
+    let first = find_or_create_pull_request(&ctx, &client, &result)
+        .await
+        .expect("fresh list reuses the existing PR");
+    assert_eq!(first.number, 7);
+    assert!(first.reused);
+    let second = find_or_create_pull_request(&ctx, &client, &result)
+        .await
+        .expect("304 replay must not fail (issue #396)");
+    assert_eq!(second.number, 7);
+    assert!(second.reused);
 }

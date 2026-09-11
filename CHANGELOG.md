@@ -204,6 +204,13 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
 
 ### Fixed
 
+- **Finalize-path GETs no longer fail on a benign 304.** The ETag-cached
+  GitHub client answers an unchanged list/state GET with HTTP 304 plus
+  the cached body; eight status checks (PR-list and comment-list reads
+  across the finalize path, crash-resume reconciliation, and the
+  trigger verifier) treated any non-200 as a failure, so a finalize
+  retry or crash-resume on an unchanged URL failed permanently. All
+  eight now parse the cached body exactly like a 200. Closes #396.
 - **PR merge-status poll no longer fails on a benign 304.** The
   GitHub client's ETag cache legitimately answers an unchanged PR
   with HTTP 304 plus the cached body; the merge-status poll treated

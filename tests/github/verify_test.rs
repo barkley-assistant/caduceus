@@ -16,8 +16,8 @@ use caduceus::github::{Client, HttpCache};
 use caduceus::issue::IssueKey;
 use caduceus::queue::TicketType;
 use caduceus::verify::{SkipReason, VerifyOutcome};
-use wiremock::matchers::{method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use wiremock::matchers::{header, method, path};
+use wiremock::{Match, Mock, MockServer, Request, ResponseTemplate};
 #[path = "../fixtures/mod.rs"]
 mod fixtures;
 
@@ -25,6 +25,7 @@ use fixtures::tempdir;
 
 const TEST_TOKEN: &str = "ghp_testtoken_value_xyz";
 const CODE_LABEL: &str = "autofix";
+const ETAG: &str = "\"abc\"";
 
 fn mock_client_with_repos(server: &MockServer) -> (Client, Config) {
     let state_dir = tempdir("mock");
@@ -53,6 +54,41 @@ fn issue_body(labels: &[&str], state: &str, pull_request: bool) -> serde_json::V
             serde_json::json!({"url": "https://api.github.com/repos/octocat/hello-world/pulls/7"});
     }
     obj
+}
+
+/// Matches requests that do NOT carry the named header. The first
+/// (unconditional) GET has no `If-None-Match`; the second does. This
+/// disambiguates the two mocks on the same path — same pattern as
+/// `tests/github/merge_detect_test.rs`.
+struct NoHeader(&'static str);
+
+impl Match for NoHeader {
+    fn matches(&self, req: &Request) -> bool {
+        !req.headers.contains_key(self.0)
+    }
+}
+
+/// Mount the two-arm conditional-GET sequence on the issue endpoint:
+/// 200 + ETag for the unconditional GET, 304 for the re-GET.
+async fn mount_issue_two_arm(server: &MockServer, issue_body: serde_json::Value) {
+    Mock::given(method("GET"))
+        .and(path("/repos/octocat/hello-world/issues/7"))
+        .and(NoHeader("if-none-match"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("etag", ETAG)
+                .set_body_json(issue_body),
+        )
+        .expect(1)
+        .mount(server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/octocat/hello-world/issues/7"))
+        .and(header("if-none-match", ETAG))
+        .respond_with(ResponseTemplate::new(304))
+        .expect(1)
+        .mount(server)
+        .await;
 }
 
 // Both ticket types
@@ -357,4 +393,25 @@ fn skip_reason_as_str_is_stable() {
     assert_eq!(SkipReason::Transferred.as_str(), "transferred");
     assert_eq!(SkipReason::NotFound.as_str(), "not_found");
     assert_eq!(SkipReason::Malformed.as_str(), "malformed");
+}
+
+#[tokio::test]
+async fn verify_304_replay_returns_same_outcome() {
+    // The ETag-cached second GET replies 304 and the client replays
+    // the cached body with the cached final_url. The verifier must
+    // parse it like a 200 and still Proceed — on current main the
+    // second call returns Err(GitHubApi { status: 304 }).
+    let server = MockServer::start().await;
+    mount_issue_two_arm(&server, issue_body(&[CODE_LABEL], "open", false)).await;
+
+    let (client, cfg) = mock_client_with_repos(&server);
+    let key = IssueKey::parse("octocat/hello-world#7").unwrap();
+    let first = caduceus::verify::verify_trigger(&client, &key, TicketType::Code, &cfg)
+        .await
+        .expect("fresh verify proceeds");
+    assert_eq!(first, VerifyOutcome::Proceed);
+    let second = caduceus::verify::verify_trigger(&client, &key, TicketType::Code, &cfg)
+        .await
+        .expect("304 replay must not fail (issue #396)");
+    assert_eq!(second, VerifyOutcome::Proceed);
 }

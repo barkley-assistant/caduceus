@@ -50,7 +50,14 @@ pub async fn find_or_create_pull_request(
     );
     let list_url = format!("{list_path}?{query}");
     let resp = client.get(&list_url, "application/vnd.github+json").await?;
-    if !matches!(resp.status, 200) {
+    // A 304 is the ETag-cached GET path replaying the cached
+    // representation: the client guarantees `body` is the last
+    // cached body (byte-identical to the 200 that stored the ETag),
+    // and GitHub mints a fresh ETag on any state change, so a 304
+    // proves the cached body is current. Parse it like a 200 instead
+    // of failing the stage (issue #396, mirroring the #385 fix in
+    // src/github/merge_detect.rs).
+    if !matches!(resp.status, 200 | 304) {
         return Err(CaduceusError::GitHubApi {
             status: resp.status,
             message: format!("list pull requests failed: {}", resp.status),
