@@ -49,13 +49,10 @@ admit work.
 ### Config key removed
 
 `ticket_label_investigation` was removed. A config that still carries
-the key **fails to load** with this deliberate error:
-
-```text
-ticket_label_investigation was removed in release N+1; investigations
-were replaced by auto_review — remove the key
-(docs/architecture/auto-review.md §12)
-```
+the key **fails to load** with serde's generic `unknown field` error
+(the same error any other unrecognized config key produces). Remove
+the key; `auto_review:` is the supported replacement — see
+`docs/architecture/auto-review.md`.
 
 Remove the key from your config file. There is no replacement value to
 set; investigation work is replaced by
