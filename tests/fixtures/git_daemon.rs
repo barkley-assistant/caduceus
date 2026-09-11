@@ -43,7 +43,8 @@ use tempfile::TempDir;
 
 /// Owns a `git daemon` subprocess serving a bare repo at
 /// `git://127.0.0.1:<port>/<owner>/<repo>`. The child is killed on
-/// drop before the tempdir is removed.
+/// drop before the tempdir is removed; stale daemons orphaned by
+/// interrupted runs are reaped on the next `start`.
 pub struct GitDaemon {
     _root: TempDir,
     bare: PathBuf,
