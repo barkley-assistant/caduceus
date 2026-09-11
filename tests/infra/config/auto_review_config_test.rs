@@ -1,7 +1,7 @@
 //! Config-loader tests for the `auto_review:` block, the
 //! OCI-required validation (DAR §6.3), `max_reviews_per_tick`, and
-//! the N+1 `ticket_label_investigation` removal error (issue #331,
-//! DAR §12). Mirrors sandbox_config_test.rs: load through the
+//! the `ticket_label_investigation` removal (issue #382, DAR §12).
+//! Mirrors sandbox_config_test.rs: load through the
 //! canonical `Config::load_from` chain, assert on message content.
 
 use caduceus::infra::config::Config;
@@ -162,36 +162,27 @@ fn unknown_auto_review_key_is_rejected() {
     assert!(err.is_err(), "Phase-2 keys must fail at parse time");
 }
 
-// --- `ticket_label_investigation` removal error (issue #331, AC5) ---
+// --- `ticket_label_investigation` removal (issue #382) ---
 //
-// The release-N deprecation warning became the N+1 deliberate load
-// error. The RawConfig key stays serde-known so an operator config
-// that still carries it produces the GUIDED error naming the
-// auto_review replacement — never a raw deny_unknown_fields dump.
+// The legacy key was removed; a config carrying it fails at parse time
+// with serde's generic unknown-field error — no special-casing, no
+// guided message.
 
 #[test]
-fn ticket_label_investigation_removed_is_a_deliberate_error() {
+fn ticket_label_investigation_fails_at_parse_as_unknown_field() {
     let err = load(&format!(
         "{}ticket_label_investigation: \"autofix-investigate\"\n",
         trusted_host_base()
     ))
-    .expect_err("the removed key must fail the load in N+1");
+    .expect_err("the removed key must fail at parse time");
     let msg = format!("{err}");
     assert!(
+        msg.contains("unknown field"),
+        "expected serde unknown-field error, got: {msg}"
+    );
+    assert!(
         msg.contains("ticket_label_investigation"),
-        "error must name the key: {msg}"
-    );
-    assert!(
-        msg.contains("removed in release N+1"),
-        "error must state the removal: {msg}"
-    );
-    assert!(
-        msg.contains("auto_review"),
-        "error must name the replacement: {msg}"
-    );
-    assert!(
-        msg.contains("auto-review.md"),
-        "error must cite the spec: {msg}"
+        "error must name the unknown field: {msg}"
     );
 }
 
