@@ -429,8 +429,12 @@ fn admission_rejected() {
                 "error context must name the rejection: {text}"
             );
             assert!(
-                text.contains("#331"),
-                "error must cite the removal issue: {text}"
+                text.contains("auto_review"),
+                "error must name the replacement: {text}"
+            );
+            assert!(
+                !text.contains("#331"),
+                "error must not cite the internal removal issue: {text}"
             );
         },
         &capture_path,
