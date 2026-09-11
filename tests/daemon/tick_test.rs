@@ -585,3 +585,51 @@ async fn auto_gc_error_path_returns_normal_tick_outcome() {
     assert_eq!(outcome, TickOutcome::IdleEmpty);
     assert!(wt.path.exists(), "GC error must not remove worktree");
 }
+
+fn read_state_meta(state_dir: &std::path::Path) -> caduceus::meta::StateMeta {
+    caduceus::meta::load(state_dir).expect("state meta loads")
+}
+
+// Issue #384, tick-level companion to the gate-level arbiter in
+// cadence_test.rs: a real cadence-skipped tick must keep the
+// last completed tick's window in state_meta.json.
+#[tokio::test]
+async fn cadence_skipped_tick_keeps_last_tick_finished() {
+    let base = tempfile::Builder::new()
+        .prefix("caduceus-tick-test-")
+        .tempdir_in(std::env::current_dir().unwrap())
+        .expect("base");
+    let bare = base.path().join("owner.git");
+    let clone = base.path().join("owner").join("r");
+    init_bare(&bare);
+    init_clone(&bare, &clone);
+
+    let cfg = tick_config(base.path(), vec!["owner/r".to_string()], None, None);
+    let server = MockServer::start().await;
+
+    // First tick completes and records last_tick_finished.
+    let outcome = run_tick(cfg.clone(), &server).await.expect("first tick");
+    assert_eq!(outcome, TickOutcome::IdleEmpty);
+    let meta_after_first = read_state_meta(&cfg.state_dir);
+
+    // Second tick fires immediately → cadence skip (default
+    // poll_interval_seconds is 120; the two ticks are ms apart).
+    let outcome = run_tick(cfg.clone(), &server).await.expect("second tick");
+    assert_eq!(outcome, TickOutcome::SkippedCadence);
+    let meta_after_skip = read_state_meta(&cfg.state_dir);
+
+    // The skip must not have advanced the window or slid
+    // next_allowed_poll_at, but must record its outcome.
+    assert_eq!(
+        meta_after_skip.last_tick_finished, meta_after_first.last_tick_finished,
+        "skipped tick must not advance last_tick_finished"
+    );
+    assert_eq!(
+        meta_after_skip.next_allowed_poll_at, meta_after_first.next_allowed_poll_at,
+        "skipped tick must not slide next_allowed_poll_at"
+    );
+    assert_eq!(
+        meta_after_skip.last_outcome,
+        Some(TickOutcome::SkippedCadence)
+    );
+}

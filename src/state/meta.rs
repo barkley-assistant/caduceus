@@ -557,6 +557,15 @@ impl CadenceGate {
     /// atomically and `next_allowed_poll_at` is set to the
     /// observation's `reset_at`; otherwise the next-allowed time
     /// is `now + poll_interval_seconds`.
+    ///
+    /// `SkippedCadence` is the one outcome that did no work, so it
+    /// must not re-arm the cadence window: it persists only
+    /// `last_outcome` (and `last_error` when present) and leaves
+    /// `last_tick_finished` and `next_allowed_poll_at` at the last
+    /// completed tick's values. Advancing either from the skip's own
+    /// timestamp makes the next invocation land inside the freshly
+    /// slid window too — a self-perpetuating skip loop whenever the
+    /// cron period is at or below `poll_interval_seconds` (#384).
     pub fn record_tick_finished(
         &self,
         now: DateTime<Utc>,
@@ -578,10 +587,20 @@ impl CadenceGate {
                 .as_ref()
                 .map(|r| r.reset_at)
                 .or_else(|| self.store.snapshot().rate_limit.map(|r| r.reset_at)),
+            // A cadence-skipped tick did no work: the next allowed
+            // poll is still whatever the last completed tick
+            // computed. Sliding this (or `last_tick_finished`)
+            // forward re-arms the gate from the skip itself and
+            // turns cron jitter into a permanent skip loop (#384).
+            TickOutcome::SkippedCadence => None,
             _ => Some(now + chrono::Duration::seconds(poll_interval_seconds as i64)),
         };
         self.store.update(|meta| {
-            meta.last_tick_finished = Some(now);
+            // Same invariant for the gate base: only a tick that did
+            // work may move `last_tick_finished` (#384).
+            if outcome != TickOutcome::SkippedCadence {
+                meta.last_tick_finished = Some(now);
+            }
             meta.last_outcome = Some(outcome);
             meta.last_http_status = http_status;
             if let Some(next) = next_allowed_poll_at {

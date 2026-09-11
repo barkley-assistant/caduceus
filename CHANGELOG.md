@@ -204,6 +204,15 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
 
 ### Fixed
 
+- **Cadence-skipped ticks no longer slide the poll gate.** A tick
+  skipped by the cadence gate recorded its own timestamp as
+  `last_tick_finished`, re-arming the window from the skip: with the
+  default `poll_interval_seconds: 120` and a 2-minute cron, every
+  invocation landed inside the freshly-slid window and skipped again —
+  a silent, permanent poll loop. A `SkippedCadence` outcome now
+  records only its outcome for `caduceus status`; `last_tick_finished`
+  and `next_allowed_poll_at` keep the last completed tick's values, so
+  the gate measures from real work. Closes #384.
 - **Live OCI certification suite: image precedence and exit-code
   readback (issue #252).** The shared live-test fixture now applies
   `CADUCEUS_LIVE_TEST_IMAGE` (the reference image) to every test;
