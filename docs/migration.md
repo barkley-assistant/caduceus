@@ -54,8 +54,8 @@ supported starting point.
    rows the upgrade will terminate and archive (below).
 3. **Remove the config key.** If your `config.yaml` still sets
    `ticket_label_investigation`, delete the key (not the whole file).
-   The load now fails deliberately when it is present — see the
-   release notes for the exact error text.
+   A config carrying it now fails to load with serde's generic
+   `unknown field` error. `auto_review:` is the supported replacement.
 
 ### What happens at first open
 
