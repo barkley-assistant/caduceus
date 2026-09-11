@@ -204,6 +204,15 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
 
 ### Fixed
 
+- **`caduceus run` now initialises file logging.** The CLI `run`
+  handler — the entry path the cron pulse wrapper and bare `caduceus`
+  invocations actually take — never called `logging::init`, so
+  `<state_dir>/processor.log` was never created: the structured log
+  stream, and even the handler's own git-identity warning, were
+  silently dropped because no tracing subscriber was installed. The
+  handler now initialises logging right after config resolution —
+  mirroring the documented `tick::run` order — and flushes the
+  non-blocking writer before `std::process::exit`. Closes #386.
 - **Finalize-path GETs no longer fail on a benign 304.** The ETag-cached
   GitHub client answers an unchanged list/state GET with HTTP 304 plus
   the cached body; eight status checks (PR-list and comment-list reads

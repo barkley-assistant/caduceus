@@ -399,12 +399,14 @@ fn idle_cancellation_does_not_mutate_state() {
         .map(|e| e.file_name())
         .collect::<BTreeSet<_>>();
     // The daemon may legitimately create the daemon lock file,
-    // the scheduler lock file, and the GitHub HTTP cache
-    // directory during its first tick — those are not state
-    // mutations attributable to the cancellation. The contract
-    // is: the queued entry is not mutated. We assert that
-    // explicitly by checking the absence of state.json (no
-    // enqueue happened).
+    // the scheduler lock file, the GitHub HTTP cache directory,
+    // and (since issue #386) the structured log file — the `run`
+    // handler now calls `logging::init` right after config
+    // resolution, before any tick work — during its first tick;
+    // those are not state mutations attributable to the
+    // cancellation. The contract is: the queued entry is not
+    // mutated. We assert that explicitly by checking the absence
+    // of state.json (no enqueue happened).
     let extras: Vec<_> = state_dir_after.difference(&state_dir_before).collect();
     for extra in &extras {
         let name = extra.to_string_lossy();
@@ -413,6 +415,7 @@ fn idle_cancellation_does_not_mutate_state() {
                 || name == "scheduler.lock"
                 || name == "cache"
                 || name == "repos"
+                || name == "processor.log"
                 || name.starts_with("cache."),
             "unexpected state-file created by idle SIGINT: {name}"
         );

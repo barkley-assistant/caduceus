@@ -243,6 +243,13 @@ pub fn run() -> CaduceusResult<()> {
                 Some(path) => Config::load_from(std::path::Path::new(&path))?,
                 None => Config::load()?,
             };
+            // Initialise the structured log stream before any tick work
+            // so every subsequent event — including the git-identity
+            // warning below, which is currently dropped because no
+            // subscriber is installed on this path — lands in
+            // `<state_dir>/processor.log`. Mirrors the documented order
+            // of the no-argument wrapper `tick::run` (issue #386).
+            let _log_guard = caduceus::logging::init(&cfg.log_path)?;
             let (host_name, host_email) = caduceus::finalize::commit::host_git_identity();
             let name_from_tier3 = cfg.git_author_name.is_none() && host_name.is_none();
             let email_from_tier3 = cfg.git_author_email.is_none() && host_email.is_none();
@@ -252,6 +259,10 @@ pub fn run() -> CaduceusResult<()> {
                 tracing::warn!("git_author: no config or host identity resolved — falling back to \"Caduceus Daemon <caduceus@daemon.local>\". Configure git_author_name + git_author_email in the caduceus: config block to silence this warning.");
             }
             let outcome = caduceus::tick::run_blocking(cfg)?;
+            // `std::process::exit` runs no destructors; drop the guard
+            // so the non-blocking writer flushes pending events before
+            // the process terminates.
+            drop(_log_guard);
             // Map the outcome to the documented exit code so
             // the cron model (Processed / Idle / Cancelled →
             // 0; Failed → 1) holds without changing the CLI.
