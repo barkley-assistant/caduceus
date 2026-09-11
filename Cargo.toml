@@ -520,6 +520,10 @@ name = "review_cli_test"
 path = "tests/cli/review_cli_test.rs"
 
 [[test]]
+name = "run_logging_test"
+path = "tests/cli/run_logging_test.rs"
+
+[[test]]
 name = "state_store_test"
 path = "tests/state/state_store_test.rs"
 
