@@ -347,8 +347,8 @@ fn write_config(
     ));
     yaml.push_str(&format!("  ticket_label_code: \"{}\"\n", CODE_LABEL));
     // `ticket_label_investigation` is intentionally NOT set: the key
-    // was removed in N+1 (#331) and a config carrying it now fails
-    // the load with the deliberate removal error.
+    // was removed (#382) and a config carrying it now fails at parse
+    // time with serde's generic unknown-field error.
     yaml.push_str(&format!("  dry_run: {}\n", dry_run));
     yaml.push_str("  reduced_containment_acknowledged: true\n");
     fs::write(config_path, yaml).expect("write canary config");
