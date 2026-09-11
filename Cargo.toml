@@ -628,6 +628,10 @@ name = "finalize_commit_test"
 path = "tests/finalize/commit_test.rs"
 
 [[test]]
+name = "finalize_reconcile_test"
+path = "tests/finalize/reconcile_test.rs"
+
+[[test]]
 name = "context_test"
 path = "tests/github/context_test.rs"
 
