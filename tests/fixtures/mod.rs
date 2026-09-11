@@ -41,8 +41,8 @@ pub use doctor_report::{classify_doctor, DoctorVerdict};
 #[cfg(test)]
 #[allow(unused_imports)]
 pub use git_daemon::{
-    clone_main, free_port_127, git_in, init_bare_with_empty_main, run_with_timeout,
-    wait_for_port_127, GitDaemon,
+    clone_main, free_port_127, git_in, init_bare_with_empty_main, reap_stale_git_daemons,
+    run_with_timeout, wait_for_port_127, GitDaemon, ReapSummary,
 };
 #[cfg(test)]
 #[allow(unused_imports)]
