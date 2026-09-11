@@ -481,23 +481,31 @@ fn state_backend_invalid_value_is_rejected() {
     assert!(msg.contains("json") && msg.contains("sqlite"), "got: {msg}");
 }
 
-// N+1 key removal (issue #331)
+// Legacy key removal (issue #382)
+
+// Legacy `ticket_label_investigation` key removed (issue #382).
+// A config carrying it now fails at PARSE time with serde's generic
+// unknown-field error — no special-casing, no guided message.
 
 #[test]
-fn removed_investigation_key_produces_deliberate_error() {
-    let root = tempdir("removed-inv-key");
+fn removed_investigation_key_fails_at_parse_as_unknown_field() {
     let yaml = r#"
         ticket_label_code: "autofix"
         ticket_label_investigation: "auto-fix"
         worker_command: ["python3", "bridge.py"]
         reduced_containment_acknowledged: true
         "#;
-    let raw: RawConfig = serde_yaml::from_str(yaml).expect("yaml parses");
-    let err = Config::from_raw(raw, &ctx(&root)).expect_err("removed key must fail the load");
-    let msg = format!("{err:?}");
-    assert!(msg.contains("ticket_label_investigation"), "got: {msg}");
-    assert!(msg.contains("removed in release N+1"), "got: {msg}");
-    assert!(msg.contains("auto_review"), "got: {msg}");
+    let err = serde_yaml::from_str::<RawConfig>(yaml)
+        .expect_err("the removed key must fail at parse time");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("unknown field"),
+        "expected serde unknown-field error, got: {msg}"
+    );
+    assert!(
+        msg.contains("ticket_label_investigation"),
+        "error must name the unknown field: {msg}"
+    );
 }
 
 // Legacy emoji label translation (DAR §12)

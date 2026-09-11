@@ -593,8 +593,9 @@ PAT-scope statement implied by listing a repo in `allow_fork_prs`
   non-terminal Investigation rows from pre-N or N-era stores are terminated,
   archived, and audited (`review_migration_terminated_investigation`) with
   operator-visible outcomes.
-- `ticket_label_investigation` config field removed with an explicit,
-  documented `from_raw` error naming the replacement.
+- `ticket_label_investigation` config field removed; a config carrying
+  it fails at parse time with serde's generic `unknown field` error
+  (no special-casing). `auto_review:` is the supported replacement.
 - `autofix-investigate` label removed with the feature.
 - Release notes must call out the direct-upgrade safety property for skip-N
   upgraders.

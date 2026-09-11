@@ -15,8 +15,7 @@
 //! a pre-N or N-era store remains (i.e. once direct pre-N→N+1 upgrades
 //! are out of support). Deleting it requires deleting
 //! `TicketType::Investigation`, the investigation `FinalizationStage`
-//! variants, the `WorkerResult::investigation` field, the retained
-//! `RawConfig::ticket_label_investigation` key, and the
+//! variants, the `WorkerResult::investigation` field, and the
 //! `PreviewReport::proposed_investigation_comment` field in the same
 //! change. Until then: frozen pre-N fixture tests in CI exercise every
 //! parse path (tests/state/investigation_removal_test.rs).
@@ -29,8 +28,6 @@
 //! * the `FinalizationStage` investigation string forms
 //!   (`investigation_ready` / `investigation_commented`) retained in
 //!   `queue::mod`'s `as_str`/`from_str` mappings (documented here),
-//! * the `RawConfig::ticket_label_investigation` sentinel key that
-//!   produces the deliberate `from_raw` error (documented here),
 //! * the `WorkerResult::investigation` serde default (documented on
 //!   the field).
 //!
@@ -49,10 +46,3 @@ pub const LEGACY_TICKET_TYPE_STRING: &str = "investigation";
 /// written by release N. Never produced by N+1 finalization paths.
 pub const LEGACY_STAGE_INVESTIGATION_READY: &str = "investigation_ready";
 pub const LEGACY_STAGE_INVESTIGATION_COMMENTED: &str = "investigation_commented";
-
-/// The config key removed in N+1. RETAINED on `RawConfig` so a config
-/// that still carries it produces the deliberate `from_raw` error
-/// naming the `auto_review` replacement, instead of a raw
-/// `deny_unknown_fields` serde dump. Presence alone is the trigger —
-/// the value is never read.
-pub const REMOVED_CONFIG_KEY: &str = "ticket_label_investigation";
