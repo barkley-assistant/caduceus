@@ -15,7 +15,7 @@
 //!   comment (marker adoption / byte-identical idempotency).
 
 use caduceus::config::Config;
-use caduceus::github::{Client, HttpCache};
+use caduceus::github::{poll_pr_merge_status, Client, HttpCache};
 use caduceus::infra::logging::build_test_subscriber;
 use caduceus::review::finalize::{
     EVENT_PUBLISHED, EVENT_PUBLISH_FAILED_RETRYABLE, EVENT_PUBLISH_STARTED,
@@ -28,6 +28,8 @@ use caduceus::review::{
 };
 use caduceus::state::review::{ReviewHistoryRow, ReviewStore};
 use chrono::{DateTime, TimeZone, Utc};
+use wiremock::matchers::{header, method, path};
+use wiremock::{Match, Mock, Request, ResponseTemplate};
 
 #[path = "../fixtures/mod.rs"]
 mod fixtures;
@@ -59,6 +61,17 @@ fn mock_client(gh: &MockGitHub) -> (Client, Config) {
     let cache = HttpCache::open(&state_dir).expect("cache opens");
     let client = Client::with_cache(&cfg, cache).expect("client builds");
     (client, cfg)
+}
+
+/// Matches requests that do NOT carry the named header. Disambiguates
+/// the unconditional first GET (200 + ETag) from the conditional
+/// re-GET (304) on the same path.
+struct NoHeader(&'static str);
+
+impl Match for NoHeader {
+    fn matches(&self, req: &Request) -> bool {
+        !req.headers.contains_key(self.0)
+    }
 }
 
 fn sample_review() -> Review {
@@ -409,6 +422,74 @@ async fn github_failure_lands_in_failed_retryable_with_backoff() {
     assert_eq!(state.publication_state, PublicationState::Published);
     assert_eq!(state.sticky_comment_id, Some(778));
     assert_eq!(state.publication_attempt_count, 2, "retried once");
+}
+
+// ---------------------------------------------------------------------------
+// #385: a 304 on the lifecycle poll must publish, not retry forever
+// ---------------------------------------------------------------------------
+
+/// Mount the PR lifecycle endpoint as a two-arm conditional GET:
+/// 200 + ETag for the unconditional request, 304 for the re-GET.
+async fn mount_pulls_etag_then_304(gh: &MockGitHub) {
+    let pulls_path = format!("/repos/{OWNER}/{REPO}/pulls/{PR}");
+    gh.mount_with(|_| {
+        Mock::given(method("GET"))
+            .and(path(pulls_path.as_str()))
+            .and(NoHeader("if-none-match"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("etag", "\"abc\"")
+                    .set_body_string(r#"{"merged": false, "state": "open"}"#),
+            )
+            .expect(1)
+    })
+    .await;
+    gh.mount_with(|_| {
+        Mock::given(method("GET"))
+            .and(path(pulls_path.as_str()))
+            .and(header("if-none-match", "\"abc\""))
+            .respond_with(ResponseTemplate::new(304))
+            .expect(1)
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn lifecycle_poll_304_replay_publishes_instead_of_retrying() {
+    let gh = MockGitHub::start().await;
+    mount_pulls_etag_then_304(&gh).await;
+    // Publish-path endpoints: empty marker-search page + create.
+    gh.mount_paged(
+        &format!("/repos/{OWNER}/{REPO}/issues/{PR}/comments"),
+        vec![serde_json::json!([])],
+    )
+    .await;
+    gh.mount_status(
+        "POST",
+        &format!("/repos/{OWNER}/{REPO}/issues/{PR}/comments"),
+        201,
+        serde_json::json!({ "id": 779, "body": "" }),
+    )
+    .await;
+
+    let (client, cfg) = mock_client(&gh);
+    let (store, _dir) = seeded_store("fin-304", 1, PublicationState::Pending);
+
+    // Pre-warm the ETag cache through the same client the finalizer
+    // will use, so the lifecycle poll below is the conditional GET.
+    let warm = poll_pr_merge_status(&client, OWNER, REPO, PR).await;
+    assert!(warm.is_ok(), "cache pre-warm poll succeeds");
+
+    // The finalizer's first GitHub call now 304s. It must parse the
+    // cached body and publish — NOT land in failed_retryable (the
+    // #385 symptom: publication_state stuck, comment never posts).
+    let outcome = finalize_review(&client, &cfg, &store, &due(1), now())
+        .await
+        .expect("finalize step completes");
+    assert_eq!(outcome, FinalizeOutcome::Published);
+    let state = load_state(&store);
+    assert_eq!(state.publication_state, PublicationState::Published);
+    assert_eq!(state.sticky_comment_id, Some(779));
 }
 
 // ---------------------------------------------------------------------------

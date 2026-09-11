@@ -40,7 +40,14 @@ pub async fn poll_pr_merge_status(
         Err(err) => return Err(err),
     };
 
-    if !matches!(resp.status, 200) {
+    // A 304 is the ETag-cached GET path replaying the cached
+    // representation: the client guarantees `body` is the last
+    // cached body (byte-identical to the 200 that stored the ETag),
+    // and GitHub mints a fresh ETag on any state change, so a 304
+    // proves the cached body is current. Parse it like a 200 instead
+    // of failing the poll (issue #385: the finalizer treated this as
+    // a publish failure and the sticky comment never posted).
+    if !matches!(resp.status, 200 | 304) {
         return Err(CaduceusError::GitHubApi {
             status: resp.status,
             message: format!("poll pull request failed: {}", resp.status),

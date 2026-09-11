@@ -204,6 +204,14 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
 
 ### Fixed
 
+- **PR merge-status poll no longer fails on a benign 304.** The
+  GitHub client's ETag cache legitimately answers an unchanged PR
+  with HTTP 304 plus the cached body; the merge-status poll treated
+  any non-200 as a failure, so the Auto Review finalizer classified
+  the poll as a publish failure and retried with exponential backoff
+  forever — the sticky PR comment never appeared. A 304 now parses
+  the cached body exactly like a 200, so merged and closed states
+  survive unchanged. Closes #385.
 - **Successful ticks now project the real next-allowed-poll time.**
   The tick's success path recorded `next_allowed_poll_at` with a
   hard-coded poll interval of 0, so after every successful tick

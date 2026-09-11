@@ -648,6 +648,10 @@ name = "github_client_test"
 path = "tests/github/github_client_test.rs"
 
 [[test]]
+name = "merge_detect_test"
+path = "tests/github/merge_detect_test.rs"
+
+[[test]]
 name = "token_resolution_test"
 path = "tests/github/token_resolution_test.rs"
 
