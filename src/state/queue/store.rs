@@ -260,13 +260,13 @@ impl StateStore {
                 event = INVESTIGATION_ADMISSION_REJECTED_EVENT,
                 repo = %key.repo,
                 issue = key.number,
-                "investigation admission rejected: the ticket type was removed \
-                 in release N+1 (#331); use auto_review or a code ticket"
+                "investigation admission rejected: the ticket type was removed; \
+                 use auto_review or a code ticket"
             );
             return Err(CaduceusError::Queue {
                 context: "investigation-admission-rejected",
                 stderr: format!(
-                    "investigation tickets were removed in release N+1 (#331); \
+                    "investigation tickets were removed; \
                      admission rejected for {key} — re-file as auto_review or code"
                 ),
             });
