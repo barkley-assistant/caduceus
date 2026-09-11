@@ -204,6 +204,17 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
 
 ### Fixed
 
+- **E2E fixtures no longer orphan `git daemon` processes on interrupted
+  runs.** `GitDaemon::start` now holds an exclusive `flock` on
+  `<fixture-root>/git-daemon.lock` for the daemon's lifetime and writes
+  `<fixture-root>/git-daemon.pid` right after spawn. Every start first
+  reaps leftovers from previous runs that died hard (SIGKILL, abort,
+  crash): for ownerless stale roots (lock free) whose pidfile points at
+  a live `git daemon` serving exactly that root's base-path, the daemon
+  is killed and the root removed. Identity is checked via
+  `/proc/<pid>/cmdline` (Linux) or `ps -ww` (macOS), so an unrelated
+  process is never signalled and a live test's root is never touched.
+  Closes #383.
 - **`caduceus run` now initialises file logging.** The CLI `run`
   handler — the entry path the cron pulse wrapper and bare `caduceus`
   invocations actually take — never called `logging::init`, so
