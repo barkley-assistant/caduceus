@@ -61,8 +61,6 @@ pub const DEFAULT_TICKET_LABEL_CODE: &str = "autofix";
 /// Exact match only; no trimming, no case-folding. A value in this map
 /// is translated to its canonical replacement and a one-time notice is
 /// emitted. See docs/architecture/auto-review.md §12.
-/// (The investigation entries were removed in N+1, issue #331 — that
-/// key now produces the deliberate `from_raw` error below.)
 pub const LEGACY_TICKET_LABEL_TRANSLATIONS: &[(&str, &str)] = &[("🤖 auto-fix", "autofix")];
 
 /// Translate explicitly-configured legacy emoji trigger labels to the
@@ -437,14 +435,6 @@ pub struct RawConfig {
     pub max_retries_per_issue: Option<u32>,
     pub retry_backoff_seconds: Option<u64>,
     pub ticket_label_code: Option<String>,
-    /// RETAINED after the N+1 key removal (issue #331) so a config
-    /// that still carries `ticket_label_investigation` is
-    /// serde-recognized and produces the DELIBERATE `from_raw` error
-    /// naming the replacement — not a raw `deny_unknown_fields` dump.
-    /// Never read for a value; presence alone is the error trigger.
-    /// See the removal checklist in
-    /// `src/state/queue/legacy_investigation.rs`.
-    pub ticket_label_investigation: Option<String>,
     pub remove_label_on_completion: Option<bool>,
     pub feedback_author_allowlist: Option<Vec<String>>,
     pub comment_ignore_patterns: Option<Vec<String>>,
@@ -829,19 +819,6 @@ impl Config {
             .unwrap_or_else(|| DEFAULT_TICKET_LABEL_CODE.to_string());
         if ticket_label_code.trim().is_empty() {
             errors.push("ticket_label_code must not be empty".to_string());
-        }
-        // `ticket_label_investigation` was REMOVED in release N+1
-        // (issue #331, DAR §12). The RawConfig key is retained
-        // (serde-known) so an operator config that still carries it
-        // gets this deliberate, documented error naming the
-        // replacement — not a raw unknown-field serde dump.
-        if raw.ticket_label_investigation.is_some() {
-            errors.push(
-                "ticket_label_investigation was removed in release N+1; investigations \
-                 were replaced by auto_review — remove the key (docs/architecture/\
-                 auto-review.md §12)"
-                    .to_string(),
-            );
         }
         // Translate legacy emoji trigger labels to canonical values at
         // read time (DAR §12). Exact match only; non-legacy values pass
