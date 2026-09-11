@@ -456,3 +456,36 @@ async fn config_off_merged_to_done_skips_delete() {
     assert_eq!(entry.phase, Phase::Done);
     assert_eq!(gh.counts().delete, 0, "no DELETE when config flag is false");
 }
+
+// Regression: the success path used to pass a hard-coded
+// poll_interval_seconds = 0 to record_tick_finished, so every
+// successful tick persisted next_allowed_poll_at = the tick's own
+// timestamp — `caduceus status` showed a "next allowed poll"
+// perpetually in the past. Display-only (the cadence gate reads
+// last_tick_finished, never this field), but misleading for
+// operators reading status as "when will the daemon poll next".
+#[test]
+fn finish_tick_outcome_projects_next_allowed_poll_one_interval_ahead() {
+    let state_dir = tempdir("finish-outcome-interval");
+    let gate = caduceus::state::meta::CadenceGate::open(&state_dir).expect("gate opens");
+    let meta = caduceus::state::meta::MetaStore::open(&state_dir).expect("meta opens");
+    let now = chrono::Utc::now();
+
+    caduceus::daemon::tick::awaiting_review::finish_tick_outcome_for_tests(
+        &gate,
+        &meta,
+        now,
+        TickOutcome::Processed,
+        Some(200),
+        60,
+        None,
+    )
+    .expect("finish succeeds");
+
+    let snap = gate.store().snapshot();
+    assert_eq!(
+        snap.next_allowed_poll_at,
+        Some(now + chrono::Duration::seconds(60)),
+        "success path must project next_allowed_poll_at one interval ahead"
+    );
+}

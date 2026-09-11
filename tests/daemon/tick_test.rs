@@ -633,3 +633,36 @@ async fn cadence_skipped_tick_keeps_last_tick_finished() {
         Some(TickOutcome::SkippedCadence)
     );
 }
+
+// Companion to the seam-level arbiter in awaiting_review_test.rs:
+// the real tick must thread cfg.poll_interval_seconds into the
+// success-path recording (it used to pass a hard-coded 0, leaving
+// next_allowed_poll_at at the tick's own start time).
+#[tokio::test]
+async fn successful_tick_projects_next_allowed_poll_one_interval_ahead() {
+    let base = tempfile::Builder::new()
+        .prefix("caduceus-tick-test-")
+        .tempdir_in(std::env::current_dir().unwrap())
+        .expect("base");
+    let bare = base.path().join("owner.git");
+    let clone = base.path().join("owner").join("r");
+    init_bare(&bare);
+    init_clone(&bare, &clone);
+
+    let cfg = tick_config(base.path(), vec!["owner/r".to_string()], None, None);
+    let server = MockServer::start().await;
+    let before = Utc::now();
+
+    let outcome = run_tick(cfg.clone(), &server).await.expect("tick");
+    assert_eq!(outcome, TickOutcome::IdleEmpty);
+
+    let meta = read_state_meta(&cfg.state_dir);
+    let next = meta
+        .next_allowed_poll_at
+        .expect("success path sets next_allowed_poll_at");
+    let delta = (next - before).num_seconds();
+    assert!(
+        (119..=180).contains(&delta),
+        "next_allowed_poll_at should be ~one interval (120s) past the tick start; got {delta}"
+    );
+}
