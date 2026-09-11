@@ -180,3 +180,59 @@ fn configured_poll_interval_is_used_when_servers_silent() {
         other => panic!("expected Cadence, got {other:?}"),
     }
 }
+
+// Issue #384 regression: the cadence window must be anchored to the
+// last COMPLETED tick. On the old behavior the skip path recorded its
+// own timestamp as last_tick_finished, sliding the window forward with
+// every skip — on a cron period at or below poll_interval_seconds the
+// daemon silently stopped polling forever.
+#[test]
+fn cadence_skip_does_not_advance_the_gate_window() {
+    let state_dir = tempdir("skip-window");
+    let gate = CadenceGate::open(&state_dir).expect("gate opens");
+    let now = Utc::now();
+
+    // Completed tick at T (interval 60).
+    gate.record_tick_started(now).expect("record start");
+    gate.record_tick_finished(now, TickOutcome::Processed, Some(200), 60, None, None)
+        .expect("record finish");
+    let after_first = gate.store().snapshot();
+    assert_eq!(after_first.last_tick_finished, Some(now));
+
+    // Early tick at T+30 → the gate says Cadence.
+    let decision = gate.precheck(now + Duration::seconds(30), 60);
+    assert!(matches!(decision, CadenceDecision::Cadence { .. }));
+
+    // The daemon's skip path records exactly this outcome.
+    let skipped_at = now + Duration::seconds(30);
+    gate.record_tick_finished(
+        skipped_at,
+        decision.tick_outcome().expect("skip outcome"),
+        None,
+        60,
+        None,
+        None,
+    )
+    .expect("record skip");
+
+    // The skip did no work: the window must still be anchored at the
+    // completed tick, and next_allowed_poll_at must not slide.
+    let after_skip = gate.store().snapshot();
+    assert_eq!(
+        after_skip.last_tick_finished,
+        Some(now),
+        "skipped tick must not advance last_tick_finished"
+    );
+    assert_eq!(
+        after_skip.next_allowed_poll_at,
+        Some(now + Duration::seconds(60)),
+        "skipped tick must not slide next_allowed_poll_at"
+    );
+    // Observability: the outcome itself IS recorded.
+    assert_eq!(after_skip.last_outcome, Some(TickOutcome::SkippedCadence));
+
+    // The gate opens at T+61 — measured from the completed tick,
+    // not from the skip.
+    let decision = gate.precheck(now + Duration::seconds(61), 60);
+    assert_eq!(decision, CadenceDecision::Proceed);
+}
