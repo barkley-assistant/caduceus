@@ -229,6 +229,24 @@ pub struct AutoReviewConfig {
     /// block; the resolved `allow_fork_prs` list names the watched
     /// repos opted INTO fork PR review via the quarantine fetch path.
     pub fork_policy: Option<ForkPolicy>,
+    /// How each review generation reaches the PR (issue #394).
+    /// `Update` (default) PATCHes the single sticky comment in place;
+    /// `NewComment` publishes a fresh comment per generation, leaving
+    /// history untouched. Absent key = `Update`; unknown value =
+    /// hard config error (the #380 lesson).
+    pub publication_mode: PublicationMode,
+}
+
+/// How each review generation reaches the PR: PATCH the single sticky
+/// comment in place (`update`, default) or publish a fresh comment per
+/// generation (`new_comment` — history stays as-is; the banner is
+/// suppressed because the fresh comment is the visibility).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PublicationMode {
+    #[default]
+    Update,
+    NewComment,
 }
 
 /// Per-repo fork trust policy (issue #337, Phase 2). Default OFF:
@@ -262,6 +280,7 @@ pub struct RawAutoReviewConfig {
     pub draft_pull_requests: Option<bool>,
     pub rerun_command: Option<String>,
     pub fork_policy: Option<RawForkPolicy>,
+    pub publication_mode: Option<String>,
 }
 
 /// Raw layer — mirrors the schema with all-`Option` fields.
@@ -936,11 +955,31 @@ impl Config {
                 }
                 ForkPolicy { allow_fork_prs }
             });
+            // Publication mode (issue #394): how each review
+            // generation reaches the PR. Absent key => `Update`
+            // (zero behavior change until opted in — same
+            // default-preserving pattern as `fork_policy`); an
+            // unknown value is a HARD error (the #380 lesson —
+            // never silently default). The placeholder keeps the
+            // literal constructible; the errors vec fails the load
+            // below.
+            let publication_mode = match raw_ar.publication_mode.as_deref() {
+                None | Some("update") => PublicationMode::Update,
+                Some("new_comment") => PublicationMode::NewComment,
+                Some(other) => {
+                    errors.push(format!(
+                        "auto_review.publication_mode: unknown value '{other}' \
+                         (expected 'update' or 'new_comment')"
+                    ));
+                    PublicationMode::Update
+                }
+            };
             AutoReviewConfig {
                 enabled: raw_ar.enabled.unwrap_or(false),
                 draft_pull_requests: raw_ar.draft_pull_requests.unwrap_or(false),
                 rerun_command,
                 fork_policy,
+                publication_mode,
             }
         });
         if let Some(ar) = &auto_review {

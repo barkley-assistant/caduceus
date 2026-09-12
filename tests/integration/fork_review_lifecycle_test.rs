@@ -24,7 +24,7 @@
 //! with the resolvers injected — the quarantine resolver seam is
 //! identical to the one `tick()` wires.
 
-use caduceus::config::{AutoReviewConfig, ForkPolicy};
+use caduceus::config::{AutoReviewConfig, ForkPolicy, PublicationMode};
 use caduceus::infra::logging::build_test_subscriber;
 use caduceus::meta::TickOutcome;
 use caduceus::review::{PublicationState, Verdict};
@@ -88,6 +88,7 @@ async fn fork_review_lifecycle_end_to_end() {
         fork_policy: Some(ForkPolicy {
             allow_fork_prs: vec!["owner/r".to_string()],
         }),
+        publication_mode: PublicationMode::Update,
     });
 
     let fork_url = h.fork_url();

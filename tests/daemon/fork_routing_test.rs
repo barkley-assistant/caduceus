@@ -17,7 +17,7 @@ use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
 
-use caduceus::config::{AutoReviewConfig, Config, ForkPolicy};
+use caduceus::config::{AutoReviewConfig, Config, ForkPolicy, PublicationMode};
 use caduceus::daemon::tick::review_discovery::{
     classify_discovery_row_for_tests, poll_review_step_for_tests, HeldShas, RowAction,
 };
@@ -65,6 +65,7 @@ fn ar_config(allow_fork_prs: &[&str]) -> AutoReviewConfig {
         fork_policy: Some(ForkPolicy {
             allow_fork_prs: allow_fork_prs.iter().map(|s| s.to_string()).collect(),
         }),
+        publication_mode: PublicationMode::Update,
     }
 }
 
@@ -79,6 +80,7 @@ fn discovery_config(root: &Path, api_base: &str) -> Config {
         draft_pull_requests: false,
         rerun_command: "/caduceus review".to_string(),
         fork_policy: None,
+        publication_mode: PublicationMode::Update,
     });
     cfg
 }

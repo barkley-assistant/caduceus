@@ -19,7 +19,7 @@ use std::path::Path;
 use std::pin::Pin;
 use std::process::Command;
 
-use caduceus::config::{AutoReviewConfig, Config};
+use caduceus::config::{AutoReviewConfig, Config, PublicationMode};
 use caduceus::daemon::tick::review_discovery::poll_review_step_for_tests;
 use caduceus::daemon::tick::review_rerun::{poll_rerun_step_for_tests, ReviewRerunStats};
 use caduceus::github::{Client, HttpCache};
@@ -59,6 +59,7 @@ fn ar_config() -> AutoReviewConfig {
         draft_pull_requests: false,
         rerun_command: "/caduceus review".to_string(),
         fork_policy: None,
+        publication_mode: PublicationMode::Update,
     }
 }
 

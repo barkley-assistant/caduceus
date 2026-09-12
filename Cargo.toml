@@ -840,6 +840,10 @@ name = "fork_policy_test"
 path = "tests/config/fork_policy_test.rs"
 
 [[test]]
+name = "publication_mode_test"
+path = "tests/config/publication_mode_test.rs"
+
+[[test]]
 name = "fork_quarantine_test"
 path = "tests/repo/fork_quarantine_test.rs"
 

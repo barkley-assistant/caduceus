@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
-use caduceus::config::{AutoReviewConfig, Config, LoadContext, RawConfig};
+use caduceus::config::{AutoReviewConfig, Config, LoadContext, PublicationMode, RawConfig};
 use caduceus::github::{Client, HttpCache};
 use caduceus::orchestration::SystemClock;
 use caduceus::repo::fork_quarantine::{quarantine_queue_key, ForkQuarantine, REMOVED_DIRNAME};
@@ -85,6 +85,7 @@ fn ar_config() -> AutoReviewConfig {
         draft_pull_requests: false,
         rerun_command: "/caduceus review".to_string(),
         fork_policy: None,
+        publication_mode: PublicationMode::Update,
     }
 }
 

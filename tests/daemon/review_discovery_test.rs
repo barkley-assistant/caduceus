@@ -28,7 +28,7 @@ use std::pin::Pin;
 use std::process::Command;
 use std::sync::Arc;
 
-use caduceus::config::{AutoReviewConfig, Config, LoadContext, RawConfig};
+use caduceus::config::{AutoReviewConfig, Config, LoadContext, PublicationMode, RawConfig};
 use caduceus::daemon::tick::review_discovery::{
     admit_target_for_tests, classify_discovery_row_for_tests, emit_admitted_for_tests,
     emit_skipped_already_complete_for_tests, emit_skipped_draft_for_tests,
@@ -130,6 +130,7 @@ fn ar_config(enabled: bool) -> AutoReviewConfig {
         draft_pull_requests: false,
         rerun_command: "/caduceus review".to_string(),
         fork_policy: None,
+        publication_mode: PublicationMode::Update,
     }
 }
 
@@ -139,6 +140,7 @@ fn ar_config_drafts(enabled: bool, drafts: bool) -> AutoReviewConfig {
         draft_pull_requests: drafts,
         rerun_command: "/caduceus review".to_string(),
         fork_policy: None,
+        publication_mode: PublicationMode::Update,
     }
 }
 

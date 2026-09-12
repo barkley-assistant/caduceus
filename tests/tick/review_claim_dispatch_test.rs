@@ -25,7 +25,7 @@ use std::pin::Pin;
 use std::process::Command;
 use std::sync::Arc;
 
-use caduceus::config::{AutoReviewConfig, Config};
+use caduceus::config::{AutoReviewConfig, Config, PublicationMode};
 use caduceus::daemon::tick::per_review::{
     REVIEW_EXECUTION_FAILED_EVENT, REVIEW_FAILED_VERDICT_EVENT, REVIEW_PASSED_EVENT,
     REVIEW_RETRY_SCHEDULED_EVENT, REVIEW_STARTED_EVENT, REVIEW_WORKER_COMPLETED_EVENT,
@@ -298,6 +298,7 @@ async fn claim_fixture(
         draft_pull_requests: false,
         rerun_command: "/caduceus review".to_string(),
         fork_policy: None,
+        publication_mode: PublicationMode::Update,
     });
     cfg.git_timeout_seconds = 30;
 
