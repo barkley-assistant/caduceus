@@ -38,7 +38,7 @@ pub use finalize::{
 };
 pub use sticky_comment::{
     find_sticky_comment_by_marker, marker_for_generation, publish, render_sticky_comment,
-    RenderInput, StickyOutcome, REVIEW_MARKER, STICKY_COMMENT_MAX_BYTES,
+    MarkerTarget, RenderInput, StickyOutcome, REVIEW_MARKER, STICKY_COMMENT_MAX_BYTES,
     STICKY_MARKER_SEARCH_MAX_PAGES,
 };
 

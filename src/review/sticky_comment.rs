@@ -63,6 +63,12 @@ pub const STICKY_COMMENT_MAX_BYTES: usize = 65_536;
 /// comment thread cannot exhaust the discovery budget.
 pub const STICKY_MARKER_SEARCH_MAX_PAGES: usize = 20;
 
+/// The marker prefix shared by the untagged legacy marker
+/// ([`REVIEW_MARKER`]) and every generation-tagged marker
+/// ([`marker_for_generation`]). The scan matches on this prefix so a
+/// tagged comment remains discoverable.
+const REVIEW_MARKER_PREFIX: &str = "<!-- caduceus-auto-review";
+
 /// Truncation notice appended when at least one finding was dropped.
 /// Reserved in every render's budget so it can always be appended.
 const TRUNCATION_NOTICE: &str = "_Additional findings truncated to fit the comment size limit._\n";
@@ -304,11 +310,51 @@ struct MarkerCommentWire {
     body: Option<String>,
 }
 
+/// What the marker scan is looking for (issue #394).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MarkerTarget {
+    /// Adopt the marker-bearing comment with the HIGHEST generation
+    /// tag (untagged = 0). First-seen wins on ties. Used by update
+    /// mode (crash-heal / gone-state A): with N marker comments on a
+    /// PR, "the sticky comment" is the latest generation.
+    Latest,
+    /// The comment carrying exactly `gen=N`. Early-exits on match.
+    /// Used by new_comment mode: exactly-once per generation.
+    Generation(u64),
+}
+
+/// Parse the generation tag out of a marker-bearing body: the digits
+/// after the first ` gen=` following the marker prefix. The untagged
+/// legacy marker ([`REVIEW_MARKER`]) and any malformed tag parse as
+/// generation 0.
+fn marker_generation(body: &str) -> u64 {
+    let Some(start) = body.find(REVIEW_MARKER_PREFIX) else {
+        return 0;
+    };
+    let rest = &body[start + REVIEW_MARKER_PREFIX.len()..];
+    let Some(after_tag) = rest.strip_prefix(" gen=") else {
+        return 0;
+    };
+    let digits: String = after_tag
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    digits.parse().unwrap_or(0)
+}
+
 /// Find the existing sticky comment's id by scanning the PR's comment
-/// list for the [`REVIEW_MARKER`] string. Capped at
+/// list for the caduceus marker. Capped at
 /// [`STICKY_MARKER_SEARCH_MAX_PAGES`] pages (Link-header pagination,
-/// mirroring `fetch_comments`). Returns the first matching comment id;
-/// `None` if no marker-bearing comment exists.
+/// mirroring `fetch_comments`).
+///
+/// * [`MarkerTarget::Generation`]`(n)`: returns the first comment
+///   carrying exactly `gen=n` (`None` if absent) — the new_comment
+///   mode's exactly-once-per-generation adoption.
+/// * [`MarkerTarget::Latest`]: returns the marker-bearing comment
+///   with the HIGHEST generation tag (untagged = 0; first-seen wins
+///   ties) — update mode's "the sticky comment is the latest
+///   generation" rule. Scans every page (the max may be on any page),
+///   still bounded by the page cap.
 ///
 /// This is the ownership fallback (DAR §9.2): `sticky_comment_id` is
 /// authoritative; this is the recovery path when the id is stale
@@ -319,11 +365,13 @@ pub async fn find_sticky_comment_by_marker(
     owner: &str,
     repo: &str,
     pr_number: u64,
+    target: MarkerTarget,
 ) -> CaduceusResult<Option<u64>> {
     let path =
         format!("/repos/{owner}/{repo}/issues/{pr_number}/comments?per_page={COMMENTS_PER_PAGE}");
     let mut page = 0usize;
     let mut url: Option<Url> = Some(join_api_path(client, &path));
+    let mut best: Option<(u64, u64)> = None; // (generation, id)
     while let Some(current) = url.take() {
         if page >= STICKY_MARKER_SEARCH_MAX_PAGES {
             return Err(CaduceusError::Other(format!(
@@ -340,18 +388,33 @@ pub async fn find_sticky_comment_by_marker(
                 ))
             })?;
         for comment in wire {
-            if comment
-                .body
-                .as_deref()
-                .unwrap_or_default()
-                .contains(REVIEW_MARKER)
-            {
-                return Ok(Some(comment.id));
+            let body = comment.body.as_deref().unwrap_or_default();
+            match target {
+                MarkerTarget::Generation(n) => {
+                    if body.contains(&marker_for_generation(n)) {
+                        return Ok(Some(comment.id));
+                    }
+                }
+                MarkerTarget::Latest => {
+                    if !body.contains(REVIEW_MARKER_PREFIX) {
+                        continue;
+                    }
+                    let generation = marker_generation(body);
+                    if best
+                        .map(|(best_gen, _)| generation > best_gen)
+                        .unwrap_or(true)
+                    {
+                        best = Some((generation, comment.id));
+                    }
+                }
             }
         }
         url = next_page_url(&response, page as u32 + 1);
     }
-    Ok(None)
+    Ok(match target {
+        MarkerTarget::Generation(_) => None,
+        MarkerTarget::Latest => best.map(|(_, id)| id),
+    })
 }
 
 /// Join an API path (with optional query) onto the client's base URL.
@@ -495,48 +558,94 @@ pub async fn publish(
     match state.sticky_comment_id {
         Some(id) => match fetch_comment_body(client, owner, repo, id).await {
             Ok(existing) if existing == body => Ok(StickyOutcome::Unchanged { comment_id: id }),
-            Ok(_) => apply_update(client, cfg, owner, repo, pr_number, id, &body).await,
+            Ok(_) => {
+                apply_update(
+                    client,
+                    cfg,
+                    owner,
+                    repo,
+                    pr_number,
+                    id,
+                    &body,
+                    MarkerTarget::Latest,
+                )
+                .await
+            }
             Err(CaduceusError::GitHubApi { status: 404, .. }) => {
-                recreate_after_comment_gone(client, cfg, owner, repo, pr_number, &body, Some(id))
-                    .await
+                recreate_after_comment_gone(
+                    client,
+                    cfg,
+                    owner,
+                    repo,
+                    pr_number,
+                    &body,
+                    Some(id),
+                    MarkerTarget::Latest,
+                )
+                .await
             }
             Err(err) => Err(err),
         },
-        None => match find_sticky_comment_by_marker(client, owner, repo, pr_number).await? {
-            Some(id) => {
-                // Crash-heal adoption (AC3): a prior create succeeded but
-                // the id was never persisted. PATCH the adopted id — no
-                // duplicate is created.
-                match fetch_comment_body(client, owner, repo, id).await {
-                    Ok(existing) if existing == body => {
-                        Ok(StickyOutcome::Unchanged { comment_id: id })
+        None => {
+            match find_sticky_comment_by_marker(
+                client,
+                owner,
+                repo,
+                pr_number,
+                MarkerTarget::Latest,
+            )
+            .await?
+            {
+                Some(id) => {
+                    // Crash-heal adoption (AC3): a prior create succeeded
+                    // but the id was never persisted. PATCH the adopted
+                    // id — no duplicate is created.
+                    match fetch_comment_body(client, owner, repo, id).await {
+                        Ok(existing) if existing == body => {
+                            Ok(StickyOutcome::Unchanged { comment_id: id })
+                        }
+                        Ok(_) => {
+                            apply_update(
+                                client,
+                                cfg,
+                                owner,
+                                repo,
+                                pr_number,
+                                id,
+                                &body,
+                                MarkerTarget::Latest,
+                            )
+                            .await
+                        }
+                        Err(CaduceusError::GitHubApi { status: 404, .. }) => {
+                            recreate_after_comment_gone(
+                                client,
+                                cfg,
+                                owner,
+                                repo,
+                                pr_number,
+                                &body,
+                                Some(id),
+                                MarkerTarget::Latest,
+                            )
+                            .await
+                        }
+                        Err(err) => Err(err),
                     }
-                    Ok(_) => apply_update(client, cfg, owner, repo, pr_number, id, &body).await,
-                    Err(CaduceusError::GitHubApi { status: 404, .. }) => {
-                        recreate_after_comment_gone(
-                            client,
-                            cfg,
-                            owner,
-                            repo,
-                            pr_number,
-                            &body,
-                            Some(id),
-                        )
-                        .await
-                    }
-                    Err(err) => Err(err),
+                }
+                None => {
+                    let new_id =
+                        create_pr_comment(client, cfg, owner, repo, pr_number, &body).await?;
+                    Ok(StickyOutcome::Published { comment_id: new_id })
                 }
             }
-            None => {
-                let new_id = create_pr_comment(client, cfg, owner, repo, pr_number, &body).await?;
-                Ok(StickyOutcome::Published { comment_id: new_id })
-            }
-        },
+        }
     }
 }
 
 /// PATCH an existing (authoritative or adopted) comment id. A 404 here
-/// is gone-state A and routes to recovery; everything else propagates.
+/// is gone-state A and routes to recovery with the caller's
+/// [`MarkerTarget`]; everything else propagates.
 async fn apply_update(
     client: &Client,
     cfg: &Config,
@@ -545,21 +654,32 @@ async fn apply_update(
     pr_number: u64,
     comment_id: u64,
     body: &str,
+    target: MarkerTarget,
 ) -> CaduceusResult<StickyOutcome> {
     match update_pr_comment(client, cfg, owner, repo, comment_id, body).await {
         Ok(()) => Ok(StickyOutcome::Published { comment_id }),
         Err(CaduceusError::GitHubApi { status: 404, .. }) => {
-            recreate_after_comment_gone(client, cfg, owner, repo, pr_number, body, Some(comment_id))
-                .await
+            recreate_after_comment_gone(
+                client,
+                cfg,
+                owner,
+                repo,
+                pr_number,
+                body,
+                Some(comment_id),
+                target,
+            )
+            .await
         }
         Err(err) => Err(err),
     }
 }
 
 /// Gone-state A recovery (DAR §9.3 row A): the comment id is stale
-/// (deleted by a human). Search the marker (capped pages); adopt the
-/// found comment via PATCH — never create a duplicate when adoption is
-/// possible — otherwise create a new one. Either way the caller gets
+/// (deleted by a human). Search the marker (capped pages, using the
+/// caller's [`MarkerTarget`]); adopt the found comment via PATCH —
+/// never create a duplicate when adoption is possible — otherwise
+/// create a new one. Either way the caller gets
 /// `CommentGoneRecreated` with the id to persist. A single recovery
 /// pass: if the adopted PATCH 404s too (deleted in the race window),
 /// fall through to create-new; if the create fails, the error
@@ -572,8 +692,9 @@ async fn recreate_after_comment_gone(
     pr_number: u64,
     body: &str,
     failed_id: Option<u64>,
+    target: MarkerTarget,
 ) -> CaduceusResult<StickyOutcome> {
-    let found = find_sticky_comment_by_marker(client, owner, repo, pr_number).await?;
+    let found = find_sticky_comment_by_marker(client, owner, repo, pr_number, target).await?;
     match found {
         Some(id) if Some(id) != failed_id => {
             match update_pr_comment(client, cfg, owner, repo, id, body).await {

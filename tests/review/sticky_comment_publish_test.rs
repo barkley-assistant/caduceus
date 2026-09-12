@@ -18,7 +18,7 @@ use caduceus::github::merge_detect::MergeStatus;
 use caduceus::github::{Client, HttpCache};
 use caduceus::review::sticky_comment::{
     find_sticky_comment_by_marker, marker_for_generation, publish, render_sticky_comment,
-    RenderInput, StickyOutcome, REVIEW_MARKER, STICKY_MARKER_SEARCH_MAX_PAGES,
+    MarkerTarget, RenderInput, StickyOutcome, REVIEW_MARKER, STICKY_MARKER_SEARCH_MAX_PAGES,
 };
 use caduceus::review::{RepositoryId, Review, ReviewState, Severity, Verdict};
 
@@ -103,9 +103,10 @@ async fn marker_search_finds_marker_comment() {
     )
     .await;
     let (client, _cfg) = mock_client(&gh);
-    let found = find_sticky_comment_by_marker(&client, "octocat", "hello-world", 42)
-        .await
-        .expect("search succeeds");
+    let found =
+        find_sticky_comment_by_marker(&client, "octocat", "hello-world", 42, MarkerTarget::Latest)
+            .await
+            .expect("search succeeds");
     assert_eq!(found, Some(99), "marker comment id found on page 2");
 }
 
@@ -118,9 +119,10 @@ async fn marker_search_returns_none_when_absent() {
     )
     .await;
     let (client, _cfg) = mock_client(&gh);
-    let found = find_sticky_comment_by_marker(&client, "octocat", "hello-world", 42)
-        .await
-        .expect("search succeeds");
+    let found =
+        find_sticky_comment_by_marker(&client, "octocat", "hello-world", 42, MarkerTarget::Latest)
+            .await
+            .expect("search succeeds");
     assert_eq!(found, None);
 }
 
@@ -135,13 +137,104 @@ async fn marker_search_errors_past_page_cap() {
     gh.mount_paged("/repos/octocat/hello-world/issues/42/comments", pages)
         .await;
     let (client, _cfg) = mock_client(&gh);
-    let err = find_sticky_comment_by_marker(&client, "octocat", "hello-world", 42)
-        .await
-        .expect_err("page cap trips");
+    let err =
+        find_sticky_comment_by_marker(&client, "octocat", "hello-world", 42, MarkerTarget::Latest)
+            .await
+            .expect_err("page cap trips");
     assert!(
         err.to_string().contains("pages"),
         "cap error mentions pages: {err}"
     );
+}
+
+#[tokio::test]
+async fn latest_target_adopts_highest_generation_not_first_match() {
+    let gh = MockGitHub::start().await;
+    gh.mount_paged(
+        "/repos/octocat/hello-world/issues/42/comments",
+        vec![serde_json::json!([
+            comment_json(11, &format!("review\n{REVIEW_MARKER}\nverdict")),
+            comment_json(12, &format!("old\n{}\nbody", marker_for_generation(1))),
+            comment_json(13, &format!("new\n{}\nbody", marker_for_generation(2))),
+        ])],
+    )
+    .await;
+    let (client, _cfg) = mock_client(&gh);
+    let found =
+        find_sticky_comment_by_marker(&client, "octocat", "hello-world", 42, MarkerTarget::Latest)
+            .await
+            .expect("search succeeds");
+    assert_eq!(found, Some(13), "latest generation wins over first match");
+}
+
+#[tokio::test]
+async fn generation_target_finds_exact_generation_early() {
+    let gh = MockGitHub::start().await;
+    gh.mount_paged(
+        "/repos/octocat/hello-world/issues/42/comments",
+        vec![serde_json::json!([
+            comment_json(11, &format!("a\n{}\nb", marker_for_generation(1))),
+            comment_json(12, &format!("b\n{}\nb", marker_for_generation(2))),
+            comment_json(13, &format!("c\n{}\nb", marker_for_generation(3))),
+        ])],
+    )
+    .await;
+    let (client, _cfg) = mock_client(&gh);
+    let found = find_sticky_comment_by_marker(
+        &client,
+        "octocat",
+        "hello-world",
+        42,
+        MarkerTarget::Generation(2),
+    )
+    .await
+    .expect("search succeeds");
+    assert_eq!(found, Some(12), "exact generation match");
+}
+
+#[tokio::test]
+async fn generation_target_returns_none_when_generation_absent() {
+    let gh = MockGitHub::start().await;
+    gh.mount_paged(
+        "/repos/octocat/hello-world/issues/42/comments",
+        vec![serde_json::json!([comment_json(
+            11,
+            &format!("a\n{}\nb", marker_for_generation(1))
+        ),])],
+    )
+    .await;
+    let (client, _cfg) = mock_client(&gh);
+    let found = find_sticky_comment_by_marker(
+        &client,
+        "octocat",
+        "hello-world",
+        42,
+        MarkerTarget::Generation(4),
+    )
+    .await
+    .expect("search succeeds");
+    assert_eq!(found, None, "no gen-4 comment exists");
+}
+
+#[tokio::test]
+async fn latest_target_adopts_legacy_untagged_comment() {
+    // Pre-#394 PRs carry the untagged marker; it parses as gen 0 and
+    // is adopted when it is the only marker comment.
+    let gh = MockGitHub::start().await;
+    gh.mount_paged(
+        "/repos/octocat/hello-world/issues/42/comments",
+        vec![serde_json::json!([
+            comment_json(11, "human"),
+            comment_json(12, &format!("legacy\n{REVIEW_MARKER}\nbody")),
+        ])],
+    )
+    .await;
+    let (client, _cfg) = mock_client(&gh);
+    let found =
+        find_sticky_comment_by_marker(&client, "octocat", "hello-world", 42, MarkerTarget::Latest)
+            .await
+            .expect("search succeeds");
+    assert_eq!(found, Some(12), "legacy untagged comment adopted");
 }
 
 // -----------------------------------------------------------------------
