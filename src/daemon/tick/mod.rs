@@ -16,7 +16,9 @@
 //!    enforce the rate-limit and cadence gates; persist
 //!    `last_tick_started` and the gated outcome.
 //! 4. Reap stale claims / abandoned worktrees; prune state-dir
-//!    backup/corruption archives past `run_retention_days`.
+//!    backup/corruption archives and finished-run artifacts
+//!    (transcripts, results, previews, stale heartbeats) past
+//!    `run_retention_days`.
 //! 5. Build the typed GitHub [`Client`], discover watched
 //!    repos, poll typed open issues, enqueue summaries.
 //!    Step 5.5 (issue #312, between issue polling and the
@@ -469,6 +471,22 @@ pub async fn tick(
         Ok(pruned) => info!(pruned, "state backup retention sweep completed"),
         Err(err) => {
             tracing::warn!(error = %err, "state backup retention sweep failed; continuing tick")
+        }
+    }
+
+    // 3.5c. Prune finished-run artifacts in `<state_dir>/runs/`
+    //      older than `run_retention_days` (issue #403): worker
+    //      transcripts, archived results, dry-run previews, and
+    //      stale heartbeats. Best-effort like its siblings: a
+    //      failure logs and never aborts the tick. The
+    //      heartbeat-freshness guard inside the sweep mirrors the
+    //      worktree-GC liveness rule, so an in-flight run's files
+    //      are never touched.
+    match crate::state::retention::prune_run_artifacts(&state_dir, cfg.run_retention_days) {
+        Ok(0) => {}
+        Ok(pruned) => info!(pruned, "run artifact retention sweep completed"),
+        Err(err) => {
+            tracing::warn!(error = %err, "run artifact retention sweep failed; continuing tick")
         }
     }
 
