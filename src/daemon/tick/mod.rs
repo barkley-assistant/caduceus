@@ -15,7 +15,8 @@
 //! 3. Open [`StateStore`], [`MetaStore`], [`CadenceGate`], and
 //!    enforce the rate-limit and cadence gates; persist
 //!    `last_tick_started` and the gated outcome.
-//! 4. Reap stale claims / abandoned worktrees.
+//! 4. Reap stale claims / abandoned worktrees; prune state-dir
+//!    backup/corruption archives past `run_retention_days`.
 //! 5. Build the typed GitHub [`Client`], discover watched
 //!    repos, poll typed open issues, enqueue summaries.
 //!    Step 5.5 (issue #312, between issue polling and the
@@ -455,6 +456,20 @@ pub async fn tick(
             }
         }
         Err(err) => tracing::warn!(error = %err, "auto attic sweep failed; continuing tick"),
+    }
+
+    // 3.5b. Prune state-dir backup/corruption archives older than
+    //      `run_retention_days` (issue #402). Best-effort like its
+    //      siblings: a failure logs and never aborts the tick. The
+    //      sweep only ever matches the daemon's own timestamped
+    //      archive classes; untimed corrupt markers and active state
+    //      files are never eligible.
+    match crate::state::retention::prune_backups(&state_dir, cfg.run_retention_days) {
+        Ok(0) => {}
+        Ok(pruned) => info!(pruned, "state backup retention sweep completed"),
+        Err(err) => {
+            tracing::warn!(error = %err, "state backup retention sweep failed; continuing tick")
+        }
     }
 
     // 3.6. Open the SQLite state store for circuit breaker access.

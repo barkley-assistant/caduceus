@@ -465,6 +465,35 @@ async fn auto_gc_removes_stale_worktree_on_tick() {
 }
 
 #[tokio::test]
+async fn retention_prunes_old_backups_on_tick() {
+    let base = tempfile::Builder::new()
+        .prefix("caduceus-tick-retention-")
+        .tempdir_in(std::env::current_dir().unwrap())
+        .expect("base");
+    let state_dir = base.path().join("state");
+
+    let cfg = tick_config(base.path(), vec!["owner/r".to_string()], None, None);
+    // Default run_retention_days is 30; backdate past it.
+    let old_bak = state_dir.join(format!("state.json.bak-{}", 1000000));
+    std::fs::create_dir_all(&state_dir).expect("mkdir state");
+    std::fs::write(&old_bak, b"old").expect("write old bak");
+    backdate_to_older_than(&old_bak, 31);
+
+    let fresh_bak = state_dir.join(format!("state.json.bak-{}", 9999999999u64));
+    std::fs::write(&fresh_bak, b"fresh").expect("write fresh bak");
+
+    let server = MockServer::start().await;
+    let outcome = run_tick(cfg, &server).await.expect("tick");
+
+    assert_eq!(outcome, TickOutcome::IdleEmpty);
+    assert!(
+        !old_bak.exists(),
+        "backdated state.json.bak- must be pruned by the tick"
+    );
+    assert!(fresh_bak.exists(), "fresh backup must survive the sweep");
+}
+
+#[tokio::test]
 async fn auto_gc_disabled_leaves_stale_worktree_intact() {
     let base = tempfile::Builder::new()
         .prefix("caduceus-tick-test-")
