@@ -14,13 +14,15 @@
 //! - AC5: crash-after-publish-before-mark produces no duplicate
 //!   comment (marker adoption / byte-identical idempotency).
 
-use caduceus::config::Config;
+use caduceus::config::{Config, PublicationMode};
 use caduceus::github::{poll_pr_merge_status, Client, HttpCache};
 use caduceus::infra::logging::build_test_subscriber;
 use caduceus::review::finalize::{
     EVENT_PUBLISHED, EVENT_PUBLISH_FAILED_RETRYABLE, EVENT_PUBLISH_STARTED,
 };
-use caduceus::review::sticky_comment::{render_sticky_comment, RenderInput, REVIEW_MARKER};
+use caduceus::review::sticky_comment::{
+    marker_for_generation, render_sticky_comment, RenderInput, REVIEW_MARKER,
+};
 use caduceus::review::{
     backoff_delay, claim_for_publication, finalize_review, DueFinalization, ExecutionStatus,
     FinalizeOutcome, PublicationState, RepositoryId, Review, ReviewResult, ReviewState,
@@ -146,6 +148,7 @@ fn rendered_body() -> String {
         reviewed_head_sha: SHA,
         current_head_sha: None,
         review_generation: 1,
+        publication_mode: PublicationMode::Update,
     })
 }
 
@@ -586,7 +589,12 @@ async fn crashed_publishing_claim_resumes_and_publishes() {
         &format!("/repos/{OWNER}/{REPO}/issues/{PR}/comments"),
         vec![serde_json::json!([serde_json::json!({
             "id": 99,
-            "body": body,
+            // The marker scan matches the UNTAGGED legacy prefix in the
+            // list body (the search is generation-aware from #394 Task
+            // 3; pre-#394 comments parse as gen 0). The GET below
+            // returns the freshly-rendered body — the byte-identical
+            // compare target.
+            "body": format!("an older review body\n{REVIEW_MARKER}"),
         })])],
     )
     .await;
@@ -901,5 +909,8 @@ async fn generation_one_finalize_publishes_without_banner() {
 
     let body = posted_comment_body(&gh);
     assert!(!body.contains("[!IMPORTANT]"), "no banner on gen 1: {body}");
-    assert!(body.starts_with(REVIEW_MARKER), "marker still first");
+    assert!(
+        body.starts_with(&marker_for_generation(1)),
+        "marker still first"
+    );
 }

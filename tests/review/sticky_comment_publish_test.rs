@@ -13,12 +13,12 @@
 //! - Voice gate: forbidden term → error before any HTTP.
 //! - Marker search: paged scan finds the marker id; page-cap error.
 
-use caduceus::config::Config;
+use caduceus::config::{Config, PublicationMode};
 use caduceus::github::merge_detect::MergeStatus;
 use caduceus::github::{Client, HttpCache};
 use caduceus::review::sticky_comment::{
-    find_sticky_comment_by_marker, publish, render_sticky_comment, RenderInput, StickyOutcome,
-    REVIEW_MARKER, STICKY_MARKER_SEARCH_MAX_PAGES,
+    find_sticky_comment_by_marker, marker_for_generation, publish, render_sticky_comment,
+    RenderInput, StickyOutcome, REVIEW_MARKER, STICKY_MARKER_SEARCH_MAX_PAGES,
 };
 use caduceus::review::{RepositoryId, Review, ReviewState, Severity, Verdict};
 
@@ -73,6 +73,7 @@ fn render_input<'a>(r: &'a Review) -> RenderInput<'a> {
         reviewed_head_sha: "abc123",
         current_head_sha: None,
         review_generation: 1,
+        publication_mode: PublicationMode::Update,
     }
 }
 

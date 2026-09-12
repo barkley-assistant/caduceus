@@ -8,10 +8,10 @@
 //!
 //! The renderer ([`render_sticky_comment`]) is pure and deterministic:
 //! the same [`RenderInput`] always produces byte-identical output. It
-//! reserves the header (marker, verdict heading, reviewed SHA,
-//! stale-revision notice, update banner (re-publications)) first and
-//! NEVER front-truncates — only findings are dropped from the tail,
-//! inside a hard byte budget.
+//! reserves the header (generation-tagged marker, verdict heading,
+//! reviewed SHA, stale-revision notice, update banner (re-publications
+//! in `update` mode only)) first and NEVER front-truncates — only
+//! findings are dropped from the tail, inside a hard byte budget.
 //!
 //! [`publish`] owns the four gone-states (DAR §9.3): a deleted comment
 //! (A) is recovered via marker search; a vanished PR (B) and a
@@ -29,7 +29,7 @@ use crate::github::link_header::next_url_from_link_header;
 use crate::github::merge_detect::MergeStatus;
 use crate::github::pr::{create_pr_comment, update_pr_comment};
 use crate::github::{check_voice_or_error, Client, Response, VoiceChannel, ACCEPT_VALUE};
-use crate::infra::config::Config;
+use crate::infra::config::{Config, PublicationMode};
 use crate::infra::error::{CaduceusError, CaduceusResult};
 use crate::review::{Finding, Review, ReviewState, Severity, Verdict};
 
@@ -39,8 +39,19 @@ use crate::review::{Finding, Review, ReviewState, Severity, Verdict};
 
 /// The one-per-PR auto-review marker (DAR §9.2). Hidden HTML comment,
 /// no run id — exactly one sticky comment per PR, not per run, so
-/// marker adoption works across runs.
+/// marker adoption works across runs. Pre-#394 publications carry this
+/// UNTAGGED form; new publications carry the generation tag
+/// ([`marker_for_generation`]) and parse as generation N (untagged
+/// legacy comments parse as generation 0).
 pub const REVIEW_MARKER: &str = "<!-- caduceus-auto-review -->";
+
+/// Generation-tagged marker (issue #394): `<!-- caduceus-auto-review
+/// gen=N -->`. New publications always carry the tag; update-mode
+/// PATCHes rewrite the body whole, so the tag advances for free.
+/// Pre-#394 comments carry the untagged marker and parse as gen 0.
+pub fn marker_for_generation(generation: u64) -> String {
+    format!("<!-- caduceus-auto-review gen={generation} -->")
+}
 
 /// Hard cap on the rendered sticky body. Matches the validator's
 /// `DEFAULT_COMMENT_MAX_BYTES` (`src/finalize/voice.rs`) and GitHub's
@@ -78,11 +89,22 @@ pub struct RenderInput<'a> {
     /// SHA noted).
     pub current_head_sha: Option<&'a str>,
     /// The completing run's `review_generation` — 1 on first
-    /// publication. Any generation > 1 renders the update banner
-    /// (issue #393): the sticky comment is edited in place, so the
-    /// banner is the at-a-glance signal that the review was re-run
-    /// for a new commit.
+    /// publication. Any generation > 1 renders the update banner in
+    /// `update` mode (issue #393): the sticky comment is edited in
+    /// place, so the banner is the at-a-glance signal that the review
+    /// was re-run for a new commit. In `new_comment` mode the banner
+    /// is suppressed at every generation (issue #394) — the fresh
+    /// comment IS the visibility.
     pub review_generation: u64,
+    /// How this review generation reaches the PR (issue #394):
+    /// `Update` PATCHes the single sticky comment in place (and
+    /// renders the #393 banner on re-publication); `NewComment`
+    /// publishes a fresh comment per generation and suppresses the
+    /// banner. Set once by the finalizer from `cfg.auto_review()`;
+    /// `publish` never re-derives the mode from config — the rendered
+    /// body's banner presence and the publish branch must agree
+    /// byte-for-byte.
+    pub publication_mode: PublicationMode,
 }
 
 /// Render the sticky comment body. Pure and deterministic: the same
@@ -91,11 +113,15 @@ pub struct RenderInput<'a> {
 ///
 /// Layout (fixed order — header reserved first, never front-truncated):
 ///
-/// 1. [`REVIEW_MARKER`] (head marker).
+/// 1. Generation-tagged head marker ([`marker_for_generation`] —
+///    `<!-- caduceus-auto-review gen=N -->`).
 /// 2. Blank line.
-/// 3. Update banner (only when `review_generation > 1`, issue #393): a
-///    `> [!IMPORTANT]` alert panel naming the reviewed short SHA and the
-///    generation, so an in-place edit is visible at a glance.
+/// 3. Update banner (only when `review_generation > 1` AND
+///    `publication_mode == Update`, issue #393/#394): a
+///    `> [!IMPORTANT]` alert panel naming the reviewed short SHA and
+///    the generation, so an in-place edit is visible at a glance. In
+///    `new_comment` mode the banner never renders — the fresh comment
+///    per generation is the visibility.
 /// 4. PASS/FAIL heading line (derived from `review.verdict`).
 /// 5. Reviewed SHA line.
 /// 6. Stale-revision notice line (only when `current_head_sha` is
@@ -105,7 +131,8 @@ pub struct RenderInput<'a> {
 ///    stable within severity = persisted `findings` order). Consumption
 ///    stops when the next finding would overflow the remaining budget.
 /// 9. Truncation notice (only when at least one finding was dropped).
-/// 10. Blank line, then [`REVIEW_MARKER`] again (tail marker).
+/// 10. Blank line, then the generation-tagged marker again (tail
+///    marker).
 ///
 /// The total is bounded by [`STICKY_COMMENT_MAX_BYTES`]. Only findings
 /// (and, in the pathological over-cap-summary case, the summary tail)
@@ -116,16 +143,18 @@ pub fn render_sticky_comment(input: &RenderInput<'_>) -> String {
         Verdict::Pass => "## Auto review: PASS",
         Verdict::Fail => "## Auto review: FAIL",
     };
+    let marker = marker_for_generation(input.review_generation);
 
     let mut head = String::new();
-    head.push_str(REVIEW_MARKER);
+    head.push_str(&marker);
     head.push_str("\n\n");
     // Update banner (issue #393): re-publications edit the comment in
     // place, so the banner is the at-a-glance signal. Pushed onto
     // `head` BEFORE the reserve computation below, which makes it
     // part of the never-front-truncated header with zero budget-math
-    // changes.
-    if input.review_generation > 1 {
+    // changes. In `new_comment` mode (issue #394) the banner NEVER
+    // renders — the fresh comment per generation is the visibility.
+    if input.review_generation > 1 && input.publication_mode == PublicationMode::Update {
         head.push_str(&format!(
             "> [!IMPORTANT] Updated for commit `{}` (review generation {})\n\n",
             short_sha(input.reviewed_head_sha),
@@ -150,7 +179,7 @@ pub fn render_sticky_comment(input: &RenderInput<'_>) -> String {
     // Reserve: head + truncation notice (even when unused, so the
     // notice can always be appended) + tail marker + surrounding
     // newlines.
-    let reserved = head.len() + TRUNCATION_NOTICE.len() + REVIEW_MARKER.len() + 2;
+    let reserved = head.len() + TRUNCATION_NOTICE.len() + marker.len() + 2;
     let mut remaining = STICKY_COMMENT_MAX_BYTES.saturating_sub(reserved);
 
     let mut out = String::with_capacity(head.len() + review.summary.len());
@@ -191,7 +220,7 @@ pub fn render_sticky_comment(input: &RenderInput<'_>) -> String {
         out.push_str(TRUNCATION_NOTICE);
     }
     out.push('\n');
-    out.push_str(REVIEW_MARKER);
+    out.push_str(&marker);
     out.push('\n');
     out
 }
