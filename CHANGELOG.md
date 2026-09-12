@@ -204,6 +204,17 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
 
 ### Fixed
 
+- **Finished-run artifacts are now retained, not kept forever.**
+  `<state_dir>/runs/` (worker transcripts, archived results,
+  dry-run previews, heartbeats) had no retention at all — files
+  accumulated for the install's lifetime. The same
+  `run_retention_days` window (default 30 days) that sweeps
+  state-dir backup archives now also prunes finished-run
+  artifacts. A heartbeat-freshness guard (skip anything whose
+  mtime is within the last hour, mirroring the worktree-GC
+  liveness rule) makes it impossible for the sweep to delete an
+  in-flight run's heartbeat and let GC reap a live worktree.
+  Closes #403.
 - **`run_retention_days` now actually prunes state backups.** The
   documented config knob had zero consumers since the crate scaffold;
   the `prune_backups` function built to consume it was never called.
