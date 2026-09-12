@@ -186,20 +186,31 @@ directories) is `hermes caduceus setup`.
 
 ## The `hermes caduceus` wrapper
 
-The Hermes plugin exposes eight subcommands. `queue`, `worktree-gc`,
-and `migrate-state` forward every trailing token verbatim to the
-binary — clap is the single source of truth for their flags.
+The Hermes plugin exposes ten subcommands. `run`, `review`, `queue`,
+`worktree-gc`, and `migrate-state` forward every trailing token
+verbatim to the binary — clap is the single source of truth for their
+flags. A CI drift guard (`tests/plugin/cli_parity_test.py`) parses the
+binary's `Command` enum from `src/cli/mod.rs` and fails when the
+wrapper set diverges, so a new binary subcommand breaks CI instead of
+operators.
 
 ```text
 hermes caduceus setup [--dry-run]
 hermes caduceus doctor [--verbose]
 hermes caduceus status [--json]
+hermes caduceus run [flags...]
+hermes caduceus review <action> [flags...]
 hermes caduceus queue <action> [flags...]
 hermes caduceus worktree-gc [flags...]
 hermes caduceus migrate-state [flags...]
 hermes caduceus cron-install [--dry-run] [--verbose]
 hermes caduceus cron-remove [--verbose]
 ```
+
+`hermes caduceus run` blocks for the whole tick: worker supervision
+alone defaults to a one-hour timeout, so the wrapper allows up to two
+hours before killing the passthrough. For longer-running ticks, run
+the binary directly (or via the cron pulse wrapper).
 
 Note the two different doctors: the wrapper's `hermes caduceus doctor`
 checks plugin health (binary present, bridge seeded, cron job

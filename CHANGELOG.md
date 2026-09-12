@@ -204,6 +204,15 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
 
 ### Fixed
 
+- **`hermes caduceus` now exposes the binary's full command set.**
+  The wrapper registers `run` and `review` REMAINDER passthroughs
+  (previously argparse `invalid choice` errors for operators), with a
+  dedicated 2h subprocess bound for `run` (a tick supervises workers
+  for minutes; the 15s passthrough default would kill a live run).
+  A new drift-guard test parses the clap `Command` enum from
+  `src/cli/mod.rs` and asserts the wrapper's subcommand tree covers it
+  exactly, so a future binary subcommand fails CI instead of breaking
+  operators. Closes #389.
 - **`review list` and `review status` now show each entry's own
   verdict.** The verdict column is derived from the entry's latest
   same-generation history row's `ReviewResult` document (mirroring the
