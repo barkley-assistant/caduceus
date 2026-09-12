@@ -443,20 +443,33 @@ failed**; resume is idempotent via `ReviewState.sticky_comment_id`.
 
 ### 9.2 Sticky comment
 
-One comment per PR, marker `<!-- caduceus-auto-review -->` (no run id — one
-comment per PR, not per run). Ownership: `sticky_comment_id` is
-authoritative; marker search is fallback. Renderer is a **deterministic
-byte-budget renderer**: reserve space for the marker, PASS/FAIL heading,
-reviewed SHA, stale-revision notice (if head moved), and truncation notice;
-consume findings deterministically (blocking → warnings → suggestions, stable
-within severity = persisted order) within the remaining budget. Never
-front-truncate. Byte limit 65,536. Re-publishing the same result is
-**byte-identical** (idempotency requirement, tested).
+In `update` mode (default), one comment per PR, marker
+`<!-- caduceus-auto-review gen=N -->` — generation-tagged, no run id
+(one comment per PR, not per run). Ownership: `sticky_comment_id` is
+authoritative; marker search is fallback. Pre-#394 comments carry the
+untagged `<!-- caduceus-auto-review -->` and parse as generation 0, so
+legacy publications still match.
 
-Re-publication (any generation > 1) prepends a `> [!IMPORTANT]` banner
-— `Updated for commit `<short-sha>` (review generation N)` — above the
-verdict heading, so the in-place edit is visible at a glance; the first
-publication (generation 1) keeps the banner-less body (#393).
+In `new_comment` mode (`auto_review.publication_mode`, #394) the policy
+changes: each review generation publishes a FRESH comment and never
+edits history. Marker search targets the exact `gen=N` comment, keeping
+crash-heal and gone-state adoption exactly-once per generation; the
+#393 banner is suppressed because the fresh comment per generation is
+the visibility. Historical generations are left untouched.
+
+Renderer is a **deterministic byte-budget renderer**: reserve space for
+the marker, PASS/FAIL heading, reviewed SHA, stale-revision notice (if
+head moved), and truncation notice; consume findings deterministically
+(blocking → warnings → suggestions, stable within severity = persisted
+order) within the remaining budget. Never front-truncate. Byte limit
+65,536. Re-publishing the same result is **byte-identical** (idempotency
+requirement, tested).
+
+Re-publication (any generation > 1, `update` mode only) prepends a
+`> [!IMPORTANT]` banner — `Updated for commit `<short-sha>` (review
+generation N)` — above the verdict heading, so the in-place edit is
+visible at a glance; the first publication (generation 1) keeps the
+banner-less body (#393).
 
 Body identifies the exact reviewed SHA (and previous SHA when applicable);
 stale results still publish with the reviewed SHA noted.
@@ -465,7 +478,7 @@ stale results still publish with the reviewed SHA noted.
 
 | # | Condition | At finalization | Policy |
 |---|---|---|---|
-| A | Comment PATCH → 404 | comment deleted by human | marker search (capped pages) → create-new → persist new id; crash between create and id-persist self-heals via marker adoption |
+| A | Comment PATCH → 404 | comment deleted by human | latest-generation marker search (capped pages; exact `gen=N` in new_comment mode) → create-new → persist new id; crash between create and id-persist self-heals via marker adoption |
 | B | PR lookup → 404 | PR deleted/inaccessible | quiet skip; **never recreate** |
 | C | PR closed-unmerged | superseded work | quiet skip + structured event; historical result remains persisted |
 | D | PR merged | review of the merged revision | **publish** (highest-value comment), subject to the stale-generation guard (§9.4) |

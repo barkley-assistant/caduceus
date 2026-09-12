@@ -38,6 +38,15 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
 
 ### Added
 
+- **Per-generation comment publication.** New
+  `auto_review.publication_mode` (`update` (default) | `new_comment`)
+  chooses how re-reviews reach the PR: `update` keeps PATCHing the
+  single sticky comment (with the #393 banner); `new_comment`
+  publishes a fresh comment per review generation and never edits
+  history. Markers are generation-tagged
+  (`<!-- caduceus-auto-review gen=N -->`) so crash-heal and marker
+  adoption stay exactly-once per generation in both modes; unknown
+  values fail the config load. Closes #394.
 - **Fork trust policy + quarantine fetch.** `auto_review.fork_policy.allow_fork_prs`
   (per-repo opt-in list, default empty → fail-closed) lets opted-in
   repos review fork PRs through a per-PR quarantine clone: cloned from

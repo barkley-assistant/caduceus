@@ -158,7 +158,14 @@ auto_review:
   fork_policy:
     allow_fork_prs:
       - owner/repo
+  publication_mode: update    # update (default) | new_comment
 ```
+
+`auto_review.publication_mode` picks how re-reviews reach the PR:
+`update` (default) keeps PATCHing the single sticky comment in place;
+`new_comment` publishes a fresh comment per review generation, leaving
+history untouched and suppressing the update banner. Unknown values
+fail the config load.
 
 - The list is a per-repo **opt-in** (default empty → fail-closed);
   slugs must be watched repos (config load rejects unknown slugs).
