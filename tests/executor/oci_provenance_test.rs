@@ -1,5 +1,6 @@
-use std::io::Write;
-use std::os::unix::fs::PermissionsExt;
+#[path = "../fixtures/mod.rs"]
+mod fixtures;
+
 use std::path::{Path, PathBuf};
 
 use caduceus::executor::oci_engine::OciImageAdapter;
@@ -8,6 +9,7 @@ use caduceus::executor::oci_platform::HostPlatform;
 use caduceus::executor::SandboxEngine;
 use caduceus::infra::config::OciPullPolicy;
 use caduceus::infra::error::CaduceusError;
+use fixtures::write_executable_script;
 use serde_json::Value;
 
 const DIGEST: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -21,7 +23,6 @@ fn host() -> HostPlatform {
 }
 
 fn fake_engine(root: &Path, local_present: bool, inspect_json: &str, pull_fails: bool) -> PathBuf {
-    let binary = root.join("fake-oci");
     let present_exit = if local_present { "0" } else { "1" };
     let pull_body = if pull_fails {
         "printf 'registry offline\\n' >&2\n  exit 42"
@@ -35,18 +36,10 @@ fn fake_engine(root: &Path, local_present: bool, inspect_json: &str, pull_fails:
         pull_body = pull_body,
         inspect_json = inspect_json,
     );
-    let mut file = std::fs::File::create(&binary).expect("create fake OCI executable");
-    file.write_all(script.as_bytes())
-        .expect("write fake OCI executable");
-    // Flush the script to disk before returning: the adapter execs the
-    // binary immediately after this helper returns, and a write that is
-    // still in flight can make the exec fail with ETXTBSY ("text file
-    // busy") on some filesystems. fsync closes the write->exec window.
-    file.sync_all().expect("fsync fake OCI executable");
-    drop(file);
-    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755))
-        .expect("make fake OCI executable");
-    binary
+    // write_executable_script flushes the script to disk and pre-flights
+    // one exec before returning, closing the write->exec ETXTBSY race
+    // (see tests/fixtures/script.rs).
+    write_executable_script(root, "fake-oci", &script)
 }
 
 fn read_record(run_dir: &Path) -> Value {
