@@ -29,9 +29,11 @@
 //! marker (byte-identical idempotency, §9.2) — no duplicate comment —
 //! and reaches `Published`.
 
-use caduceus::config::Config;
+use caduceus::config::{Config, PublicationMode};
 use caduceus::github::{Client, HttpCache};
-use caduceus::review::sticky_comment::{render_sticky_comment, RenderInput, REVIEW_MARKER};
+use caduceus::review::sticky_comment::{
+    marker_for_generation, render_sticky_comment, RenderInput, REVIEW_MARKER,
+};
 use caduceus::review::{
     finalize_review, ExecutionStatus, FinalizeOutcome, PublicationState, RepositoryId, Review,
     ReviewResult, ReviewState, ReviewTarget, Verdict, REVIEW_SCHEMA_VERSION,
@@ -219,9 +221,10 @@ async fn restart_mid_publish_emits_no_duplicate_comment_and_reaches_published() 
         reviewed_head_sha: SHA,
         current_head_sha: None,
         review_generation: 1,
+        publication_mode: PublicationMode::Update,
     });
     assert!(
-        rendered.contains(REVIEW_MARKER),
+        rendered.contains(&marker_for_generation(1)),
         "rendered sticky carries the automation marker"
     );
     gh.mount(
@@ -234,7 +237,12 @@ async fn restart_mid_publish_emits_no_duplicate_comment_and_reaches_published() 
         &format!("/repos/{OWNER}/{REPO}/issues/{PR}/comments"),
         vec![serde_json::json!([serde_json::json!({
             "id": 99,
-            "body": rendered,
+            // The marker scan matches the UNTAGGED legacy prefix in the
+            // list body (the search is generation-aware from #394 Task
+            // 3; pre-#394 comments parse as gen 0). The GET below
+            // returns the freshly-rendered body — the byte-identical
+            // compare target.
+            "body": format!("an older review body\n{REVIEW_MARKER}"),
         })])],
     )
     .await;

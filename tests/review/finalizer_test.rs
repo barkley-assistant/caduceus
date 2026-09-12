@@ -14,13 +14,15 @@
 //! - AC5: crash-after-publish-before-mark produces no duplicate
 //!   comment (marker adoption / byte-identical idempotency).
 
-use caduceus::config::Config;
+use caduceus::config::{Config, PublicationMode};
 use caduceus::github::{poll_pr_merge_status, Client, HttpCache};
 use caduceus::infra::logging::build_test_subscriber;
 use caduceus::review::finalize::{
     EVENT_PUBLISHED, EVENT_PUBLISH_FAILED_RETRYABLE, EVENT_PUBLISH_STARTED,
 };
-use caduceus::review::sticky_comment::{render_sticky_comment, RenderInput, REVIEW_MARKER};
+use caduceus::review::sticky_comment::{
+    marker_for_generation, render_sticky_comment, RenderInput, REVIEW_MARKER,
+};
 use caduceus::review::{
     backoff_delay, claim_for_publication, finalize_review, DueFinalization, ExecutionStatus,
     FinalizeOutcome, PublicationState, RepositoryId, Review, ReviewResult, ReviewState,
@@ -146,6 +148,7 @@ fn rendered_body() -> String {
         reviewed_head_sha: SHA,
         current_head_sha: None,
         review_generation: 1,
+        publication_mode: PublicationMode::Update,
     })
 }
 
@@ -586,7 +589,12 @@ async fn crashed_publishing_claim_resumes_and_publishes() {
         &format!("/repos/{OWNER}/{REPO}/issues/{PR}/comments"),
         vec![serde_json::json!([serde_json::json!({
             "id": 99,
-            "body": body,
+            // The marker scan matches the UNTAGGED legacy prefix in the
+            // list body (the search is generation-aware from #394 Task
+            // 3; pre-#394 comments parse as gen 0). The GET below
+            // returns the freshly-rendered body — the byte-identical
+            // compare target.
+            "body": format!("an older review body\n{REVIEW_MARKER}"),
         })])],
     )
     .await;
@@ -901,5 +909,103 @@ async fn generation_one_finalize_publishes_without_banner() {
 
     let body = posted_comment_body(&gh);
     assert!(!body.contains("[!IMPORTANT]"), "no banner on gen 1: {body}");
-    assert!(body.starts_with(REVIEW_MARKER), "marker still first");
+    assert!(
+        body.starts_with(&marker_for_generation(1)),
+        "marker still first"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// New-comment publication mode wiring (issue #394) — the finalizer reads
+// `publication_mode` from `cfg.auto_review()` and the publish branch +
+// banner suppression follow
+// ---------------------------------------------------------------------------
+
+/// Clone `cfg` with `auto_review.publication_mode = NewComment`.
+fn new_comment_cfg(mut cfg: Config) -> Config {
+    cfg.auto_review = Some(caduceus::config::AutoReviewConfig {
+        enabled: true,
+        draft_pull_requests: false,
+        rerun_command: "/caduceus review".to_string(),
+        fork_policy: None,
+        publication_mode: PublicationMode::NewComment,
+    });
+    cfg
+}
+
+#[tokio::test]
+async fn new_comment_finalize_creates_second_comment_and_repoints_id() {
+    let gh = MockGitHub::start().await;
+    gh.mount(
+        "GET",
+        &format!("/repos/{OWNER}/{REPO}/pulls/{PR}"),
+        serde_json::json!({ "state": "open", "merged": false }),
+    )
+    .await;
+    // Comment list shows ONLY the gen-1 comment (id 50) — the state's
+    // sticky_comment_id points at it, but new_comment mode must NOT
+    // PATCH it; the gen-2 marker search finds nothing and creates 51.
+    gh.mount_paged(
+        &format!("/repos/{OWNER}/{REPO}/issues/{PR}/comments"),
+        vec![serde_json::json!([serde_json::json!({
+            "id": 50,
+            "body": rendered_body(),
+        })])],
+    )
+    .await;
+    gh.mount_status(
+        "POST",
+        &format!("/repos/{OWNER}/{REPO}/issues/{PR}/comments"),
+        201,
+        serde_json::json!({ "id": 51, "body": "" }),
+    )
+    .await;
+    let (client, cfg) = mock_client(&gh);
+    let cfg = new_comment_cfg(cfg);
+    let (store, _dir) = seeded_store("fin-nc", 2, PublicationState::Pending);
+    let mut state = load_state(&store);
+    state.sticky_comment_id = Some(50); // gen-1's comment
+    store.save_review_state(&state).expect("seed sticky id");
+
+    let outcome = finalize_review(&client, &cfg, &store, &due(2), now())
+        .await
+        .expect("finalize succeeds");
+    assert_eq!(outcome, FinalizeOutcome::Published);
+
+    let state = load_state(&store);
+    assert_eq!(
+        state.sticky_comment_id,
+        Some(51),
+        "sticky_comment_id re-points to the gen-2 comment"
+    );
+    let counts = gh.counts();
+    assert_eq!(counts.patch, 0, "history never PATCHed in new_comment mode");
+
+    let body = posted_comment_body(&gh);
+    assert!(
+        body.starts_with(&marker_for_generation(2)),
+        "created body carries the gen-2 marker: {body}"
+    );
+    assert!(
+        !body.contains("[!IMPORTANT]"),
+        "no banner in new_comment mode"
+    );
+}
+
+#[tokio::test]
+async fn stale_generation_suppression_holds_in_new_comment_mode() {
+    let gh = MockGitHub::start().await;
+    let (client, cfg) = mock_client(&gh);
+    let cfg = new_comment_cfg(cfg);
+    // Current state generation 2; the completing run finished under
+    // generation 1 — same fixture as the update-mode suppression test,
+    // but the cfg declares new_comment mode. The §9.4 guard returns
+    // before any HTTP call regardless of mode.
+    let (store, _dir) = seeded_store("fin-nc-stale", 2, PublicationState::Pending);
+
+    let outcome = finalize_review(&client, &cfg, &store, &due(1), now())
+        .await
+        .expect("finalize succeeds");
+    assert_eq!(outcome, FinalizeOutcome::SuppressedStaleGeneration);
+    assert_eq!(gh.counts().total(), 0, "zero GitHub requests mounted");
 }

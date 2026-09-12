@@ -37,8 +37,9 @@ pub use finalize::{
     PUBLISH_ERROR_SUPPRESSED_STALE,
 };
 pub use sticky_comment::{
-    find_sticky_comment_by_marker, publish, render_sticky_comment, RenderInput, StickyOutcome,
-    REVIEW_MARKER, STICKY_COMMENT_MAX_BYTES, STICKY_MARKER_SEARCH_MAX_PAGES,
+    find_sticky_comment_by_marker, marker_for_generation, publish, render_sticky_comment,
+    MarkerTarget, RenderInput, StickyOutcome, REVIEW_MARKER, STICKY_COMMENT_MAX_BYTES,
+    STICKY_MARKER_SEARCH_MAX_PAGES,
 };
 
 use chrono::{DateTime, Utc};

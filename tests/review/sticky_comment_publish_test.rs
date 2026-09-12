@@ -13,12 +13,12 @@
 //! - Voice gate: forbidden term → error before any HTTP.
 //! - Marker search: paged scan finds the marker id; page-cap error.
 
-use caduceus::config::Config;
+use caduceus::config::{Config, PublicationMode};
 use caduceus::github::merge_detect::MergeStatus;
 use caduceus::github::{Client, HttpCache};
 use caduceus::review::sticky_comment::{
-    find_sticky_comment_by_marker, publish, render_sticky_comment, RenderInput, StickyOutcome,
-    REVIEW_MARKER, STICKY_MARKER_SEARCH_MAX_PAGES,
+    find_sticky_comment_by_marker, marker_for_generation, publish, render_sticky_comment,
+    MarkerTarget, RenderInput, StickyOutcome, REVIEW_MARKER, STICKY_MARKER_SEARCH_MAX_PAGES,
 };
 use caduceus::review::{RepositoryId, Review, ReviewState, Severity, Verdict};
 
@@ -73,6 +73,29 @@ fn render_input<'a>(r: &'a Review) -> RenderInput<'a> {
         reviewed_head_sha: "abc123",
         current_head_sha: None,
         review_generation: 1,
+        publication_mode: PublicationMode::Update,
+    }
+}
+
+/// Update-mode render at an arbitrary generation (mode-flip tests).
+fn render_input_gen<'a>(r: &'a Review, generation: u64) -> RenderInput<'a> {
+    RenderInput {
+        review: r,
+        reviewed_head_sha: "abc123",
+        current_head_sha: None,
+        review_generation: generation,
+        publication_mode: PublicationMode::Update,
+    }
+}
+
+/// New-comment-mode render at an arbitrary generation (issue #394).
+fn nc_render_input<'a>(r: &'a Review, generation: u64) -> RenderInput<'a> {
+    RenderInput {
+        review: r,
+        reviewed_head_sha: "abc123",
+        current_head_sha: None,
+        review_generation: generation,
+        publication_mode: PublicationMode::NewComment,
     }
 }
 
@@ -102,9 +125,10 @@ async fn marker_search_finds_marker_comment() {
     )
     .await;
     let (client, _cfg) = mock_client(&gh);
-    let found = find_sticky_comment_by_marker(&client, "octocat", "hello-world", 42)
-        .await
-        .expect("search succeeds");
+    let found =
+        find_sticky_comment_by_marker(&client, "octocat", "hello-world", 42, MarkerTarget::Latest)
+            .await
+            .expect("search succeeds");
     assert_eq!(found, Some(99), "marker comment id found on page 2");
 }
 
@@ -117,9 +141,10 @@ async fn marker_search_returns_none_when_absent() {
     )
     .await;
     let (client, _cfg) = mock_client(&gh);
-    let found = find_sticky_comment_by_marker(&client, "octocat", "hello-world", 42)
-        .await
-        .expect("search succeeds");
+    let found =
+        find_sticky_comment_by_marker(&client, "octocat", "hello-world", 42, MarkerTarget::Latest)
+            .await
+            .expect("search succeeds");
     assert_eq!(found, None);
 }
 
@@ -134,13 +159,104 @@ async fn marker_search_errors_past_page_cap() {
     gh.mount_paged("/repos/octocat/hello-world/issues/42/comments", pages)
         .await;
     let (client, _cfg) = mock_client(&gh);
-    let err = find_sticky_comment_by_marker(&client, "octocat", "hello-world", 42)
-        .await
-        .expect_err("page cap trips");
+    let err =
+        find_sticky_comment_by_marker(&client, "octocat", "hello-world", 42, MarkerTarget::Latest)
+            .await
+            .expect_err("page cap trips");
     assert!(
         err.to_string().contains("pages"),
         "cap error mentions pages: {err}"
     );
+}
+
+#[tokio::test]
+async fn latest_target_adopts_highest_generation_not_first_match() {
+    let gh = MockGitHub::start().await;
+    gh.mount_paged(
+        "/repos/octocat/hello-world/issues/42/comments",
+        vec![serde_json::json!([
+            comment_json(11, &format!("review\n{REVIEW_MARKER}\nverdict")),
+            comment_json(12, &format!("old\n{}\nbody", marker_for_generation(1))),
+            comment_json(13, &format!("new\n{}\nbody", marker_for_generation(2))),
+        ])],
+    )
+    .await;
+    let (client, _cfg) = mock_client(&gh);
+    let found =
+        find_sticky_comment_by_marker(&client, "octocat", "hello-world", 42, MarkerTarget::Latest)
+            .await
+            .expect("search succeeds");
+    assert_eq!(found, Some(13), "latest generation wins over first match");
+}
+
+#[tokio::test]
+async fn generation_target_finds_exact_generation_early() {
+    let gh = MockGitHub::start().await;
+    gh.mount_paged(
+        "/repos/octocat/hello-world/issues/42/comments",
+        vec![serde_json::json!([
+            comment_json(11, &format!("a\n{}\nb", marker_for_generation(1))),
+            comment_json(12, &format!("b\n{}\nb", marker_for_generation(2))),
+            comment_json(13, &format!("c\n{}\nb", marker_for_generation(3))),
+        ])],
+    )
+    .await;
+    let (client, _cfg) = mock_client(&gh);
+    let found = find_sticky_comment_by_marker(
+        &client,
+        "octocat",
+        "hello-world",
+        42,
+        MarkerTarget::Generation(2),
+    )
+    .await
+    .expect("search succeeds");
+    assert_eq!(found, Some(12), "exact generation match");
+}
+
+#[tokio::test]
+async fn generation_target_returns_none_when_generation_absent() {
+    let gh = MockGitHub::start().await;
+    gh.mount_paged(
+        "/repos/octocat/hello-world/issues/42/comments",
+        vec![serde_json::json!([comment_json(
+            11,
+            &format!("a\n{}\nb", marker_for_generation(1))
+        ),])],
+    )
+    .await;
+    let (client, _cfg) = mock_client(&gh);
+    let found = find_sticky_comment_by_marker(
+        &client,
+        "octocat",
+        "hello-world",
+        42,
+        MarkerTarget::Generation(4),
+    )
+    .await
+    .expect("search succeeds");
+    assert_eq!(found, None, "no gen-4 comment exists");
+}
+
+#[tokio::test]
+async fn latest_target_adopts_legacy_untagged_comment() {
+    // Pre-#394 PRs carry the untagged marker; it parses as gen 0 and
+    // is adopted when it is the only marker comment.
+    let gh = MockGitHub::start().await;
+    gh.mount_paged(
+        "/repos/octocat/hello-world/issues/42/comments",
+        vec![serde_json::json!([
+            comment_json(11, "human"),
+            comment_json(12, &format!("legacy\n{REVIEW_MARKER}\nbody")),
+        ])],
+    )
+    .await;
+    let (client, _cfg) = mock_client(&gh);
+    let found =
+        find_sticky_comment_by_marker(&client, "octocat", "hello-world", 42, MarkerTarget::Latest)
+            .await
+            .expect("search succeeds");
+    assert_eq!(found, Some(12), "legacy untagged comment adopted");
 }
 
 // -----------------------------------------------------------------------
@@ -584,4 +700,237 @@ async fn voice_gate_blocks_publish_before_http() {
     // The gate fires before the marker search hits the network: even
     // though nothing is mounted, no request was made.
     assert_eq!(gh.counts().total(), 0, "no HTTP before the gate");
+}
+
+// -----------------------------------------------------------------------
+// New-comment publication mode (issue #394) — fresh comment per
+// generation, history untouched
+// -----------------------------------------------------------------------
+
+#[tokio::test]
+async fn new_comment_gen2_creates_second_comment_without_patching_history() {
+    let gh = MockGitHub::start().await;
+    let r = review();
+    let gen1_body = render_sticky_comment(&nc_render_input(&r, 1));
+    let _gen2_body = render_sticky_comment(&nc_render_input(&r, 2));
+    // Comment list: gen-1 comment still on the wire.
+    gh.mount_paged(
+        "/repos/octocat/hello-world/issues/42/comments",
+        vec![serde_json::json!([comment_json(50, &gen1_body)])],
+    )
+    .await;
+    gh.mount_status(
+        "POST",
+        "/repos/octocat/hello-world/issues/42/comments",
+        201,
+        comment_json(51, ""),
+    )
+    .await;
+    let (client, cfg) = mock_client(&gh);
+    let mut state = review_state(Some(50)); // points at gen-1 comment
+    state.review_generation = 2;
+    let outcome = publish(
+        &client,
+        &cfg,
+        "octocat",
+        "hello-world",
+        42,
+        &state,
+        &nc_render_input(&r, 2),
+        MergeStatus::StillOpen,
+    )
+    .await
+    .expect("publish succeeds");
+    assert_eq!(outcome, StickyOutcome::Published { comment_id: 51 });
+    let counts = gh.counts();
+    assert_eq!(
+        counts.patch, 0,
+        "history is never PATCHed in new_comment mode"
+    );
+    assert_eq!(counts.post, 1, "exactly one new comment");
+}
+
+#[tokio::test]
+async fn new_comment_byte_identical_republish_is_unchanged() {
+    let gh = MockGitHub::start().await;
+    let r = review();
+    let gen2_body = render_sticky_comment(&nc_render_input(&r, 2));
+    gh.mount_paged(
+        "/repos/octocat/hello-world/issues/42/comments",
+        vec![serde_json::json!([
+            comment_json(50, &render_sticky_comment(&nc_render_input(&r, 1))),
+            comment_json(51, &gen2_body),
+        ])],
+    )
+    .await;
+    gh.mount_status(
+        "GET",
+        "/repos/octocat/hello-world/issues/comments/51",
+        200,
+        comment_json(51, &gen2_body),
+    )
+    .await;
+    let (client, cfg) = mock_client(&gh);
+    let mut state = review_state(Some(51));
+    state.review_generation = 2;
+    let outcome = publish(
+        &client,
+        &cfg,
+        "octocat",
+        "hello-world",
+        42,
+        &state,
+        &nc_render_input(&r, 2),
+        MergeStatus::StillOpen,
+    )
+    .await
+    .expect("publish succeeds");
+    assert_eq!(outcome, StickyOutcome::Unchanged { comment_id: 51 });
+    let counts = gh.counts();
+    assert_eq!(counts.patch, 0);
+    assert_eq!(counts.post, 0, "no third comment");
+}
+
+#[tokio::test]
+async fn new_comment_crash_heal_adopts_gen_comment_via_marker() {
+    // Create succeeded, id never persisted: sticky_comment_id still
+    // points at the gen-1 comment. The gen-2 marker search must adopt
+    // the gen-2 comment — no duplicate, no history PATCH.
+    let gh = MockGitHub::start().await;
+    let r = review();
+    let gen2_body = render_sticky_comment(&nc_render_input(&r, 2));
+    gh.mount_paged(
+        "/repos/octocat/hello-world/issues/42/comments",
+        vec![serde_json::json!([
+            comment_json(50, &render_sticky_comment(&nc_render_input(&r, 1))),
+            comment_json(51, &gen2_body),
+        ])],
+    )
+    .await;
+    gh.mount_status(
+        "GET",
+        "/repos/octocat/hello-world/issues/comments/51",
+        200,
+        comment_json(51, &gen2_body),
+    )
+    .await;
+    let (client, cfg) = mock_client(&gh);
+    let mut state = review_state(Some(50)); // stale: gen-1 id
+    state.review_generation = 2;
+    let outcome = publish(
+        &client,
+        &cfg,
+        "octocat",
+        "hello-world",
+        42,
+        &state,
+        &nc_render_input(&r, 2),
+        MergeStatus::StillOpen,
+    )
+    .await
+    .expect("publish succeeds");
+    assert_eq!(outcome, StickyOutcome::Unchanged { comment_id: 51 });
+    let counts = gh.counts();
+    assert_eq!(counts.patch, 0);
+    assert_eq!(counts.post, 0, "crash-heal never duplicates");
+}
+
+#[tokio::test]
+async fn new_comment_deleted_latest_gen_recreates_historical_left_alone() {
+    // gen-2 comment deleted by a human; gen-1 comment still present.
+    // Publish gen 2 again: recreate gen-2 (create), never PATCH gen-1.
+    let gh = MockGitHub::start().await;
+    let r = review();
+    gh.mount_paged(
+        "/repos/octocat/hello-world/issues/42/comments",
+        vec![serde_json::json!([comment_json(
+            50,
+            &render_sticky_comment(&nc_render_input(&r, 1)),
+        )])],
+    )
+    .await;
+    gh.mount_status(
+        "POST",
+        "/repos/octocat/hello-world/issues/42/comments",
+        201,
+        comment_json(52, ""),
+    )
+    .await;
+    let (client, cfg) = mock_client(&gh);
+    let mut state = review_state(Some(51)); // deleted gen-2 id
+    state.review_generation = 2;
+    let outcome = publish(
+        &client,
+        &cfg,
+        "octocat",
+        "hello-world",
+        42,
+        &state,
+        &nc_render_input(&r, 2),
+        MergeStatus::StillOpen,
+    )
+    .await
+    .expect("publish succeeds");
+    assert!(
+        matches!(
+            outcome,
+            StickyOutcome::Published { comment_id: 52 }
+                | StickyOutcome::CommentGoneRecreated { new_comment_id: 52 }
+        ),
+        "gen-2 recreated: {outcome:?}"
+    );
+    let counts = gh.counts();
+    assert_eq!(counts.patch, 0, "historical gen-1 comment untouched");
+}
+
+#[tokio::test]
+async fn update_flip_adopts_latest_gen_when_id_lost() {
+    // PR ran in new_comment mode (gen 1..3 comments exist); operator
+    // flipped to update; sticky_comment_id was lost (crash). The
+    // Latest search must adopt gen-3, NOT the first (gen-1) comment.
+    let gh = MockGitHub::start().await;
+    let r = review();
+    gh.mount_paged(
+        "/repos/octocat/hello-world/issues/42/comments",
+        vec![serde_json::json!([
+            comment_json(50, &format!("g1\n{}\nb", marker_for_generation(1))),
+            comment_json(51, &format!("g2\n{}\nb", marker_for_generation(2))),
+            comment_json(52, &format!("g3\n{}\nb", marker_for_generation(3))),
+        ])],
+    )
+    .await;
+    let gen4_body = render_sticky_comment(&render_input_gen(&r, 4)); // update mode
+    gh.mount_status(
+        "GET",
+        "/repos/octocat/hello-world/issues/comments/52",
+        200,
+        comment_json(52, "stale gen-3 body"),
+    )
+    .await;
+    gh.mount_status(
+        "PATCH",
+        "/repos/octocat/hello-world/issues/comments/52",
+        200,
+        comment_json(52, &gen4_body),
+    )
+    .await;
+    let (client, cfg) = mock_client(&gh);
+    let mut state = review_state(None); // id lost
+    state.review_generation = 4;
+    let outcome = publish(
+        &client,
+        &cfg,
+        "octocat",
+        "hello-world",
+        42,
+        &state,
+        &render_input_gen(&r, 4),
+        MergeStatus::StillOpen,
+    )
+    .await
+    .expect("publish succeeds");
+    assert_eq!(outcome, StickyOutcome::Published { comment_id: 52 });
+    let counts = gh.counts();
+    assert_eq!(counts.patch, 1, "exactly the gen-3 comment PATCHed");
+    assert_eq!(counts.post, 0, "update mode never creates a second comment");
 }

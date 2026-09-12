@@ -35,7 +35,7 @@ use std::pin::Pin;
 use std::process::Command;
 use std::sync::Arc;
 
-use caduceus::config::{AutoReviewConfig, Config};
+use caduceus::config::{AutoReviewConfig, Config, PublicationMode};
 use caduceus::executor::{Executor, ExecutorOutcome, ExecutorSpec};
 use caduceus::github::{Client, HttpCache};
 use caduceus::meta::TickOutcome;
@@ -295,6 +295,7 @@ impl LifecycleHarness {
             draft_pull_requests: false,
             rerun_command: "/caduceus review".to_string(),
             fork_policy: None,
+            publication_mode: PublicationMode::Update,
         });
         cfg.state_backend = backend.state_backend().to_string();
         cfg.repo_storage_root = root.join("repos");

@@ -186,9 +186,27 @@ suppressed by a monotonic publication guard so an older run can never
 overwrite a newer one (DAR §9.4). Re-publishing the same result is
 byte-identical (idempotency requirement).
 
-Re-reviews (generation 2 and later) prepend a `> [!IMPORTANT]` banner
-naming the new reviewed commit and the generation, so the update is
-visible without opening the comment's edit history.
+Re-reviews (generation 2 and later, `update` mode) prepend a
+`> [!IMPORTANT]` banner naming the new reviewed commit and the
+generation, so the update is visible without opening the comment's edit
+history.
+
+`auto_review.publication_mode` (`update` (default) | `new_comment`)
+selects the re-review publication policy:
+
+| Mode | Re-review behaviour | #393 banner | History |
+|---|---|---|---|
+| `update` (default) | PATCHes the single sticky comment in place | shown | one comment ever |
+| `new_comment` | publishes a fresh comment per review generation | suppressed | every generation preserved |
+
+`update` keeps the pre-#394 behaviour: one sticky comment per PR,
+PATCHed on each re-review. `new_comment` publishes a fresh comment per
+review generation and never edits history — the full comment trail per
+re-review is kept. Markers are generation-tagged
+(`<!-- caduceus-auto-review gen=N -->`); untagged pre-#394 comments
+parse as generation 0. Crash-heal and gone-state marker adoption stay
+exactly-once per generation in both modes; an unknown value fails the
+config load.
 
 ## Config reference
 

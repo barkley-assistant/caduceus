@@ -13,8 +13,10 @@
 //!   finding body containing the marker literal, multi-byte UTF-8
 //!   summary truncation.
 
+use caduceus::config::PublicationMode;
 use caduceus::review::sticky_comment::{
-    render_sticky_comment, RenderInput, REVIEW_MARKER, STICKY_COMMENT_MAX_BYTES,
+    marker_for_generation, render_sticky_comment, RenderInput, REVIEW_MARKER,
+    STICKY_COMMENT_MAX_BYTES,
 };
 use caduceus::review::{Finding, Review, Severity, Verdict};
 
@@ -32,6 +34,7 @@ fn pass_input<'a>(r: &'a Review, sha: &'a str) -> RenderInput<'a> {
         reviewed_head_sha: sha,
         current_head_sha: None,
         review_generation: 1,
+        publication_mode: PublicationMode::Update,
     }
 }
 
@@ -57,7 +60,10 @@ fn render_is_byte_identical_for_same_input() {
     let a = render_sticky_comment(&input);
     let b = render_sticky_comment(&input);
     assert_eq!(a, b, "re-publish must be byte-identical");
-    assert!(a.contains(REVIEW_MARKER));
+    assert!(
+        a.contains(&marker_for_generation(1)),
+        "tagged marker present"
+    );
     assert!(a.contains("PASS"));
     assert!(a.contains("abc123"));
 }
@@ -70,9 +76,14 @@ fn marker_appears_at_head_and_tail() {
         vec![finding(Severity::Blocking, "t", "b")],
     );
     let body = render_sticky_comment(&pass_input(&r, "abc"));
-    assert!(body.starts_with(REVIEW_MARKER), "head marker first");
-    let tail = body.rfind(REVIEW_MARKER).expect("tail marker present");
-    let after_tail = &body[tail + REVIEW_MARKER.len()..];
+    assert!(
+        body.starts_with(&marker_for_generation(1)),
+        "head marker first"
+    );
+    let tail = body
+        .rfind(&marker_for_generation(1))
+        .expect("tail marker present");
+    let after_tail = &body[tail + marker_for_generation(1).len()..];
     // Only the trailing newline may follow the tail marker.
     assert!(
         after_tail.chars().all(|c| c == '\n'),
@@ -104,6 +115,7 @@ fn no_stale_notice_when_head_unchanged_or_unknown() {
         reviewed_head_sha: "sha1",
         current_head_sha: Some("sha1"),
         review_generation: 1,
+        publication_mode: PublicationMode::Update,
     });
     assert!(!body.contains("Stale"), "no stale notice when equal");
 }
@@ -116,6 +128,7 @@ fn stale_revision_notice_when_head_moved() {
         reviewed_head_sha: "oldsha",
         current_head_sha: Some("newsha"),
         review_generation: 1,
+        publication_mode: PublicationMode::Update,
     });
     assert!(body.contains("oldsha"));
     assert!(body.contains("newsha"));
@@ -194,7 +207,7 @@ fn truncation_notice_present_when_findings_dropped() {
     let r = review(Verdict::Fail, "summary", findings);
     let body = render_sticky_comment(&pass_input(&r, "abc"));
     assert!(body.len() <= 65_536, "under cap");
-    assert!(body.contains(REVIEW_MARKER), "marker present");
+    assert!(body.contains(&marker_for_generation(1)), "marker present");
     assert!(body.contains("FAIL"), "verdict header present");
     assert!(
         body.contains("truncated") || body.contains("Truncated"),
@@ -212,7 +225,7 @@ fn overflow_properties_hold_for_many_findings() {
     let r = review(Verdict::Fail, "summary", findings);
     let body = render_sticky_comment(&pass_input(&r, "abc"));
     assert!(body.len() <= STICKY_COMMENT_MAX_BYTES, "under cap");
-    assert!(body.contains(REVIEW_MARKER), "marker present");
+    assert!(body.contains(&marker_for_generation(1)), "marker present");
     assert!(body.contains("FAIL"), "verdict header present");
     assert!(
         body.contains("truncated") || body.contains("Truncated"),
@@ -253,9 +266,11 @@ fn one_huge_finding_fits_second_is_dropped() {
     );
     // The tail marker is the last content byte (only a trailing newline
     // may follow) — the render never ends inside a finding body.
-    let tail = body.rfind(REVIEW_MARKER).expect("tail marker present");
+    let tail = body
+        .rfind(&marker_for_generation(1))
+        .expect("tail marker present");
     assert!(
-        body[tail + REVIEW_MARKER.len()..]
+        body[tail + marker_for_generation(1).len()..]
             .chars()
             .all(|c| c == '\n'),
         "tail marker is last despite dropped findings"
@@ -271,9 +286,11 @@ fn marker_literal_inside_finding_body_does_not_break_ownership() {
     let findings = vec![finding(Severity::Warning, "w", &hostile)];
     let r = review(Verdict::Pass, "summary", findings);
     let body = render_sticky_comment(&pass_input(&r, "abc"));
-    let tail = body.rfind(REVIEW_MARKER).expect("tail marker present");
+    let tail = body
+        .rfind(&marker_for_generation(1))
+        .expect("tail marker present");
     assert!(
-        body[tail + REVIEW_MARKER.len()..]
+        body[tail + marker_for_generation(1).len()..]
             .chars()
             .all(|c| c == '\n'),
         "tail marker is last despite hostile body"
@@ -291,7 +308,7 @@ fn huge_summary_tail_truncated_header_intact() {
     let r = review(Verdict::Pass, &summary, vec![]);
     let body = render_sticky_comment(&pass_input(&r, "abc"));
     assert!(body.len() <= STICKY_COMMENT_MAX_BYTES, "under cap");
-    assert!(body.starts_with(REVIEW_MARKER), "header intact");
+    assert!(body.starts_with(&marker_for_generation(1)), "header intact");
     assert!(body.contains("PASS"), "heading intact");
     assert!(body.contains("abc"), "SHA intact");
     assert!(body.contains('Z'), "summary head preserved");
@@ -336,6 +353,7 @@ fn gen_input<'a>(r: &'a Review, sha: &'a str, generation: u64) -> RenderInput<'a
         reviewed_head_sha: sha,
         current_head_sha: None,
         review_generation: generation,
+        publication_mode: PublicationMode::Update,
     }
 }
 
@@ -348,7 +366,10 @@ fn republish_banner_present_from_generation_two() {
     assert!(body.contains(expected), "exact banner line: {body}");
     // Banner reads as the top of the comment: after the invisible
     // head marker, before the verdict heading.
-    assert!(body.starts_with(REVIEW_MARKER), "marker still first");
+    assert!(
+        body.starts_with(&marker_for_generation(2)),
+        "marker still first"
+    );
     let banner_pos = body.find("[!IMPORTANT]").expect("banner present");
     let heading_pos = body.find("## Auto review").expect("heading present");
     assert!(banner_pos < heading_pos, "banner above the heading");
@@ -399,7 +420,7 @@ fn banner_survives_truncation_under_overflow() {
     let r = review(Verdict::Pass, &summary, vec![]);
     let body = render_sticky_comment(&gen_input(&r, SHA40, 2));
     assert!(body.len() <= STICKY_COMMENT_MAX_BYTES, "under cap");
-    assert!(body.starts_with(REVIEW_MARKER), "marker intact");
+    assert!(body.starts_with(&marker_for_generation(2)), "marker intact");
     assert!(
         body.contains("> [!IMPORTANT] Updated for commit `3b836a2391a4` (review generation 2)"),
         "banner intact despite overflow"
@@ -422,4 +443,64 @@ fn banner_short_sha_is_twelve_chars_and_boundary_safe() {
         body.contains("Updated for commit `abc123`"),
         "short sha unchanged when already short: {body}"
     );
+}
+
+// -----------------------------------------------------------------------
+// Publication mode (issue #394) — generation-tagged markers + the
+// mode-conditional banner
+// -----------------------------------------------------------------------
+
+#[test]
+fn fresh_render_carries_generation_tagged_marker_head_and_tail() {
+    let r = review(Verdict::Pass, "ok", vec![]);
+    let body = render_sticky_comment(&gen_input(&r, SHA40, 1));
+    let tagged = marker_for_generation(1);
+    assert!(body.starts_with(&tagged), "tagged head marker: {body}");
+    let tail = body.rfind(&tagged).expect("tagged tail marker present");
+    assert!(body[tail + tagged.len()..].chars().all(|c| c == '\n'));
+}
+
+#[test]
+fn marker_tag_advances_with_generation() {
+    let r = review(Verdict::Pass, "ok", vec![]);
+    let gen2 = render_sticky_comment(&gen_input(&r, SHA40, 2));
+    assert!(gen2.starts_with(&marker_for_generation(2)));
+    assert!(!gen2.contains(&marker_for_generation(1)));
+}
+
+#[test]
+fn new_comment_mode_suppresses_banner_at_every_generation() {
+    let r = review(Verdict::Pass, "ok", vec![]);
+    for generation in [2u64, 3, 7] {
+        let mut input = gen_input(&r, SHA40, generation);
+        input.publication_mode = PublicationMode::NewComment;
+        let body = render_sticky_comment(&input);
+        assert!(
+            !body.contains("[!IMPORTANT]"),
+            "no banner in new_comment mode at gen {generation}: {body}"
+        );
+        assert!(!body.contains("Updated for commit"));
+        // the tagged marker is still present — the comment remains
+        // discoverable by the marker scan.
+        assert!(body.contains(&marker_for_generation(generation)));
+    }
+}
+
+#[test]
+fn new_comment_render_is_byte_identical_across_renders() {
+    let r = review(
+        Verdict::Fail,
+        "problems",
+        vec![finding(Severity::Blocking, "t", "b")],
+    );
+    let mut input = gen_input(&r, SHA40, 2);
+    input.publication_mode = PublicationMode::NewComment;
+    assert_eq!(render_sticky_comment(&input), render_sticky_comment(&input));
+}
+
+#[test]
+fn update_mode_keeps_the_banner_exactly_as_393_shipped_it() {
+    let r = review(Verdict::Pass, "all good", vec![]);
+    let body = render_sticky_comment(&gen_input(&r, SHA40, 2));
+    assert!(body.contains("> [!IMPORTANT] Updated for commit `3b836a2391a4` (review generation 2)"));
 }

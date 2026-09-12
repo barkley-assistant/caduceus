@@ -78,7 +78,7 @@ use tracing::info;
 
 use crate::github::merge_detect::poll_pr_merge_status;
 use crate::github::Client;
-use crate::infra::config::Config;
+use crate::infra::config::{Config, PublicationMode};
 use crate::infra::error::{CaduceusError, CaduceusResult};
 use crate::review::sticky_comment::{publish, RenderInput, StickyOutcome};
 use crate::review::{
@@ -370,6 +370,12 @@ pub async fn finalize_review(
         // `due.run_generation == state.review_generation` here, so this
         // reads the completing run's generation (issue #393).
         review_generation: due.run_generation,
+        // The mode is read at publish time (never persisted per run),
+        // so a config flip applies to ongoing runs only (issue #394).
+        publication_mode: cfg
+            .auto_review()
+            .map(|ar| ar.publication_mode)
+            .unwrap_or(PublicationMode::Update),
     };
     let sticky = match publish(
         client,
