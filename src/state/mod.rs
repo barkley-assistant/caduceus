@@ -12,7 +12,8 @@
 //! - [`store`] — the v1.0 SQLite StateStore.
 //! - [`migrate`] — `caduceus migrate-state` (JSON import).
 //! - [`migrate_to_sqlite`] — `caduceus migrate-state --to-sqlite`.
-//! - [`retention`] — backup and corruption-archive pruning.
+//! - [`retention`] — backup and corruption-archive pruning, driven
+//!   by `run_retention_days` on the tick cadence (issue #402).
 
 pub mod checkpoints;
 pub mod meta;

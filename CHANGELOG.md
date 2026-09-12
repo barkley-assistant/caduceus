@@ -204,6 +204,17 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
 
 ### Fixed
 
+- **`run_retention_days` now actually prunes state backups.** The
+  documented config knob had zero consumers since the crate scaffold;
+  the `prune_backups` function built to consume it was never called.
+  The tick now sweeps the state dir's timestamped backup and
+  corruption archives (`state.json.bak-*`, `state.json.corrupt-*`,
+  `state.db.corrupt-*`, `state_meta.json.corrupt-*`) older than the
+  window (default 30 days). The phantom `state.db.bak-` prefix is
+  removed (no writer ever existed; operators' manual
+  `state.db.backup-*` files are untouched), and the cutoff math is
+  saturating so a huge window can no longer panic the tick. Closes
+  #402.
 - **`hermes caduceus` now exposes the binary's full command set.**
   The wrapper registers `run` and `review` REMAINDER passthroughs
   (previously argparse `invalid choice` errors for operators), with a
