@@ -494,6 +494,49 @@ async fn retention_prunes_old_backups_on_tick() {
 }
 
 #[tokio::test]
+async fn run_artifact_retention_sweep_on_tick() {
+    let base = tempfile::Builder::new()
+        .prefix("caduceus-tick-runs-retention-")
+        .tempdir_in(std::env::current_dir().unwrap())
+        .expect("base");
+    let state_dir = base.path().join("state");
+    let runs_dir = state_dir.join("runs");
+
+    let cfg = tick_config(base.path(), vec!["owner/r".to_string()], None, None);
+    // Default run_retention_days is 30; backdate past it.
+    std::fs::create_dir_all(&runs_dir).expect("mkdir runs");
+    let old_log = runs_dir.join("old-run.log");
+    std::fs::write(&old_log, b"old transcript").expect("write old log");
+    let old_result = runs_dir.join("old-run.result.json");
+    std::fs::write(&old_result, b"{}").expect("write old result");
+    backdate_to_older_than(&old_log, 31);
+    backdate_to_older_than(&old_result, 31);
+
+    let fresh_log = runs_dir.join("fresh-run.log");
+    std::fs::write(&fresh_log, b"fresh transcript").expect("write fresh log");
+    let fresh_result = runs_dir.join("fresh-run.result.json");
+    std::fs::write(&fresh_result, b"{}").expect("write fresh result");
+
+    let server = MockServer::start().await;
+    let outcome = run_tick(cfg, &server).await.expect("tick");
+
+    assert_eq!(outcome, TickOutcome::IdleEmpty);
+    assert!(
+        !old_log.exists(),
+        "old transcript must be pruned by the tick"
+    );
+    assert!(
+        !old_result.exists(),
+        "old result must be pruned by the tick"
+    );
+    assert!(
+        fresh_log.exists(),
+        "fresh transcript must survive the sweep"
+    );
+    assert!(fresh_result.exists(), "fresh result must survive the sweep");
+}
+
+#[tokio::test]
 async fn auto_gc_disabled_leaves_stale_worktree_intact() {
     let base = tempfile::Builder::new()
         .prefix("caduceus-tick-test-")
