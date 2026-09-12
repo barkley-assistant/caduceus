@@ -186,6 +186,10 @@ suppressed by a monotonic publication guard so an older run can never
 overwrite a newer one (DAR §9.4). Re-publishing the same result is
 byte-identical (idempotency requirement).
 
+Re-reviews (generation 2 and later) prepend a `> [!IMPORTANT]` banner
+naming the new reviewed commit and the generation, so the update is
+visible without opening the comment's edit history.
+
 ## Config reference
 
 All keys below are validated at load time; `deny_unknown_fields` is on
