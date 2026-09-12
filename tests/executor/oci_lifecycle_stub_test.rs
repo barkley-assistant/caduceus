@@ -35,6 +35,10 @@ use caduceus::infra::config::Config;
 use caduceus::infra::error::CaduceusResult;
 use caduceus::state::oci_run::{ContainerRunRow, OciLifecycleState, OciRunState};
 
+#[path = "../fixtures/mod.rs"]
+mod fixtures;
+use fixtures::write_executable_script;
+
 #[allow(dead_code)]
 mod support;
 
@@ -299,11 +303,7 @@ struct StubEngine {
 impl StubEngine {
     fn new() -> Self {
         let dir = tempfile::tempdir().expect("stub tempdir");
-        let script = dir.path().join("docker");
-        std::fs::write(&script, STUB_SCRIPT).expect("write stub script");
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
-            .expect("chmod stub script");
+        write_executable_script(dir.path(), "docker", STUB_SCRIPT);
         let path = std::env::var("PATH").unwrap_or_default();
         std::env::set_var("PATH", format!("{}:{path}", dir.path().display()));
         Self {

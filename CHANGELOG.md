@@ -314,6 +314,15 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
   with no sticky comment ever published. Dedup now holds from completion
   onward and the next tick publishes the run it was built for. Closes
   #333.
+- **Executable-script fixtures no longer flake with `Text file busy`.**
+  `tests/fixtures/script.rs::write_executable_script` writes the fake
+  engine/stub script and pre-flights one exec before returning, retrying
+  the transient `ExecutableFileBusy` (ETXTBSY) that Linux `execve()`
+  reports for a file whose write fd was just closed under parallel test
+  threads. `oci_provenance_test` flaked with shuffled failure names
+  (failing ~1/3 of isolated runs) despite its fsync workaround; the
+  shared helper now backs the OCI adapter, readiness, lifecycle-stub,
+  and env-file fixtures.
 
 ## [1.0.0] - 2026-08-08
 

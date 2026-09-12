@@ -24,6 +24,9 @@ use std::time::Duration;
 use serial_test::serial;
 use tokio_util::sync::CancellationToken;
 
+#[path = "../fixtures/mod.rs"]
+mod fixtures;
+
 use caduceus::executor::oci_env_file::OciEnvFile;
 use caduceus::executor::oci_lifecycle;
 use caduceus::executor::sandbox_spec::{resolve, SandboxEngine};
@@ -32,6 +35,7 @@ use caduceus::github::issue::IssueKey;
 use caduceus::infra::config::Config;
 use caduceus::infra::error::{CaduceusError, CaduceusResult};
 use caduceus::state::oci_run::{ContainerRunRow, OciLifecycleState, OciRunState};
+use fixtures::write_executable_script;
 
 mod support;
 
@@ -327,9 +331,7 @@ esac
 async fn create_failure_leaves_no_env_file() {
     let tmp = tempfile::tempdir().expect("tmp");
     let stub_dir = tempfile::tempdir().expect("stub tmp");
-    let script = stub_dir.path().join("docker");
-    std::fs::write(&script, FAILING_CREATE_STUB).expect("write stub");
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod stub");
+    write_executable_script(stub_dir.path(), "docker", FAILING_CREATE_STUB);
 
     let run_dir = tmp.path().join("oci-runs").join("run-guard");
     let env_file = OciEnvFile::create(&run_dir, &env_map(&[("CADUCEUS_RUN_ID", "run-guard")]))

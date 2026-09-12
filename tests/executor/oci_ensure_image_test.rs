@@ -1,4 +1,6 @@
-use std::os::unix::fs::PermissionsExt;
+#[path = "../fixtures/mod.rs"]
+mod fixtures;
+
 use std::path::{Path, PathBuf};
 
 use caduceus::executor::oci_engine::OciImageAdapter;
@@ -7,6 +9,7 @@ use caduceus::executor::oci_platform::HostPlatform;
 use caduceus::executor::SandboxEngine;
 use caduceus::infra::config::OciPullPolicy;
 use caduceus::infra::error::CaduceusError;
+use fixtures::write_executable_script;
 
 const DIGEST: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const IMAGE_REF: &str = "registry.example/worker@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -19,9 +22,7 @@ fn fake_engine(root: &Path, inspect_json: &str) -> (PathBuf, PathBuf) {
         calls.display(),
         inspect_json
     );
-    std::fs::write(&binary, script).expect("write fake OCI executable");
-    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755))
-        .expect("make fake OCI executable");
+    write_executable_script(root, "fake-oci", &script);
     (binary, calls)
 }
 

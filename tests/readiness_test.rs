@@ -4,6 +4,9 @@ use caduceus::readiness::{
     assemble_report, render_human, run_live_with_options, CheckId, CheckResult, CheckStatus,
     DiagnosticCanary, DiagnosticStatus, ProbeOptions, ReadinessVerdict,
 };
+#[path = "fixtures/mod.rs"]
+mod fixtures;
+use fixtures::write_executable_script;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
@@ -106,11 +109,7 @@ fn fake_engine(dir: &Path, image_present: bool, userns_remap: bool) -> PathBuf {
         if image_present { "exit 0" } else { "exit 1" },
     )
     .replace("__IMAGE__", &image);
-    let path = dir.join("fake-engine");
-    std::fs::write(&path, script).expect("write fake engine");
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-        .expect("make fake engine executable");
-    path
+    write_executable_script(dir, "fake-engine", &script)
 }
 
 #[cfg(unix)]

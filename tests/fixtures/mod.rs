@@ -30,6 +30,8 @@ mod process_tree;
 #[cfg(test)]
 mod release_binary;
 #[cfg(test)]
+mod script;
+#[cfg(test)]
 mod tempdir;
 
 #[cfg(test)]
@@ -56,6 +58,9 @@ pub use process_tree::{assert_no_survivors, snapshot_subtree, ProcessTree};
 #[cfg(test)]
 #[allow(unused_imports)]
 pub use release_binary::{ReleaseBinary, RunSupervisorArgs};
+#[cfg(test)]
+#[allow(unused_imports)]
+pub use script::write_executable_script;
 #[cfg(test)]
 #[allow(unused_imports)]
 pub use tempdir::{tempdir, tempdir_owned};
