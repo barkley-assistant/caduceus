@@ -21,14 +21,23 @@ use crate::infra::error::CaduceusResult;
 ///
 /// Eligible for pruning:
 ///
-/// - Timestamped backups (`state.json.bak-<ts>`, `state.db.bak-<ts>`)
+/// - Timestamped backups (`state.json.bak-<ts>`)
 /// - Timestamped corruption archives (`state.json.corrupt-<ts>`,
-///   `state.db.corrupt-<ts>`)
+///   `state.db.corrupt-<ts>`, `state_meta.json.corrupt-<ts>`)
 ///
 /// Returns the number of pruned files.
 pub fn prune_backups(state_dir: &Path, retention_days: u64) -> CaduceusResult<u64> {
-    let cutoff =
-        std::time::SystemTime::now() - std::time::Duration::from_secs(retention_days * 86400);
+    // A window reaching back past the epoch (huge
+    // `run_retention_days`) means nothing can be older than it:
+    // prune nothing. `checked_sub` returns None there; the plain
+    // `Sub` impl panics ("overflow when subtracting duration from
+    // SystemTime", both profiles — verified rustc 1.97.1), which
+    // would crash every tick.
+    let Some(cutoff) = std::time::SystemTime::now().checked_sub(std::time::Duration::from_secs(
+        retention_days.saturating_mul(86400),
+    )) else {
+        return Ok(0);
+    };
 
     let mut pruned = 0u64;
 
@@ -45,11 +54,16 @@ pub fn prune_backups(state_dir: &Path, retention_days: u64) -> CaduceusResult<u6
             continue;
         };
 
-        // Only prune timestamped backup/archive files.
+        // Only prune timestamped backup/archive files. The classes
+        // match the daemon's own writers (migrate.rs install/recover
+        // arms, meta.rs quarantine). Operators' manual backups
+        // follow the wiki's `state.db.backup-*` convention and must
+        // never match. Untimed markers and active files are never
+        // touched.
         let is_backup = name.starts_with("state.json.bak-")
-            || name.starts_with("state.db.bak-")
             || name.starts_with("state.json.corrupt-")
-            || name.starts_with("state.db.corrupt-");
+            || name.starts_with("state.db.corrupt-")
+            || name.starts_with("state_meta.json.corrupt-");
 
         if !is_backup {
             continue;
