@@ -145,6 +145,7 @@ fn rendered_body() -> String {
         review: &sample_review(),
         reviewed_head_sha: SHA,
         current_head_sha: None,
+        review_generation: 1,
     })
 }
 
@@ -842,4 +843,63 @@ async fn publish_failed_retryable_emits_on_github_failure() {
         !body.contains(EVENT_PUBLISHED),
         "published leaked into the failed path: {body}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Update banner wiring (issue #393) — finalize passes the generation
+// ---------------------------------------------------------------------------
+
+fn posted_comment_body(gh: &MockGitHub) -> String {
+    let posts: Vec<_> = gh
+        .received_requests()
+        .into_iter()
+        .filter(|r| r.method.as_str() == "POST")
+        .collect();
+    assert_eq!(posts.len(), 1, "exactly one comment POST");
+    let payload: serde_json::Value =
+        serde_json::from_slice(&posts[0].body).expect("POST body is JSON");
+    payload["body"].as_str().expect("body field").to_string()
+}
+
+#[tokio::test]
+async fn generation_two_finalize_publishes_banner_body() {
+    let gh = MockGitHub::start().await;
+    mount_publish_open(&gh, 601).await;
+    let (client, cfg) = mock_client(&gh);
+    let (store, _dir) = seeded_store("fin-banner", 2, PublicationState::Pending);
+
+    let outcome = finalize_review(&client, &cfg, &store, &due(2), now())
+        .await
+        .expect("finalize succeeds");
+    assert_eq!(outcome, FinalizeOutcome::Published);
+
+    // `SHA` is forty `a`s (finalizer_test.rs:43), so the 12-char
+    // prefix is "aaaaaaaaaaaa". Build the expected fragment from the
+    // const so the assertion tracks it.
+    let body = posted_comment_body(&gh);
+    let expected = format!(
+        "> [!IMPORTANT] Updated for commit `{}` (review generation 2)",
+        &SHA[..12]
+    );
+    assert!(
+        body.contains(&expected),
+        "banner on the wire for gen 2: {body}"
+    );
+}
+
+#[tokio::test]
+async fn generation_one_finalize_publishes_without_banner() {
+    let gh = MockGitHub::start().await;
+    mount_publish_open(&gh, 602).await;
+    let (client, cfg) = mock_client(&gh);
+    let (store, _dir) = seeded_store("fin-banner-one", 1, PublicationState::Pending);
+
+    let outcome = finalize_review(&client, &cfg, &store, &due(1), now())
+        .await
+        .expect("finalize succeeds");
+    assert_eq!(outcome, FinalizeOutcome::Published);
+
+    let body = posted_comment_body(&gh);
+    assert!(!body.contains("[!IMPORTANT]"), "no banner on gen 1: {body}");
+    assert!(body.starts_with(REVIEW_MARKER), "marker still first");
 }

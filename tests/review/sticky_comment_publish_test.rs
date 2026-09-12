@@ -72,6 +72,7 @@ fn render_input<'a>(r: &'a Review) -> RenderInput<'a> {
         review: r,
         reviewed_head_sha: "abc123",
         current_head_sha: None,
+        review_generation: 1,
     }
 }
 

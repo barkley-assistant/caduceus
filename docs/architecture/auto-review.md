@@ -453,6 +453,11 @@ within severity = persisted order) within the remaining budget. Never
 front-truncate. Byte limit 65,536. Re-publishing the same result is
 **byte-identical** (idempotency requirement, tested).
 
+Re-publication (any generation > 1) prepends a `> [!IMPORTANT]` banner
+— `Updated for commit `<short-sha>` (review generation N)` — above the
+verdict heading, so the in-place edit is visible at a glance; the first
+publication (generation 1) keeps the banner-less body (#393).
+
 Body identifies the exact reviewed SHA (and previous SHA when applicable);
 stale results still publish with the reviewed SHA noted.
 

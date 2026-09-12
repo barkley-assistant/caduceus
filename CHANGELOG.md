@@ -204,6 +204,12 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
 
 ### Fixed
 
+- **Re-review updates are visible on the PR.** The sticky review
+  comment is edited in place, which made a re-review easy to miss.
+  Every re-publication (review generation > 1) now prepends a
+  `> [!IMPORTANT]` banner naming the reviewed short SHA and the
+  generation; the first publication keeps the current body. Closes
+  #393.
 - **Finished-run artifacts are now retained, not kept forever.**
   `<state_dir>/runs/` (worker transcripts, archived results,
   dry-run previews, heartbeats) had no retention at all — files

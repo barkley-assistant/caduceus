@@ -31,6 +31,7 @@ fn pass_input<'a>(r: &'a Review, sha: &'a str) -> RenderInput<'a> {
         review: r,
         reviewed_head_sha: sha,
         current_head_sha: None,
+        review_generation: 1,
     }
 }
 
@@ -102,6 +103,7 @@ fn no_stale_notice_when_head_unchanged_or_unknown() {
         review: &r,
         reviewed_head_sha: "sha1",
         current_head_sha: Some("sha1"),
+        review_generation: 1,
     });
     assert!(!body.contains("Stale"), "no stale notice when equal");
 }
@@ -113,6 +115,7 @@ fn stale_revision_notice_when_head_moved() {
         review: &r,
         reviewed_head_sha: "oldsha",
         current_head_sha: Some("newsha"),
+        review_generation: 1,
     });
     assert!(body.contains("oldsha"));
     assert!(body.contains("newsha"));
@@ -318,5 +321,105 @@ fn empty_findings_render_is_compact_and_deterministic() {
     assert!(
         !body.contains("truncated") && !body.contains("Truncated"),
         "no truncation note when nothing was dropped"
+    );
+}
+
+// -----------------------------------------------------------------------
+// Update banner (issue #393)
+// -----------------------------------------------------------------------
+
+const SHA40: &str = "3b836a2391a4567890abcdef1234567890abcdef"; // 40 hex chars
+
+fn gen_input<'a>(r: &'a Review, sha: &'a str, generation: u64) -> RenderInput<'a> {
+    RenderInput {
+        review: r,
+        reviewed_head_sha: sha,
+        current_head_sha: None,
+        review_generation: generation,
+    }
+}
+
+#[test]
+fn republish_banner_present_from_generation_two() {
+    let r = review(Verdict::Pass, "all good", vec![]);
+    let body = render_sticky_comment(&gen_input(&r, SHA40, 2));
+    let expected = "> [!IMPORTANT] Updated for commit `3b836a2391a4` \
+(review generation 2)";
+    assert!(body.contains(expected), "exact banner line: {body}");
+    // Banner reads as the top of the comment: after the invisible
+    // head marker, before the verdict heading.
+    assert!(body.starts_with(REVIEW_MARKER), "marker still first");
+    let banner_pos = body.find("[!IMPORTANT]").expect("banner present");
+    let heading_pos = body.find("## Auto review").expect("heading present");
+    assert!(banner_pos < heading_pos, "banner above the heading");
+    assert_eq!(
+        body.find("[!IMPORTANT]"),
+        body.rfind("[!IMPORTANT]"),
+        "exactly one banner"
+    );
+}
+
+#[test]
+fn banner_carries_the_generation_number() {
+    let r = review(Verdict::Pass, "ok", vec![]);
+    let body = render_sticky_comment(&gen_input(&r, SHA40, 3));
+    assert!(
+        body.contains("(review generation 3)"),
+        "generation is part of the banner: {body}"
+    );
+}
+
+#[test]
+fn first_publication_generation_one_has_no_banner() {
+    let r = review(Verdict::Pass, "ok", vec![]);
+    let body = render_sticky_comment(&gen_input(&r, SHA40, 1));
+    assert!(!body.contains("[!IMPORTANT]"), "no banner on gen 1");
+    assert!(
+        !body.contains("Updated for commit"),
+        "no banner text on gen 1"
+    );
+}
+
+#[test]
+fn republish_banner_is_byte_identical_across_renders() {
+    let r = review(
+        Verdict::Fail,
+        "problems",
+        vec![finding(Severity::Blocking, "t", "b")],
+    );
+    let input = gen_input(&r, SHA40, 2);
+    assert_eq!(render_sticky_comment(&input), render_sticky_comment(&input));
+}
+
+#[test]
+fn banner_survives_truncation_under_overflow() {
+    // 64 KiB summary alone overflows the budget: the banner is part
+    // of the reserved header and must never be front-truncated.
+    let summary = format!("Z{}", "s".repeat(64 * 1024));
+    let r = review(Verdict::Pass, &summary, vec![]);
+    let body = render_sticky_comment(&gen_input(&r, SHA40, 2));
+    assert!(body.len() <= STICKY_COMMENT_MAX_BYTES, "under cap");
+    assert!(body.starts_with(REVIEW_MARKER), "marker intact");
+    assert!(
+        body.contains("> [!IMPORTANT] Updated for commit `3b836a2391a4` (review generation 2)"),
+        "banner intact despite overflow"
+    );
+    assert!(
+        body.contains("truncated") || body.contains("Truncated"),
+        "truncation note present"
+    );
+}
+
+#[test]
+fn banner_short_sha_is_twelve_chars_and_boundary_safe() {
+    let r = review(Verdict::Pass, "ok", vec![]);
+    // 40-char SHA → first 12 chars in the banner.
+    let body = render_sticky_comment(&gen_input(&r, SHA40, 2));
+    assert!(body.contains("`3b836a2391a4`"), "12-char short sha: {body}");
+    // Short SHA stays whole.
+    let body = render_sticky_comment(&gen_input(&r, "abc123", 2));
+    assert!(
+        body.contains("Updated for commit `abc123`"),
+        "short sha unchanged when already short: {body}"
     );
 }

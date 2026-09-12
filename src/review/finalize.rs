@@ -366,6 +366,10 @@ pub async fn finalize_review(
         review: &review,
         reviewed_head_sha: &due.head_sha,
         current_head_sha: None,
+        // The §9.4 guard above already guarantees
+        // `due.run_generation == state.review_generation` here, so this
+        // reads the completing run's generation (issue #393).
+        review_generation: due.run_generation,
     };
     let sticky = match publish(
         client,
