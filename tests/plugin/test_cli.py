@@ -40,6 +40,8 @@ def test_cli_command_is_registered(adapter, fake_ctx: FakePluginContext) -> None
         "status",
         "cron-install",
         "cron-remove",
+        "run",
+        "review",
         "queue",
         "worktree-gc",
         "migrate-state",

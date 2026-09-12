@@ -1,8 +1,9 @@
 """Hermes wrapper pass-through CLI tests.
 
-``hermes caduceus`` forwards ``queue``, ``worktree-gc``, and
-``migrate-state`` verbatim to the ``caduceus`` binary, and forwards
-``status --json``. The wrapper never re-encodes the flag contract —
+``hermes caduceus`` forwards ``run``, ``review``, ``queue``,
+``worktree-gc``, and ``migrate-state`` verbatim to the ``caduceus``
+binary, and forwards ``status --json``. The wrapper never re-encodes
+the flag contract —
 the clap parser in the binary is the single source of truth. The
 pass-through subparsers use a custom argparse parser so a
 flags-first invocation (e.g. ``worktree-gc --older-than-days 7``)
@@ -50,6 +51,8 @@ def test_cli_help_lists_full_command_set(adapter, fake_ctx: FakePluginContext) -
         "status",
         "cron-install",
         "cron-remove",
+        "run",
+        "review",
         "queue",
         "worktree-gc",
         "migrate-state",
@@ -168,3 +171,85 @@ def test_passthrough_missing_binary_returns_diagnostic(
     captured = capsys.readouterr()
     assert rc == 1
     assert "hermes caduceus setup" in captured.err
+
+
+def test_run_passthrough_forwards_bare_tick(
+    adapter, fake_ctx: FakePluginContext, install_with_fake_binary, monkeypatch
+) -> None:
+    """``hermes caduceus run`` forwards a bare tick invocation verbatim.
+
+    `caduceus run` takes no flags on current main (src/cli/mod.rs
+    `Command::Run`); REMAINDER passthrough still forwards any trailing
+    tokens so clap stays the single source of truth.
+    """
+    calls = _record_run(adapter, monkeypatch)
+    rc = _parse_and_dispatch(adapter, fake_ctx, "run")
+    assert rc == 0
+    assert calls == [[str(install_with_fake_binary), "run"]]
+
+
+def test_run_passthrough_uses_long_timeout(
+    adapter, fake_ctx: FakePluginContext, install_with_fake_binary, monkeypatch
+) -> None:
+    """A tick supervises workers for minutes — never the 15s default.
+
+    Regression shape for issue #389: a naive mirror of the queue parser
+    would reuse SUBPROCESS_TIMEOUT_SECONDS (15s) and SIGKILL a live
+    tick mid-worker (worker_timeout_seconds defaults to 3600).
+    """
+    seen: List[Dict[str, Any]] = []
+
+    def fake_run(argv: list, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        seen.append(dict(kwargs))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(adapter, "_run", fake_run)
+    rc = _parse_and_dispatch(adapter, fake_ctx, "run")
+    assert rc == 0
+    assert len(seen) == 1
+    assert seen[0].get("timeout") == adapter.SUBPROCESS_RUN_TIMEOUT_SECONDS
+    assert seen[0]["timeout"] > 3600
+
+
+def test_review_status_passthrough_forwards_args(
+    adapter, fake_ctx: FakePluginContext, install_with_fake_binary, monkeypatch
+) -> None:
+    calls = _record_run(adapter, monkeypatch)
+    rc = _parse_and_dispatch(adapter, fake_ctx, "review", "status")
+    assert rc == 0
+    assert calls == [[str(install_with_fake_binary), "review", "status"]]
+
+
+def test_review_list_passthrough_forwards_json_flag(
+    adapter, fake_ctx: FakePluginContext, install_with_fake_binary, monkeypatch
+) -> None:
+    calls = _record_run(adapter, monkeypatch)
+    rc = _parse_and_dispatch(adapter, fake_ctx, "review", "list", "--json")
+    assert rc == 0
+    assert calls == [[str(install_with_fake_binary), "review", "list", "--json"]]
+
+
+def test_review_show_passthrough_forwards_positionals(
+    adapter, fake_ctx: FakePluginContext, install_with_fake_binary, monkeypatch
+) -> None:
+    """``review show OWNER/REPO PR`` forwards both positionals verbatim."""
+    calls = _record_run(adapter, monkeypatch)
+    rc = _parse_and_dispatch(
+        adapter, fake_ctx, "review", "show", "owner/repo", "123", "--json"
+    )
+    assert rc == 0
+    assert calls == [
+        [str(install_with_fake_binary), "review", "show", "owner/repo", "123", "--json"]
+    ]
+
+
+def test_review_status_repo_filter_passthrough(
+    adapter, fake_ctx: FakePluginContext, install_with_fake_binary, monkeypatch
+) -> None:
+    """Flags-first tokens are swallowed by the pass-through parser."""
+    calls = _record_run(adapter, monkeypatch)
+    rc = _parse_and_dispatch(adapter, fake_ctx, "review", "--json", "status")
+    assert rc == 0
+    assert calls == [
+        [str(install_with_fake_binary), "review", "--json", "status"]
+    ]

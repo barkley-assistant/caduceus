@@ -23,9 +23,10 @@ plugin compatibility contract:
    chat-safe diagnostic explaining how to run ``hermes caduceus setup``.
 3. ``ctx.register_cli_command(name="caduceus", ...)`` for the
    ``hermes caduceus <subcommand>`` family, with subcommands
-   ``setup``, ``doctor``, ``status``, ``cron-install``, ``cron-remove``,
-   and the pass-through ``queue``, ``worktree-gc``, and ``migrate-state``
-   (trailing args are forwarded verbatim to the ``caduceus`` binary).
+   ``setup``, ``doctor``, ``status``, ``cron-install``,
+   ``cron-remove``, and the pass-through ``run``, ``review``,
+   ``queue``, ``worktree-gc``, and ``migrate-state`` (trailing args
+   are forwarded verbatim to the ``caduceus`` binary).
 """
 
 from __future__ import annotations
@@ -58,6 +59,13 @@ SKILL_QUALIFIED_NAME = f"{PLUGIN_NAME}:{SKILL_BARE_NAME}"
 SUBPROCESS_TIMEOUT_SECONDS = 15
 SUBPROCESS_OUTPUT_BYTES = 32 * 1024
 SUBPROCESS_BUILD_TIMEOUT_SECONDS = 600
+
+# `caduceus run` executes a full daemon tick: worker supervision alone
+# defaults to worker_timeout_seconds = 3600
+# (src/infra/config/mod.rs DEFAULT_WORKER_TIMEOUT_SECONDS). The 2h
+# bound leaves headroom for git/finalize overhead while still surfacing
+# a hung binary to the operator instead of blocking the shell forever.
+SUBPROCESS_RUN_TIMEOUT_SECONDS = 7200
 
 
 # ---------------------------------------------------------------------------
@@ -279,7 +287,7 @@ def register(ctx: Any) -> None:
     )
     ctx.register_cli_command(
         name=PLUGIN_NAME,
-        help="Caduceus v1.0.0 lifecycle (setup, doctor, status, cron).",
+        help="Caduceus v1.0.0 lifecycle, cron, and daemon subcommands.",
         setup_fn=_register_caduceus_cli,
         handler_fn=_caduceus_cli_command,
         description=(
@@ -373,7 +381,8 @@ def _format_status_for_chat(payload: Dict[str, Any]) -> str:
 
 # ---------------------------------------------------------------------------
 # CLI command: hermes caduceus
-#   <setup|doctor|status|cron-install|cron-remove|queue|worktree-gc|migrate-state>
+#   <setup|doctor|status|cron-install|cron-remove|run|review|queue|
+#    worktree-gc|migrate-state>
 # ---------------------------------------------------------------------------
 
 
@@ -465,6 +474,32 @@ def _register_caduceus_cli(subparser: Any) -> None:
         help="Subcommand and flags forwarded to the caduceus binary.",
     )
 
+    run = subs.add_parser(
+        "run",
+        help="Run one daemon tick (args forwarded to the binary).",
+        passthrough_attr="run_args",
+    )
+    # Pass-through: every trailing token is forwarded verbatim to the
+    # binary; clap is the single source of truth for the flag contract.
+    # `run` takes no flags today (src/cli/mod.rs Command::Run) — the
+    # REMAINDER keeps that true without re-encoding it here.
+    run.add_argument(
+        "run_args",
+        nargs=argparse.REMAINDER,
+        help="Flags forwarded to the caduceus binary.",
+    )
+
+    review = subs.add_parser(
+        "review",
+        help="Inspect review state (status, list, show).",
+        passthrough_attr="review_args",
+    )
+    review.add_argument(
+        "review_args",
+        nargs=argparse.REMAINDER,
+        help="Subcommand and flags forwarded to the caduceus binary.",
+    )
+
     subs.add_parser(
         "worktree-gc",
         help="Garbage-collect stale worktrees (flags forwarded to the binary).",
@@ -523,6 +558,14 @@ def _caduceus_cli_command(args: Any) -> int:
         return _cli_status(json=getattr(args, "json", False))
     if sub == "queue":
         return _cli_passthrough("queue", getattr(args, "queue_args", []))
+    if sub == "run":
+        return _cli_passthrough(
+            "run",
+            getattr(args, "run_args", []),
+            timeout=SUBPROCESS_RUN_TIMEOUT_SECONDS,
+        )
+    if sub == "review":
+        return _cli_passthrough("review", getattr(args, "review_args", []))
     if sub == "worktree-gc":
         return _cli_passthrough("worktree-gc", getattr(args, "worktree_gc_args", []))
     if sub == "migrate-state":
@@ -1094,12 +1137,20 @@ def _cli_status(*, json: bool = False) -> int:
     return proc.returncode
 
 
-def _cli_passthrough(subcommand: str, forwarded: List[str]) -> int:
+def _cli_passthrough(
+    subcommand: str,
+    forwarded: List[str],
+    *,
+    timeout: int = SUBPROCESS_TIMEOUT_SECONDS,
+) -> int:
     """Run ``caduceus <subcommand> [forwarded...]`` and propagate the exit code.
 
     *forwarded* is the verbatim trailing argv the operator typed after
     the subcommand keyword; the wrapper never re-encodes flags — the
     clap parser in the binary is the single source of truth.
+    ``timeout`` defaults to the short subprocess bound; ``run`` passes
+    a dedicated long bound because a tick supervises workers for
+    minutes.
     """
     binary = _binary_path()
     if not binary.is_file():
@@ -1111,7 +1162,7 @@ def _cli_passthrough(subcommand: str, forwarded: List[str]) -> int:
     proc = _run(
         [str(binary), subcommand, *forwarded],
         cwd=_plugin_root(),
-        timeout=SUBPROCESS_TIMEOUT_SECONDS,
+        timeout=timeout,
     )
     if proc.stdout:
         sys.stdout.write(proc.stdout)
