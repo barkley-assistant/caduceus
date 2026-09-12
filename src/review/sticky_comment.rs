@@ -524,12 +524,20 @@ async fn fetch_comment_body(
 ///
 /// Flow: gone-states B/C are classified first (`PrNotFound` /
 /// `PrClosedUnmerged`, no HTTP); D (merged) and still-open proceed.
-/// With an authoritative id: fetch the current body — byte-identical →
-/// `Unchanged` (no PATCH); different → PATCH. A 404 on the GET or PATCH
-/// is gone-state A: marker search → adopt via PATCH, else create-new →
-/// `CommentGoneRecreated`. With no authoritative id: marker search
-/// first (crash-heal adoption for a create whose id was never
-/// persisted), then the same compare/PATCH path; no marker → create.
+/// Then the publication mode (issue #394) picks the branch:
+///
+/// * `update` (default): with an authoritative id — fetch the current
+///   body, byte-identical → `Unchanged` (no PATCH); different → PATCH.
+///   A 404 on the GET or PATCH is gone-state A: latest-generation
+///   marker search → adopt via PATCH, else create-new →
+///   `CommentGoneRecreated`. With no authoritative id: marker search
+///   first (crash-heal adoption for a create whose id was never
+///   persisted), then the same compare/PATCH path; no marker → create.
+/// * `new_comment`: a fresh comment per generation. `sticky_comment_id`
+///   is IGNORED for targeting (it points at generation N-1); the exact
+///   `gen=N` marker search is the only adoption path — found → compare/
+///   PATCH/recreate the gen-N comment; absent → create. Historical
+///   generations are never touched.
 #[allow(clippy::too_many_arguments)] // plan §3.4 surface: fixed 8-arg #310 contract
 pub async fn publish(
     client: &Client,
@@ -555,84 +563,41 @@ pub async fn publish(
     // are GETs, so the explicit gate here guarantees zero network
     // traffic for a rejected body).
     check_voice_or_error(&body, cfg, VoiceChannel::Comment)?;
-    match state.sticky_comment_id {
-        Some(id) => match fetch_comment_body(client, owner, repo, id).await {
-            Ok(existing) if existing == body => Ok(StickyOutcome::Unchanged { comment_id: id }),
-            Ok(_) => {
-                apply_update(
-                    client,
-                    cfg,
-                    owner,
-                    repo,
-                    pr_number,
-                    id,
-                    &body,
-                    MarkerTarget::Latest,
-                )
-                .await
-            }
-            Err(CaduceusError::GitHubApi { status: 404, .. }) => {
-                recreate_after_comment_gone(
-                    client,
-                    cfg,
-                    owner,
-                    repo,
-                    pr_number,
-                    &body,
-                    Some(id),
-                    MarkerTarget::Latest,
-                )
-                .await
-            }
-            Err(err) => Err(err),
-        },
-        None => {
-            match find_sticky_comment_by_marker(
-                client,
-                owner,
-                repo,
-                pr_number,
-                MarkerTarget::Latest,
-            )
-            .await?
-            {
-                Some(id) => {
-                    // Crash-heal adoption (AC3): a prior create succeeded
-                    // but the id was never persisted. PATCH the adopted
-                    // id — no duplicate is created.
-                    match fetch_comment_body(client, owner, repo, id).await {
-                        Ok(existing) if existing == body => {
-                            Ok(StickyOutcome::Unchanged { comment_id: id })
-                        }
-                        Ok(_) => {
-                            apply_update(
-                                client,
-                                cfg,
-                                owner,
-                                repo,
-                                pr_number,
-                                id,
-                                &body,
-                                MarkerTarget::Latest,
-                            )
-                            .await
-                        }
-                        Err(CaduceusError::GitHubApi { status: 404, .. }) => {
-                            recreate_after_comment_gone(
-                                client,
-                                cfg,
-                                owner,
-                                repo,
-                                pr_number,
-                                &body,
-                                Some(id),
-                                MarkerTarget::Latest,
-                            )
-                            .await
-                        }
-                        Err(err) => Err(err),
+    match input.publication_mode {
+        // New-comment mode (issue #394): a FRESH comment per review
+        // generation; historical comments are never edited. The
+        // gen-scoped marker search is the only adoption path —
+        // `sticky_comment_id` is ignored for targeting because it
+        // points at generation N-1's comment (the id-first path would
+        // overwrite history). Exactly-once per generation: a byte-
+        // identical re-publish of gen N adopts the existing gen-N
+        // comment as `Unchanged`; a deleted gen-N comment is
+        // recreated (gone-state A) while older generations stay as-is.
+        PublicationMode::NewComment => {
+            let target = MarkerTarget::Generation(input.review_generation);
+            match find_sticky_comment_by_marker(client, owner, repo, pr_number, target).await? {
+                Some(id) => match fetch_comment_body(client, owner, repo, id).await {
+                    Ok(existing) if existing == body => {
+                        Ok(StickyOutcome::Unchanged { comment_id: id })
                     }
-                }
+                    Ok(_) => {
+                        apply_update(client, cfg, owner, repo, pr_number, id, &body, target).await
+                    }
+                    Err(CaduceusError::GitHubApi { status: 404, .. }) => {
+                        recreate_after_comment_gone(
+                            client,
+                            cfg,
+                            owner,
+                            repo,
+                            pr_number,
+                            &body,
+                            Some(id),
+                            target,
+                        )
+                        .await
+                    }
+                    Err(err) => Err(err),
+                },
                 None => {
                     let new_id =
                         create_pr_comment(client, cfg, owner, repo, pr_number, &body).await?;
@@ -640,6 +605,92 @@ pub async fn publish(
                 }
             }
         }
+        PublicationMode::Update => match state.sticky_comment_id {
+            Some(id) => match fetch_comment_body(client, owner, repo, id).await {
+                Ok(existing) if existing == body => Ok(StickyOutcome::Unchanged { comment_id: id }),
+                Ok(_) => {
+                    apply_update(
+                        client,
+                        cfg,
+                        owner,
+                        repo,
+                        pr_number,
+                        id,
+                        &body,
+                        MarkerTarget::Latest,
+                    )
+                    .await
+                }
+                Err(CaduceusError::GitHubApi { status: 404, .. }) => {
+                    recreate_after_comment_gone(
+                        client,
+                        cfg,
+                        owner,
+                        repo,
+                        pr_number,
+                        &body,
+                        Some(id),
+                        MarkerTarget::Latest,
+                    )
+                    .await
+                }
+                Err(err) => Err(err),
+            },
+            None => {
+                match find_sticky_comment_by_marker(
+                    client,
+                    owner,
+                    repo,
+                    pr_number,
+                    MarkerTarget::Latest,
+                )
+                .await?
+                {
+                    Some(id) => {
+                        // Crash-heal adoption (AC3): a prior create succeeded
+                        // but the id was never persisted. PATCH the adopted
+                        // id — no duplicate is created.
+                        match fetch_comment_body(client, owner, repo, id).await {
+                            Ok(existing) if existing == body => {
+                                Ok(StickyOutcome::Unchanged { comment_id: id })
+                            }
+                            Ok(_) => {
+                                apply_update(
+                                    client,
+                                    cfg,
+                                    owner,
+                                    repo,
+                                    pr_number,
+                                    id,
+                                    &body,
+                                    MarkerTarget::Latest,
+                                )
+                                .await
+                            }
+                            Err(CaduceusError::GitHubApi { status: 404, .. }) => {
+                                recreate_after_comment_gone(
+                                    client,
+                                    cfg,
+                                    owner,
+                                    repo,
+                                    pr_number,
+                                    &body,
+                                    Some(id),
+                                    MarkerTarget::Latest,
+                                )
+                                .await
+                            }
+                            Err(err) => Err(err),
+                        }
+                    }
+                    None => {
+                        let new_id =
+                            create_pr_comment(client, cfg, owner, repo, pr_number, &body).await?;
+                        Ok(StickyOutcome::Published { comment_id: new_id })
+                    }
+                }
+            }
+        },
     }
 }
 
