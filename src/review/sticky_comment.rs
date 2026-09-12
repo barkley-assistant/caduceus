@@ -9,8 +9,9 @@
 //! The renderer ([`render_sticky_comment`]) is pure and deterministic:
 //! the same [`RenderInput`] always produces byte-identical output. It
 //! reserves the header (marker, verdict heading, reviewed SHA,
-//! stale-revision notice) first and NEVER front-truncates — only
-//! findings are dropped from the tail, inside a hard byte budget.
+//! stale-revision notice, update banner (re-publications)) first and
+//! NEVER front-truncates — only findings are dropped from the tail,
+//! inside a hard byte budget.
 //!
 //! [`publish`] owns the four gone-states (DAR §9.3): a deleted comment
 //! (A) is recovered via marker search; a vanished PR (B) and a
@@ -76,6 +77,12 @@ pub struct RenderInput<'a> {
     /// notice (DAR §9.2: stale results still publish with the reviewed
     /// SHA noted).
     pub current_head_sha: Option<&'a str>,
+    /// The completing run's `review_generation` — 1 on first
+    /// publication. Any generation > 1 renders the update banner
+    /// (issue #393): the sticky comment is edited in place, so the
+    /// banner is the at-a-glance signal that the review was re-run
+    /// for a new commit.
+    pub review_generation: u64,
 }
 
 /// Render the sticky comment body. Pure and deterministic: the same
@@ -86,16 +93,19 @@ pub struct RenderInput<'a> {
 ///
 /// 1. [`REVIEW_MARKER`] (head marker).
 /// 2. Blank line.
-/// 3. PASS/FAIL heading line (derived from `review.verdict`).
-/// 4. Reviewed SHA line.
-/// 5. Stale-revision notice line (only when `current_head_sha` is
+/// 3. Update banner (only when `review_generation > 1`, issue #393): a
+///    `> [!IMPORTANT]` alert panel naming the reviewed short SHA and the
+///    generation, so an in-place edit is visible at a glance.
+/// 4. PASS/FAIL heading line (derived from `review.verdict`).
+/// 5. Reviewed SHA line.
+/// 6. Stale-revision notice line (only when `current_head_sha` is
 ///    `Some` and differs from `reviewed_head_sha`).
-/// 6. Summary.
-/// 7. Findings in severity order (Blocking → Warning → Suggestion,
+/// 7. Summary.
+/// 8. Findings in severity order (Blocking → Warning → Suggestion,
 ///    stable within severity = persisted `findings` order). Consumption
 ///    stops when the next finding would overflow the remaining budget.
-/// 8. Truncation notice (only when at least one finding was dropped).
-/// 9. Blank line, then [`REVIEW_MARKER`] again (tail marker).
+/// 9. Truncation notice (only when at least one finding was dropped).
+/// 10. Blank line, then [`REVIEW_MARKER`] again (tail marker).
 ///
 /// The total is bounded by [`STICKY_COMMENT_MAX_BYTES`]. Only findings
 /// (and, in the pathological over-cap-summary case, the summary tail)
@@ -110,6 +120,18 @@ pub fn render_sticky_comment(input: &RenderInput<'_>) -> String {
     let mut head = String::new();
     head.push_str(REVIEW_MARKER);
     head.push_str("\n\n");
+    // Update banner (issue #393): re-publications edit the comment in
+    // place, so the banner is the at-a-glance signal. Pushed onto
+    // `head` BEFORE the reserve computation below, which makes it
+    // part of the never-front-truncated header with zero budget-math
+    // changes.
+    if input.review_generation > 1 {
+        head.push_str(&format!(
+            "> [!IMPORTANT] Updated for commit `{}` (review generation {})\n\n",
+            short_sha(input.reviewed_head_sha),
+            input.review_generation
+        ));
+    }
     head.push_str(heading);
     head.push('\n');
     head.push_str("Reviewed SHA: ");
@@ -225,6 +247,20 @@ fn push_char_bounded(out: &mut String, text: &str, max_bytes: usize) {
         keep -= 1;
     }
     out.push_str(&text[..keep]);
+}
+
+/// First 12 characters of a SHA, or the whole string when shorter.
+/// Char-boundary safe: head SHAs are bounded, non-empty strings at
+/// the store layer, but a multi-byte value must never panic the
+/// renderer. Mirrors the CLI's display convention
+/// (`src/cli/review.rs::short_sha`); kept private so the renderer
+/// stays self-contained.
+fn short_sha(sha: &str) -> &str {
+    if sha.len() > 12 && sha.is_char_boundary(12) {
+        &sha[..12]
+    } else {
+        sha
+    }
 }
 
 // ---------------------------------------------------------------------------

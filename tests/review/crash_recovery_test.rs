@@ -218,6 +218,7 @@ async fn restart_mid_publish_emits_no_duplicate_comment_and_reaches_published() 
         review: &sample_review(),
         reviewed_head_sha: SHA,
         current_head_sha: None,
+        review_generation: 1,
     });
     assert!(
         rendered.contains(REVIEW_MARKER),
