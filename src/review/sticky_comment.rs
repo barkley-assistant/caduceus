@@ -138,7 +138,7 @@ pub struct RenderInput<'a> {
 ///    stops when the next finding would overflow the remaining budget.
 /// 9. Truncation notice (only when at least one finding was dropped).
 /// 10. Blank line, then the generation-tagged marker again (tail
-///    marker).
+///     marker).
 ///
 /// The total is bounded by [`STICKY_COMMENT_MAX_BYTES`]. Only findings
 /// (and, in the pathological over-cap-summary case, the summary tail)
@@ -697,6 +697,7 @@ pub async fn publish(
 /// PATCH an existing (authoritative or adopted) comment id. A 404 here
 /// is gone-state A and routes to recovery with the caller's
 /// [`MarkerTarget`]; everything else propagates.
+#[allow(clippy::too_many_arguments)] // fixed 8-arg internal surface (issue #394)
 async fn apply_update(
     client: &Client,
     cfg: &Config,
@@ -735,6 +736,7 @@ async fn apply_update(
 /// pass: if the adopted PATCH 404s too (deleted in the race window),
 /// fall through to create-new; if the create fails, the error
 /// propagates for #310's retryable-failure handling.
+#[allow(clippy::too_many_arguments)] // fixed 8-arg internal surface (issue #394)
 async fn recreate_after_comment_gone(
     client: &Client,
     cfg: &Config,
