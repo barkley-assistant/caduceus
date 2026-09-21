@@ -1081,6 +1081,14 @@ def _cli_doctor(verbose: bool = False) -> int:
     shell (e.g. for debugging) get the internal detail. CI log hygiene
     is achieved by the default output being operator-only (verbose=False
     is the default), not by overriding an explicit verbose flag.
+
+    Rendering is delegated to :mod:`_display`. On an interactive TTY
+    (``TERM`` != ``dumb``, ``NO_COLOR`` unset, a non-ASCII stdout
+    encoding) findings render as colored glyph-prefixed lines aligned in
+    columns and wrapped to the terminal width; everywhere else the
+    output is the plain ``[OK]``/``[FAIL]`` text with zero ANSI bytes.
+    Neither mode changes which checks run, their categories, or the
+    exit codes.
     """
     checks = [
         ("Binary", _doctor_check_binary()),
@@ -1092,18 +1100,16 @@ def _cli_doctor(verbose: bool = False) -> int:
         ("OCI Identity", _doctor_check_oci_identity()),
     ]
 
+    from . import _display  # type: ignore[import-not-found]
+
+    name_width = max(len(name) for name, _ in checks)
+    renderer = _display.DoctorRenderer.from_stream(sys.stdout, name_width)
+
     effective_verbose = verbose
     max_severity = 0  # 0 = ok, 1 = config/runtime, 2 = prerequisite
     for name, finding in checks:
-        status_mark = "OK" if finding.status == "ok" else "FAIL"
-        print(f"[{status_mark}] {name} — {finding.detail}")
-        if finding.next_action:
-            print(f"       next action: {finding.next_action}")
-        if effective_verbose:
-            internal = finding.internal_detail or finding.detail
-            print(f"       detail:      {internal}")
-            if finding.status != "ok":
-                print(f"       category:    {finding.category}")
+        for line in renderer.finding(name, finding, verbose=effective_verbose):
+            print(line)
         print()
         if finding.status != "ok":
             if finding.category in ("host-capability-unavailable", "gateway-inactive"):
