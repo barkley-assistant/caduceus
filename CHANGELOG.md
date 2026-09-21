@@ -38,6 +38,13 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
 
 ### Added
 
+- **Doctor display layer.** `hermes caduceus doctor` renders Unicode
+  status glyphs and ANSI color when stdout is an interactive TTY, aligns
+  the check-name column, and wraps long detail lines to the terminal
+  width with a hanging indent. Piped or CI output is unchanged — the
+  exact `[OK]`/`[FAIL]` plain-text lines with zero ANSI bytes — so log
+  grepping and the release-canary doctor classifier keep working. Exit
+  codes 0/1/2 are unchanged. Closes #412.
 - **Per-generation comment publication.** New
   `auto_review.publication_mode` (`update` (default) | `new_comment`)
   chooses how re-reviews reach the PR: `update` keeps PATCHing the

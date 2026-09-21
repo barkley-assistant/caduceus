@@ -215,4 +215,6 @@ the binary directly (or via the cron pulse wrapper).
 Note the two different doctors: the wrapper's `hermes caduceus doctor`
 checks plugin health (binary present, bridge seeded, cron job
 installed); the binary's `caduceus doctor` checks live OCI readiness.
-`cron-install` and `cron-remove` exist only in the wrapper.
+The wrapper doctor renders color and status glyphs on an interactive
+TTY; piped or CI output stays plain `[OK]`/`[FAIL]` lines with no ANSI
+bytes. `cron-install` and `cron-remove` exist only in the wrapper.
