@@ -19,6 +19,17 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
 
 ### Changed
 
+- **Readable `/caduceus-status` chat output.** The slash command now renders an
+  emoji verdict line (✅ healthy / ℹ️ working / ⚠️ failures / ❌ corrupt state),
+  tick times as local wall clock plus relative age instead of nanosecond ISO
+  strings, decoded tick outcomes (`idle304` → "Idle — GitHub 304, no changes",
+  unknown labels verbatim), a quiet `Queue empty` line or a compact table of
+  the non-zero operational phases, and omits the rate-limit line when it is
+  unknown. `caduceus status --json` and the wrapper CLI are untouched, and
+  `_redact`/`_truncate` plus the binary-missing and non-zero-exit diagnostics
+  are unchanged. A blank line terminates the queue table so GFM renders it as
+  phase rows only instead of absorbing the trailing count, `Next:` and
+  rate-limit lines. Closes #410.
 - **Configurable git author identity.** `git_author_name` and
   `git_author_email` now resolve per field through explicit config, host git
   config, and the `Caduceus Daemon <caduceus@daemon.local>` fallback. Closes
