@@ -543,3 +543,119 @@ fn reset_refuses_when_daemon_lock_held() {
     let e = snap.entry(&k).expect("present");
     assert_eq!(e.phase, Phase::Failed);
 }
+
+// `queue reprocess --json` (issue #417)
+
+fn parse_json(output: &std::process::Output) -> serde_json::Value {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    serde_json::from_str(&stdout).expect("stdout must be JSON")
+}
+
+#[test]
+fn reprocess_json_emits_generation_payload() {
+    let state_dir = tempdir("reprocess-json");
+    let k = key("Owner", "Repo", 1);
+    seed_failed(&state_dir, &k, 1);
+    let output = run_cli(
+        &state_dir,
+        &["queue", "reprocess", "owner/repo#1", "--json"],
+    );
+    assert!(
+        output.status.success(),
+        "expected success; got {:?}\nstdout: {}\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let doc = parse_json(&output);
+    assert_eq!(doc["schema"], "queue/1.0");
+    assert_eq!(doc["app_version"], env!("CARGO_PKG_VERSION"));
+    assert!(doc["diagnostic"].is_null(), "diagnostic must be null");
+    let payload = &doc["payload"];
+    assert_eq!(payload["action"], "reprocess");
+    assert_eq!(payload["dry_run"], false);
+    assert_eq!(payload["key"], "owner/repo#1");
+    assert_eq!(payload["previous_generation"], 1);
+    assert_eq!(payload["new_generation"], 2);
+    // The reported generation is the persisted one.
+    let store = StateStore::open(&state_dir).expect("open");
+    let snap = store.snapshot().unwrap();
+    let e = snap.entry(&k).expect("present");
+    assert_eq!(e.phase, Phase::Queued);
+    assert_eq!(e.generation, 2);
+    assert_eq!(e.attempts, 0);
+}
+
+#[test]
+fn reprocess_dry_run_json_emits_planned_payload() {
+    let state_dir = tempdir("reprocess-dry-json");
+    let k = key("Owner", "Repo", 1);
+    seed_failed(&state_dir, &k, 1);
+    let output = run_cli(
+        &state_dir,
+        &["queue", "reprocess", "owner/repo#1", "--dry-run", "--json"],
+    );
+    assert!(
+        output.status.success(),
+        "expected success; got {:?}\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let doc = parse_json(&output);
+    let payload = &doc["payload"];
+    assert_eq!(payload["action"], "reprocess");
+    assert_eq!(payload["dry_run"], true);
+    assert_eq!(payload["key"], "owner/repo#1");
+    assert_eq!(payload["previous_generation"], 1);
+    assert_eq!(payload["new_generation"], 2);
+    // No mutation on the dry-run path.
+    let store = StateStore::open(&state_dir).expect("open");
+    let snap = store.snapshot().unwrap();
+    let e = snap.entry(&k).expect("present");
+    assert_eq!(e.phase, Phase::Failed);
+    assert_eq!(e.generation, 1);
+}
+
+#[test]
+fn reprocess_json_missing_entry_still_errors() {
+    let state_dir = tempdir("reprocess-json-missing");
+    fs::create_dir_all(&state_dir).unwrap();
+    write_state(
+        &state_dir.join("state.json"),
+        &QueueState {
+            version: QUEUE_FILE_VERSION,
+            entries: BTreeMap::new(),
+        },
+    );
+    let output = run_cli(
+        &state_dir,
+        &["queue", "reprocess", "owner/repo#1", "--json"],
+    );
+    assert!(
+        !output.status.success(),
+        "expected failure for a missing entry"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.to_lowercase().contains("not found"),
+        "expected the missing-entry error on stderr; got {stderr:?}"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).trim().is_empty(),
+        "--json must not print a partial envelope on the error path"
+    );
+}
+
+#[test]
+fn reprocess_human_output_unchanged() {
+    let state_dir = tempdir("reprocess-human");
+    let k = key("Owner", "Repo", 1);
+    seed_failed(&state_dir, &k, 1);
+    let output = run_cli(&state_dir, &["queue", "reprocess", "owner/repo#1"]);
+    assert!(output.status.success(), "expected success");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("reprocessed owner/repo#1: new generation=2"),
+        "human output changed; got {stdout:?}"
+    );
+}

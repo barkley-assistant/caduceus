@@ -6,6 +6,22 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`--json` on wrapper doctor and binary `queue reprocess`.** `hermes
+  caduceus doctor --json` emits a machine-readable report (per-check
+  status, category, detail, next action, and internal detail, plus a
+  top-level `severity` that mirrors the human 0/1/2 exit codes exactly);
+  the human report and the exit codes are unchanged. `caduceus queue
+  reprocess --json` joins reset/remove/show on the versioned `queue/1.0`
+  envelope with an `action: "reprocess"` payload (previous and new
+  generation). `caduceus queue remove --json` already existed and is
+  unchanged. Setup help on both surfaces now cross-references the other
+  meaning of the word (`caduceus setup` = config generator for
+  standalone installs; `hermes caduceus setup` = binary build + bridge
+  seeding), and the README standalone-install section says the same.
+  Closes #417.
+
 ### Security
 
 - **Fork trust posture documented.** Fork review executes
@@ -416,6 +432,24 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
   (failing ~1/3 of isolated runs) despite its fsync workaround; the
   shared helper now backs the OCI adapter, readiness, lifecycle-stub,
   and env-file fixtures.
+- **`test_doctor_cli_dispatches_json_flag` is hermetic-CI safe.** The
+  test exercises both the parser-dispatched `--json` and human paths
+  through a single `args.func(args)` invocation per path, wrapping
+  each call in `try ... finally: _runtime.reset_dispatcher()`.
+  `reset_dispatcher()` resets `_runtime._subprocess_run` and
+  `_runtime._HERMES_PATH` to their defaults, which wipes the cron stub
+  installed by `_stub_cron_runtime` (that helper writes the two
+  attributes directly, not via `monkeypatch.setattr`). On a hermetic
+  CI runner with no `hermes` on `PATH`, the second invocation's
+  `_doctor_check_cron_capability` then invoked real `subprocess.run`
+  and raised `CronCapabilityError`, mapping to a
+  `host-capability-unavailable` fail and `max_severity = 2`, breaking
+  the `assert rc == 0` on the human path. The test now re-stubs the
+  cron runtime between the two invocations, mirroring the
+  `_healthy_install` setup and preserving the test's intent (both
+  paths through the real parser→dispatcher→handler chain). Local
+  hosts with `hermes` on `PATH` were unaffected; CI was
+  deterministic. Closes #417.
 
 ## [1.0.0] - 2026-08-08
 

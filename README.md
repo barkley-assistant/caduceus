@@ -155,6 +155,13 @@ This is on purpose: the Hermes plugin has a default
 bridge path; you don't, so the daemon makes you say it
 out loud.
 
+One naming note: `caduceus setup` (the subcommand you may
+have seen in the CLI reference) is a different, smaller
+thing — it only generates the minimal non-secret config
+file. The build-and-seed step you skip by going standalone
+is `hermes caduceus setup`, which needs the Hermes plugin
+and is not part of this path.
+
 ### OCI sandbox (optional)
 
 Caduceus can dispatch workers inside a container instead
