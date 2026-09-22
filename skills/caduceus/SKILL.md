@@ -87,6 +87,27 @@ When triggered, this skill should:
    daemon `processor.log` lives at `<state_dir>/processor.log` and the
    heartbeat envelope sits at `<state_dir>/runs/<run_id>.heartbeat`.
 
+## Doctor
+
+`hermes caduceus doctor` reports two families in one pass: the
+install-health checks (binary, bridge harness, provider secret, cron
+job, worktree lock, Hermes home, OCI identity) and the binary's own
+machine contracts chained as read-only inputs — `caduceus doctor --json
+--skip-canary` (live OCI readiness verdict) and `caduceus status --json`
+(tick freshness, from `last_tick_started`).
+
+- `READY` OCI readiness is OK. `UNAVAILABLE` is WARN, not FAIL: every
+  trusted-host box (the default `executor_mode`) has no sandbox section,
+  so its OCI checks never ran.
+- A last tick under 5 minutes old is OK, 5-30 minutes is WARN, and 30
+  minutes or more is FAIL — the registered cron job fires every 2
+  minutes. A box that has never ticked (no state dir, `null` timestamp)
+  is WARN, never FAIL.
+- WARN is advisory and never changes the exit code, which stays 0 (all
+  healthy), 1 (config/runtime defect), 2 (host capability / external
+  prerequisite). `--verbose` adds the internal detail and the structured
+  `category:` line.
+
 ## Configuration keys
 
 Set `git_author_name` and `git_author_email` in the `caduceus:` block to

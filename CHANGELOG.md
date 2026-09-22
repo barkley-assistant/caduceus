@@ -45,6 +45,16 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
   exact `[OK]`/`[FAIL]` plain-text lines with zero ANSI bytes — so log
   grepping and the release-canary doctor classifier keep working. Exit
   codes 0/1/2 are unchanged. Closes #412.
+- **Doctor 2.0: chained OCI doctor + tick freshness.** `hermes caduceus
+  doctor` now also runs the binary's `caduceus doctor --json
+  --skip-canary` (verdict mapped: READY → OK, UNAVAILABLE → WARN — every
+  trusted-host box returns UNAVAILABLE because OCI checks did not run)
+  and a tick-freshness check reading `last_tick_started` from `caduceus
+  status --json` (WARN past 5 minutes, FAIL past 30 — the cron job fires
+  every 2 minutes). Both render in the same unified report; WARN is
+  advisory and never changes the exit code, so the 0/1/2 contract holds.
+  The binary's `doctor --json` / `status --json` contracts are read-only
+  inputs, never altered. Closes #414.
 - **Per-generation comment publication.** New
   `auto_review.publication_mode` (`update` (default) | `new_comment`)
   chooses how re-reviews reach the PR: `update` keeps PATCHing the

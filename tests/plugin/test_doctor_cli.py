@@ -9,6 +9,7 @@ import shutil
 import stat
 import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -25,7 +26,7 @@ from tests.plugin._helpers import _stub_cron_runtime
 
 
 def test_doctor_exit_0_when_all_healthy(
-    adapter, install_with_fake_binary: Path, isolated_hermes_home: Path, monkeypatch
+    adapter, install_with_fake_binary: Path, isolated_hermes_home: Path, monkeypatch, capsys
 ) -> None:
     """_cli_doctor returns 0 when all checks pass (AC-06)."""
     from caduceus import _runtime
@@ -40,11 +41,36 @@ def test_doctor_exit_0_when_all_healthy(
 
     registry = {}
     _stub_cron_runtime(adapter, registry)
+
+    # The shared fake binary has no `doctor` arm, so stub the chained
+    # calls: a READY OCI report and a one-minute-old tick (issue #414).
+    recent = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    doctor_json = json.dumps(
+        {
+            "schema_version": "1.0.0",
+            "verdict": "READY",
+            "checks": [{"id": "engine", "status": "pass", "detail": "ok"}],
+        }
+    )
+    status_json = json.dumps({"diagnostic": None, "report": {"last_tick_started": recent}})
+
+    def fake_run(argv, *, cwd=None, timeout=None):
+        sub = argv[1] if len(argv) > 1 else ""
+        if sub == "doctor":
+            return subprocess.CompletedProcess(argv, 0, doctor_json, "")
+        if sub == "status":
+            return subprocess.CompletedProcess(argv, 0, status_json, "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(adapter, "_run", fake_run)
     try:
         rc = adapter._cli_doctor()
     finally:
         _runtime.reset_dispatcher()
+    out = capsys.readouterr().out
     assert rc == 0
+    assert "[OK] OCI Readiness — OCI readiness: READY (1 check, all passed)" in out
+    assert "[OK] Tick Freshness — last tick 1 minute ago" in out
 
 
 

@@ -9,10 +9,13 @@ under parallel test threads.
 from __future__ import annotations
 
 import io
+import json
 import re
+import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterator, Tuple
+from typing import Any, Dict, Iterator, List, Tuple
 
 import pytest
 
@@ -250,6 +253,69 @@ def test_narrow_terminal_guard_skips_wrap() -> None:
 
 
 # ---------------------------------------------------------------------------
+# WARN status — the advisory row (issue #414)
+# ---------------------------------------------------------------------------
+
+
+def test_plain_render_warn() -> None:
+    """A ``warn`` finding renders as ``[WARN]`` with sub-lines and no ANSI."""
+    renderer = _plain_renderer()
+    finding = _finding(
+        category="daemon-defect",
+        status="warn",
+        detail="last tick 7 minutes ago (cron fires every 2 min)",
+        next_action="check the cron ticker (`hermes cron list`) if this persists",
+        internal_detail="last_tick_started=2026-09-12T15:40:24Z; age_seconds=420",
+    )
+
+    assert renderer.finding("Tick Freshness", finding, verbose=False) == [
+        "[WARN] Tick Freshness \u2014 last tick 7 minutes ago (cron fires every 2 min)",
+        "       next action: check the cron ticker (`hermes cron list`) if this persists",
+    ]
+    assert renderer.finding("Tick Freshness", finding, verbose=True) == [
+        "[WARN] Tick Freshness \u2014 last tick 7 minutes ago (cron fires every 2 min)",
+        "       next action: check the cron ticker (`hermes cron list`) if this persists",
+        "       detail:      last_tick_started=2026-09-12T15:40:24Z; age_seconds=420",
+        "       category:    daemon-defect",
+    ]
+    joined = "\n".join(renderer.finding("Tick Freshness", finding, verbose=True))
+    assert "\x1b" not in joined
+    assert GLYPH_OK not in joined
+    assert GLYPH_FAIL not in joined
+
+
+def test_interactive_render_warn() -> None:
+    """A ``warn`` finding uses the ``!`` glyph, yellow SGR, and hang column."""
+    renderer = _interactive_renderer()
+    finding = _finding(
+        category="daemon-defect",
+        status="warn",
+        detail="last tick 7 minutes ago",
+        next_action="",
+        internal_detail="",
+    )
+
+    lines = renderer.finding("Tick Freshness", finding, verbose=False)
+
+    assert lines[0].startswith("\x1b[33m" + "! WARN" + _display.RESET)
+    assert _visible(lines[0]).startswith("! WARN " + "Tick Freshness".ljust(15) + " \u2014 ")
+    assert _visible(lines[0]).index("last tick 7 minutes ago") == renderer.hang
+
+
+def test_finding_passes_warn_status_through() -> None:
+    """The renderer honours ``warn`` and still falls back to ``fail`` for junk."""
+    warn_finding = _finding(status="warn", detail="advisory", next_action="", internal_detail="")
+    unknown_finding = _finding(status="bogus", detail="junk", next_action="", internal_detail="")
+
+    assert _plain_renderer().finding("X", warn_finding, verbose=False) == [
+        "[WARN] X \u2014 advisory"
+    ]
+    assert _plain_renderer().finding("X", unknown_finding, verbose=False) == [
+        "[FAIL] X \u2014 junk"
+    ]
+
+
+# ---------------------------------------------------------------------------
 # End to end through _cli_doctor
 # ---------------------------------------------------------------------------
 
@@ -422,3 +488,227 @@ def test_doctor_verbose_in_tty_mode_prints_detail_and_category(
     assert rc == 1
     assert "detail:      checked CADUCEUS_GITHUB_TOKEN, GITHUB_TOKEN, GH_TOKEN" in out
     assert "category:    config-incomplete" in out
+
+
+# ---------------------------------------------------------------------------
+# Chained checks — one unified report (issue #414)
+# ---------------------------------------------------------------------------
+
+
+def _minutes_ago(minutes: float) -> str:
+    """An RFC3339 timestamp *minutes* in the past (chrono emits ``Z``)."""
+    stamp = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+    return stamp.isoformat().replace("+00:00", "Z")
+
+
+def _doctor_report(verdict: str, checks: List[Dict[str, Any]]) -> str:
+    """A ``caduceus doctor --json`` ReadinessReport payload."""
+    return json.dumps(
+        {
+            "schema_version": "1.0.0",
+            "generated_at": "2026-09-12T15:40:24.394878683Z",
+            "verdict": verdict,
+            "checks": checks,
+        }
+    )
+
+
+def _status_envelope(last_tick_started: Any, *, diagnostic: Any = None) -> str:
+    """A ``caduceus status --json`` envelope (see src/daemon/status.rs)."""
+    return json.dumps(
+        {
+            "app_version": "1.0.0",
+            "version": "7.7.0",
+            "diagnostic": diagnostic,
+            "report": {"version": "7.7.0", "last_tick_started": last_tick_started},
+        }
+    )
+
+
+def _stub_chained(
+    adapter,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    doctor: str = "",
+    status: str = "",
+    doctor_rc: int = 0,
+    status_rc: int = 0,
+) -> None:
+    """Replace ``_run`` with canned chained doctor/status results."""
+
+    def fake_run(argv, *, cwd=None, timeout=None):
+        sub = argv[1] if len(argv) > 1 else ""
+        if sub == "doctor":
+            return subprocess.CompletedProcess(argv, doctor_rc, doctor, "")
+        if sub == "status":
+            return subprocess.CompletedProcess(argv, status_rc, status, "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(adapter, "_run", fake_run)
+
+
+_PASSING_CHECKS = [
+    {"id": "platform", "status": "pass", "detail": "Linux host", "remediation": None},
+    {"id": "engine", "status": "pass", "detail": "docker reachable", "remediation": None},
+]
+
+_TRUSTED_HOST_CHECKS = [
+    {
+        "id": "engine",
+        "status": "fail",
+        "detail": "no sandbox configuration is present",
+        "remediation": "configure executor_mode: oci or keep trusted_host mode",
+    }
+]
+
+
+def test_doctor_chained_renders_both_families(
+    adapter,
+    install_with_fake_binary: Path,
+    healthy_home: None,
+    capsys: pytest.CaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One run reports install health, OCI readiness, and tick freshness (AC-1)."""
+    from caduceus import _runtime
+
+    _stub_chained(
+        adapter,
+        monkeypatch,
+        doctor=_doctor_report("READY", _PASSING_CHECKS),
+        status=_status_envelope(_minutes_ago(1)),
+    )
+    try:
+        rc = adapter._cli_doctor()
+    finally:
+        _runtime.reset_dispatcher()
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "[OK] Binary \u2014" in out
+    assert "[OK] OCI Readiness \u2014 OCI readiness: READY (2 checks, all passed)" in out
+    assert "[OK] Tick Freshness \u2014 last tick 1 minute ago" in out
+    assert "\x1b" not in out
+
+
+def test_doctor_chained_trusted_host_is_warn_not_fail(
+    adapter,
+    install_with_fake_binary: Path,
+    healthy_home: None,
+    capsys: pytest.CaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Trusted-host UNAVAILABLE renders as [WARN] and keeps exit 0 (D2)."""
+    from caduceus import _runtime
+
+    _stub_chained(
+        adapter,
+        monkeypatch,
+        doctor=_doctor_report("UNAVAILABLE", _TRUSTED_HOST_CHECKS),
+        status=_status_envelope(_minutes_ago(1)),
+    )
+    try:
+        rc = adapter._cli_doctor()
+    finally:
+        _runtime.reset_dispatcher()
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "[WARN] OCI Readiness \u2014 OCI readiness: UNAVAILABLE (1 check, 1 failed)" in out
+    assert "[FAIL] OCI Readiness" not in out
+
+
+def test_doctor_tick_freshness_dead_flips_exit_to_1(
+    adapter,
+    install_with_fake_binary: Path,
+    healthy_home: None,
+    capsys: pytest.CaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A tick 45 minutes stale is a FAIL and drives exit 1 (AC-2)."""
+    from caduceus import _runtime
+
+    _stub_chained(
+        adapter,
+        monkeypatch,
+        doctor=_doctor_report("READY", _PASSING_CHECKS),
+        status=_status_envelope(_minutes_ago(45)),
+    )
+    try:
+        rc = adapter._cli_doctor()
+    finally:
+        _runtime.reset_dispatcher()
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "[FAIL] Tick Freshness \u2014 last tick 45 minutes ago" in out
+
+
+def test_doctor_tick_freshness_warn_keeps_exit_0(
+    adapter,
+    install_with_fake_binary: Path,
+    healthy_home: None,
+    capsys: pytest.CaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A tick 10 minutes stale is advisory: [WARN] and exit 0 (D1, AC-2)."""
+    from caduceus import _runtime
+
+    _stub_chained(
+        adapter,
+        monkeypatch,
+        doctor=_doctor_report("READY", _PASSING_CHECKS),
+        status=_status_envelope(_minutes_ago(10)),
+    )
+    try:
+        rc = adapter._cli_doctor()
+    finally:
+        _runtime.reset_dispatcher()
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "[WARN] Tick Freshness \u2014 last tick 10 minutes ago" in out
+
+
+def test_doctor_exit_codes_preserved_with_new_checks(
+    adapter,
+    install_with_fake_binary: Path,
+    healthy_home: None,
+    capsys: pytest.CaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The chained checks leave the 0/1/2 exit-code contract intact."""
+    from caduceus import _DoctorFinding, _runtime
+
+    _stub_chained(
+        adapter,
+        monkeypatch,
+        doctor=_doctor_report("READY", _PASSING_CHECKS),
+        status=_status_envelope(_minutes_ago(1)),
+    )
+    original_secret = adapter._doctor_check_provider_secret
+
+    def _failing_secret():
+        return _DoctorFinding(
+            category="config-incomplete",
+            status="fail",
+            detail="provider secret not configured",
+            next_action="set CADUCEUS_GITHUB_TOKEN",
+        )
+
+    try:
+        rc_healthy = adapter._cli_doctor()
+        capsys.readouterr()
+
+        adapter._doctor_check_provider_secret = _failing_secret  # type: ignore[assignment]
+        rc_config = adapter._cli_doctor()
+        capsys.readouterr()
+
+        install_with_fake_binary.unlink()
+        rc_prereq = adapter._cli_doctor()
+        capsys.readouterr()
+    finally:
+        adapter._doctor_check_provider_secret = original_secret
+        _runtime.reset_dispatcher()
+
+    assert (rc_healthy, rc_config, rc_prereq) == (0, 1, 2)

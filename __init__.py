@@ -41,6 +41,7 @@ import subprocess
 import sys
 from collections import namedtuple
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Union
 
@@ -129,7 +130,9 @@ _DoctorFinding = namedtuple(
 Attributes:
     category: One of ``"host-capability-unavailable"``, ``"gateway-inactive"``,
         ``"config-incomplete"``, ``"daemon-defect"``.
-    status: ``"ok"`` or ``"fail"``.
+    status: ``"ok"``, ``"warn"``, or ``"fail"``. A ``"warn"`` finding is
+        advisory: it renders as ``[WARN]`` but never changes the doctor
+        exit code.
     detail: Human-readable operator-facing description of the finding.
     next_action: What the operator should do to fix the issue, or empty
         string if status is ``"ok"``.
@@ -976,6 +979,274 @@ def _binary_on_path(name: str) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# Chained doctor checks (issue #414)
+# ---------------------------------------------------------------------------
+
+# The registered cron job fires every 2 minutes, so 5 minutes is roughly
+# two missed ticks and 30 minutes means the ticker is effectively dead.
+_TICK_FRESH_WARN_SECONDS = 5 * 60
+_TICK_FRESH_FAIL_SECONDS = 30 * 60
+
+
+def _doctor_check_oci_readiness() -> _DoctorFinding:
+    """Chain the binary's live OCI readiness doctor (issue #414, AC-1).
+
+    Runs ``caduceus doctor --json --skip-canary`` as a bounded subprocess
+    and maps the report's ``verdict`` into the unified report:
+
+    - ``READY`` -> ``ok``;
+    - ``UNAVAILABLE`` -> ``warn``. Every trusted-host box (the default
+      ``executor_mode``) has no sandbox configuration, so the binary
+      reports a single Engine failure and exits non-zero — that is a
+      configuration choice, not a defect, and must not red-light a
+      healthy install. ``warn`` is advisory and never changes the exit
+      code.
+
+    The binary's own exit code is deliberately not propagated (it exits
+    1 on ``UNAVAILABLE``); the wrapper owns the exit-code contract. The
+    diagnostic canary is skipped because it pulls an image and can
+    outlive the wrapper's subprocess bound — ``caduceus doctor`` run
+    directly is the way to get the deeper diagnostic.
+    """
+    category = "host-capability-unavailable"
+    binary = _binary_path()
+    if not binary.is_file():
+        # The Binary check owns "binary missing" (it FAILs -> exit 2); a
+        # second failure here would be noise, not signal.
+        return _DoctorFinding(
+            category=category,
+            status="ok",
+            detail="binary OCI doctor skipped (binary not installed — see Binary check)",
+            next_action="",
+            internal_detail=f"binary not present at {binary}",
+        )
+    argv = [str(binary), "doctor", "--json", "--skip-canary"]
+    try:
+        proc = _run(argv, cwd=_plugin_root(), timeout=SUBPROCESS_TIMEOUT_SECONDS)
+    except RuntimeError as exc:
+        return _DoctorFinding(
+            category=category,
+            status="warn",
+            detail=f"binary OCI doctor could not run ({exc})",
+            next_action="run `caduceus doctor` directly to diagnose the OCI engine",
+            internal_detail=str(exc),
+        )
+    try:
+        payload = json.loads(proc.stdout)
+    except (json.JSONDecodeError, TypeError):
+        payload = None
+    if not isinstance(payload, dict) or "verdict" not in payload:
+        return _DoctorFinding(
+            category=category,
+            status="warn",
+            detail=f"binary OCI doctor returned no usable report (exit {proc.returncode})",
+            next_action="run `caduceus doctor` directly for the full OCI report",
+            internal_detail=(
+                f"exit={proc.returncode}; "
+                f"stderr={_redact(proc.stderr or '').strip()!r}"
+            ),
+        )
+    verdict = payload.get("verdict")
+    checks = payload.get("checks")
+    checks = checks if isinstance(checks, list) else []
+    failed = [
+        check
+        for check in checks
+        if isinstance(check, dict) and check.get("status") != "pass"
+    ]
+    internal = (
+        f"verdict={verdict}; schema={payload.get('schema_version', 'unknown')}; "
+        f"failed={[str(check.get('id')) for check in failed]}"
+    )
+    if verdict == "READY":
+        return _DoctorFinding(
+            category=category,
+            status="ok",
+            detail=f"OCI readiness: READY ({_check_count(len(checks))}, all passed)",
+            next_action="",
+            internal_detail=internal,
+        )
+    if verdict != "UNAVAILABLE":
+        return _DoctorFinding(
+            category=category,
+            status="warn",
+            detail=f"binary OCI doctor reported an unknown verdict {verdict!r}",
+            next_action="run `caduceus doctor` directly for the full OCI report",
+            internal_detail=internal,
+        )
+    detail = f"OCI readiness: UNAVAILABLE ({_check_count(len(checks))}, {len(failed)} failed)"
+    first_detail = failed[0].get("detail") if failed else None
+    if first_detail:
+        detail = f"{detail} — {first_detail}"
+    return _DoctorFinding(
+        category=category,
+        status="warn",
+        detail=detail,
+        next_action="run `caduceus doctor` directly for the full OCI report",
+        internal_detail=internal,
+    )
+
+
+def _doctor_check_tick_freshness() -> _DoctorFinding:
+    """Check that the daemon ticked recently (issue #414, AC-2).
+
+    Reads ``last_tick_started`` from ``caduceus status --json`` and ages
+    it against the registered 2-minute cron cadence:
+
+    - under 5 minutes -> ``ok``;
+    - 5 to 30 minutes -> ``warn`` (roughly two missed ticks);
+    - 30 minutes or more -> ``fail`` (``daemon-defect`` -> exit 1; the
+      ticker has stopped and the daemon is effectively dead).
+
+    A box that has not ticked yet (no state directory, a ``null``
+    timestamp, or unreadable state) is ``warn``, never ``fail``: a
+    freshly installed or deliberately paused daemon is not a defect, and
+    repairing daemon state belongs to the state-recovery flow rather
+    than to ``doctor``. ``warn`` is advisory and never changes the exit
+    code.
+    """
+    binary = _binary_path()
+    if not binary.is_file():
+        return _DoctorFinding(
+            category="host-capability-unavailable",
+            status="ok",
+            detail="tick freshness skipped (binary not installed — see Binary check)",
+            next_action="",
+            internal_detail=f"binary not present at {binary}",
+        )
+    argv = [str(binary), "status", "--json"]
+    try:
+        proc = _run(argv, cwd=_plugin_root(), timeout=SUBPROCESS_TIMEOUT_SECONDS)
+    except RuntimeError as exc:
+        return _DoctorFinding(
+            category="daemon-defect",
+            status="warn",
+            detail=f"could not read daemon status ({exc})",
+            next_action="run `caduceus status` directly and check the cron ticker",
+            internal_detail=str(exc),
+        )
+    try:
+        payload = json.loads(proc.stdout)
+    except (json.JSONDecodeError, TypeError):
+        payload = None
+    if not isinstance(payload, dict):
+        payload = {}
+    report = payload.get("report")
+    report = report if isinstance(report, dict) else {}
+    diagnostic = payload.get("diagnostic")
+    if proc.returncode != 0:
+        # exit 2 = no state dir yet; exit 1 = corrupt state (or a
+        # corrupt queue). Neither is a reason to fail the tick check —
+        # the Worktree Lock / Hermes Home checks already cover
+        # daemon-state health, and the recovery path is documented in
+        # the state-recovery flow, not in a doctor next-action.
+        if proc.returncode == 2 and diagnostic == "no_state":
+            detail = "no state directory yet — the daemon has not ticked"
+            next_action = (
+                "run `hermes caduceus run` once (or wait for the 2-minute cron job)"
+            )
+        elif diagnostic:
+            detail = f"could not read daemon status ({diagnostic})"
+            next_action = "run `caduceus status` directly to inspect daemon state"
+        else:
+            detail = f"could not read daemon status (exit {proc.returncode})"
+            next_action = "run `caduceus status` directly to inspect daemon state"
+        return _DoctorFinding(
+            category="daemon-defect",
+            status="warn",
+            detail=detail,
+            next_action=next_action,
+            internal_detail=(
+                f"exit={proc.returncode}; diagnostic={diagnostic}; "
+                f"stderr={_redact(proc.stderr or '').strip()!r}"
+            ),
+        )
+    last_tick = report.get("last_tick_started")
+    if not isinstance(last_tick, str) or not last_tick:
+        return _DoctorFinding(
+            category="daemon-defect",
+            status="warn",
+            detail="daemon has never ticked (no tick recorded yet)",
+            next_action="run `hermes caduceus run` once (or wait for the 2-minute cron job)",
+            internal_detail=f"last_tick_started={last_tick!r}",
+        )
+    started = _parse_rfc3339(last_tick)
+    if started is None:
+        return _DoctorFinding(
+            category="daemon-defect",
+            status="warn",
+            detail=f"daemon status reported an unparsable last tick ({last_tick})",
+            next_action="run `caduceus status` directly to inspect daemon state",
+            internal_detail=f"last_tick_started={last_tick!r}",
+        )
+    age = max(0.0, (datetime.now(timezone.utc) - started).total_seconds())
+    internal = (
+        f"last_tick_started={last_tick}; age_seconds={int(age)}; "
+        f"threshold_warn={_TICK_FRESH_WARN_SECONDS}; "
+        f"threshold_fail={_TICK_FRESH_FAIL_SECONDS}"
+    )
+    age_label = _relative_age(age)
+    if age >= _TICK_FRESH_FAIL_SECONDS:
+        return _DoctorFinding(
+            category="daemon-defect",
+            status="fail",
+            detail=f"last tick {age_label} — the daemon appears dead",
+            next_action=(
+                "check the cron ticker (`hermes cron list`) and the daemon "
+                "process; the 2-minute job may have died"
+            ),
+            internal_detail=internal,
+        )
+    if age >= _TICK_FRESH_WARN_SECONDS:
+        return _DoctorFinding(
+            category="daemon-defect",
+            status="warn",
+            detail=f"last tick {age_label} (cron fires every 2 min)",
+            next_action="check the cron ticker (`hermes cron list`) if this persists",
+            internal_detail=internal,
+        )
+    return _DoctorFinding(
+        category="daemon-defect",
+        status="ok",
+        detail=f"last tick {age_label}",
+        next_action="",
+        internal_detail=internal,
+    )
+
+
+def _parse_rfc3339(raw: str) -> Optional[datetime]:
+    """Parse an RFC3339 timestamp, attaching UTC when no offset is present.
+
+    Chrono serialises ``DateTime<Utc>`` with nanosecond precision
+    (``2026-09-12T15:40:24.394878683Z``); ``datetime.fromisoformat``
+    handles that on the pinned Python 3.12 floor. Returns ``None`` when
+    the value cannot be parsed.
+    """
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _check_count(count: int) -> str:
+    """Render an OCI check count with correct pluralisation."""
+    return "1 check" if count == 1 else f"{count} checks"
+
+
+def _relative_age(seconds: float) -> str:
+    """Render an age in seconds as a short relative label."""
+    minutes = int(seconds // 60)
+    if minutes < 1:
+        return "less than a minute ago"
+    if minutes == 1:
+        return "1 minute ago"
+    return f"{minutes} minutes ago"
+
+
 def _doctor_check_worktree_lock(ctx: Any) -> _DoctorFinding:
     """Detect leftover .worktrees/.lock files via non-blocking flock probe.
 
@@ -1066,6 +1337,13 @@ def _doctor_check_worktree_lock(ctx: Any) -> _DoctorFinding:
 def _cli_doctor(verbose: bool = False) -> int:
     """Run all doctor checks and print a structured report (AC-06/07/08/11).
 
+    The report is the union of two families: the install-health checks
+    (binary, bridge harness, provider secret, cron capability, worktree
+    lock, Hermes home, OCI identity) and the chained checks that read the
+    binary's own machine contracts — ``caduceus doctor --json`` for live
+    OCI readiness and ``caduceus status --json`` for tick freshness
+    (issue #414). The binary's JSON is a read-only input.
+
     Each check is independent — a failure in one does NOT short-circuit
     the others. Exit codes:
         0: all checks healthy
@@ -1074,6 +1352,9 @@ def _cli_doctor(verbose: bool = False) -> int:
            ``gateway-inactive``)
 
     Exit 2 takes precedence over exit 1 because prerequisites block everything.
+    A ``warn`` finding is advisory: it renders as ``[WARN]`` but never
+    changes the exit code, so the 0/1/2 contract is stable for scripts and
+    the release-canary classifier.
 
     ``--verbose`` prints the internal detail string and the structured
     category on FAIL lines. The verbose flag is always honoured when
@@ -1086,7 +1367,8 @@ def _cli_doctor(verbose: bool = False) -> int:
     (``TERM`` != ``dumb``, ``NO_COLOR`` unset, a non-ASCII stdout
     encoding) findings render as colored glyph-prefixed lines aligned in
     columns and wrapped to the terminal width; everywhere else the
-    output is the plain ``[OK]``/``[FAIL]`` text with zero ANSI bytes.
+    output is the plain ``[OK]``/``[WARN]``/``[FAIL]`` text with zero ANSI
+    bytes.
     Neither mode changes which checks run, their categories, or the
     exit codes.
     """
@@ -1098,6 +1380,8 @@ def _cli_doctor(verbose: bool = False) -> int:
         ("Worktree Lock", _doctor_check_worktree_lock(ctx=None)),
         ("Hermes Home", _doctor_check_hermes_home()),
         ("OCI Identity", _doctor_check_oci_identity()),
+        ("OCI Readiness", _doctor_check_oci_readiness()),
+        ("Tick Freshness", _doctor_check_tick_freshness()),
     ]
 
     from . import _display  # type: ignore[import-not-found]
@@ -1111,7 +1395,10 @@ def _cli_doctor(verbose: bool = False) -> int:
         for line in renderer.finding(name, finding, verbose=effective_verbose):
             print(line)
         print()
-        if finding.status != "ok":
+        # Only a hard failure moves the exit code: a ``warn`` finding is
+        # advisory (rendered as [WARN]) and leaves the 0/1/2 contract
+        # intact for scripts and the release-canary classifier.
+        if finding.status == "fail":
             if finding.category in ("host-capability-unavailable", "gateway-inactive"):
                 max_severity = max(max_severity, 2)
             else:
