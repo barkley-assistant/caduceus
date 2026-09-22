@@ -340,6 +340,180 @@ def _handle_caduceus_status(raw_args: str) -> Optional[str]:
     return _format_status_for_chat(parsed)
 
 
+# TickOutcome labels (serde snake_case, ``src/state/meta.rs``) rendered as
+# chat phrases. Labels that are not in the table pass through verbatim so a
+# deployed binary with a newer enum (or the legacy ``idle``) still renders.
+_OUTCOME_TEXT: Dict[str, str] = {
+    "idle304": "Idle — GitHub 304, no changes",
+    "idle_empty": "Idle — nothing eligible",
+    "processed": "Processed issue(s)",
+    "skipped_concurrent": "Skipped — another tick holds the lock",
+    "skipped_cadence": "Skipped — cadence interval not elapsed",
+    "rate_limited": "Rate-limited by GitHub",
+    "cancelled": "Cancelled (signal or drain)",
+    "failed": "Failed",
+}
+
+# The four verdict glyphs the issue allows. Escapes (not literal emoji) match
+# the ``_display.py`` glyph style and survive any editor encoding; the chat
+# surface renders them as-is.
+_STATUS_VERDICT_EMOJI: Dict[str, str] = {
+    "healthy": "\u2705",
+    "warn": "\u26a0\ufe0f",
+    "fail": "\u274c",
+    "info": "\u2139\ufe0f",
+}
+
+# Operational phases drive the queue summary and its all-zero test. The
+# terminal bookkeeping phases (``done``/``skipped``/``previewed``) are
+# append-only in the Rust queue store and never drain, so counting them would
+# make the "Queue empty" line unreachable after the first shipped ticket.
+# The operational order is fixed for signal: the BTreeMap would sort
+# alphabetically, headlining ``awaiting_review`` over ``queued``.
+_OPERATIONAL_PHASE_ORDER = (
+    "queued",
+    "in_progress",
+    "needs_attention",
+    "failed",
+    "awaiting_review",
+)
+_BOOKKEEPING_PHASES = ("done", "skipped", "previewed")
+
+
+def _count(phases: Dict[str, Any], name: str) -> int:
+    """Read a phase count defensively (missing/null/garbage → ``0``)."""
+    try:
+        return int(phases.get(name) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _describe_outcome(raw: Any) -> str:
+    """Decode a ``last_outcome`` label into a readable phrase.
+
+    ``None``/empty renders ``no tick yet``; unknown labels pass through
+    verbatim rather than crashing or being silently mislabelled.
+    """
+    if raw is None or raw == "":
+        return "no tick yet"
+    text = str(raw)
+    return _OUTCOME_TEXT.get(text, text)
+
+
+def _chat_when(raw: Any) -> str:
+    """Render a tick timestamp as local wall time plus a relative age.
+
+    Three buckets keep the line readable and drop chrono's sub-second
+    precision: under 45 minutes renders ``HH:MM · N min ago``, under a day
+    renders ``HH:MM · Nh ago``, older renders ``Mon DD, HH:MM · Nd ago``.
+    A missing value renders ``never``; an unparsable value passes through
+    verbatim; a future timestamp (clock skew) clamps to ``just now`` so an
+    age is never negative.
+    """
+    if raw is None or raw == "":
+        return "never"
+    text = raw if isinstance(raw, str) else str(raw)
+    parsed = _parse_rfc3339(text)
+    if parsed is None:
+        return text
+    age = (datetime.now(timezone.utc) - parsed).total_seconds()
+    if age < 0:
+        age = 0.0
+    local = parsed.astimezone()
+    if age < 60:
+        return f"{local.strftime('%H:%M')} · just now"
+    if age < 45 * 60:
+        return f"{local.strftime('%H:%M')} · {int(age // 60)} min ago"
+    if age < 24 * 60 * 60:
+        return f"{local.strftime('%H:%M')} · {max(1, int(age // 3600))}h ago"
+    return f"{local.strftime('%b %d, %H:%M')} · {int(age // 86400)}d ago"
+
+
+def _queue_section(phases: Dict[str, Any]) -> List[str]:
+    """Render the queue summary, quiet when nothing operational is pending.
+
+    All five operational phases zero → a single ``Queue empty`` line. Any
+    non-zero → a two-column table of only the non-zero operational rows, in
+    fixed signal order. Non-zero bookkeeping counts follow as one plain
+    sentence so history stays visible without polluting the table.
+    """
+    non_zero = [
+        (name, _count(phases, name))
+        for name in _OPERATIONAL_PHASE_ORDER
+        if _count(phases, name)
+    ]
+    if non_zero:
+        lines = ["  | Phase | Count |", "  |---|---|"]
+        lines.extend(f"  | {name} | {count} |" for name, count in non_zero)
+    else:
+        lines = ["  Queue empty"]
+    bookkeeping = [
+        f"{name}: {_count(phases, name)}"
+        for name in _BOOKKEEPING_PHASES
+        if _count(phases, name)
+    ]
+    if bookkeeping:
+        lines.append(f"  Also {' · '.join(bookkeeping)}")
+    return lines
+
+
+def _verdict_line(
+    data: Dict[str, Any], phases: Dict[str, Any], diagnostic: Any = None
+) -> str:
+    """Return the one at-a-glance health line; first matching rung wins.
+
+    Order matters: corrupt state invalidates every count below it; failures
+    and blocked entries need an operator; an in-progress run answers "is it
+    doing something right now?"; the healthy rung is reachable only when
+    nothing operational is pending.
+    """
+    emoji = _STATUS_VERDICT_EMOJI
+
+    if data.get("state_corrupt") or diagnostic in ("corrupt_state", "corrupt_queue"):
+        return (
+            f"{emoji['fail']} Daemon state corrupt — recover with "
+            "`caduceus queue`; never hand-edit state files"
+        )
+    failed = _count(phases, "failed")
+    if failed:
+        return f"{emoji['warn']} Recent failure — {failed} issue(s) in Failed"
+    blocked = _count(phases, "needs_attention")
+    if blocked:
+        return (
+            f"{emoji['warn']} Blocked — {blocked} issue(s) need operator attention"
+        )
+    working = _count(phases, "in_progress")
+    if working:
+        return f"{emoji['info']} Working — {working} run(s) in progress"
+    now = datetime.now(timezone.utc)
+    poll_at = _parse_rfc3339(str(data.get("next_allowed_poll_at") or ""))
+    resuming = poll_at.astimezone().strftime("%H:%M") if poll_at and poll_at > now else None
+    if data.get("last_outcome") == "rate_limited" or resuming:
+        detail = f" — polling resumes {resuming}" if resuming else ""
+        return f"{emoji['info']} Rate-limited by GitHub{detail}"
+    started = _parse_rfc3339(str(data.get("last_tick_started") or ""))
+    tick_age = (now - started).total_seconds() if started else None
+    if data.get("last_outcome") in ("skipped_concurrent", "skipped_cadence") or (
+        tick_age is not None and tick_age >= _TICK_FRESH_FAIL_SECONDS
+    ):
+        return (
+            f"{emoji['warn']} Tick overdue — last tick "
+            f"{_chat_when(data.get('last_tick_started'))} (cron fires every 2 min)"
+        )
+    pending = [
+        f"{count} {label}"
+        for label, count in (
+            ("queued", _count(phases, "queued")),
+            ("previewed", _count(phases, "previewed")),
+            ("awaiting review", _count(phases, "awaiting_review")),
+        )
+        if count
+    ]
+    if pending:
+        return f"{emoji['info']} Queued work — {', '.join(pending)}"
+    return f"{emoji['healthy']} Daemon healthy — idle (no queued work)"
+
+
 def _format_status_for_chat(payload: Dict[str, Any]) -> str:
     """Render a status JSON payload as a short chat-friendly summary.
 
@@ -347,39 +521,53 @@ def _format_status_for_chat(payload: Dict[str, Any]) -> str:
     back to the root level for backward compatibility with flat payloads.
     Prefers the new ``app_version`` field over the legacy ``version``
     field so the chat output reflects the actual crate version rather
-    than the JSON schema version. Surfaces ``last_tick_started`` and
-    ``last_tick_finished`` separately because there is no combined
-    ``last_tick`` field in the Rust output.
+    than the JSON schema version. Chrono renders both tick timestamps
+    separately; they share one line when equal (the common idle case).
+
+    Output is line-based: the only markdown construct is the optional
+    two-column queue table, which degrades to readable plain text on
+    surfaces that do not render GFM.
     """
-    if isinstance(payload, dict):
-        data = payload.get("report", payload)
-    else:
+    root = payload if isinstance(payload, dict) else {}
+    data = root.get("report", root)
+    if not isinstance(data, dict):
         data = {}
     version = (
         data.get("app_version")
-        or payload.get("app_version")
+        or root.get("app_version")
         or data.get("version")
-        or payload.get("version")
+        or root.get("version")
         or "unknown"
     )
-    started = data.get("last_tick_started") or "never"
-    finished = data.get("last_tick_finished") or "never"
-    last_tick = f"started={started} finished={finished}"
-    last_outcome = data.get("last_outcome") or "n/a"
-    phases = data.get("phases") or {}
-    phase_counts = ", ".join(f"{k}={v}" for k, v in phases.items()) or "none"
-    next_head = data.get("next_head") or "none"
-    rate_limit = data.get("rate_limit") or {}
-    if rate_limit.get("limit"):
-        rl = f"rate_limit={rate_limit.get('remaining')}/{rate_limit.get('limit')}"
+    phases = data.get("phases")
+    if not isinstance(phases, dict):
+        phases = {}
+    started = data.get("last_tick_started")
+    finished = data.get("last_tick_finished")
+    if not started and not finished:
+        tick_line = "never"
+    elif started == finished:
+        tick_line = _chat_when(started)
     else:
-        rl = "rate_limit=unknown"
-    return (
-        f"caduceus {version} — last tick: {last_tick} ({last_outcome})\n"
-        f"  queue: {phase_counts}\n"
-        f"  next: {next_head}\n"
-        f"  {rl}"
-    )
+        tick_line = f"started {_chat_when(started)} · finished {_chat_when(finished)}"
+    lines = [
+        _verdict_line(data, phases, root.get("diagnostic")),
+        f"caduceus {version} — last tick {tick_line} "
+        f"({_describe_outcome(data.get('last_outcome'))})",
+        *_queue_section(phases),
+    ]
+    next_head = data.get("next_head")
+    if next_head:
+        lines.append(f"  Next: {next_head}")
+    rate_limit = data.get("rate_limit")
+    if isinstance(rate_limit, dict) and rate_limit.get("remaining") is not None:
+        if rate_limit.get("limit"):
+            lines.append(
+                f"  Rate limit: {rate_limit.get('remaining')}/{rate_limit.get('limit')}"
+            )
+        else:
+            lines.append(f"  Rate limit: {rate_limit.get('remaining')} remaining")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
