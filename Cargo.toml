@@ -524,6 +524,10 @@ name = "run_logging_test"
 path = "tests/cli/run_logging_test.rs"
 
 [[test]]
+name = "bare_help_test"
+path = "tests/cli/bare_help_test.rs"
+
+[[test]]
 name = "state_store_test"
 path = "tests/state/state_store_test.rs"
 

@@ -2,8 +2,8 @@
 
 Every subcommand of the `caduceus` binary, its flags and defaults,
 exit codes, and the `hermes caduceus` wrapper surface. The daemon is
-driven by a cron job that runs `caduceus` (rewritten to `caduceus
-run`); everything else here is operator tooling.
+driven by a cron job that runs `caduceus run`; everything else here is
+operator tooling.
 
 ```text
 caduceus run
@@ -25,8 +25,8 @@ caduceus setup [--dry-run]
 
 ## Conventions
 
-- A bare `caduceus` invocation is rewritten to `caduceus run` before
-  parsing, so the cron contract (silent on success) holds.
+- A bare `caduceus` invocation prints the help to stdout and exits 0
+  (git-style); it never runs a tick.
 - Every subcommand resolves its configuration from
   `$CADUCEUS_CONFIG` when set, falling back to the canonical
   resolution chain (`Config::load`).
@@ -47,7 +47,7 @@ caduceus setup [--dry-run]
 
 Run a single tick: poll GitHub, claim at most `max_issues_per_tick`
 entries, supervise workers, finalise results. This is the cron entry
-point; a bare `caduceus` invocation is equivalent. Success is silent.
+point. Success is silent.
 
 ## status [--json]
 

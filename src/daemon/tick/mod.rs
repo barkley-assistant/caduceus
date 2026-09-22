@@ -3,8 +3,8 @@
 //! [`run`], [`run_with_config`], and [`tick`] together implement
 //! the per-tick controller. The
 //! controller is the only entry point the daemon's CLI exposes:
-//! a no-argument `caduceus` invocation, the explicit `caduceus run`,
-//! and the cron tick all funnel through [`run`].
+//! the explicit `caduceus run` and the cron tick both funnel
+//! through [`run`].
 //!
 //! The order of operations is the contractually-documented
 //! one:
@@ -79,7 +79,7 @@ use tokio::task::JoinSet;
 
 // Public surface
 
-/// Cron / no-argument entry point. Loads config from the
+/// Cron entry point. Loads config from the
 /// canonical resolver chain, initialises the structured log
 /// stream, and runs a single tick under a fresh
 /// [`CancellationToken`]. The exit code follows the

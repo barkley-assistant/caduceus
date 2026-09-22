@@ -547,13 +547,13 @@ surface; the daemon ignores it, which is the honest answer to
 ## CLI reference
 
 The `caduceus` binary exposes eight top-level commands. A bare
-`caduceus` invocation is rewritten to `caduceus run` so the cron
-contract (silent on success) holds. `--json` output uses a versioned
+`caduceus` invocation prints the help and exits 0; the cron job
+invokes `caduceus run` explicitly. `--json` output uses a versioned
 envelope; the queue commands emit `schema: "queue/1.0"` and
 `status` emits its own `version`.
 
 ```text
-caduceus run                          # run a single tick (default)
+caduceus run                          # run a single tick
 caduceus status [--json]              # report daemon state
 caduceus doctor [...]                 # live OCI readiness check
 caduceus worktree-gc [...]            # sweep stale worktrees

@@ -2,9 +2,9 @@
 //!
 //! The CLI parses the canonical subcommands listed in the CLI contract in
 //! `src/cli/mod.rs`: `run`, `status`, `worktree-gc`, `queue reset`, and
-//! `migrate-state`. A no-argument invocation is equivalent to `caduceus run`
-//! — that rewriting happens inside the CLI parser, before Clap dispatches,
-//! so a bare cron tick never prints help or version output.
+//! `migrate-state`. A no-argument invocation prints help and exits 0; the
+//! cron pulse wrapper invokes `caduceus run` explicitly, so the cron tick
+//! contract (silent on success) is unchanged.
 //!
 //! `run` is silent on success; all diagnostics go to stderr.
 //!
@@ -44,21 +44,17 @@ fn main() -> ExitCode {
         };
     }
 
-    // The CLI router inspects `args_os` and inserts `run` when the user
-    // invoked `caduceus` with no arguments, before Clap parsing. This is
-    // the contractually documented behaviour (the CLI contract in
-    // `src/cli/mod.rs`: "Implement no-argument behavior by inspecting
-    // `args_os`...").
-    //
     // Block SIGINT/SIGTERM before any CLI work when this process is a
-    // daemon tick (`caduceus` / `caduceus run`), so a signal delivered
-    // during startup pends instead of hitting the default disposition
-    // and killing the process (issue #270). `run_blocking` installs
-    // the tokio handlers and restores the mask after registration.
+    // daemon tick (`caduceus run`), so a signal delivered during
+    // startup pends instead of hitting the default disposition and
+    // killing the process (issue #270). `run_blocking` installs the
+    // tokio handlers and restores the mask after registration. Bare
+    // invocations print help and are exempt; they have no cleanup
+    // contract.
     // Other subcommands (`status`, `queue reset`, `doctor`, ...) keep
     // their default signal behaviour, and the supervisor mode above is
     // exempted so the worker TERM-to-KILL contract is unaffected.
-    let is_tick_invocation = std::env::args_os().nth(1).is_none_or(|arg| arg == "run");
+    let is_tick_invocation = std::env::args_os().nth(1).is_some_and(|arg| arg == "run");
     if is_tick_invocation {
         if let Err(err) = caduceus::signals::block_idle_signals() {
             eprintln!("caduceus: {err}");
