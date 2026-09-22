@@ -214,7 +214,14 @@ the binary directly (or via the cron pulse wrapper).
 
 Note the two different doctors: the wrapper's `hermes caduceus doctor`
 checks plugin health (binary present, bridge seeded, cron job
-installed); the binary's `caduceus doctor` checks live OCI readiness.
+installed) **and** chains the binary's own machine contracts — `caduceus
+doctor --json --skip-canary` for the live OCI-readiness verdict and
+`caduceus status --json` for tick freshness — into one report. Both are
+read-only inputs. Trusted-host boxes report OCI readiness as WARN (their
+OCI checks did not run); a last tick older than 5 minutes is WARN and
+older than 30 minutes is FAIL (the cron job fires every 2 minutes).
+WARN is advisory and never changes the exit code, which stays 0/1/2.
 The wrapper doctor renders color and status glyphs on an interactive
-TTY; piped or CI output stays plain `[OK]`/`[FAIL]` lines with no ANSI
-bytes. `cron-install` and `cron-remove` exist only in the wrapper.
+TTY; piped or CI output stays plain `[OK]`/`[WARN]`/`[FAIL]` lines with
+no ANSI bytes. `cron-install` and `cron-remove` exist only in the
+wrapper.

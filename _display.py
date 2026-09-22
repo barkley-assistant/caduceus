@@ -2,8 +2,8 @@
 
 Two rendering modes, chosen by one gate:
 
-* **plain** — the legacy byte-for-byte text (``[OK]``/``[FAIL]`` lines,
-  7-space sub-line indent, no wrapping). This is what piped, CI, and
+* **plain** — the legacy byte-for-byte text (``[OK]``/``[FAIL]``/``[WARN]``
+  lines, 7-space sub-line indent, no wrapping). This is what piped, CI, and
   ``NO_COLOR`` runs see, so log grepping and the release-canary doctor
   classifier keep working unchanged.
 * **interactive** — status glyphs, ANSI color on the status word, an
@@ -29,10 +29,11 @@ _YELLOW = "\x1b[33m"
 
 #: status -> (tty_glyph, tty_word, ascii_word, ansi)
 #:
-#: ``warn`` is display vocabulary only: no doctor check emits it today
-#: (checks are ``"ok"``/``"fail"``), but the renderer maps any
-#: non-``"ok"`` status to the ``fail`` row, so the table stays a single
-#: source of truth for status presentation.
+#: ``warn`` is emitted by the chained OCI-readiness and tick-freshness
+#: checks (issue #414): advisory findings that the operator should see
+#: but that never change the exit code. The table stays the single
+#: source of truth for status presentation; an unknown status renders as
+#: the ``fail`` row.
 _STATUS_VOCAB = {
     "ok": ("\u2713", "OK", "[OK]", _GREEN),
     "fail": ("\u2717", "FAIL", "[FAIL]", _RED),
@@ -170,8 +171,13 @@ class DoctorRenderer:
         return cls(detect_style(stream), terminal_width(), name_width)
 
     def finding(self, name: str, finding, *, verbose: bool) -> List[str]:
-        """Render one ``(name, _DoctorFinding)`` check into lines."""
-        status = "ok" if getattr(finding, "status", "") == "ok" else "fail"
+        """Render one ``(name, _DoctorFinding)`` check into lines.
+
+        Unknown or missing statuses fall back to the ``fail`` row so a
+        malformed finding can never render as healthy.
+        """
+        raw_status = getattr(finding, "status", "")
+        status = raw_status if raw_status in _STATUS_VOCAB else "fail"
         if not self.style.interactive:
             return self._finding_plain(name, finding, status=status, verbose=verbose)
         return self._finding_interactive(name, finding, status=status, verbose=verbose)
