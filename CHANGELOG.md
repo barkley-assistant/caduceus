@@ -19,6 +19,13 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
 
 ### Changed
 
+- **Bare `caduceus` now prints help instead of running a tick.** A no-argument
+  invocation used to be rewritten to `caduceus run` and execute a full daemon
+  tick; it now prints the clap help to stdout and exits 0, matching the
+  wrapper's bare-invocation behaviour (#411). The cron pulse wrapper and every
+  documented crontab invoke `caduceus run` explicitly and are unaffected; if
+  your own scheduler calls a bare `caduceus`, add the `run` argument. All other
+  subcommands, flags, and exit codes are unchanged. Closes #415.
 - **Bare `hermes caduceus` shows help.** Invoking `hermes caduceus` with no
   subcommand now prints the full help to stdout and exits 0 (git-style)
   instead of failing with an argparse "the following arguments are required"

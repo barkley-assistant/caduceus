@@ -1,17 +1,16 @@
 //! Command-line entry point used by `src/main.rs`.
 //!
-//! The exact public surface (subcommands, flags, and no-argument rewriting)
+//! The exact public surface (subcommands, flags, and bare-invocation help)
 //! is documented in the CLI contract. This file holds the CLI parser and the
 //! entry-point function. Implementation of the
 //! individual subcommand bodies lives in the relevant module; `caduceus run`
 //! ultimately delegates to `caduceus::tick::run_blocking`.
 
-use std::ffi::OsString;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use chrono::Utc;
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 
 use caduceus::config::{Config, SetupAction};
 use caduceus::error::{CaduceusError, CaduceusResult};
@@ -53,11 +52,11 @@ pub struct Cli {
 
 /// Canonical subcommands.
 ///
-/// A `None` value means the user invoked `caduceus` with no arguments and
-/// the entry-point rewrites that to `caduceus run` before Clap dispatches.
+/// A `None` value means the user invoked `caduceus` with no arguments; the
+/// entry point prints help and exits 0 (issue #415).
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Run a single tick (default subcommand).
+    /// Run a single tick.
     Run,
     /// Report daemon state.
     Status {
@@ -187,23 +186,23 @@ pub enum QueueAction {
 
 /// Drive the CLI from `main`.
 ///
-/// A bare `caduceus` invocation is rewritten to `caduceus run` before
-/// Clap parsing. The rewrite uses `args_os()` per the CLI contract,
-/// "Implement no-argument behavior by inspecting `args_os` and inserting
-/// `run` before Clap parsing"; a `--version` / `--help` flag is *not*
-/// considered a bare invocation and is dispatched normally.
+/// A bare `caduceus` invocation (no subcommand) prints the clap help to
+/// stdout and exits 0 — the same convention as the wrapper's
+/// bare-invocation path (#411). No config is resolved, no logging is
+/// initialised, and no state is written, so a bare invocation can never
+/// run a tick. `--version` / `--help` are dispatched by clap itself and
+/// never reach the `None` arm.
 pub fn run() -> CaduceusResult<()> {
-    let mut args: Vec<OsString> = std::env::args_os().collect();
-
-    // `args_os()` returns at least the program name. If the only argument
-    // is the program name, insert `run` so the user sees identical
-    // behaviour to `caduceus run`.
-    if args.len() == 1 {
-        args.push(OsString::from("run"));
-    }
-
-    let cli = Cli::parse_from(args);
+    let cli = Cli::parse();
     match cli.command {
+        // Bare `caduceus`: print help to stdout and exit 0. `main`
+        // maps the returned `Ok(())` to exit code 0, so this stays
+        // on the single exit path.
+        None => {
+            let mut help = Cli::command();
+            help.print_help()?;
+            Ok(())
+        }
         Some(Command::Queue {
             action:
                 QueueAction::Reset {
@@ -248,7 +247,7 @@ pub fn run() -> CaduceusResult<()> {
             // warning below, which is currently dropped because no
             // subscriber is installed on this path — lands in
             // `<state_dir>/processor.log`. Mirrors the documented order
-            // of the no-argument wrapper `tick::run` (issue #386).
+            // of the cron entry point `tick::run` (issue #386).
             let _log_guard = caduceus::logging::init(&cfg.log_path)?;
             let (host_name, host_email) = caduceus::finalize::commit::host_git_identity();
             let name_from_tier3 = cfg.git_author_name.is_none() && host_name.is_none();
@@ -344,11 +343,6 @@ pub fn run() -> CaduceusResult<()> {
             }
             Ok(())
         }
-        // Every other subcommand is a stub for now; `run` is the
-        // canonical "no-op success" so the cron tick contract
-        // (silent on success) holds while the rest of the daemon
-        // is being built.
-        _ => Ok(()),
     }
 }
 
