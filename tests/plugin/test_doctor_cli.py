@@ -551,6 +551,16 @@ def test_doctor_cli_dispatches_json_flag(
     assert doc["severity"] == 0
     assert len(doc["checks"]) == 9
 
+    # ``_runtime.reset_dispatcher()`` above wipes the cron stub set by
+    # ``_stub_cron_runtime`` (the helper writes ``_runtime._subprocess_run``
+    # and ``_runtime._HERMES_PATH`` directly without ``monkeypatch.setattr``,
+    # so the reset is destructive). Restub before the second invocation so the
+    # human path sees the same healthy fixture the JSON path saw; otherwise
+    # the second ``_cli_doctor`` call would invoke real ``subprocess.run`` and
+    # raise ``CronCapabilityError`` on a hermetic CI runner with no ``hermes``
+    # on PATH, mapping to ``max_severity = 2`` and breaking this assertion.
+    _stub_cron_runtime(adapter, {})
+
     args = parser.parse_args(["doctor"])
     try:
         rc = args.func(args)
