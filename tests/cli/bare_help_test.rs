@@ -210,3 +210,41 @@ fn explicit_run_still_takes_tick_path() {
         "`caduceus run` must still initialise logging (issue #386)",
     );
 }
+
+#[test]
+fn setup_help_disambiguates_hermes_wrapper() {
+    // Issue #417: `caduceus setup` (config generator) and
+    // `hermes caduceus setup` (build + bridge seeding) share a word.
+    // The binary's long help names the wrapper command; the
+    // subcommand list keeps the one-line `about`.
+    let dir = tempdir("setup-help");
+    let config = write_config(&dir);
+
+    let setup_help = run_binary(&config, &["setup", "--help"]);
+    assert!(
+        setup_help.status.success(),
+        "`caduceus setup --help` must exit 0; got {:?}\nstderr: {}",
+        setup_help.status,
+        String::from_utf8_lossy(&setup_help.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&setup_help.stdout);
+    assert!(
+        stdout.contains("Hermes-managed installs should use"),
+        "setup --help must name the wrapper subcommand; got: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("hermes caduceus setup"),
+        "setup --help must name `hermes caduceus setup`; got: {stdout:?}"
+    );
+
+    let top_help = run_binary(&config, &["--help"]);
+    let top_stdout = String::from_utf8_lossy(&top_help.stdout);
+    assert!(
+        top_stdout.contains("Generate minimal non-secret configuration"),
+        "the subcommand list must keep setup's one-line about; got: {top_stdout:?}"
+    );
+    assert!(
+        !top_stdout.contains("Hermes-managed installs"),
+        "the long about must not leak into the subcommand list; got: {top_stdout:?}"
+    );
+}

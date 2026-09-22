@@ -118,6 +118,11 @@ machine contracts chained as read-only inputs — `caduceus doctor --json
   healthy), 1 (config/runtime defect), 2 (host capability / external
   prerequisite). `--verbose` adds the internal detail and the structured
   `category:` line.
+- `--json` prints the same checks as one machine-readable document with a
+  top-level `severity` (0/1/2) that mirrors the human exit codes, plus a
+  `severity_label` and a `checks` array of `name`, `status`, `category`,
+  `detail`, `next_action`, and `internal_detail`. The human report and the
+  exit codes are unchanged; `--verbose` adds nothing in JSON mode.
 
 ## Configuration keys
 

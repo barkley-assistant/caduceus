@@ -352,3 +352,210 @@ def test_doctor_exit_1_when_worktree_lock_stale(
     finally:
         _runtime.reset_dispatcher()
     assert rc == 1
+
+
+# ---------------------------------------------------------------------------
+# ``hermes caduceus doctor --json`` (issue #417)
+# ---------------------------------------------------------------------------
+
+
+def _healthy_install(adapter, isolated_hermes_home: Path, monkeypatch) -> None:
+    """Install the all-healthy fixture: token, bridge executable, cron stub."""
+    monkeypatch.setenv("CADUCEUS_GITHUB_TOKEN", "ghp_test-secret-configured")
+    bridge = isolated_hermes_home / "caduceus" / "worker-bridge.py"
+    bridge.parent.mkdir(parents=True, exist_ok=True)
+    bridge.write_text("#!/usr/bin/env python3\nprint('ok')\n")
+    bridge.chmod(0o755)
+    _stub_cron_runtime(adapter, {})
+
+
+def _stub_ready_chain(adapter, monkeypatch) -> None:
+    """Stub the chained binary calls: READY OCI readiness, fresh tick."""
+    recent = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    doctor_json = json.dumps(
+        {
+            "schema_version": "1.0.0",
+            "verdict": "READY",
+            "checks": [{"id": "engine", "status": "pass", "detail": "ok"}],
+        }
+    )
+    status_json = json.dumps({"diagnostic": None, "report": {"last_tick_started": recent}})
+
+    def fake_run(argv, *, cwd=None, timeout=None):
+        sub = argv[1] if len(argv) > 1 else ""
+        if sub == "doctor":
+            return subprocess.CompletedProcess(argv, 0, doctor_json, "")
+        if sub == "status":
+            return subprocess.CompletedProcess(argv, 0, status_json, "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(adapter, "_run", fake_run)
+
+
+def _failing_provider_secret(adapter):
+    """Patch the provider-secret check to a config-incomplete failure."""
+    from caduceus import _DoctorFinding
+
+    original = adapter._doctor_check_provider_secret
+    adapter._doctor_check_provider_secret = lambda: _DoctorFinding(  # type: ignore[assignment]
+        category="config-incomplete",
+        status="fail",
+        detail="provider secret not configured",
+        next_action="set HERMES_PROVIDER_SECRET in environment",
+    )
+    return original
+
+
+_CHECK_KEYS = {"name", "status", "category", "detail", "next_action", "internal_detail"}
+
+
+def test_doctor_json_emits_parseable_report_with_severity_zero(
+    adapter, install_with_fake_binary: Path, isolated_hermes_home: Path,
+    monkeypatch, capsys: pytest.CaptureFixture,
+) -> None:
+    """--json on a healthy box: one document, severity 0, nine checks."""
+    from caduceus import _runtime
+
+    _healthy_install(adapter, isolated_hermes_home, monkeypatch)
+    _stub_ready_chain(adapter, monkeypatch)
+    try:
+        rc = adapter._cli_doctor(json_mode=True)
+    finally:
+        _runtime.reset_dispatcher()
+
+    out = capsys.readouterr().out
+    doc = json.loads(out)
+    assert rc == 0
+    assert doc["command"] == "hermes caduceus doctor"
+    assert doc["severity"] == 0
+    assert doc["severity_label"] == "ok"
+    assert isinstance(doc["checks"], list) and len(doc["checks"]) == 9
+    for check in doc["checks"]:
+        assert set(check) == _CHECK_KEYS, f"unexpected check shape: {sorted(check)}"
+        assert check["status"] in {"ok", "warn"}, check
+
+
+def test_doctor_json_severity_matches_exit_code_1(
+    adapter, install_with_fake_binary: Path, isolated_hermes_home: Path,
+    monkeypatch, capsys: pytest.CaptureFixture,
+) -> None:
+    """A config defect is severity 1 in JSON and exit 1 in the human path."""
+    from caduceus import _runtime
+
+    _healthy_install(adapter, isolated_hermes_home, monkeypatch)
+    original_secret = _failing_provider_secret(adapter)
+    try:
+        rc = adapter._cli_doctor(json_mode=True)
+    finally:
+        _runtime.reset_dispatcher()
+        adapter._doctor_check_provider_secret = original_secret
+
+    doc = json.loads(capsys.readouterr().out)
+    assert rc == 1
+    assert doc["severity"] == 1
+    assert doc["severity_label"] == "config-runtime"
+    secret = next(c for c in doc["checks"] if c["name"] == "Provider Secret")
+    assert secret["status"] == "fail"
+    assert secret["category"] == "config-incomplete"
+
+
+def test_doctor_json_severity_2_wins_over_1(
+    adapter, isolated_hermes_home: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """A missing binary (severity 2) outranks a config defect (severity 1)."""
+    from caduceus import _runtime
+
+    from tests.plugin._helpers import _stub_cron_runtime as _stub
+
+    _stub(adapter, {})
+    original_secret = _failing_provider_secret(adapter)
+    try:
+        rc = adapter._cli_doctor(json_mode=True)
+    finally:
+        _runtime.reset_dispatcher()
+        adapter._doctor_check_provider_secret = original_secret
+
+    doc = json.loads(capsys.readouterr().out)
+    assert rc == 2
+    assert doc["severity"] == 2
+    assert doc["severity_label"] == "host-capability-unavailable"
+
+
+def test_doctor_json_is_single_json_document(
+    adapter, install_with_fake_binary: Path, isolated_hermes_home: Path,
+    monkeypatch, capsys: pytest.CaptureFixture,
+) -> None:
+    """--json replaces the human report instead of appending to it."""
+    from caduceus import _runtime
+
+    _healthy_install(adapter, isolated_hermes_home, monkeypatch)
+    _stub_ready_chain(adapter, monkeypatch)
+    try:
+        adapter._cli_doctor(json_mode=True)
+    finally:
+        _runtime.reset_dispatcher()
+
+    out = capsys.readouterr().out
+    assert json.loads(out.strip())  # whole stdout is one document
+    assert "[OK]" not in out and "[FAIL]" not in out and "[WARN]" not in out
+    assert "\x1b[" not in out
+
+
+def test_doctor_json_ignores_verbose(
+    adapter, install_with_fake_binary: Path, isolated_hermes_home: Path,
+    monkeypatch, capsys: pytest.CaptureFixture,
+) -> None:
+    """--verbose adds nothing in JSON mode: every field is always present."""
+    from caduceus import _runtime
+
+    _healthy_install(adapter, isolated_hermes_home, monkeypatch)
+    _stub_ready_chain(adapter, monkeypatch)
+    try:
+        rc = adapter._cli_doctor(verbose=True, json_mode=True)
+    finally:
+        _runtime.reset_dispatcher()
+
+    out = capsys.readouterr().out
+    doc = json.loads(out)
+    assert rc == 0
+    assert set(doc) == {"command", "severity", "severity_label", "checks"}
+    for check in doc["checks"]:
+        assert set(check) == _CHECK_KEYS
+    assert "detail:" not in out
+    assert "\x1b[" not in out
+
+
+def test_doctor_cli_dispatches_json_flag(
+    adapter, install_with_fake_binary: Path, isolated_hermes_home: Path,
+    monkeypatch, fake_ctx: FakePluginContext, capsys: pytest.CaptureFixture,
+) -> None:
+    """``hermes caduceus doctor --json`` reaches the JSON path (issue #417).
+
+    The flag-to-handler wiring is what this pins: the human path stays the
+    default when the flag is absent.
+    """
+    from caduceus import _runtime
+
+    _healthy_install(adapter, isolated_hermes_home, monkeypatch)
+    _stub_ready_chain(adapter, monkeypatch)
+    adapter.register(fake_ctx)
+    parser = fake_ctx.cli_commands["caduceus"].parser
+
+    args = parser.parse_args(["doctor", "--json"])
+    try:
+        rc = args.func(args)
+    finally:
+        _runtime.reset_dispatcher()
+    doc = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert doc["severity"] == 0
+    assert len(doc["checks"]) == 9
+
+    args = parser.parse_args(["doctor"])
+    try:
+        rc = args.func(args)
+    finally:
+        _runtime.reset_dispatcher()
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "[OK] Binary —" in out
