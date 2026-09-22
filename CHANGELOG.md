@@ -64,6 +64,17 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
 
 ### Added
 
+- **`hermes caduceus logs` surfaces the daemon log, run transcripts, and
+  the doctor report.** A new wrapper subcommand reads the diagnostic files
+  the daemon already writes instead of making the operator remember the
+  state-dir layout: `processor.log` (default: the last 50 lines,
+  `--follow` streams, `--tail N` overrides, `0` = whole file),
+  `runs/<run_id>.log` (`--run <RUN_ID>`), and `doctor.json` (`--doctor`,
+  pretty-printed). Missing state dirs or targets print a clear diagnostic
+  and exit 1; a malformed run id exits 2; credential-shaped lines are
+  redacted through the existing `_redact` filter; `--json` emits a
+  machine-readable envelope. The `caduceus` binary is unchanged — it has
+  no log surface, so this is a wrapper-only convenience. Closes #416.
 - **Shared CLI display policy for `status`, `queue`, and `review`.** One
   gate (`stdout is a TTY && TERM != dumb && NO_COLOR absent`) decides
   between the legacy plain rendering and an interactive one: Unicode

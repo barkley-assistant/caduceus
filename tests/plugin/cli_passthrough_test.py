@@ -56,6 +56,7 @@ def test_cli_help_lists_full_command_set(adapter, fake_ctx: FakePluginContext) -
         "queue",
         "worktree-gc",
         "migrate-state",
+        "logs",
     ):
         assert sub in help_text, f"missing subcommand {sub} in help"
 

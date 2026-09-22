@@ -58,8 +58,12 @@ When triggered, this skill should:
    un-updated copy fails closed on a PR env while issue-path runs keep
    working unchanged.
 5. **If something is broken**: tail `<state_dir>/processor.log` and
-   `<state_dir>/runs/<run-id>.log` for the affected run. For a terminal
-   failed/skipped entry, show `caduceus queue show OWNER/REPO#N` to
+   `<state_dir>/runs/<run-id>.log` for the affected run — or use
+   `hermes caduceus logs` (no args tails `processor.log`, `--follow`
+   streams, `--run <id>` prints one transcript, `--doctor` prints the
+   stored readiness report) so the operator never has to remember the
+   paths. For a terminal failed/skipped entry, show
+   `caduceus queue show OWNER/REPO#N` to
    inspect the entry and checkpoint, then `caduceus queue reset
    OWNER/REPO#N [--dry-run]` before proposing the real reset; never edit
    state files directly. If the root cause is fixed and the operator
@@ -90,6 +94,9 @@ When triggered, this skill should:
    `<state_dir>/runs/<run_id>.dry-run.md` (only when dry-run). The
    daemon `processor.log` lives at `<state_dir>/processor.log` and the
    heartbeat envelope sits at `<state_dir>/runs/<run_id>.heartbeat`.
+   `hermes caduceus logs` is the operator-facing way to read the first
+   two without knowing those paths (see the troubleshooting step
+   above).
 
 ## Doctor
 

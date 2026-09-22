@@ -19,7 +19,7 @@ from tests.fixtures.fake_ctx import FakePluginContext
 
 # Subcommands that exist only in the Hermes wrapper, never in the
 # binary. The coverage test ignores them on the wrapper side.
-WRAPPER_ONLY = {"cron-install", "cron-remove"}
+WRAPPER_ONLY = {"cron-install", "cron-remove", "logs"}
 
 # Binary subcommands the wrapper intercepts with its own rich
 # implementation instead of pass-through. Kept explicit so a variant
@@ -70,8 +70,8 @@ def test_wrapper_covers_full_binary_command_set(
     )
     assert not extra, (
         f"hermes caduceus registers unknown subcommands: {sorted(extra)}. "
-        "Binary commands must map 1:1; cron-install/cron-remove are the "
-        "only wrapper-owned additions."
+        "Binary commands must map 1:1; wrapper-owned additions belong in "
+        "WRAPPER_ONLY above."
     )
 
 
