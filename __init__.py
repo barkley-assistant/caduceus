@@ -628,9 +628,28 @@ class _PassthroughParser(argparse.ArgumentParser):
 
 
 def _register_caduceus_cli(subparser: Any) -> None:
-    """Wire the ``hermes caduceus`` argparse tree."""
+    """Wire the ``hermes caduceus`` argparse tree.
+
+    The subcommand is optional: a bare ``hermes caduceus`` parses with
+    ``caduceus_command=None`` and :func:`_caduceus_cli_command` renders
+    the help (git-style) instead of argparse rejecting the invocation.
+    ``metavar="COMMAND"`` keeps the usage line readable — the default
+    choice list renders as a cramped ``{...}`` blob. The three example
+    invocations in the epilog cover the wrapper's three shapes: an
+    intercepted subcommand, a passthrough with a positional, and the
+    diagnostic path.
+    """
+    subparser.epilog = (
+        "Examples:\n"
+        "  hermes caduceus status --json\n"
+        "  hermes caduceus queue show OWNER/REPO#N\n"
+        "  hermes caduceus doctor --verbose"
+    )
     subs = subparser.add_subparsers(
-        dest="caduceus_command", required=True, parser_class=_PassthroughParser
+        dest="caduceus_command",
+        required=False,
+        metavar="COMMAND",
+        parser_class=_PassthroughParser,
     )
 
     setup = subs.add_parser(
@@ -645,7 +664,7 @@ def _register_caduceus_cli(subparser: Any) -> None:
 
     doctor = subs.add_parser(
         "doctor",
-        help="Verify the binary, bridge, and cron job are healthy.",
+        help="Check plugin install, OCI readiness, and tick freshness.",
     )
     doctor.add_argument(
         "--verbose",
@@ -655,7 +674,7 @@ def _register_caduceus_cli(subparser: Any) -> None:
 
     status = subs.add_parser(
         "status",
-        help="Run `caduceus status` and print the result.",
+        help="Print daemon state and the last tick summary.",
     )
     status.add_argument(
         "--json",
@@ -665,7 +684,7 @@ def _register_caduceus_cli(subparser: Any) -> None:
 
     queue = subs.add_parser(
         "queue",
-        help="Manage the work queue (show, reset, reprocess, remove).",
+        help="Manage work-queue entries (show, reset, reprocess, remove).",
         passthrough_attr="queue_args",
     )
     # Pass-through: every trailing token is forwarded verbatim to the
@@ -678,7 +697,7 @@ def _register_caduceus_cli(subparser: Any) -> None:
 
     run = subs.add_parser(
         "run",
-        help="Run one daemon tick (args forwarded to the binary).",
+        help="Run one daemon tick now.",
         passthrough_attr="run_args",
     )
     # Pass-through: every trailing token is forwarded verbatim to the
@@ -693,7 +712,7 @@ def _register_caduceus_cli(subparser: Any) -> None:
 
     review = subs.add_parser(
         "review",
-        help="Inspect review state (status, list, show).",
+        help="Inspect the review queue (status, list, show).",
         passthrough_attr="review_args",
     )
     review.add_argument(
@@ -704,7 +723,7 @@ def _register_caduceus_cli(subparser: Any) -> None:
 
     subs.add_parser(
         "worktree-gc",
-        help="Garbage-collect stale worktrees (flags forwarded to the binary).",
+        help="Garbage-collect stale worktrees.",
         passthrough_attr="worktree_gc_args",
     ).add_argument(
         "worktree_gc_args",
@@ -714,7 +733,7 @@ def _register_caduceus_cli(subparser: Any) -> None:
 
     subs.add_parser(
         "migrate-state",
-        help="Migrate daemon state (flags forwarded to the binary).",
+        help="Migrate legacy queue state into the current schema.",
         passthrough_attr="migrate_state_args",
     ).add_argument(
         "migrate_state_args",
@@ -724,7 +743,7 @@ def _register_caduceus_cli(subparser: Any) -> None:
 
     cron_install = subs.add_parser(
         "cron-install",
-        help="Create the no-agent 2-minute cron job + bash wrapper.",
+        help="Install the 2-minute no-agent cron job and wrapper.",
     )
     cron_install.add_argument(
         "--dry-run",
@@ -747,11 +766,20 @@ def _register_caduceus_cli(subparser: Any) -> None:
         help="Print internal detail and structured category (human debugging only).",
     )
 
-    subparser.set_defaults(func=_caduceus_cli_command)
+    # ``_caduceus_parser`` travels with the namespace so the handler can
+    # render help for a bare invocation — see _caduceus_cli_command.
+    subparser.set_defaults(func=_caduceus_cli_command, _caduceus_parser=subparser)
 
 
 def _caduceus_cli_command(args: Any) -> int:
     sub = getattr(args, "caduceus_command", None)
+    if sub is None:
+        # Bare ``hermes caduceus``: print the full help to stdout and
+        # exit 0 (git-style) instead of failing with an argparse error.
+        parser = getattr(args, "_caduceus_parser", None)
+        if parser is not None:
+            parser.print_help()
+            return 0
     if sub == "setup":
         return _cli_setup(dry_run=getattr(args, "dry_run", False))
     if sub == "doctor":
