@@ -148,6 +148,18 @@ Attributes:
         ``"malformed-response"`` because it is not operator-facing.
 """
 
+# ``severity`` → stable label for ``hermes caduceus doctor --json``
+# (issue #417). The integer is the exit code the human path returns;
+# the label names the *class* of failure, which is what a script needs
+# to branch on. Categories 1 and 2 collapse several ``category`` values
+# into one severity, so the per-check ``category`` field carries the
+# precise value.
+_DOCTOR_SEVERITY_LABELS = {
+    0: "ok",
+    1: "config-runtime",
+    2: "host-capability-unavailable",
+}
+
 
 def _plugin_root() -> Path:
     """Resolve the repository root.
@@ -663,6 +675,12 @@ def _register_caduceus_cli(subparser: Any) -> None:
     setup = subs.add_parser(
         "setup",
         help="Build the Rust binary and seed the user-owned bridge.",
+        description=(
+            "Build the Rust binary and seed the user-owned bridge.\n\n"
+            "This is the Hermes-managed install step. The unrelated binary "
+            "subcommand `caduceus setup` generates minimal non-secret "
+            "configuration for standalone installs."
+        ),
     )
     setup.add_argument(
         "--dry-run",
@@ -678,6 +696,11 @@ def _register_caduceus_cli(subparser: Any) -> None:
         "--verbose",
         action="store_true",
         help="Print internal detail and structured category (human debugging only).",
+    )
+    doctor.add_argument(
+        "--json",
+        action="store_true",
+        help="Print a machine-readable JSON report instead of the human report.",
     )
 
     status = subs.add_parser(
@@ -823,7 +846,10 @@ def _caduceus_cli_command(args: Any) -> int:
     if sub == "setup":
         return _cli_setup(dry_run=getattr(args, "dry_run", False))
     if sub == "doctor":
-        return _cli_doctor(verbose=getattr(args, "verbose", False))
+        return _cli_doctor(
+            verbose=getattr(args, "verbose", False),
+            json_mode=getattr(args, "json", False),
+        )
     if sub == "status":
         return _cli_status(json=getattr(args, "json", False))
     if sub == "queue":
@@ -1609,7 +1635,35 @@ def _doctor_check_worktree_lock(ctx: Any) -> _DoctorFinding:
     )
 
 
-def _cli_doctor(verbose: bool = False) -> int:
+def _doctor_json_report(checks: List[Any], severity: int) -> Dict[str, Any]:
+    """Build the machine-readable doctor document (issue #417).
+
+    One JSON document per invocation: the same check list the human
+    report renders, plus a top-level ``severity`` that mirrors the
+    human exit codes exactly (0/1/2) and a stable ``severity_label``
+    for readers that prefer a name over a number. ``--verbose`` adds
+    nothing here — every field (including ``internal_detail``) is
+    always present.
+    """
+    return {
+        "command": "hermes caduceus doctor",
+        "severity": severity,
+        "severity_label": _DOCTOR_SEVERITY_LABELS[severity],
+        "checks": [
+            {
+                "name": name,
+                "status": finding.status,
+                "category": finding.category,
+                "detail": finding.detail,
+                "next_action": finding.next_action,
+                "internal_detail": finding.internal_detail,
+            }
+            for name, finding in checks
+        ],
+    }
+
+
+def _cli_doctor(verbose: bool = False, json_mode: bool = False) -> int:
     """Run all doctor checks and print a structured report (AC-06/07/08/11).
 
     The report is the union of two families: the install-health checks
@@ -1638,6 +1692,13 @@ def _cli_doctor(verbose: bool = False) -> int:
     is achieved by the default output being operator-only (verbose=False
     is the default), not by overriding an explicit verbose flag.
 
+    ``--json`` replaces the human rendering with one JSON document
+    (:func:`_doctor_json_report`) carrying the same checks plus a
+    top-level ``severity`` equal to the value this function returns as
+    its exit code. The human report and the exit codes are unchanged by
+    the flag, and ``--verbose`` adds nothing in JSON mode (all fields,
+    ``internal_detail`` included, are always present).
+
     Rendering is delegated to :mod:`_display`. On an interactive TTY
     (``TERM`` != ``dumb``, ``NO_COLOR`` unset, a non-ASCII stdout
     encoding) findings render as colored glyph-prefixed lines aligned in
@@ -1659,17 +1720,8 @@ def _cli_doctor(verbose: bool = False) -> int:
         ("Tick Freshness", _doctor_check_tick_freshness()),
     ]
 
-    from . import _display  # type: ignore[import-not-found]
-
-    name_width = max(len(name) for name, _ in checks)
-    renderer = _display.DoctorRenderer.from_stream(sys.stdout, name_width)
-
-    effective_verbose = verbose
     max_severity = 0  # 0 = ok, 1 = config/runtime, 2 = prerequisite
-    for name, finding in checks:
-        for line in renderer.finding(name, finding, verbose=effective_verbose):
-            print(line)
-        print()
+    for _name, finding in checks:
         # Only a hard failure moves the exit code: a ``warn`` finding is
         # advisory (rendered as [WARN]) and leaves the 0/1/2 contract
         # intact for scripts and the release-canary classifier.
@@ -1678,6 +1730,21 @@ def _cli_doctor(verbose: bool = False) -> int:
                 max_severity = max(max_severity, 2)
             else:
                 max_severity = max(max_severity, 1)
+
+    if json_mode:
+        print(json.dumps(_doctor_json_report(checks, max_severity), ensure_ascii=False))
+        return max_severity
+
+    from . import _display  # type: ignore[import-not-found]
+
+    name_width = max(len(name) for name, _ in checks)
+    renderer = _display.DoctorRenderer.from_stream(sys.stdout, name_width)
+
+    effective_verbose = verbose
+    for name, finding in checks:
+        for line in renderer.finding(name, finding, verbose=effective_verbose):
+            print(line)
+        print()
 
     return max_severity
 

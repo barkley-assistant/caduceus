@@ -6,6 +6,22 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`--json` on wrapper doctor and binary `queue reprocess`.** `hermes
+  caduceus doctor --json` emits a machine-readable report (per-check
+  status, category, detail, next action, and internal detail, plus a
+  top-level `severity` that mirrors the human 0/1/2 exit codes exactly);
+  the human report and the exit codes are unchanged. `caduceus queue
+  reprocess --json` joins reset/remove/show on the versioned `queue/1.0`
+  envelope with an `action: "reprocess"` payload (previous and new
+  generation). `caduceus queue remove --json` already existed and is
+  unchanged. Setup help on both surfaces now cross-references the other
+  meaning of the word (`caduceus setup` = config generator for
+  standalone installs; `hermes caduceus setup` = binary build + bridge
+  seeding), and the README standalone-install section says the same.
+  Closes #417.
+
 ### Security
 
 - **Fork trust posture documented.** Fork review executes

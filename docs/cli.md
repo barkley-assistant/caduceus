@@ -13,7 +13,7 @@ caduceus worktree-gc [--older-than-days N] [--dry-run]
 caduceus queue show [<owner/repo#n>] [--json]
 caduceus queue reset <owner/repo#n> [--dry-run] [--json]
               [--force-finalization-reset]
-caduceus queue reprocess <owner/repo#n> [--dry-run]
+caduceus queue reprocess <owner/repo#n> [--dry-run] [--json]
 caduceus queue remove <owner/repo#n> [--dry-run] [--force] [--json]
 caduceus review status [<owner/repo>] [--json]
 caduceus review list [--json]
@@ -95,7 +95,7 @@ path takes the daemon lock and refuses to run while an active claim
 file exists for the entry. `--dry-run` prints the planned change
 without mutating anything.
 
-## queue reprocess <owner/repo#n> [--dry-run]
+## queue reprocess <owner/repo#n> [--dry-run] [--json]
 
 Create a new generation for an issue: the generation counter is
 incremented and a terminal entry moves back to `Queued` with the
@@ -106,7 +106,11 @@ cause, or to reopen a finished entry. Refuses only `AwaitingReview`
 retries the same generation. The live path mutates state under the
 queue's exclusive lock but does not take the daemon lock; prefer
 running it while no tick is in flight. `--dry-run` prints the current
-and would-be generation. No `--json` form.
+and would-be generation. `--json` emits the versioned `queue/1.0`
+envelope used by `reset`/`remove`/`show`, with an
+`action: "reprocess"` payload carrying `key`, `dry_run`,
+`previous_generation`, and `new_generation` (the generation the store
+persisted).
 
 ## queue remove <owner/repo#n> [--dry-run] [--force] [--json]
 
@@ -196,7 +200,7 @@ operators.
 
 ```text
 hermes caduceus setup [--dry-run]
-hermes caduceus doctor [--verbose]
+hermes caduceus doctor [--verbose] [--json]
 hermes caduceus status [--json]
 hermes caduceus logs [--follow] [--tail N] [--run RUN_ID] [--doctor] [--json]
 hermes caduceus run [flags...]
@@ -222,6 +226,13 @@ read-only inputs. Trusted-host boxes report OCI readiness as WARN (their
 OCI checks did not run); a last tick older than 5 minutes is WARN and
 older than 30 minutes is FAIL (the cron job fires every 2 minutes).
 WARN is advisory and never changes the exit code, which stays 0/1/2.
+`--json` prints one document instead of the report — `command`,
+`severity` (the exit code the run returns: 0 `ok`, 1 `config-runtime`,
+2 `host-capability-unavailable`), `severity_label`, and a `checks`
+array of `{name, status, category, detail, next_action,
+internal_detail}`. The human report and the exit codes are unchanged
+by the flag, and `--verbose` adds nothing in JSON mode (all fields are
+always present).
 The wrapper doctor renders color and status glyphs on an interactive
 TTY; piped or CI output stays plain `[OK]`/`[WARN]`/`[FAIL]` lines with
 no ANSI bytes. `cron-install`, `cron-remove`, and `logs` exist only in

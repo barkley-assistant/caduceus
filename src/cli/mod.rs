@@ -109,7 +109,13 @@ pub enum Command {
         to_sqlite: bool,
     },
     /// Generate minimal non-secret configuration.
-    #[command(name = "setup", about = "Generate minimal non-secret configuration")]
+    #[command(
+        name = "setup",
+        about = "Generate minimal non-secret configuration",
+        long_about = "Generate minimal non-secret configuration.\n\nThis is the \
+standalone-install config generator only.\nHermes-managed installs should use \
+`hermes caduceus setup` instead\n(binary build, bridge seeding, state directories)."
+    )]
     Setup {
         /// Print the planned action without writing.
         #[arg(long)]
@@ -149,6 +155,9 @@ pub enum QueueAction {
         /// Print the planned change without applying it.
         #[arg(long, default_value_t = false)]
         dry_run: bool,
+        /// Print machine-readable JSON instead of the human summary.
+        #[arg(long, default_value_t = false)]
+        json: bool,
     },
     /// List queue entries, or print full detail for one entry.
     Show {
@@ -211,8 +220,13 @@ pub fn run() -> CaduceusResult<()> {
                 },
         }) => run_queue_reset(&issue, dry_run, json, force_finalization_reset),
         Some(Command::Queue {
-            action: QueueAction::Reprocess { issue, dry_run },
-        }) => run_queue_reprocess(&issue, dry_run),
+            action:
+                QueueAction::Reprocess {
+                    issue,
+                    dry_run,
+                    json,
+                },
+        }) => run_queue_reprocess(&issue, dry_run, json),
         Some(Command::Queue {
             action: QueueAction::Show { issue, json },
         }) => run_queue_show(issue.as_deref(), json),
@@ -907,41 +921,72 @@ fn render_entry_detail(entry: &QueueEntry) -> String {
     display::render_queue_entry_detail(entry, display::detect_style(), display::terminal_width())
 }
 
-/// `caduceus queue reprocess <issue>` — create a new generation
-/// for the issue, incrementing its generation counter and moving
-/// it back to `Queued` if it was in a terminal phase.
-fn run_queue_reprocess(issue: &str, dry_run: bool) -> CaduceusResult<()> {
-    use caduceus::issue::IssueKey;
-    use caduceus::queue::StateStore;
-
-    let config = match std::env::var_os("CADUCEUS_CONFIG") {
-        Some(path) => Config::load_from(std::path::Path::new(&path))?,
-        None => Config::load()?,
-    };
+/// `caduceus queue reprocess <issue> [--dry-run] [--json]` — create a
+/// new generation for the issue, incrementing its generation counter
+/// and moving it back to `Queued` if it was in a terminal phase.
+///
+/// `--json` emits the same versioned `queue/1.0` envelope as
+/// reset/remove/show, with an `action: "reprocess"` payload carrying
+/// the previous and new generation.
+fn run_queue_reprocess(issue: &str, dry_run: bool, json: bool) -> CaduceusResult<()> {
     let key = IssueKey::parse(issue)
         .map_err(|e| CaduceusError::Config(format!("invalid issue key: {e}")))?;
-    let state_dir = &config.state_dir;
-    let store = StateStore::open(state_dir)?;
+    let config = resolve_queue_config()?;
+    let state_dir = config.state_dir.clone();
+    let store = StateStore::open(&state_dir)?;
     let snap = store.snapshot()?;
-    let entry = snap.entry(&key).ok_or_else(|| CaduceusError::Queue {
-        context: "reprocess",
-        stderr: format!("entry {} not found in queue", key.display_key()),
-    })?;
-
-    // Increment the generation.
-    let new_generation = entry.generation.saturating_add(1);
+    let previous_generation = snap
+        .entry(&key)
+        .ok_or_else(|| CaduceusError::Queue {
+            context: "reprocess",
+            stderr: format!("entry {} not found in queue", key.display_key()),
+        })?
+        .generation;
 
     if dry_run {
+        if json {
+            print_queue_json(
+                &state_dir,
+                serde_json::json!({
+                    "action": "reprocess",
+                    "dry_run": true,
+                    "key": key.display_key(),
+                    "previous_generation": previous_generation,
+                    "new_generation": previous_generation.saturating_add(1),
+                }),
+            )?;
+            return Ok(());
+        }
         println!(
             "reprocess {}: current generation={}, would set generation={}",
             key.display_key(),
-            entry.generation,
-            new_generation,
+            previous_generation,
+            previous_generation.saturating_add(1),
         );
         return Ok(());
     }
 
     store.reprocess_entry(&key)?;
+    // Re-read the persisted entry so the report carries the generation
+    // the store actually wrote rather than a locally computed guess.
+    let persisted = store.snapshot()?;
+    let new_generation = persisted
+        .entry(&key)
+        .map(|entry| entry.generation)
+        .unwrap_or_else(|| previous_generation.saturating_add(1));
+    if json {
+        print_queue_json(
+            &state_dir,
+            serde_json::json!({
+                "action": "reprocess",
+                "dry_run": false,
+                "key": key.display_key(),
+                "previous_generation": previous_generation,
+                "new_generation": new_generation,
+            }),
+        )?;
+        return Ok(());
+    }
     println!(
         "reprocessed {}: new generation={}",
         key.display_key(),

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import re
@@ -105,3 +106,30 @@ def test_cli_explicit_help_still_works(
     captured = capsys.readouterr()
     assert "usage: " in captured.out
     assert "Examples:" in captured.out
+
+
+def test_setup_help_disambiguates_binary_setup(
+    adapter, fake_ctx: FakePluginContext, monkeypatch, capsys: pytest.CaptureFixture
+) -> None:
+    """Wrapper ``setup`` names the unrelated binary ``setup`` (issue #417)."""
+    # argparse reflows the description into one paragraph wrapped to the
+    # terminal width; pin a wide width so the assertions below match the
+    # unwrapped text.
+    monkeypatch.setenv("COLUMNS", "300")
+    parser = _register_and_get_parser(adapter, fake_ctx)
+    subs = next(
+        action
+        for action in parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    )
+    description = subs.choices["setup"].description
+    assert "`caduceus setup` generates minimal non-secret configuration" in description
+
+    with pytest.raises(SystemExit) as exc:
+        parser.parse_args(["setup", "--help"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "This is the Hermes-managed install step." in out
+    assert "`caduceus setup` generates minimal non-secret configuration" in out
+    # The subcommand list keeps its one-line help.
+    assert "Build the Rust binary and seed the user-owned bridge." in parser.format_help()
