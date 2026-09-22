@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
+use super::display::{self, DisplayStyle};
 use crate::infra::error::{CaduceusError, CaduceusResult};
 use crate::readiness::{ReadinessReport, ReadinessVerdict};
 use crate::state::meta::{MetaStore, StateMeta, TickOutcome};
@@ -573,6 +574,35 @@ fn collect_live_workers(state_dir: &Path) -> Vec<LiveWorker> {
 /// stable across daemon versions; integration tests
 /// pin the exact bytes.
 pub fn render_human(report: &StatusReport, diagnostic: Option<&StatusDiagnostic>) -> String {
+    render_human_styled(
+        report,
+        diagnostic,
+        display::detect_style(),
+        display::terminal_width(),
+    )
+}
+
+/// [`render_human`] with the display policy resolved by the caller.
+///
+/// Plain mode is the legacy renderer verbatim (see [`render_human_plain`]);
+/// interactive mode adds SGR colour, status glyphs, and width-aware wrapping
+/// without changing a label, a key, or a value.
+pub fn render_human_styled(
+    report: &StatusReport,
+    diagnostic: Option<&StatusDiagnostic>,
+    style: DisplayStyle,
+    width: usize,
+) -> String {
+    if !style.interactive {
+        return render_human_plain(report, diagnostic);
+    }
+    render_human_interactive(report, diagnostic, style, width)
+}
+
+/// The byte-pinned legacy renderer. Kept as its own function so the plain
+/// output contract (the `caduceus-daemon-ops` greps plus
+/// `tests/daemon/status_test.rs`'s exact-byte pins) is auditable at a glance.
+fn render_human_plain(report: &StatusReport, diagnostic: Option<&StatusDiagnostic>) -> String {
     let mut out = String::new();
     out.push_str("caduceus status\n");
     out.push_str(&format!("  state dir: {}\n", report.state_dir.display()));
@@ -685,6 +715,283 @@ pub fn render_human(report: &StatusReport, diagnostic: Option<&StatusDiagnostic>
         out.push_str("  recent errors:\n");
         for err in &report.recent_errors {
             out.push_str(&format!("    - {err}\n"));
+        }
+    }
+    out
+}
+
+/// The interactive renderer: the same labels, keys, and values as
+/// [`render_human_plain`], with status colouring, glyph prefixes on the
+/// status-bearing rows, and width-aware wrapping of long values.
+fn render_human_interactive(
+    report: &StatusReport,
+    diagnostic: Option<&StatusDiagnostic>,
+    style: DisplayStyle,
+    width: usize,
+) -> String {
+    let mut out = String::new();
+    out.push_str("caduceus status\n");
+    display::push_labelled(
+        &mut out,
+        style,
+        width,
+        2,
+        "state dir",
+        &report.state_dir.display().to_string(),
+        None,
+    );
+    if let Some(d) = diagnostic {
+        match d {
+            StatusDiagnostic::NoState => {
+                out.push_str(&format!(
+                    "  {}\n",
+                    display::paint(
+                        style,
+                        display::YELLOW,
+                        "no state yet — run `caduceus run` to bootstrap"
+                    )
+                ));
+            }
+            StatusDiagnostic::CorruptState { path, message } => {
+                display::push_labelled(
+                    &mut out,
+                    style,
+                    width,
+                    2,
+                    "state_meta corrupt",
+                    &path.display().to_string(),
+                    Some(display::RED),
+                );
+                display::push_row_line(
+                    &mut out,
+                    style,
+                    width,
+                    4,
+                    &format!("    {}", display::paint(style, display::RED, message)),
+                );
+            }
+            StatusDiagnostic::CorruptQueue { path, message } => {
+                display::push_labelled(
+                    &mut out,
+                    style,
+                    width,
+                    2,
+                    "state.json corrupt",
+                    &path.display().to_string(),
+                    Some(display::RED),
+                );
+                display::push_row_line(
+                    &mut out,
+                    style,
+                    width,
+                    4,
+                    &format!("    {}", display::paint(style, display::RED, message)),
+                );
+            }
+        }
+        return out;
+    }
+    if let Some(started) = report.last_tick_started {
+        display::push_labelled(
+            &mut out,
+            style,
+            width,
+            2,
+            "last tick started",
+            &started.to_rfc3339(),
+            None,
+        );
+    } else {
+        out.push_str("  last tick started: -\n");
+    }
+    if let Some(finished) = report.last_tick_finished {
+        display::push_labelled(
+            &mut out,
+            style,
+            width,
+            2,
+            "last tick finished",
+            &finished.to_rfc3339(),
+            None,
+        );
+    } else {
+        out.push_str("  last tick finished: -\n");
+    }
+    if let Some(o) = report.last_outcome {
+        display::push_labelled(
+            &mut out,
+            style,
+            width,
+            2,
+            "last outcome",
+            &format!("{o:?}"),
+            None,
+        );
+    } else {
+        out.push_str("  last outcome: -\n");
+    }
+    if let Some(s) = report.last_http_status {
+        display::push_labelled(
+            &mut out,
+            style,
+            width,
+            2,
+            "last http status",
+            &s.to_string(),
+            None,
+        );
+    }
+    if let Some(next) = report.next_allowed_poll_at {
+        display::push_labelled(
+            &mut out,
+            style,
+            width,
+            2,
+            "next allowed poll",
+            &next.to_rfc3339(),
+            None,
+        );
+    }
+    if report.state_corrupt {
+        out.push_str(&format!(
+            "  {}\n",
+            display::paint(
+                style,
+                display::BOLD_RED,
+                "STATE META CORRUPT — refusing to tick until cleared"
+            )
+        ));
+    }
+    if let Some(ref pool) = report.pool_state {
+        display::push_labelled(&mut out, style, width, 2, "pool state", pool, None);
+    }
+    if let Some(doctor) = &report.doctor {
+        display::push_labelled(
+            &mut out,
+            style,
+            width,
+            2,
+            "doctor",
+            &format!(
+                "{} (informational, generated {})",
+                doctor.verdict,
+                doctor.generated_at.to_rfc3339()
+            ),
+            None,
+        );
+    }
+    out.push_str("  phases:\n");
+    for (label, count) in &report.phases {
+        let glyph = display::phase_glyph(style, label);
+        let marker = if glyph.is_empty() {
+            String::new()
+        } else {
+            format!("{glyph} ")
+        };
+        out.push_str(&format!(
+            "    {marker}{label}: {}\n",
+            display::paint_opt(style, display::phase_color(label), &count.to_string())
+        ));
+    }
+    let head = if let Some(head) = &report.next_head {
+        Some(head.clone())
+    } else {
+        report.next_head_earliest_eligibility.map(|earliest| {
+            format!(
+                "(all backed off) earliest eligibility = {}",
+                earliest.to_rfc3339()
+            )
+        })
+    };
+    match head {
+        Some(head) => display::push_labelled(&mut out, style, width, 2, "next head", &head, None),
+        None => out.push_str("  next head: -\n"),
+    }
+    if report.live_workers.is_empty() {
+        out.push_str("  live workers: (none)\n");
+    } else {
+        out.push_str(&format!("  live workers: {}\n", report.live_workers.len()));
+        for w in &report.live_workers {
+            let freshness = if w.freshness == "stale" {
+                display::paint(style, display::YELLOW, &w.freshness)
+            } else {
+                w.freshness.clone()
+            };
+            let line = format!(
+                "    - {} issue={} pid={} freshness={} age={}s transcript={}",
+                w.run_id,
+                w.issue,
+                w.pid,
+                freshness,
+                now_seconds_ago(&w.updated_at),
+                w.transcript_path.display()
+            );
+            display::push_row_line(&mut out, style, width, 6, &line);
+        }
+    }
+    if !report.blocked_issues.is_empty() {
+        out.push_str("  blocked issues:\n");
+        for entry in &report.blocked_issues {
+            let glyph = display::phase_glyph(style, "needs_attention");
+            let marker = if glyph.is_empty() {
+                String::new()
+            } else {
+                format!("{glyph} ")
+            };
+            out.push_str(&format!("    - {marker}{}\n", entry.issue_key));
+            display::push_labelled(
+                &mut out,
+                style,
+                width,
+                6,
+                "source",
+                &entry.blocked_source,
+                None,
+            );
+            // The reason line is informational; an entry can legitimately
+            // lack `last_error`, so we fall back to `-` to keep the section
+            // shape stable (mirrors the plain renderer).
+            let reason = if entry.last_error.is_empty() {
+                "-".to_string()
+            } else {
+                entry.last_error.clone()
+            };
+            display::push_labelled(
+                &mut out,
+                style,
+                width,
+                6,
+                "reason",
+                &reason,
+                Some(display::YELLOW),
+            );
+            display::push_labelled(
+                &mut out,
+                style,
+                width,
+                6,
+                "recovery",
+                &entry.blocked_recovery_hint,
+                None,
+            );
+        }
+    }
+    if !report.recent_errors.is_empty() {
+        out.push_str("  recent errors:\n");
+        for err in &report.recent_errors {
+            let glyph = display::fail_glyph(style);
+            let marker = if glyph.is_empty() {
+                String::from("- ")
+            } else {
+                format!("{glyph} ")
+            };
+            display::push_row_line(
+                &mut out,
+                style,
+                width,
+                6,
+                &format!("    {marker}{}", display::paint(style, display::RED, err)),
+            );
         }
     }
     out

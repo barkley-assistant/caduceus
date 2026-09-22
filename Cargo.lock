@@ -175,6 +175,7 @@ dependencies = [
  "tar",
  "temp-env",
  "tempfile",
+ "terminal_size",
  "thiserror 1.0.69",
  "tokio",
  "tokio-util",

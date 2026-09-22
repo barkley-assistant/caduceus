@@ -64,6 +64,19 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
 
 ### Added
 
+- **Shared CLI display policy for `status`, `queue`, and `review`.** One
+  gate (`stdout is a TTY && TERM != dumb && NO_COLOR absent`) decides
+  between the legacy plain rendering and an interactive one: Unicode
+  glyphs on status-bearing rows, 16-colour ANSI, aligned table columns
+  with a bold header, and width-aware wrapping with a hanging indent.
+  Piped, CI, `NO_COLOR`, and `TERM=dumb` output is byte-identical to
+  before — zero ANSI bytes, no glyphs, no wrapping, tab separators
+  intact — so the `caduceus-daemon-ops` grep labels (`phases:`,
+  `queued:`, `live workers:`, `blocked issues:`, `next head:`) and every
+  `--json` envelope are unchanged. Wrapping never truncates: an
+  unbreakable token overflows rather than losing bytes, and the width
+  probe falls back to 80 columns when it cannot measure a terminal.
+  Closes #413.
 - **Doctor display layer.** `hermes caduceus doctor` renders Unicode
   status glyphs and ANSI color when stdout is an interactive TTY, aligns
   the check-name column, and wraps long detail lines to the terminal
