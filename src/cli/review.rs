@@ -21,6 +21,7 @@ use clap::Subcommand;
 use serde::Serialize;
 
 use caduceus::config::Config;
+use caduceus::daemon::display;
 use caduceus::error::{CaduceusError, CaduceusResult};
 use caduceus::review::{
     ExecutionStatus, PublicationState, RepositoryId, ReviewResult, ReviewState, Verdict,
@@ -516,12 +517,19 @@ fn short_sha(sha: &str) -> &str {
 }
 
 /// Human status renderer: header + phase counts + one line per entry.
+///
+/// Plain mode (piped / CI / `NO_COLOR` / `TERM=dumb`) reproduces the
+/// legacy bytes verbatim — no SGR, no glyphs, no wrapping. Interactive
+/// mode colours the phase and verdict words, prefixes the phase counts
+/// with a status glyph, and wraps rows that overflow the terminal.
 fn render_status_human(
     config: &Config,
     counts: &BTreeMap<String, u64>,
     entries: &[&ReviewQueueEntry],
     rows: &[ReviewRow],
 ) -> String {
+    let style = display::detect_style();
+    let width = display::terminal_width();
     let mut out = String::new();
     out.push_str("caduceus review status\n");
     out.push_str(&format!("  state dir: {}\n", config.state_dir.display()));
@@ -530,44 +538,73 @@ fn render_status_human(
     out.push_str(&format!("  review queue: {total} entries\n"));
     out.push_str("  phases:\n");
     for (label, count) in counts {
-        out.push_str(&format!("    {label}: {count}\n"));
+        let glyph = display::phase_glyph(style, label);
+        let marker = if glyph.is_empty() {
+            String::new()
+        } else {
+            format!("{glyph} ")
+        };
+        out.push_str(&format!(
+            "    {marker}{label}: {}\n",
+            display::paint_opt(style, display::phase_color(label), &count.to_string())
+        ));
     }
     out.push_str("  entries:\n");
     for (entry, row) in entries.iter().zip(rows) {
-        out.push_str(&format!(
-            "    {}  phase={} attempts={} gen={} verdict={} publication={} run={}\n",
+        let verdict = row.verdict.as_deref().unwrap_or("-");
+        let line = format!(
+            "    {}  phase={} attempts={} gen={} verdict={} publication={} run={}",
             display_key(entry),
-            row.review_state,
+            display::paint_opt(
+                style,
+                display::phase_color(&row.review_state),
+                &row.review_state
+            ),
             row.execution_attempts,
             row.review_generation,
-            row.verdict.as_deref().unwrap_or("-"),
+            display::with_glyph(
+                display::verdict_glyph(style, verdict),
+                &display::paint_opt(style, display::verdict_color(verdict), verdict)
+            ),
             row.publication_state,
             row.run_id.as_deref().unwrap_or("-"),
-        ));
+        );
+        display::push_row_line(&mut out, style, width, 4, &line);
     }
     out
 }
 
-/// Human list renderer: tab-separated table (the full §13 field set
-/// is available via `--json` and `show`).
+/// Human list renderer: tab-separated table in plain mode; aligned,
+/// coloured columns on an interactive terminal (the full §13 field set is
+/// available via `--json` and `show`).
 fn render_list_human(entries: &BTreeMap<String, ReviewQueueEntry>, rows: &[ReviewRow]) -> String {
+    let style = display::detect_style();
     if rows.is_empty() {
         return "review queue: no entries".to_string();
     }
-    let mut out = String::from("key\tphase\tattempts\tgeneration\tverdict\tpublication\trun_id\n");
+    let headers = [
+        "key",
+        "phase",
+        "attempts",
+        "generation",
+        "verdict",
+        "publication",
+        "run_id",
+    ];
+    let mut table: Vec<Vec<display::TableCell>> = Vec::with_capacity(rows.len());
     for (entry, row) in entries.values().zip(rows) {
-        out.push_str(&format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
-            display_key(entry),
-            row.review_state,
-            row.execution_attempts,
-            row.review_generation,
-            row.verdict.as_deref().unwrap_or("-"),
-            row.publication_state,
-            row.run_id.as_deref().unwrap_or("-"),
-        ));
+        let verdict = row.verdict.as_deref().unwrap_or("-");
+        table.push(vec![
+            display::TableCell::plain(display_key(entry)),
+            display::TableCell::status(display::phase_color(&row.review_state), &row.review_state),
+            display::TableCell::plain(row.execution_attempts.to_string()),
+            display::TableCell::plain(row.review_generation.to_string()),
+            display::TableCell::status(display::verdict_color(verdict), verdict),
+            display::TableCell::plain(&row.publication_state),
+            display::TableCell::plain(row.run_id.as_deref().unwrap_or("-")),
+        ]);
     }
-    out
+    display::render_table(style, display::terminal_width(), &headers, &table)
 }
 
 /// Human show renderer: full detail + history rows.
@@ -576,45 +613,126 @@ fn render_show_human(
     row: &ReviewRow,
     history: &[HistorySummary],
 ) -> String {
+    let style = display::detect_style();
+    let width = display::terminal_width();
     let mut out = String::new();
     out.push_str(&format!("entry {}\n", display_key(entry)));
-    out.push_str(&format!("  repo: {}\n", row.repo));
-    out.push_str(&format!("  pr: {}\n", row.pr));
-    out.push_str(&format!("  base_sha: {}\n", row.base_sha));
-    out.push_str(&format!("  head_sha: {}\n", row.head_sha));
-    out.push_str(&format!("  merge_base: {}\n", row.merge_base));
-    out.push_str(&format!("  phase: {}\n", row.review_state));
-    out.push_str(&format!(
-        "  run_id: {}\n",
-        row.run_id.as_deref().unwrap_or("-")
-    ));
-    out.push_str(&format!("  generation: {}\n", row.review_generation));
-    out.push_str(&format!("  attempts: {}\n", row.execution_attempts));
-    out.push_str(&format!(
-        "  execution_status: {}\n",
-        row.execution_status.as_deref().unwrap_or("-")
-    ));
-    out.push_str(&format!(
-        "  verdict: {}\n",
-        row.verdict.as_deref().unwrap_or("-")
-    ));
-    out.push_str(&format!(
-        "  last_error: {}\n",
-        row.last_error.as_deref().unwrap_or("-")
-    ));
-    out.push_str(&format!(
-        "  reviewed_at: {}\n",
-        row.reviewed_at.as_deref().unwrap_or("-")
-    ));
-    out.push_str(&format!("  publication_state: {}\n", row.publication_state));
-    out.push_str(&format!(
-        "  publication_attempt_count: {}\n",
-        row.publication_attempt_count
-    ));
-    out.push_str(&format!(
-        "  next_publication_attempt: {}\n",
-        row.next_publication_attempt.as_deref().unwrap_or("-")
-    ));
+    display::push_labelled(&mut out, style, width, 2, "repo", &row.repo, None);
+    display::push_labelled(&mut out, style, width, 2, "pr", &row.pr.to_string(), None);
+    display::push_labelled(&mut out, style, width, 2, "base_sha", &row.base_sha, None);
+    display::push_labelled(&mut out, style, width, 2, "head_sha", &row.head_sha, None);
+    display::push_labelled(
+        &mut out,
+        style,
+        width,
+        2,
+        "merge_base",
+        &row.merge_base,
+        None,
+    );
+    display::push_labelled(
+        &mut out,
+        style,
+        width,
+        2,
+        "phase",
+        &row.review_state,
+        display::phase_color(&row.review_state),
+    );
+    display::push_labelled(
+        &mut out,
+        style,
+        width,
+        2,
+        "run_id",
+        row.run_id.as_deref().unwrap_or("-"),
+        None,
+    );
+    display::push_labelled(
+        &mut out,
+        style,
+        width,
+        2,
+        "generation",
+        &row.review_generation.to_string(),
+        None,
+    );
+    display::push_labelled(
+        &mut out,
+        style,
+        width,
+        2,
+        "attempts",
+        &row.execution_attempts.to_string(),
+        None,
+    );
+    display::push_labelled(
+        &mut out,
+        style,
+        width,
+        2,
+        "execution_status",
+        row.execution_status.as_deref().unwrap_or("-"),
+        None,
+    );
+    let verdict = row.verdict.as_deref().unwrap_or("-");
+    display::push_labelled(
+        &mut out,
+        style,
+        width,
+        2,
+        "verdict",
+        &display::with_glyph(
+            display::verdict_glyph(style, verdict),
+            &display::paint_opt(style, display::verdict_color(verdict), verdict),
+        ),
+        None,
+    );
+    display::push_labelled(
+        &mut out,
+        style,
+        width,
+        2,
+        "last_error",
+        row.last_error.as_deref().unwrap_or("-"),
+        row.last_error.as_ref().map(|_| display::RED),
+    );
+    display::push_labelled(
+        &mut out,
+        style,
+        width,
+        2,
+        "reviewed_at",
+        row.reviewed_at.as_deref().unwrap_or("-"),
+        None,
+    );
+    display::push_labelled(
+        &mut out,
+        style,
+        width,
+        2,
+        "publication_state",
+        &row.publication_state,
+        None,
+    );
+    display::push_labelled(
+        &mut out,
+        style,
+        width,
+        2,
+        "publication_attempt_count",
+        &row.publication_attempt_count.to_string(),
+        None,
+    );
+    display::push_labelled(
+        &mut out,
+        style,
+        width,
+        2,
+        "next_publication_attempt",
+        row.next_publication_attempt.as_deref().unwrap_or("-"),
+        None,
+    );
     out.push_str("  history:\n");
     if history.is_empty() {
         out.push_str("    (none)\n");
@@ -627,18 +745,48 @@ fn render_show_human(
             entry.review_generation,
             entry.completed_at
         ));
-        out.push_str(&format!(
-            "      status: {}  verdict: {}\n",
-            entry.status.as_deref().unwrap_or("-"),
-            entry.verdict.as_deref().unwrap_or("-")
-        ));
+        let status = entry.status.as_deref().unwrap_or("-");
+        let history_verdict = entry.verdict.as_deref().unwrap_or("-");
+        let line = format!(
+            "      status: {}  verdict: {}",
+            display::paint_opt(style, verdict_color_for(status), status),
+            display::with_glyph(
+                display::verdict_glyph(style, history_verdict),
+                &display::paint_opt(
+                    style,
+                    display::verdict_color(history_verdict),
+                    history_verdict
+                ),
+            ),
+        );
+        display::push_row_line(&mut out, style, width, 6, &line);
         match (&entry.summary, &entry.parse_error) {
-            (Some(summary), _) => out.push_str(&format!("      summary: {summary}\n")),
-            (None, Some(err)) => out.push_str(&format!("      parse_error: {err}\n")),
-            (None, None) => out.push_str("      summary: -\n"),
+            (Some(summary), _) => {
+                display::push_labelled(&mut out, style, width, 6, "summary", summary, None)
+            }
+            (None, Some(err)) => display::push_labelled(
+                &mut out,
+                style,
+                width,
+                6,
+                "parse_error",
+                err,
+                Some(display::RED),
+            ),
+            (None, None) => display::push_labelled(&mut out, style, width, 6, "summary", "-", None),
         }
     }
     out
+}
+
+/// The execution-status word is not a verdict: `success` is healthy,
+/// `failed` is not, and anything else (including `-`) is uncoloured.
+fn verdict_color_for(status: &str) -> Option<&'static str> {
+    match status.to_ascii_lowercase().as_str() {
+        "success" => Some(display::GREEN),
+        "failed" | "failure" | "error" => Some(display::RED),
+        _ => None,
+    }
 }
 
 /// Print a versioned `review/1.0` JSON envelope to stdout.

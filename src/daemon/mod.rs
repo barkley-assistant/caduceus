@@ -11,6 +11,7 @@
 //!   imports from every other module.
 //! - [`status`] — the `caduceus status` command surface.
 
+pub mod display;
 pub mod orchestration;
 pub mod signals;
 pub mod status;

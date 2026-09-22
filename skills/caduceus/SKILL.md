@@ -235,6 +235,17 @@ completed run fall back to the PR-level last verdict (#387).
 Unparsable result documents surface `-`/null, never the PR-level
 verdict.
 
+Interactive display (issue #413): when stdout is a terminal and
+`NO_COLOR` is unset with `TERM` not `dumb`, `caduceus status`,
+`caduceus queue show`, and the three `caduceus review` surfaces render
+coloured phase/verdict values, glyph-prefixed status rows, aligned
+tables, and width-wrapped long values (never truncated). Piped, CI,
+`NO_COLOR`, and `TERM=dumb` output is byte-identical to the plain
+rendering — no ANSI, no glyphs, no wrapping — and `--json` is
+unaffected on every surface. The status labels (`phases:`, `queued:`,
+`live workers:`, `blocked issues:`, `next head:`) are identical in both
+modes, so grepping `caduceus status` output stays safe.
+
 ## State Recovery Procedure
 
 Both `state.json` and `state_meta.json` use temp-file + `fsync` + atomic

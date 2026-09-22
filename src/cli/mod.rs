@@ -9,17 +9,15 @@
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use chrono::Utc;
 use clap::{CommandFactory, Parser, Subcommand};
 
 use caduceus::config::{Config, SetupAction};
+use caduceus::daemon::display;
 use caduceus::error::{CaduceusError, CaduceusResult};
 use caduceus::executor::oci::OciExecutor;
 use caduceus::executor::{Executor, ExecutorSpec, IssueWorkTarget, WorkTarget};
 use caduceus::issue::IssueKey;
-use caduceus::queue::{
-    display_digest, Phase, QueueEntry, QueueState, RemoveOutcome, StateStore, TicketType,
-};
+use caduceus::queue::{display_digest, Phase, QueueEntry, QueueState, RemoveOutcome, StateStore};
 use caduceus::readiness::{self, DiagnosticCanary, DiagnosticStatus, ReadinessVerdict};
 use caduceus::DaemonLock;
 
@@ -891,83 +889,22 @@ fn print_queue_json_with_diagnostic(
     Ok(())
 }
 
-/// Stable snake_case label for a ticket type (independent of the
-/// serde rename attribute on [`TicketType`]).
-fn ticket_type_label(ticket_type: TicketType) -> &'static str {
-    match ticket_type {
-        TicketType::Code => "code",
-        TicketType::Investigation => "investigation",
-    }
-}
-
 /// Render the human list table for `queue show`. Columns: key,
 /// phase, ticket type, attempts, generation, and age (seconds since
 /// `updated_at`). Entries iterate in `BTreeMap` lexical order.
+///
+/// The rendering policy lives in [`caduceus::daemon::display`]: plain
+/// mode (piped / CI / `NO_COLOR` / `TERM=dumb`) reproduces the
+/// tab-separated legacy bytes verbatim; interactive mode aligns the
+/// columns and colours the phase cells.
 fn render_queue_table(state: &QueueState) -> String {
-    if state.entries.is_empty() {
-        return "queue: no entries".to_string();
-    }
-    let now = Utc::now();
-    let mut out = String::from("key\tphase\tticket\tattempts\tgeneration\tage\n");
-    for entry in state.entries.values() {
-        let age = (now - entry.updated_at).num_seconds().max(0);
-        out.push_str(&format!(
-            "{}\t{}\t{}\t{}\t{}\t{}s\n",
-            entry.key.display_key(),
-            entry.phase.as_str(),
-            ticket_type_label(entry.ticket_type),
-            entry.attempts,
-            entry.generation,
-            age,
-        ));
-    }
-    out
+    display::render_queue_table(state, display::detect_style(), display::terminal_width())
 }
 
 /// Render the human detail view for `queue show <key>`, including
 /// the finalization checkpoint (branch, run id, stage, PR).
 fn render_entry_detail(entry: &QueueEntry) -> String {
-    let mut out = String::new();
-    out.push_str(&format!("entry {}\n", entry.key.display_key()));
-    out.push_str(&format!("  phase: {}\n", entry.phase.as_str()));
-    out.push_str(&format!(
-        "  ticket_type: {}\n",
-        ticket_type_label(entry.ticket_type)
-    ));
-    out.push_str(&format!("  attempts: {}\n", entry.attempts));
-    out.push_str(&format!("  last_error: {:?}\n", entry.last_error));
-    out.push_str(&format!("  last_run_id: {:?}\n", entry.last_run_id));
-    out.push_str(&format!("  next_attempt_at: {:?}\n", entry.next_attempt_at));
-    out.push_str(&format!("  queued_at: {}\n", entry.queued_at.to_rfc3339()));
-    out.push_str(&format!(
-        "  updated_at: {}\n",
-        entry.updated_at.to_rfc3339()
-    ));
-    out.push_str(&format!("  generation: {}\n", entry.generation));
-    out.push_str(&format!("  blocked_source: {:?}\n", entry.blocked_source));
-    out.push_str(&format!(
-        "  blocked_recovery_hint: {:?}\n",
-        entry.blocked_recovery_hint
-    ));
-    match entry.finalization.as_ref() {
-        Some(check) => {
-            out.push_str("  finalization:\n");
-            out.push_str(&format!("    run_id: {}\n", check.run_id));
-            out.push_str(&format!("    branch_name: {}\n", check.branch_name));
-            out.push_str(&format!(
-                "    result_path: {}\n",
-                check.result_path.display()
-            ));
-            out.push_str(&format!("    stage: {}\n", check.stage.as_str()));
-            out.push_str(&format!("    commit_oid: {:?}\n", check.commit_oid));
-            out.push_str(&format!("    pr_number: {:?}\n", check.pr_number));
-            out.push_str(&format!("    pr_url: {:?}\n", check.pr_url));
-        }
-        None => {
-            out.push_str("  finalization: none\n");
-        }
-    }
-    out
+    display::render_queue_entry_detail(entry, display::detect_style(), display::terminal_width())
 }
 
 /// `caduceus queue reprocess <issue>` — create a new generation
