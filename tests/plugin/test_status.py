@@ -239,6 +239,56 @@ def test_format_status_queue_table_shows_only_nonzero_operational_rows(
     assert result.index("| queued | 2 |") < result.index("| in_progress | 1 |")
 
 
+def test_format_status_table_block_terminated_by_blank_line(adapter) -> None:
+    """A blank line must separate the queue table from following prose: GFM
+    ends a table only at a blank line, so without one the ``Also`` / ``Next`` /
+    ``Rate limit`` lines render as single-cell rows of the table."""
+    payload = _payload(
+        last_tick_started=_rfc3339(120),
+        last_tick_finished=_rfc3339(120),
+        last_outcome="idle304",
+        phases=_phases(queued=2, in_progress=1, done=12, skipped=1),
+        next_head="owner/repo#42",
+        rate_limit={"limit": 5000, "remaining": 42},
+    )
+    lines = adapter._format_status_for_chat(payload).splitlines()
+    assert [line for line in lines if line.startswith("  |")] == [
+        "  | Phase | Count |",
+        "  |---|---|",
+        "  | queued | 2 |",
+        "  | in_progress | 1 |",
+    ]
+    also = lines.index("  Also done: 12 · skipped: 1")
+    assert lines[also - 1] == ""
+    assert lines[also + 1] == "  Next: owner/repo#42"
+    assert lines[also + 2] == "  Rate limit: 42/5000"
+
+    # a table with no bookkeeping sentence still terminates before the prose
+    payload = _payload(
+        last_tick_started=_rfc3339(120),
+        last_outcome="idle_empty",
+        phases=_phases(failed=1),
+        next_head="owner/repo#42",
+    )
+    lines = adapter._format_status_for_chat(payload).splitlines()
+    assert lines[-2:] == ["", "  Next: owner/repo#42"]
+
+
+def test_format_status_prose_only_output_has_no_blank_lines(adapter) -> None:
+    """The blank separator exists only to terminate a table; a queue with no
+    non-zero operational phase stays contiguous."""
+    payload = _payload(
+        last_tick_started=_rfc3339(120),
+        last_outcome="idle304",
+        phases=_phases(previewed=2),
+        next_head="owner/repo#42",
+    )
+    result = adapter._format_status_for_chat(payload)
+    assert "|" not in result
+    assert "" not in result.splitlines()
+    assert "\n\n" not in result
+
+
 def test_format_status_failed_phase_warns(adapter) -> None:
     payload = _payload(
         last_tick_started=_rfc3339(120),
@@ -395,7 +445,9 @@ def test_format_status_plain_text_no_ansi(adapter) -> None:
     lines = result.splitlines()
     assert lines[0].startswith(INFO)
     for line in lines[2:]:
-        assert line.startswith("  "), line
+        assert line.startswith("  ") or line == "", line
     table_rows = [line for line in lines if line.strip().startswith("|")]
     assert table_rows
     assert all(line.startswith("  |") for line in table_rows)
+    # the table block is closed by a blank line before any following prose
+    assert any(line == "" for line in lines)

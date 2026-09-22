@@ -435,7 +435,9 @@ def _queue_section(phases: Dict[str, Any]) -> List[str]:
     All five operational phases zero → a single ``Queue empty`` line. Any
     non-zero → a two-column table of only the non-zero operational rows, in
     fixed signal order. Non-zero bookkeeping counts follow as one plain
-    sentence so history stays visible without polluting the table.
+    sentence so history stays visible without polluting the table — separated
+    from it by a blank line, because GFM ends a table only at a blank line
+    and would otherwise absorb the sentence as a single-cell row.
     """
     non_zero = [
         (name, _count(phases, name))
@@ -453,6 +455,8 @@ def _queue_section(phases: Dict[str, Any]) -> List[str]:
         if _count(phases, name)
     ]
     if bookkeeping:
+        if non_zero:
+            lines.append("")  # blank line terminates the GFM table block
         lines.append(f"  Also {' · '.join(bookkeeping)}")
     return lines
 
@@ -526,7 +530,9 @@ def _format_status_for_chat(payload: Dict[str, Any]) -> str:
 
     Output is line-based: the only markdown construct is the optional
     two-column queue table, which degrades to readable plain text on
-    surfaces that do not render GFM.
+    surfaces that do not render GFM. A blank line separates the table from
+    any prose that follows it — GFM ends a table only at a blank line and
+    would otherwise absorb the prose lines as single-cell rows.
     """
     root = payload if isinstance(payload, dict) else {}
     data = root.get("report", root)
@@ -557,16 +563,21 @@ def _format_status_for_chat(payload: Dict[str, Any]) -> str:
         *_queue_section(phases),
     ]
     next_head = data.get("next_head")
+    trailing: List[str] = []
     if next_head:
-        lines.append(f"  Next: {next_head}")
+        trailing.append(f"  Next: {next_head}")
     rate_limit = data.get("rate_limit")
     if isinstance(rate_limit, dict) and rate_limit.get("remaining") is not None:
         if rate_limit.get("limit"):
-            lines.append(
+            trailing.append(
                 f"  Rate limit: {rate_limit.get('remaining')}/{rate_limit.get('limit')}"
             )
         else:
-            lines.append(f"  Rate limit: {rate_limit.get('remaining')} remaining")
+            trailing.append(f"  Rate limit: {rate_limit.get('remaining')} remaining")
+    if trailing:
+        if lines[-1].startswith("  |"):
+            lines.append("")  # blank line terminates the GFM table block
+        lines.extend(trailing)
     return "\n".join(lines)
 
 
