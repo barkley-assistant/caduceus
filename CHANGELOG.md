@@ -19,6 +19,14 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
 
 ### Changed
 
+- **Bare `hermes caduceus` shows help.** Invoking `hermes caduceus` with no
+  subcommand now prints the full help to stdout and exits 0 (git-style)
+  instead of failing with an argparse "the following arguments are required"
+  error on stderr. The usage line shows `COMMAND ...` instead of the cramped
+  `{...}` choice list, the subcommand help strings are tightened to consistent
+  imperative phrasing, and a three-example epilog is added. `--help`, every
+  subcommand, every flag, passthrough forwarding, and all non-zero exit codes
+  are unchanged. Closes #411.
 - **Readable `/caduceus-status` chat output.** The slash command now renders an
   emoji verdict line (✅ healthy / ℹ️ working / ⚠️ failures / ❌ corrupt state),
   tick times as local wall clock plus relative age instead of nanosecond ISO

@@ -313,6 +313,11 @@ directories with mode 0700, and seeds the user-owned bridge under
 Hermes cron job that calls it. The Hermes gateway (or a configured
 managed cron provider) must be running for the cron job to fire.
 
+Run bare `hermes caduceus` (no subcommand) to print the full
+subcommand list, aligned help columns, and example invocations; like
+`git`, it exits 0 rather than erroring. `hermes caduceus --help` prints
+the same page.
+
 ### Source updates
 
 When a new plugin version is released:
