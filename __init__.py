@@ -23,7 +23,7 @@ plugin compatibility contract:
    chat-safe diagnostic explaining how to run ``hermes caduceus setup``.
 3. ``ctx.register_cli_command(name="caduceus", ...)`` for the
    ``hermes caduceus <subcommand>`` family, with subcommands
-   ``setup``, ``doctor``, ``status``, ``cron-install``,
+   ``setup``, ``doctor``, ``status``, ``logs``, ``cron-install``,
    ``cron-remove``, and the pass-through ``run``, ``review``,
    ``queue``, ``worktree-gc``, and ``migrate-state`` (trailing args
    are forwarded verbatim to the ``caduceus`` binary).
@@ -39,6 +39,7 @@ import shlex
 import stat
 import subprocess
 import sys
+import time
 from collections import namedtuple
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -67,6 +68,12 @@ SUBPROCESS_BUILD_TIMEOUT_SECONDS = 600
 # bound leaves headroom for git/finalize overhead while still surfacing
 # a hung binary to the operator instead of blocking the shell forever.
 SUBPROCESS_RUN_TIMEOUT_SECONDS = 7200
+
+# Poll interval for ``hermes caduceus logs --follow``. The plugin is
+# stdlib-only (no inotify/watchdog), so the follow loop re-reads the
+# file on this cadence; 0.5s keeps an operator's view near-live without
+# spinning the CPU.
+LOGS_FOLLOW_POLL_SECONDS = 0.5
 
 
 # ---------------------------------------------------------------------------
@@ -583,7 +590,7 @@ def _format_status_for_chat(payload: Dict[str, Any]) -> str:
 
 # ---------------------------------------------------------------------------
 # CLI command: hermes caduceus
-#   <setup|doctor|status|cron-install|cron-remove|run|review|queue|
+#   <setup|doctor|status|logs|cron-install|cron-remove|run|review|queue|
 #    worktree-gc|migrate-state>
 # ---------------------------------------------------------------------------
 
@@ -634,16 +641,17 @@ def _register_caduceus_cli(subparser: Any) -> None:
     ``caduceus_command=None`` and :func:`_caduceus_cli_command` renders
     the help (git-style) instead of argparse rejecting the invocation.
     ``metavar="COMMAND"`` keeps the usage line readable — the default
-    choice list renders as a cramped ``{...}`` blob. The three example
-    invocations in the epilog cover the wrapper's three shapes: an
-    intercepted subcommand, a passthrough with a positional, and the
-    diagnostic path.
+    choice list renders as a cramped ``{...}`` blob. The example
+    invocations in the epilog cover the wrapper's shapes: an
+    intercepted subcommand, a passthrough with a positional, the
+    diagnostic path, and a log read.
     """
     subparser.epilog = (
         "Examples:\n"
         "  hermes caduceus status --json\n"
         "  hermes caduceus queue show OWNER/REPO#N\n"
-        "  hermes caduceus doctor --verbose"
+        "  hermes caduceus doctor --verbose\n"
+        "  hermes caduceus logs --run 01M0SCW70B1MQK81Y5NV36N1P4"
     )
     subs = subparser.add_subparsers(
         dest="caduceus_command",
@@ -741,6 +749,38 @@ def _register_caduceus_cli(subparser: Any) -> None:
         help="Flags forwarded to the caduceus binary.",
     )
 
+    logs = subs.add_parser(
+        "logs",
+        help="Print the daemon log, a run transcript, or the doctor report.",
+    )
+    logs.add_argument(
+        "--follow",
+        action="store_true",
+        help="Stream new lines as they arrive (processor.log or --run); Ctrl-C stops.",
+    )
+    logs.add_argument(
+        "--tail",
+        type=int,
+        default=50,
+        metavar="N",
+        help="Print the last N lines (default 50; 0 = whole file).",
+    )
+    logs.add_argument(
+        "--run",
+        metavar="RUN_ID",
+        help="Print the transcript for this run id (runs/<RUN_ID>.log).",
+    )
+    logs.add_argument(
+        "--doctor",
+        action="store_true",
+        help="Pretty-print the stored doctor.json report.",
+    )
+    logs.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a machine-readable JSON envelope instead of raw text.",
+    )
+
     cron_install = subs.add_parser(
         "cron-install",
         help="Install the 2-minute no-agent cron job and wrapper.",
@@ -800,6 +840,14 @@ def _caduceus_cli_command(args: Any) -> int:
         return _cli_passthrough("worktree-gc", getattr(args, "worktree_gc_args", []))
     if sub == "migrate-state":
         return _cli_passthrough("migrate-state", getattr(args, "migrate_state_args", []))
+    if sub == "logs":
+        return _cli_logs(
+            follow=getattr(args, "follow", False),
+            tail=getattr(args, "tail", 50),
+            run_id=getattr(args, "run", None),
+            doctor=getattr(args, "doctor", False),
+            json_mode=getattr(args, "json", False),
+        )
     if sub == "cron-install":
         return _cli_cron_install(
             dry_run=getattr(args, "dry_run", False),
@@ -1691,6 +1739,186 @@ def _cli_passthrough(
     return proc.returncode
 
 
+# ---- logs -------------------------------------------------------------------
+
+
+def _cli_logs(
+    *,
+    follow: bool = False,
+    tail: int = 50,
+    run_id: Optional[str] = None,
+    doctor: bool = False,
+    json_mode: bool = False,
+) -> int:
+    """Print a daemon log, a run transcript, or the stored doctor report.
+
+    Wrapper-owned: the ``caduceus`` binary has no log surface, so every
+    path is derived from the same :func:`_state_dir` resolution the rest
+    of the plugin uses and the files are read directly. Nothing is ever
+    written back — the state dir is read-only for this command.
+
+    Exit codes: 0 on success, 1 when the state dir or a requested file
+    is missing, 2 on an invalid invocation (bad run id, conflicting
+    flags).
+    """
+    if run_id is not None and doctor:
+        print(
+            "caduceus logs: --run and --doctor are mutually exclusive",
+            file=sys.stderr,
+        )
+        return 2
+    if follow and json_mode:
+        print(
+            "caduceus logs: --json cannot be combined with --follow",
+            file=sys.stderr,
+        )
+        return 2
+    if tail < 0:
+        print("caduceus logs: --tail must be >= 0 (0 = whole file)", file=sys.stderr)
+        return 2
+
+    state_dir = _state_dir()
+    if not state_dir.is_dir():
+        print(
+            f"caduceus logs: state dir not found: {state_dir} "
+            "(run `hermes caduceus setup` first)",
+            file=sys.stderr,
+        )
+        return 1
+
+    if doctor:
+        return _print_doctor_report(state_dir / "doctor.json", json_mode=json_mode)
+
+    if run_id is not None:
+        problem = _validate_run_id(run_id)
+        if problem is not None:
+            print(
+                f"caduceus logs: invalid run id {run_id!r} ({problem})",
+                file=sys.stderr,
+            )
+            return 2
+        transcript = state_dir / "runs" / f"{run_id}.log"
+        if not transcript.is_file():
+            print(
+                f"caduceus logs: no transcript for run {run_id!r} at {transcript}",
+                file=sys.stderr,
+            )
+            return 1
+        return _emit_stream(
+            transcript,
+            follow=follow,
+            tail=tail,
+            json_mode=json_mode,
+            source=f"run:{run_id}",
+        )
+
+    processor_log = state_dir / "processor.log"
+    if not processor_log.is_file():
+        print(
+            f"caduceus logs: no daemon log at {processor_log} "
+            "(the daemon has not run yet)",
+            file=sys.stderr,
+        )
+        return 1
+    return _emit_stream(
+        processor_log,
+        follow=follow,
+        tail=tail,
+        json_mode=json_mode,
+        source="processor",
+    )
+
+
+def _emit_stream(
+    path: Path,
+    *,
+    follow: bool,
+    tail: int,
+    json_mode: bool,
+    source: str,
+) -> int:
+    """Print *path*, optionally tailing and then following it.
+
+    *tail* is the number of trailing lines to seed the output with
+    (``0`` = the whole file). With *follow* the file is streamed until
+    the operator interrupts with Ctrl-C, which exits 0. Every line
+    passes through :func:`_redact` so a credential that leaked into a
+    worker's stderr never reaches chat output.
+    """
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        seed = handle.readlines()
+        if tail > 0:
+            seed = seed[-tail:]
+        if not follow:
+            _print_log_lines(seed, path=path, json_mode=json_mode, source=source)
+            return 0
+        for line in seed:
+            print(_redact(line.rstrip("\n")))
+        sys.stdout.flush()
+        try:
+            while True:
+                chunk = handle.read()
+                if not chunk:
+                    time.sleep(LOGS_FOLLOW_POLL_SECONDS)
+                    continue
+                for line in chunk.splitlines():
+                    print(_redact(line))
+                sys.stdout.flush()
+        except KeyboardInterrupt:
+            print()
+            return 0
+
+
+def _print_log_lines(
+    lines: List[str],
+    *,
+    path: Path,
+    json_mode: bool,
+    source: str,
+) -> None:
+    """Write *lines* to stdout as raw redacted text or a JSON envelope."""
+    cleaned = [_redact(line.rstrip("\n")) for line in lines]
+    if json_mode:
+        print(
+            json.dumps(
+                {"source": source, "path": str(path), "lines": cleaned},
+                ensure_ascii=False,
+            )
+        )
+        return
+    if cleaned:
+        print("\n".join(cleaned))
+
+
+def _print_doctor_report(path: Path, *, json_mode: bool) -> int:
+    """Print the stored ``doctor.json`` report, pretty-printed."""
+    if not path.is_file():
+        print(
+            f"caduceus logs: no doctor report at {path} "
+            "(run `hermes caduceus doctor` first)",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        report = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(
+            f"caduceus logs: doctor.json is not valid JSON: {path} ({exc})",
+            file=sys.stderr,
+        )
+        return 1
+    if json_mode:
+        print(
+            json.dumps(
+                {"source": "doctor", "path": str(path), "report": report},
+                ensure_ascii=False,
+            )
+        )
+    else:
+        print(_redact(json.dumps(report, indent=2, ensure_ascii=False)))
+    return 0
+
+
 # ---- state dirs / bridge ---------------------------------------------------
 
 
@@ -1715,6 +1943,27 @@ def _state_dir() -> Path:
     if raw:
         return Path(raw).expanduser().resolve()
     return _hermes_home() / "caduceus-state"
+
+
+def _validate_run_id(run_id: str) -> Optional[str]:
+    """Return an error message when *run_id* is unsafe to join, else ``None``.
+
+    Mirrors the daemon's ``validate_run_id`` (``src/repo/worktree.rs``):
+    ASCII alphanumerics plus ``_`` and ``-``, 1..=64 characters. The
+    allowed set already excludes ``/`` and ``.``, so a traversal shape
+    like ``../x`` cannot be joined onto ``runs/``. This is a diagnostic
+    guard (a clean message instead of a ``FileNotFoundError``), not a
+    security boundary — the read is confined to the state dir either
+    way.
+    """
+    if not run_id:
+        return "run id must not be empty"
+    if len(run_id) > 64:
+        return f"run id length {len(run_id)} exceeds the 64-char limit"
+    allowed = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"
+    if any(char not in allowed for char in run_id):
+        return "run id may only contain alphanumeric, '_', or '-'"
+    return None
 
 
 def _ensure_state_directories(state_dir: Path) -> None:

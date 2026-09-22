@@ -45,6 +45,7 @@ def test_cli_command_is_registered(adapter, fake_ctx: FakePluginContext) -> None
         "queue",
         "worktree-gc",
         "migrate-state",
+        "logs",
     ):
         assert sub in help_text, f"missing subcommand {sub} in help"
 
@@ -87,6 +88,7 @@ def test_cli_bare_invocation_prints_help_and_exits_zero(
         "migrate-state",
         "cron-install",
         "cron-remove",
+        "logs",
     ):
         assert sub in out, f"missing subcommand {sub} in bare help"
     assert "Examples:" in out

@@ -186,7 +186,7 @@ directories) is `hermes caduceus setup`.
 
 ## The `hermes caduceus` wrapper
 
-The Hermes plugin exposes ten subcommands. `run`, `review`, `queue`,
+The Hermes plugin exposes eleven subcommands. `run`, `review`, `queue`,
 `worktree-gc`, and `migrate-state` forward every trailing token
 verbatim to the binary — clap is the single source of truth for their
 flags. A CI drift guard (`tests/plugin/cli_parity_test.py`) parses the
@@ -198,6 +198,7 @@ operators.
 hermes caduceus setup [--dry-run]
 hermes caduceus doctor [--verbose]
 hermes caduceus status [--json]
+hermes caduceus logs [--follow] [--tail N] [--run RUN_ID] [--doctor] [--json]
 hermes caduceus run [flags...]
 hermes caduceus review <action> [flags...]
 hermes caduceus queue <action> [flags...]
@@ -223,5 +224,11 @@ older than 30 minutes is FAIL (the cron job fires every 2 minutes).
 WARN is advisory and never changes the exit code, which stays 0/1/2.
 The wrapper doctor renders color and status glyphs on an interactive
 TTY; piped or CI output stays plain `[OK]`/`[WARN]`/`[FAIL]` lines with
-no ANSI bytes. `cron-install` and `cron-remove` exist only in the
-wrapper.
+no ANSI bytes. `cron-install`, `cron-remove`, and `logs` exist only in
+the wrapper. `hermes caduceus logs` reads the files the daemon already
+writes: `processor.log` (default: the last 50 lines; `--follow` streams
+new lines, `--tail N` overrides the count, `0` prints the whole file),
+`runs/<run_id>.log` (`--run <run_id>`), and the stored readiness report
+(`--doctor`, pretty-printed). A missing state dir or target prints a
+diagnostic and exits 1; secrets in log bodies are redacted and `--json`
+emits a machine-readable envelope.
