@@ -11,65 +11,68 @@
   <a href="https://github.com/barkley-assistant/caduceus/wiki"><img alt="Docs" src="https://img.shields.io/badge/docs-wiki-2ea44f"></a>
 </p>
 
-> A Hermes plugin that turns a labeled GitHub issue into a pull
-> request, without making you babysit it.
+> A Hermes plugin that reviews your pull requests and implements your
+> handoff tickets — without making you babysit either.
 
-Caduceus is a Unix daemon, shipped as a Hermes plugin, that polls
-GitHub for labeled issues, runs your AI harness against them in
-isolated worktrees, enforces hard timeouts, and finalizes the
-result as branch → push → PR → close. Linux is tier-1; macOS is
-tier-2: it compiles, runs, and is enforced by CI (`macos / test`),
-with real process-identity (`proc_pidinfo`), descendant reaping
-(`proc_listchildpids`), and subreaper semantics on Linux only
-(`prctl(PR_SET_CHILD_SUBREAPER)`; macOS relies on process-group
-kills plus best-effort descendant enumeration — grandchildren that
-`setsid` away are still reaped via the portable seam). Windows is
-not a target. This is not the project for you if that's a problem.
+Caduceus is a Unix daemon, shipped as a Hermes plugin, that runs the
+boring half of an AI-assisted coding loop on the repositories you
+point it at. Two jobs, one binary:
 
-We're opinionated about three things, and the rest of this
-document will tell you what they are, why, and how to push
-back when we're wrong:
+1. **Reviews pull requests.** Every new revision of an open PR is run
+   through an isolated, read-only review worker. The result is a
+   structured PASS/FAIL verdict — findings with severities and
+   remediation guidance — published as one sticky comment on the PR
+   and updated in place as the PR evolves. A trusted `/caduceus
+   review` comment on the PR re-reviews the current head on demand.
+2. **Implements handoff tickets.** Label a ticket `autofix` and
+   Caduceus claims it, provisions a fresh worktree, runs your AI
+   harness against it under a hard timeout, and sees the job through
+   — commit, push, pull request, completion comment, close. Every
+   step is checkpointed *before* it happens, so a crash mid-run
+   resumes from the last checkpoint instead of double-posting.
+
+Both run on your machine, with your credentials, against your local
+clones. Linux is tier-1; macOS is tier-2, compiles, runs, and is
+enforced by CI. Windows is not a target. This is not the project for
+you if that's a problem.
+
+We're opinionated about three things, and the rest of this document
+will tell you what they are, why, and how to push back when we're
+wrong:
 
 1. **Deterministic infrastructure does not live inside the
-   non-deterministic loop.** The daemon owns polling,
-   claims, worktrees, timeouts, Git, GitHub, retries, and
-   the public-voice rule. The worker owns "what does the
-   code say, and what should it say next?" They meet at a
-   single env-var contract and a single `worker-result.json`
-   file. We will not put an LLM call inside our state
-   machine, and we will not put a GitHub API client
-   inside your harness.
-2. **Zero inbound networking, no shortcuts around the
-   public-voice rule.** The daemon is pull-only, refuses
-   to listen on any port, and refuses to publish a
-   comment or PR body containing a hardcoded list of
-   internal tool names. This is the only moralizing we
-   do in the codebase, and we will defend it.
-3. **The bridge is a file you own.** Setup seeds a
-   reference bridge at
-   `~/.hermes/caduceus/worker-bridge.py`. You edit that
-   file. You point it at pi, codex, claude-code, or your
-   own custom harness — Caduceus has no opinion about
-   which one. Plugin source updates will not overwrite
-   your bridge. If the upstream bridge template changes,
-   setup writes a sibling `.new` candidate and tells
-   you, instead of clobbering your edits.
+   non-deterministic loop.** The daemon owns polling, claims,
+   worktrees, timeouts, Git, GitHub, retries, and the public-voice
+   rule. The worker owns "what does the code say, and what should it
+   say next?" They meet at a single env-var contract and a single
+   `worker-result.json` file. We will not put an LLM call inside our
+   state machine, and we will not put a GitHub API client inside
+   your harness.
+2. **Zero inbound networking, no shortcuts around the public-voice
+   rule.** The daemon is pull-only, refuses to listen on any port,
+   and refuses to publish a comment or PR body containing a hardcoded
+   list of internal tool names. This is the only moralizing we do in
+   the codebase, and we will defend it.
+3. **The bridge is a file you own.** Setup seeds a reference bridge
+   at `~/.hermes/caduceus/worker-bridge.py`. You edit that file. You
+   point it at pi, codex, claude-code, or your own custom harness —
+   Caduceus has no opinion about which one. Plugin source updates
+   will not overwrite your bridge. If the upstream bridge template
+   changes, setup writes a sibling `.new` candidate and tells you,
+   instead of clobbering your edits.
 
-If you want a managed hosted product with a web dashboard
-and a monthly invoice, this is not it. If you want a
-single Rust binary and a Python script and the ability to
-read every line of the code that runs on your behalf,
-welcome.
+If you want a managed hosted product with a web dashboard and a
+monthly invoice, this is not it. If you want a single Rust binary and
+a Python script and the ability to read every line of the code that
+runs on your behalf, welcome.
 
-**A note on what this project is for**: Caduceus exists
-to reduce the operator's workload, not to remove the
-operator from the loop. Every PR Caduceus opens is
-opened for a human to read and merge. The daemon
-surfaces state and failures; humans decide what to do
-about them. We are not building toward a system where a
-bot ships code unattended while the maintainers sleep.
-If that is what you want, this is not the project for
-you either.
+**A note on what this project is for**: Caduceus exists to reduce the
+operator's workload, not to remove the operator from the loop. Every
+PR Caduceus opens is opened for a human to read and merge; every
+review verdict is a recommendation, not a verdict from on high. We
+are not building toward a system where a bot ships code unattended
+while the maintainers sleep. If that is what you want, this is not
+the project for you either.
 
 ## How It Works
 
@@ -95,49 +98,54 @@ you either.
                 └─────────────────────────────┘
 ```
 
-The daemon polls, picks one or more issues per tick, claims each
-under a per-issue lease (bounded by `worker_parallelism`),
-provisions a worktree, spawns
-the bridge as a child of a Rust worker supervisor (not
-systemd, not a shell), waits for exit, then finalizes:
-commit, push, find-or-create the PR, post the completion
-comment, close the issue. (Investigation tickets were removed in
-release N+1; see docs/release-notes.md.)
+The daemon polls GitHub on a schedule. Each tick does two things:
 
-When Auto Review is enabled, the tick also polls pull requests in
-watched repositories and runs an isolated review worker against each
-new head revision. See [docs/auto-review.md](docs/auto-review.md).
+- **Reviews.** It polls open PRs in the watched repos, admits each
+  new head revision as an immutable review target, and runs it
+  through an isolated review worker. The verdict lands as one stable
+  sticky comment per PR — no comment spam, no "reviewed 12 minutes
+  ago" churn. New revisions are re-reviewed automatically; a trusted
+  `/caduceus review` comment re-reviews on demand.
+- **Implements.** It polls issues carrying the `autofix` label,
+  claims each under a per-issue lease (bounded by
+  `worker_parallelism`), provisions a worktree, spawns the bridge as
+  a child of a Rust worker supervisor (not systemd, not a shell),
+  waits for exit, then finalizes: commit, push, find-or-create the
+  PR, post the completion comment, close the issue.
+
+Deep dives: [Auto Review](docs/auto-review.md) covers the review
+flow end to end; the
+[wiki](https://github.com/barkley-assistant/caduceus/wiki/Home) is
+the operator's manual for the ticket flow.
 
 ## Install (Hermes)
 
+Requires **Hermes Agent v0.18.2 or newer**.
+
 ```bash
-# Hermes Agent v0.18.2 or newer
 hermes plugins install barkley-assistant/caduceus --enable
 hermes caduceus setup                 # build + seed your bridge
 hermes caduceus cron-install          # 2-min no-agent job
 hermes caduceus status                # verify
 ```
 
-The install does three things, in order, and is
-idempotent:
+The install does three things, in order, and is idempotent:
 
 - `cargo build --release --locked` of the Rust binary.
 - Atomic install of the binary as `<plugin>/bin/caduceus`.
-- Seed `~/.hermes/caduceus/worker-bridge.py` (only if
-  absent; the shipped template lives in
-  `plugin-assets/worker-bridge.py`).
+- Seed `~/.hermes/caduceus/worker-bridge.py` (only if absent; the
+  shipped template lives in `plugin-assets/worker-bridge.py`).
 
-`hermes plugins update caduceus` refreshes the source.
-Rerun `hermes caduceus setup` to rebuild. Before
-removal, run `hermes caduceus cron-remove` then `hermes
-plugins remove caduceus`; your state, your bridge, and
-your config all survive.
+`hermes plugins update caduceus` refreshes the source; rerun
+`hermes caduceus setup` to rebuild. Before removal, run
+`hermes caduceus cron-remove` then `hermes plugins remove caduceus`;
+your state, your bridge, and your config all survive.
 
 ## Install (Standalone, No Hermes)
 
-If you'd rather not use Hermes, you can run the binary
-directly. You lose the plugin's skill, slash command,
-and cron integration, but the daemon is the same:
+If you'd rather not use Hermes, you can run the binary directly. You
+lose the plugin's skill, slash command, and cron integration, but the
+daemon is the same:
 
 ```bash
 git clone https://github.com/barkley-assistant/caduceus
@@ -150,24 +158,21 @@ install -m 0755 target/release/caduceus ~/.local/bin/caduceus
 ```
 
 A standalone install **requires** you set `worker_command`
-explicitly. The daemon will refuse to start without it.
-This is on purpose: the Hermes plugin has a default
-bridge path; you don't, so the daemon makes you say it
-out loud.
+explicitly. The daemon refuses to start without it. This is on
+purpose: the Hermes plugin has a default bridge path; you don't, so
+the daemon makes you say it out loud.
 
-One naming note: `caduceus setup` (the subcommand you may
-have seen in the CLI reference) is a different, smaller
-thing — it only generates the minimal non-secret config
-file. The build-and-seed step you skip by going standalone
-is `hermes caduceus setup`, which needs the Hermes plugin
-and is not part of this path.
+One naming note: `caduceus setup` (the subcommand) is a different,
+smaller thing — it only generates the minimal non-secret config file.
+The build-and-seed step you skip by going standalone is
+`hermes caduceus setup`, which needs the Hermes plugin and is not
+part of this path.
 
-### OCI sandbox (optional)
+### Workers run sandboxed (OCI)
 
-Caduceus can dispatch workers inside a container instead
-of directly on the host. The whole sandbox lives under
-one nested `sandbox:` section — the single source of
-truth for what the OCI executor enforces:
+Caduceus can dispatch workers inside a hardened container instead of
+directly on the host. The whole sandbox lives under one nested
+`sandbox:` section:
 
 ```yaml
 executor_mode: oci
@@ -176,313 +181,39 @@ sandbox:
   image: "caduceus-worker@sha256:<64 lowercase hex>"  # required, no default
   pull_policy: if_missing   # never | if_missing | always
   resources: { cpus: 2.0, memory_mb: 2048, pids: 256, tmpfs_mb: 256, shm_mb: 64 }
-  network: none             # none | unrestricted (see below; never host)
-  pass_env: []
-  stop_timeout_seconds: 10
-  kill_timeout_seconds: 5
-  reconcile_timeout_seconds: 60
-  reserved_host_disk_mb: 2048  # 0 disables the disk-pressure watchdog
+  network: none             # none | unrestricted (never host)
+  pass_env: []              # exact names only; credentials refused at load
 ```
 
-TrustedHost configs (the default) may omit `sandbox:`
-entirely; `executor_mode: oci` fails to load without a
-valid `sandbox.image`. The flat prototype keys that
-earlier versions of this project used for OCI sandbox
-configuration are rejected at load with an unknown-field
-error, and there is no migration path — that surface was
-never publicly released. The verbatim removal list lives
-on the
+The enforceable baseline is not negotiable: read-only rootfs,
+`--cap-drop ALL`, `no-new-privileges`, bounded memory/pids/tmpfs, no
+devices or engine sockets, no host namespaces, and a daemon-owned
+read-only `.git` shadow over the real gitdir. `network: none`
+(default) means loopback only; `unrestricted` is the engine's
+isolated bridge — host networking is structurally unrepresentable.
+Workers run as the worktree owner's real UID/GID, never a hard-coded
+identity.
+
+TrustedHost configs (the default) may omit `sandbox:` entirely;
+`executor_mode: oci` fails to load without a valid digest-pinned
+`sandbox.image`. Run `caduceus doctor` to check OCI readiness — the
+same live checks the dispatch boundary runs. Crash recovery is a
+restart: startup reconciliation converges durable rows and orphaned
+containers without manual cleanup.
+
+The full enforcement story and the certification suite live in
+[docs/certification/oci-certification.md](docs/certification/oci-certification.md)
+and on the
 [configuration wiki page](https://github.com/barkley-assistant/caduceus/wiki/Configuration).
-
-### OCI readiness and `caduceus doctor`
-
-OCI dispatch runs the readiness checks live at the dispatch boundary. A stored
-doctor report is never used to authorize a worker. The checks cover the Linux
-platform, engine reachability and mode, namespace mapping, cgroup `cpu`,
-`memory`, and `pids` controllers, configured storage and disk reserve, the
-digest-pinned operator image, network representability, and the engine's basic
-sandbox primitives.
-
-The image check performs the configured pull-policy action, inspects the
-result, and verifies both the requested repository digest and the host
-architecture. A successful dispatch reuses those verified image facts rather
-than pulling or inspecting the image a second time. The executor writes the
-facts and timing data to `<state_dir>/oci-runs/<run_id>/provenance.log`.
-
-The readiness filesystem policy is intentionally tiered: the repository
-storage root must be a daemon-owned, non-symlink directory with mode `0700`;
-the state and worktree roots must be daemon-owned, non-symlink directories
-with no group/other write permission. All three roots are checked before
-dispatch.
-
-Run the same checks manually:
-
-```sh
-caduceus doctor
-caduceus doctor --json
-```
-
-The mandatory verdict is `READY` only when every mandatory check passes. Any
-failure produces `UNAVAILABLE` with a remediation message, and OCI dispatch
-refuses with a typed infrastructure error. `caduceus doctor --json` keeps the
-mandatory `checks` and optional `diagnostic_canary` results in separate fields.
-
-The canary is opt-in and diagnostic only. It never changes the mandatory
-verdict and never runs the configured production `worker_command`. Supply a
-digest-pinned canary image and its benign contract command explicitly:
-
-```sh
-caduceus doctor \
-  --canary-image 'registry.example/reference@sha256:<64 lowercase hex>' \
-  --canary-command /path/to/contract-command
-```
-
-The image may also be supplied through `CADUCEUS_DOCTOR_CANARY_IMAGE` and the
-command through `CADUCEUS_DOCTOR_CANARY_COMMAND`. If either is absent, the
-canary is reported as `SKIP`; if it cannot be pulled, started, or produce a
-valid result artifact, it is reported as `FAILURE`. Neither case makes an
-otherwise-ready production sandbox unavailable. The last report is written to
-`<state_dir>/doctor.json` for informational status display only.
-
-This binary command is separate from the Hermes plugin's
-`hermes caduceus doctor`, which checks plugin installation and provider
-configuration.
-
-What the worker container sees is a closed, typed spec:
-
-- **An exactly-specified environment.** The container receives the
-  canonical `CADUCEUS_*` variable set (run, issue, context, branch,
-  and the container-side worktree/result paths), the two compat
-  values `HOME=/tmp` and `TMPDIR=/tmp`, and nothing else from the
-  host — no host-environment inheritance. The whole environment
-  travels through ONE daemon-private file (mode 0600, randomly
-  named, under `<state_dir>/oci-runs/<run_id>`) passed to `create`
-  as a single `--env-file`; no environment value is ever in the
-  container-create argv, and the file is deleted immediately after
-  `create` returns on every path (success, failure, cancellation).
-  Canonical free-text values (such as the issue title and body) are
-  newline-normalized for the line-based env file (`\r\n` and `\n`
-  collapse to a single space), so multi-line GitHub issues run; the
-  full multi-line content still reaches the worker verbatim through
-  the prompt file written into the worktree. Operator `pass_env`
-  values are NOT normalized: a newline-bearing value fails the run
-  closed, before the container is created.
-- **Operator `sandbox.pass_env` (exact names only).** Each entry
-  names ONE daemon-environment variable to forward, verbatim — no
-  prefix patterns. A requested name absent from the daemon
-  environment fails the run with a typed error BEFORE the container
-  is created; nothing is silently skipped. Credential names
-  (`GITHUB_TOKEN`, `GH_TOKEN`, `CADUCEUS_GITHUB_TOKEN`,
-  `AUTO_ISSUE_GITHUB_TOKEN`, any name containing both `GITHUB` and
-  `TOKEN`, and any `CADUCEUS_*` name containing `SECRET` or
-  `TOKEN`) are refused at config load — whether or not the variable
-  currently exists. Names colliding with the canonical
-  `CADUCEUS_*` set or `HOME`/`TMPDIR` are also refused at load.
-- **Threat note.** Anything handed to a worker — including
-  `pass_env` values — is readable and exfiltratable by that worker,
-  especially with `network: unrestricted`. `pass_env` is for
-  non-sensitive worker inputs (proxy endpoints, feature flags, tool
-  config); never for credentials. A worker with unrestricted
-  network access can send anything it can read to any host.
-- **Two writable host-backed surfaces, nothing else.**
-  `/workspace` binds the per-run worktree directly (no
-  copied or `.git`-stripped second workspace) and `/output`
-  is a daemon-owned directory under the daemon state
-  directory (`<state_dir>/oci-runs/<run_id>/output`), never
-  a sibling of the worktree. `/tmp` and `/dev/shm` are the
-  only tmpfs, each bounded by the configured sizes. Any
-  other host-backed mount would be a resolution-time typed
-  error, before a container exists.
-- **A daemon-owned `.git` shadow.** A worktree's `.git` is a
-  `gitdir:` pointer into the main repo's object database, so
-  the container sees a read-only shadow at
-  `/workspace/.git` instead: a harmless sentinel file for a
-  pointer-file `.git`, an empty read-only directory for a
-  `.git` directory, and no shadow at all when `.git` is
-  absent. The worker can neither read the real gitdir nor
-  write `/workspace/.git`; repo operations belong to the
-  host-side finalize step.
-- **Dynamic runtime identity.** The container runs as the
-  worktree owner's real UID/GID, probed before container
-  start — never a hard-coded `1000:1000`. Docker rootful
-  renders `--user <owner-uid>:<owner-gid>`; Docker rootless
-  emits no `--user` (container root maps to the unprivileged
-  engine user via the rootless user namespace); Podman
-  rootless renders plain `--userns keep-id` so the
-  in-container identity equals the daemon/worktree owner;
-  Podman rootful follows the rootful rule. Unsupported
-  namespace configurations (the canonical case: a rootful
-  engine with userns-remap, or an engine whose mode cannot
-  be determined) are refused with a typed error before any
-  container is created, and `hermes caduceus doctor`
-   reports the engine/mode as unavailable.
-
-### OCI crash recovery and state compatibility
-
-OCI runs use one crash-safe lifecycle. The container ID is durably recorded
-after `create` and before `start`; execution is raced against the worker
-deadline, daemon cancellation, and disk pressure. Cleanup uses bounded
-`stop` → `kill` → `rm --force` and confirms the container is absent before
-recording `Removed`. A fresh daemon token keeps cleanup running even when the
-parent run is cancelled, and active runs refresh the normal 5-second
-heartbeat.
-
-The OCI run store is schema **v7**. There is no legacy v6 migration: starting
-against a v6 state database stops with a stale-schema error, and operators
-must initialise fresh state. Each installation also gets a UUID persisted
-atomically by the metadata store. It replaces the state-directory basename
-as `caduceus.daemon_id`, so discovery never touches containers belonging to a
-different installation. Restarting the daemon is the recovery operation;
-startup reconciliation converges durable rows and labeled engine containers
-without manual container cleanup.
-
-### The mandatory per-run OCI baseline (non-weakenable)
-
-Every OCI run on both engines (Docker and Podman) gets the
-following baseline, emitted by the argv renderer on every
-single run. There is no config knob, profile, or opt-out
-that can disable or weaken any of these controls; unknown
-config fields are rejected at parse time and resource
-floors prevent zeroing a control to an unsafe value.
-
-- `--read-only` — read-only container rootfs; writes
-  outside the declared surfaces fail EROFS.
-- `--cap-drop ALL` — no Linux capabilities in-container.
-- `--security-opt no-new-privileges` — setuid cannot
-  re-escalate.
-- `--cpus <resources.cpus>` — CPU quota (floor 0.25).
-- `--memory <resources.memory_mb>m` **and**
-  `--memory-swap <resources.memory_mb>m` — the swap limit
-  is pinned EQUAL to the memory limit, so committed memory
-  (RAM + swap) can never exceed the memory bound (no swap
-  rescue). Floor 64 MiB.
-- `--pids-limit <resources.pids>` — fork bombs die at the
-  limit. Floor 16.
-- Bounded ephemeral tmpfs: `--tmpfs /tmp:size=<tmpfs_mb>m`
-  and `--tmpfs /dev/shm:size=<shm_mb>m` — the only writable
-  ephemeral surfaces, each floored at 1 MiB (a `size=0m`
-  would let the engine apply an unbounded default, silently
-  weakening the baseline).
-- No devices, no engine/runtime socket mounts
-  (`docker.sock` / `podman.sock` are denied at resolve
-  time), and no host namespace sharing (`--pid host`,
-  `--ipc host`, `--uts host` are structurally
-  unrepresentable — the spec has no field for them).
-- Typed-only networking, two modes: `sandbox.network` is
-  `none` (the default) or `unrestricted`. `none` renders
-  `--network none`: loopback-only, no outbound connectivity
-  at all. `unrestricted` renders `--network bridge` on
-  both engines: the engine's default isolated bridge with
-  full outbound internet access via NAT. `unrestricted`
-  is NOT host networking — the container joins no host
-  namespace, and `--network host` is structurally
-  unrepresentable (the config rejects any `host` token at
-  load with a typed error).
-- Bounded engine logs: `--log-opt max-size=10m` and
-  `--log-opt max-file=3` on every run (worst case 30 MiB
-  of on-disk engine logs per container).
-- Bounded daemon-side diagnostic capture: after each run,
-  the daemon persists `<engine> logs` for the container,
-  capped at 1 MiB (tail truncation with a marker), under
-  `<state_dir>/oci-runs/<run_id>/engine.log` (mode 0600).
-
-### Host disk-pressure watchdog
-
-`sandbox.reserved_host_disk_mb` (default `2048`) is a
-free-space floor, sampled every 30 s across the DISTINCT
-filesystems hosting the daemon state dir, the repo storage
-/ worktrees, and the OCI output dirs — deduplicated by
-device ID so a shared filesystem is sampled exactly once.
-
-- **Breach** (any sampled filesystem below the reserve):
-  in-flight OCI work is terminated via the existing
-  stop → kill → rm path, and new OCI dispatch is refused
-  with a typed `OciDiskPressure` error until the reserve
-  recovers. TrustedHost work is not subject to the
-  watchdog.
-- **Recovery hysteresis**: after a breach, free space must
-  exceed the reserve by 256 MiB before new work is
-  re-enabled — recovery at exactly the threshold does not
-  re-enable, preventing flapping.
-- **`0` disables the watchdog** entirely (no sampling, no
-  enforcement). The default `2048` enables it.
-
-Honest limits: this is a **host-level mitigation, not a
-per-container byte quota**. `/workspace` remains a host
-bind mount with NO per-container byte quota — a runaway
-run can still consume disk between samples (detection
-latency is bounded by the 30 s sampling interval plus the
-stop/kill timeouts). The watchdog bounds the damage and
-stops the bleeding; it does not isolate storage per run.
-
-### The reference worker image
-
-Caduceus ships a minimal, deterministic reference worker
-image that proves the worker contract end to end:
-`plugin-assets/worker-reference-image/` (see its
-[README](plugin-assets/worker-reference-image/README.md)).
-It pins `busybox:1.36.1` by SHA256 digest (no package
-manager, compiler, or LLM tooling) and contains only the
-contract helper (`caduceus-env.sh`), the result writer
-(`write-result.sh`), the certification probes
-(`worker-probe sentinel-read|mount-probe|resource-hog|
-network-probe`), and the busybox runtime. The image is a
-test fixture and an operator example — never a production
-dependency of the executor (an independence test keeps
-`src/` free of any reference to it).
-
-CI builds the image locally and runs the contract smoke in
-the `oci-reference-image` job of `.github/workflows/ci.yml`
-(no push). Publication happens only from the
-`release-worker-image` workflow on `v*` tags, which pushes
-`ghcr.io/barkley-assistant/caduceus-worker-reference:
-vX.Y.Z` and `latest` with provenance and echoes the
-published digest into the workflow summary and release
-notes.
-
-Operator example — run it exactly like the executor does:
-read-only rootfs, `/workspace` and `/output` bind mounts, a
-bounded `/tmp` tmpfs, the canonical environment, and
-arbitrary `--entrypoint` argv:
-
-```sh
-ws="$(mktemp -d)" && out="$(mktemp -d)"
-echo "example-sentinel" > "$ws/sentinel.txt"
-
-docker run --rm --read-only --network none --tmpfs /tmp:size=256m \
-  -v "$ws":/workspace:rw -v "$out":/output:rw \
-  -e CADUCEUS_RUN_ID=example \
-  -e CADUCEUS_ISSUE_ID=example \
-  -e CADUCEUS_ISSUE_NUMBER=1 \
-  -e CADUCEUS_ISSUE_REPO=owner/repo \
-  -e CADUCEUS_ISSUE_TITLE="Example run" \
-  -e CADUCEUS_ISSUE_BODY="Example body" \
-  -e 'CADUCEUS_ISSUE_LABELS_JSON=["example"]' \
-  -e 'CADUCEUS_CONTEXT_JSON={}' \
-  -e CADUCEUS_BRANCH_NAME=main \
-  -e CADUCEUS_WORKTREE_PATH=/workspace \
-  -e CADUCEUS_RESULT_PATH=/output/worker-result.json \
-  --entrypoint /bin/sh \
-  caduceus-worker-reference:local -c '
-    /usr/local/bin/caduceus-env.sh --names-only &&
-    /usr/local/bin/worker-probe sentinel-read &&
-    /usr/local/bin/write-result.sh &&
-    cat /output/worker-result.json
-  '
-```
-
-OCI tests that need a real container use the **unrelated**
-fixture image (`tests/fixtures/oci-fixture-image/`), never
-the reference image; the fixture-parity test enforces the
-separation.
 
 ## The 60-Second Orientation
 
-1. `git clone`, `cargo build`, `hermes caduceus setup`
-   (or the standalone equivalent above).
-2. Put your watched repos at `~/projects/<owner>/<repo>`
-   with non-interactive Git credentials (SSH key or
-   credential helper).
+1. `git clone`, `cargo build`, `hermes caduceus setup` (or the
+   standalone equivalent above).
+2. Put your watched repos at `~/projects/<owner>/<repo>` (the
+   `workdir_base` layout) with non-interactive git credentials —
+   an SSH key or a credential helper. A watched repo without a local
+   clone is refused, not retried forever.
 3. Create the trigger label in each repo:
 
    ```bash
@@ -491,73 +222,67 @@ separation.
    ```
 
 4. Drop the label on an issue. Wait two minutes. Watch
-   `caduceus status`. When the daemon picks it up, the
-   bridge runs and you get a PR.
-5. **First time, run with `CADUCEUS_DRY_RUN=1`.** Dry-run
-   does everything except commit / push / comment /
-   label-mutate / PR / close. It writes a
-   `<run_id>.dry-run.md` report under
-   `<state_dir>/runs/`. You should be reading that
-   report before the first real run. Trust, but verify.
+   `caduceus status`. When the daemon picks it up, the bridge runs
+   and you get a PR. For PR review, set `auto_review.enabled: true`
+   (requires OCI; see [docs/auto-review.md](docs/auto-review.md)).
+5. **First time, run with `CADUCEUS_DRY_RUN=1`.** Dry-run does
+   everything except commit / push / comment / label-mutate / PR /
+   close. It writes a `<run_id>.dry-run.md` report under
+   `<state_dir>/runs/`. You should be reading that report before the
+   first real run. Trust, but verify.
 
 ## The four keys you need to know about
 
-You will not get far without these. The full schema lives
-in [configuration](https://github.com/barkley-assistant/caduceus/wiki/Configuration)
-and the wiring lives in
-[Home](https://github.com/barkley-assistant/caduceus/wiki/Home); this is the
-short version with the opinions attached.
+You will not get far without these. The full schema lives in
+[configuration](https://github.com/barkley-assistant/caduceus/wiki/Configuration);
+this is the short version with the opinions attached.
 
-- `watched_repos` — the list of `owner/repo` pairs the daemon
-  polls. Each entry must resolve to a local clone under
-  `workdir_base/<owner>/<repo>` (default
-  `~/projects/<owner>/<repo>`) with a working `origin` remote
-  *before* the daemon will pick up an issue. The daemon
-  refuses to poll a `watched_repos` entry that has no local
-  clone. This is not a courtesy — a daemon that quietly
-  retried GitHub forever against a missing clone is how you
-  burn through a rate limit at 3 a.m. and never know why.
-- `worker_command` — the path the daemon execs after a tick.
-  The Hermes plugin seeds a default at
+- `watched_repos` — the list of `owner/repo` pairs the daemon polls.
+  Each entry must resolve to a local clone under
+  `workdir_base/<owner>/<repo>` with a working `origin` remote
+  *before* the daemon will pick anything up. This is not a courtesy —
+  a daemon that quietly retried GitHub forever against a missing
+  clone is how you burn through a rate limit at 3 a.m. and never
+  know why.
+- `worker_command` — the path the daemon execs after a tick. The
+  Hermes plugin seeds a default at
   `~/.hermes/caduceus/worker-bridge.py`; a standalone install
-  requires this field to be set explicitly. The daemon
-  refuses to start without it on a standalone install, and
-  that is the right default: a daemon that silently
-  invents a worker path is a daemon that will surprise you
-  on the one host where the convention does not hold.
-- `poll_interval_seconds` — how often the cron tick fires.
-  Default is `120`. The plugin installs a 2-minute cron job;
-  the operator can override per environment. Lower it if you
-  want; do not set it to zero and expect a polite daemon.
-- `ticket_label_code` — the GitHub label that triggers a
-  code-fixing run (default `autofix`). It is created in
-  step 3 of the 60-second orientation above. Legacy emoji
-  config values (`🤖 auto-fix`) are translated to the
-  canonical label at read time with a one-time warning;
-  update the config file and re-label open issues to the
-  canonical name after upgrading, because the daemon only polls the
-  canonical label. (The investigation label
-  `ticket_label_investigation` was removed in release N+1; a config
-  that still carries the key fails to load — see
-  [release notes](docs/release-notes.md) and
-  [migration guide](docs/migration.md).)
-  `auto_review.enabled` enables automatic PR review on eligible
-  revisions (requires `executor_mode: oci` and a valid `sandbox:`
-  block); see [docs/auto-review.md](docs/auto-review.md).
+  requires this field to be set explicitly. A daemon that silently
+  invents a worker path is a daemon that will surprise you on the
+  one host where the convention does not hold.
+- `poll_interval_seconds` — how often the cron tick fires. Default
+  is `120`. The plugin installs a 2-minute cron job; the operator can
+  override per environment. Lower it if you want; do not set it to
+  zero and expect a polite daemon.
+- `ticket_label_code` — the GitHub label that triggers a ticket
+  implementation run (default `autofix`). Legacy emoji values
+  (`🤖 auto-fix`) are translated to the canonical name at read time
+  with a one-time warning; re-label open issues after upgrading,
+  because the daemon only polls the canonical label.
+  `auto_review.enabled` turns on PR review (requires
+  `executor_mode: oci`); see [docs/auto-review.md](docs/auto-review.md).
 
 Everything else lives in
 [configuration](https://github.com/barkley-assistant/caduceus/wiki/Configuration).
-If a config key is not named there, it is not part of the public contract
-surface; the daemon ignores it, which is the honest answer to
-"why does my custom key do nothing?"
+If a config key is not named there, it is not part of the public
+contract surface; the daemon ignores it, which is the honest answer
+to "why does my custom key do nothing?"
+
+## Auth: two different credentials
+
+Operators conflate these constantly, so here it is in one sentence:
+the **GitHub API token (PAT)** Caduceus holds is for the API — polling,
+labels, comments, PRs; the **git authentication** used for
+`push` comes from your SSH agent or credential helper. Configure
+both, and don't reuse one for the other.
 
 ## CLI reference
 
 The `caduceus` binary exposes eight top-level commands. A bare
 `caduceus` invocation prints the help and exits 0; the cron job
 invokes `caduceus run` explicitly. `--json` output uses a versioned
-envelope; the queue commands emit `schema: "queue/1.0"` and
-`status` emits its own `version`.
+envelope; the queue commands emit `schema: "queue/1.0"` and `status`
+emits its own `version`.
 
 ```text
 caduceus run                          # run a single tick
@@ -577,292 +302,113 @@ surface is documented in the [CLI reference](docs/cli.md).
 
 ## The Operator's Manual
 
-Moved out of the README on purpose. The README is the
-front door; the manual is in the
+Moved out of the README on purpose. The README is the front door;
+the manual is in the
 [wiki](https://github.com/barkley-assistant/caduceus/wiki/Home):
 
 - [installation](https://github.com/barkley-assistant/caduceus/wiki/Installation) —
-  Hermes vs standalone, prerequisites, Hermes plugin
-  lifecycle (install / update / remove), the cron
-  contract, and the supported-host tier table.
+  Hermes vs standalone, prerequisites, the cron contract.
 - [configuration](https://github.com/barkley-assistant/caduceus/wiki/Configuration) —
-  every config field, defaults, resolution order,
-  environment variables.
-- [the-bridge](https://github.com/barkley-assistant/caduceus/wiki/The-Bridge) — the
-  `worker-bridge.py` contract, the `CADUCEUS_*` env
-  vars, the `worker-result.json` schema, how to plug
-  in a different harness.
+  every config field, defaults, resolution order.
+- [the-bridge](https://github.com/barkley-assistant/caduceus/wiki/The-Bridge) —
+  the `worker-bridge.py` contract, the `CADUCEUS_*` env vars, the
+  `worker-result.json` schema, how to plug in a different harness.
 - [state-recovery](https://github.com/barkley-assistant/caduceus/wiki/State-Recovery) —
-  corrupt state, stuck issues, the `migrate-state`
-  command, backup retention.
+  corrupt state, stuck issues, the `migrate-state` command.
 - [troubleshooting](https://github.com/barkley-assistant/caduceus/wiki/Troubleshooting) —
-  the common failure modes with the actual error text
-  and the actual fix.
+  the common failure modes with the actual error text and the actual
+  fix.
 - [faq](https://github.com/barkley-assistant/caduceus/wiki/FAQ) — short.
-- [cli reference](docs/cli.md) — every `caduceus` subcommand and
-  flag, exit codes, and the `hermes caduceus` wrapper surface
-  (in-repo page).
 - [auto review](docs/auto-review.md) — operator guide, config
   reference, and troubleshooting for automated PR code review.
+- [cli reference](docs/cli.md) — every subcommand, flag, and exit
+  code (in-repo page).
 
 ### Transcripts
 
 Each worker run produces one bounded transcript file at
-`<state-dir>/runs/<run-id>.log`. The supervisor captures
-both the worker's stdout and stderr into it,
-byte-interleaved without stream markers, up to
-`transcript_max_bytes`; output past the cap is dropped
-behind a truncation marker line. See
-[configuration](https://github.com/barkley-assistant/caduceus/wiki/Configuration)
-for the limit and retention knobs.
+`<state-dir>/runs/<run-id>.log`, capturing both stdout and stderr up
+to `transcript_max_bytes` with a truncation marker. See the wiki for
+the retention knobs.
 
-## Replacing a prior install
+## State, migration, and recovery
 
-JSON is the default state backend; SQLite is opt-in. If
-your state directory contains a JSON state file and you
-want the SQLite backend (optional), use the `migrate-state`
-command to import existing entries:
+**Do not edit daemon state, metadata, claim files, or transcripts by
+hand.** Caduceus owns those files. Use supported commands so it can
+take its lock, validate input, and install changes atomically.
 
-```text
-caduceus migrate-state --from <path-to-legacy.json> [--dry-run]
-```
+- JSON is the default state backend; SQLite is opt-in.
+  `caduceus migrate-state --from <path> [--dry-run]` imports legacy
+  JSON, `--to-sqlite` switches the backend. See
+  [docs/migration.md](docs/migration.md) for the full upgrade
+  procedure.
+- Failed work: `caduceus queue show`, `caduceus queue reset
+  OWNER/REPO#N [--dry-run]` (retry), `caduceus queue reprocess
+  OWNER/REPO#N` (fast-track), `caduceus queue remove OWNER/REPO#N`
+  (drop). Reset keeps the finalization checkpoint; the daemon never
+  deletes remote branches or PRs.
+- Stuck reviews: `caduceus review show OWNER/REPO PR`.
+- `caduceus worktree-gc` sweeps stale worktrees when it is safe.
 
-```text
-caduceus migrate-state --to-sqlite [--dry-run]
-```
-
-**Do not edit daemon state, metadata, claim files, or
-transcripts by hand.** Caduceus owns those files. Use
-supported commands so it can take its lock, validate
-input, and install changes atomically.
-
-### Preflight
-
-1. Read the release notes for the version you are
-   installing. They identify the supported source
-   formats, any required commands, and version-specific
-   limitations.
-2. Record your active configuration and the resolved
-   state directory path.
-3. Stop scheduled ticks and any automation that may be
-   polling the same issues. Wait for any active tick to
-   finish before proceeding.
-4. Confirm that GitHub and Git credentials are available
-   to the account that will run the daemon after the
-   upgrade.
-
-### Import
-
-The flow in this section is the `--from` JSON importer.
-Run a dry run first:
-
-```text
-caduceus migrate-state --from /path/to/legacy.json --dry-run
-```
-
-Compare the reported import and skip counts with the
-source data. If they are not what you expect, stop and
-resolve the discrepancy before applying.
-
-When ready:
-
-```text
-caduceus migrate-state --from /path/to/legacy.json
-```
-
-The importer takes the daemon lock, validates every
-record, and adds entries that are not already present in
-live state. It does not overwrite conflicting entries.
-Malformed input leaves live state unchanged. A successful
-write uses the normal atomic-write procedure and creates a
-timestamped backup in the state directory.
-
-Running the same import again is idempotent: already-present
-entries are reported as skipped and are not duplicated.
-
-To switch to the SQLite backend instead, run
-`caduceus migrate-state --to-sqlite`. It imports the JSON
-queue into the SQLite store and flips `state_backend` to
-`sqlite` in the operator's config; validate it the same way
-afterwards.
-
-### Validate
-
-1. Run `caduceus status` and review the reported state.
-2. Confirm the expected backup exists in the state
-   directory.
-3. Run one tick against a test repository and verify its
-   logs, GitHub access, Git credentials, and worker
-   result.
-4. Re-enable scheduling only after the test tick
-   succeeds.
-5. Monitor the first scheduled run and retain backups
-   through that observation period.
-
-If the installation includes the Hermes plugin, also run
-`hermes caduceus doctor` after setup or an upgrade. A
-missing scheduler capability, required gateway restart,
-incomplete configuration, or unavailable provider must be
-treated as an actionable setup failure rather than a
-healthy installation.
-
-### Rollback
-
-If validation fails, stop scheduling before changing
-state. The `--from` import command preserves prior content
-as `<state_dir>/state.json.bak-<timestamp>`. A typical
-rollback:
-
-```text
-# Stop the Caduceus scheduler first.
-cp <state_dir>/state.json.bak-<timestamp> <state_dir>/state.json
-# Restart the known-good installation.
-```
-
-Rollback after `--to-sqlite` is config-side: set
-`state_backend` back to `json` and restart; the JSON file
-is preserved alongside the SQLite store.
-
-Use this only while the daemon is stopped. When Caduceus
-detects malformed state, it preserves the rejected bytes
-as a timestamped `state.json.corrupt-*` archive and
-refuses to proceed. Do not edit that archive or the live
-state in place. Follow the supported recovery process in
-[state recovery](https://github.com/barkley-assistant/caduceus/wiki/State-Recovery).
-
-### Retrying failed work
-
-Use the queue commands to inspect and retry a failed item:
-
-```text
-caduceus status
-caduceus queue show                    # see every entry and its phase
-caduceus queue show owner/repo#number  # full detail incl. checkpoint
-caduceus queue reset owner/repo#number --dry-run
-caduceus queue reset owner/repo#number
-```
-
-The normal reset keeps the saved finalization checkpoint
-so a later tick can resume safely. `--force-finalization-reset`
-discards that checkpoint after warning about the affected
-branch and pull request; it never deletes remote branches
-or pull requests.
-
-`caduceus queue reprocess owner/repo#number` bumps the generation
-and clears `next_attempt_at`, making the entry immediately claimable
-on the next tick — use it to fast-track a retry after the root cause
-is fixed.
-
-To drop an entry entirely instead of retrying it:
-
-```text
-caduceus queue remove owner/repo#number --dry-run
-caduceus queue remove owner/repo#number
-```
-
-`queue remove` deletes only the queue entry; the worktree, claim
-file, remote branch, and PR are left for the reaper / `worktree-gc`
-and are never touched. `InProgress`, `AwaitingReview`, and `Done`
-entries are refused by default; `--force` relaxes that phase guard
-only, and an entry with a live claim file is always refused. If the
-trigger label is still on the issue, the next poll re-enqueues a
-fresh entry — remove the label first if you want the issue to stay
-out of the queue.
-
-### Installation changes and removal
-
-For Hermes installations, remove scheduling before removing
-the plugin:
-
-```text
-hermes caduceus cron-remove
-hermes plugins remove caduceus
-```
-
-This preserves the state directory, user-owned bridge,
-configuration, watched repositories, and worktrees for
-inspection or a later reinstall. Run `caduceus worktree-gc`
-when it is safe to clean unused worktrees.
+The full recovery playbook (corrupt state, stuck issues, stale
+heartbeats) is on the
+[wiki](https://github.com/barkley-assistant/caduceus/wiki/State-Recovery).
 
 ## What Caduceus Explicitly Is Not
 
 Read this before you install it. We mean it.
 
-- **Not a multi-host system.** Caduceus is one daemon
-  per host. If you run two daemons on two machines,
-  they will both poll the same org and step on each
-  other. The result is not "two workers in parallel";
-  it is "two workers racing for the same issue, one of
-  them loses, the issue gets retried twice." Multi-host
-  state with proper leader election is a future
-  conversation, and we are not going to ship a
+- **Not a multi-host system.** Caduceus is one daemon per host. If
+  you run two daemons on two machines, they will both poll the same
+  org and step on each other. Multi-host state with proper leader
+  election is a future conversation, and we are not going to ship a
   half-baked version of it because you asked nicely.
-- **Not a GitHub App.** Caduceus uses a fine-grained
-  PAT. GitHub App authentication with installation
-  tokens is a future feature. We know ops teams have
-  asked and the rotation story is better with App auth;
-  we are not shipping it now because the migration
-  story for operators on PAT is more important than
-  the migration story for hypothetical future
-  operators on App auth.
-- **Not a managed hosted service.** We don't run your
-  automation. You do. There is no web dashboard, no
-  monthly invoice, no Slack integration that pings us.
-  The binary is yours, the daemon logs to your disk,
-  and your credentials never leave your machine. If
-  you want a hosted alternative, several exist; we are
-  not them.
-- **Not "OpenCode inside the daemon".** The daemon has
-  absolutely no opinion about which LLM you call. We
-  ship a reference bridge because every project needs
-  a starting point; the bridge currently calls
-  OpenCode because that's what we use internally. Swap
-  the bridge for pi, codex, claude-code, or your own
-  script, and the daemon will not notice or care. See
-  [the-bridge](https://github.com/barkley-assistant/caduceus/wiki/The-Bridge)
-  for the contract.
-- **Not a replacement for code review.** Every PR that
-  Caduceus opens is opened for a human to review and
-  merge. There is no auto-merge today. Policy-gated
-  auto-merge with a documented policy in plain English
-  is a future feature, not a current one.
-- **Not a webhook receiver.** The daemon is pull-only.
-  It polls GitHub on a schedule. We will never accept
-  inbound HTTP. If you want push semantics, write a
-  webhook → label-relabel shim in front of Caduceus;
-  that's your shim, not ours.
-- **Not a queue you can attach a custom worker to.**
-  The worker contract is `worker-bridge.py` plus the
-  `CADUCEUS_*` env vars plus the `worker-result.json`
-  file. That's it. If you want to bypass that
-  contract, you don't want Caduceus; you want a job
-  queue.
+- **Not a GitHub App.** Caduceus uses a fine-grained PAT. GitHub App
+  authentication with installation tokens is a future feature. The
+  rotation story is better with App auth; we are not shipping it now
+  because the migration story for operators on PAT is more important
+  than the migration story for hypothetical future operators.
+- **Not a managed hosted service.** We don't run your automation.
+  You do. There is no web dashboard, no monthly invoice, no Slack
+  integration that pings us. The binary is yours, the daemon logs to
+  your disk, and your credentials never leave your machine.
+- **Not "OpenCode inside the daemon".** The daemon has absolutely no
+  opinion about which LLM you call. We ship a reference bridge
+  because every project needs a starting point; the bridge currently
+  calls OpenCode because that's what we use internally. Swap the
+  bridge for pi, codex, claude-code, or your own script, and the
+  daemon will not notice or care.
+- **Not a human reviewer, and not an auto-merger.** Caduceus reviews
+  code and opens PRs, but every verdict is a recommendation and
+  every PR is opened for a human to read and merge. There is no
+  auto-merge today. Policy-gated auto-merge with a documented policy
+  in plain English is a future feature, not a current one.
+- **Not a webhook receiver.** The daemon is pull-only. It polls
+  GitHub on a schedule. We will never accept inbound HTTP. If you
+  want push semantics, write a webhook → label-relabel shim in front
+  of Caduceus; that's your shim, not ours.
+- **Not a queue you can attach a custom worker to.** The worker
+  contract is `worker-bridge.py` plus the `CADUCEUS_*` env vars plus
+  the `worker-result.json` file. That's it. If you want to bypass
+  that contract, you don't want Caduceus; you want a job queue.
 
 ## Contributing, Releasing, SemVer
 
 This project follows [Semantic Versioning 2.0.0](https://semver.org/).
-The public surface — `caduceus` CLI, the `Config` YAML
-schema, the plugin manifest fields, the
-`worker-bridge.py` env-var contract, the state file
-format, the default `comment_forbidden_strings` — is
-versioned; everything else is implementation detail and
-can change between minor releases.
+The public surface — `caduceus` CLI, the `Config` YAML schema, the
+plugin manifest fields, the `worker-bridge.py` env-var contract, the
+state file format, the default `comment_forbidden_strings` — is
+versioned; everything else is implementation detail and can change
+between minor releases.
 
-- [`CONTRIBUTING.md`](CONTRIBUTING.md) — how to file
-  issues, open PRs, what the CI expects, the commit
-  format we use.
-- [`RELEASING.md`](RELEASING.md) — SemVer policy, what
-  counts as a breaking change, the release cadence
-  (or lack of one), how release tags are cut and what
-  CI runs on them.
-- [`CHANGELOG.md`](CHANGELOG.md) — keep-a-changelog
-  format. Every user-visible change lands an entry.
-- [`AGENTS.md`](AGENTS.md) — agent guidance for both
-  human contributors and AI tools. Read it before
-  opening a PR; the constraints on state files, the
-  contract-revision procedure, the test discipline,
-  and the no-edits-to-published-prompts rule live
-  there.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — how to file issues, open
+  PRs, what the CI expects, the commit format we use.
+- [`RELEASING.md`](RELEASING.md) — SemVer policy, what counts as a
+  breaking change, how release tags are cut.
+- [`CHANGELOG.md`](CHANGELOG.md) — keep-a-changelog format. Every
+  user-visible change lands an entry.
+- [`AGENTS.md`](AGENTS.md) — agent guidance for both human
+  contributors and AI tools. Read it before opening a PR.
 
 ## License
 
