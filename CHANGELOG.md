@@ -35,6 +35,20 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
 
 ### Changed
 
+- **README reframed around the two core jobs; operator prose slashed.**
+  The README now leads with Caduceus's two flows — automated PR review
+  (sticky PASS/FAIL verdicts, `/caduceus review` re-review) and
+  handoff-ticket implementation (`autofix` label → worktree → harness
+  → PR) — instead of framing the project as "labeled issue → PR"
+  with review as an afterthought. The ~400 lines of OCI implementation
+  minutiae (env-file mechanics, identity matrix, watchdog internals,
+  reference-image walkthrough) and the duplicated replacement-install
+  manual were cut; the README now points at the wiki, migration guide,
+  and certification doc instead. The operator-facing auto-review guide
+  (`docs/auto-review.md`) lost its internal "DAR §" cross-references
+  and the stale "Phase 1 / Phase 2" framing, and now documents fork
+  review via `auto_review.fork_policy.allow_fork_prs` as the shipped
+  feature it is (previously described as having "no config knob").
 - **Bare `caduceus` now prints help instead of running a tick.** A no-argument
   invocation used to be rewritten to `caduceus run` and execute a full daemon
   tick; it now prints the clap help to stdout and exits 0, matching the

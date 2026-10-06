@@ -1,40 +1,40 @@
 # Auto Review
 
-Auto Review is automated PR code review. The daemon polls watched
-repositories for open pull requests, detects new head revisions, and runs
-each one through an isolated, read-only OCI worker. The result is a
-structured PASS/FAIL verdict published as a single sticky PR comment.
+Auto Review is Caduceus's PR review half. The daemon polls watched
+repositories for open pull requests, detects new head revisions, and
+runs each one through an isolated, read-only OCI worker. The result is
+a structured PASS/FAIL verdict published as a single sticky PR comment
+— one comment per PR, updated in place as the PR evolves.
 
-The canonical engineering specification is
-[docs/architecture/auto-review.md](architecture/auto-review.md). This page
-is the operator-facing reference; the architecture doc is the deep-dive.
+The deep engineering record lives in
+[docs/architecture/auto-review.md](architecture/auto-review.md); this
+page is the operator-facing reference.
 
 ## What Auto Review does
 
 - Monitors PRs in `watched_repos` through the existing cron tick.
 - Treats each previously unseen head revision as an immutable review
-  unit — identity is `repository + PR number + head SHA`
-  (DAR §2.1).
+  unit — identity is `repository + PR number + head SHA`.
 - Runs the review in a detached-HEAD worktree at the exact frozen
-  revision, using merge-base (three-dot) diff semantics
-  (DAR §2.2, §2.3).
+  revision, using merge-base (three-dot) diff semantics — the PR's own
+  changes, never the base branch's drift.
 - Produces a structured verdict: PASS or FAIL, with findings rated
-  Blocking, Warning, or Suggestion, each carrying a title, body, optional
-  path/line, and remediation guidance (DAR §3).
+  Blocking, Warning, or Suggestion, each carrying a title, body,
+  optional path/line, and remediation guidance.
 - Publishes one stable, idempotent sticky comment per PR, updated in
-  place on new revisions (DAR §9).
+  place on new revisions.
 - Re-reviews new revisions automatically; no manual trigger is needed.
+- Re-reviews the current head on demand when a trusted author comments
+  `/caduceus review` on the PR.
 
-What it does **not** do in Phase 1: no GitHub Checks API, no inline
-comments, no auto-merge, no fork-PR review, no coalescing of
-intermediate revisions. Same-SHA explicit re-review arrives in Phase 2
-via a trusted PR comment (see below). See DAR §1 for the full
-non-goal list.
+What it does **not** do: no GitHub Checks API, no inline comments, no
+auto-merge, no coalescing of intermediate revisions (every admitted
+SHA is reviewed).
 
 ## Enabling Auto Review
 
-Auto Review requires OCI execution in Phase 1. The minimal config looks
-like this:
+Auto Review requires OCI execution — reviewing untrusted PR content
+needs containment. The minimal config looks like this:
 
 ```yaml
 executor_mode: oci
@@ -66,7 +66,7 @@ digest-pinned image.
 ## How reviews are discovered and run
 
 PR polling is a step inside the existing daemon tick, between issue
-polling and the queue drain (DAR §5).
+polling and the queue drain.
 
 ### Eligibility
 
@@ -76,12 +76,13 @@ A PR is admitted for review only when **all** of the following hold:
 - The PR is not a draft, unless `draft_pull_requests: true` is set.
 - The head SHA has not been reviewed before and is not already queued.
 - The PR is not a fork, unless the base repo is listed in
-  `auto_review.fork_policy.allow_fork_prs` (Phase 2, #337). Allowed
-  forks are reviewed through a per-PR quarantine clone; see
+  `auto_review.fork_policy.allow_fork_prs`. Allowed forks are reviewed
+  through a per-PR quarantine clone — a throwaway clone that is never
+  a second remote on the persistent mirror; see
   [docs/security/fork-trust-posture.md](security/fork-trust-posture.md).
 
 When a PR does not qualify, the daemon emits a structured skip event
-rather than silently ignoring it (DAR §5.1):
+rather than silently ignoring it:
 
 | Condition | Event |
 |---|---|
@@ -102,9 +103,9 @@ flooding the shared worker pool.
 When a PR pushes a new head SHA, the next poll discovers it and admits
 a new review. The old review against the old SHA stays valid and
 finalizable; the new review is a separate run. The head SHA is frozen
-at discovery and never re-resolved (DAR §2.1).
+at discovery and never re-resolved.
 
-### Explicit re-review via a trusted comment (Phase 2)
+### Explicit re-review via a trusted comment
 
 An allowlisted author can request a re-review of the current head SHA
 by commenting the trigger command on the PR:
@@ -138,8 +139,6 @@ by commenting the trigger command on the PR:
 - Polling never does this: automatic discovery still skips
   already-reviewed SHAs with `review_skipped_already_complete`.
 
-See DAR §17 for the full design.
-
 ### Draft behaviour
 
 By default, draft PRs are skipped with `review_skipped_draft`. Set
@@ -149,15 +148,14 @@ By default, draft PRs are skipped with `review_skipped_draft`. Set
 
 The queue entry owns execution attempts; `ReviewState` has no
 `attempt_count` field. Publication retries are separate from worker
-retries and are tracked on `ReviewState.publication_attempt_count`
-(DAR §3, §9.1).
+retries and are tracked on `ReviewState.publication_attempt_count`.
 
 ## The review verdict and sticky comment
 
 ### Verdict vs execution status
 
 These are intentionally distinct and must never be conflated in logs or
-operator reading (DAR §8, §13):
+operator reading:
 
 - **Execution status** (`Success` or `Failure`) — did the review
   execute? Drives retry.
@@ -181,9 +179,9 @@ Each finding carries:
 ### Sticky comment
 
 One comment per PR, marked with `<!-- caduceus-auto-review -->`. The
-comment is updated in place on new revisions; superseded generations are
-suppressed by a monotonic publication guard so an older run can never
-overwrite a newer one (DAR §9.4). Re-publishing the same result is
+comment is updated in place on new revisions; superseded generations
+are suppressed by a monotonic publication guard so an older run can
+never overwrite a newer one. Re-publishing the same result is
 byte-identical (idempotency requirement).
 
 Re-reviews (generation 2 and later, `update` mode) prepend a
@@ -194,19 +192,18 @@ history.
 `auto_review.publication_mode` (`update` (default) | `new_comment`)
 selects the re-review publication policy:
 
-| Mode | Re-review behaviour | #393 banner | History |
+| Mode | Re-review behaviour | Banner | History |
 |---|---|---|---|
 | `update` (default) | PATCHes the single sticky comment in place | shown | one comment ever |
 | `new_comment` | publishes a fresh comment per review generation | suppressed | every generation preserved |
 
-`update` keeps the pre-#394 behaviour: one sticky comment per PR,
-PATCHed on each re-review. `new_comment` publishes a fresh comment per
-review generation and never edits history — the full comment trail per
-re-review is kept. Markers are generation-tagged
-(`<!-- caduceus-auto-review gen=N -->`); untagged pre-#394 comments
-parse as generation 0. Crash-heal and gone-state marker adoption stay
-exactly-once per generation in both modes; an unknown value fails the
-config load.
+`update` keeps one sticky comment per PR, PATCHed on each re-review.
+`new_comment` publishes a fresh comment per review generation and
+never edits history — the full comment trail per re-review is kept.
+Markers are generation-tagged (`<!-- caduceus-auto-review gen=N -->`);
+untagged legacy comments parse as generation 0. Crash-heal and
+gone-state marker adoption stay exactly-once per generation in both
+modes; an unknown value fails the config load.
 
 ## Config reference
 
@@ -217,9 +214,10 @@ typo'd key is a load failure, not a silent ignore.
 | Key (YAML) | Type | Default | Source | Notes |
 |---|---|---|---|---|
 | `auto_review` | block | absent (disabled) | `src/infra/config/mod.rs:213` | Absent means disabled; no downstream code may read it |
-| `auto_review.enabled` | `bool` | `false` | `:216` | Explicit Phase-1 opt-in |
+| `auto_review.enabled` | `bool` | `false` | `:216` | Explicit opt-in |
 | `auto_review.draft_pull_requests` | `bool` | `false` | `:219` | When `false`, drafts skip with `review_skipped_draft` |
-| `auto_review.rerun_command` | `string` | `/caduceus review` | `:226` | Trusted-comment re-review trigger (DAR §17); must be non-empty and start with `/` |
+| `auto_review.rerun_command` | `string` | `/caduceus review` | `:226` | Trusted-comment re-review trigger; must be non-empty and start with `/` |
+| `auto_review.fork_policy.allow_fork_prs` | `list[string]` | `[]` | `:228-262` | Per-repo opt-in for fork PRs; empty = fail-closed, no fork review |
 | `max_reviews_per_tick` | `u32` | `worker_parallelism × 4` | `:303` | Top-level; `0` = unbounded |
 | `state_backend` | `String` | `"json"` | `:244` | `"json"` or `"sqlite"`; review supports both |
 | `executor_mode` | `ExecutorKind` | `TrustedHost` | `:841` | Auto Review requires `oci` |
@@ -227,24 +225,20 @@ typo'd key is a load failure, not a silent ignore.
 
 ### The `autoreview` label
 
-The `autoreview` GitHub label is **reserved and inert in Phase 1**:
+The `autoreview` GitHub label is **reserved and inert**:
 
 - No daemon code polls it.
 - No PR eligibility requires it.
 - It must never be applied to issues as a classification label.
 
-**Dispatch vs classification:** dispatch is flag-based
-(`auto_review.enabled: true`). The `autoreview` label is a reserved
-classification name with no dispatch effect in Phase 1. The canonical
-spec for this distinction is DAR §5.2.
+Dispatch is flag-based (`auto_review.enabled: true`); the label is a
+reserved classification name with no dispatch effect.
 
 ## Observability
 
-Auto Review emits 23 structured event names during discovery,
-dispatch, execution, finalization, and migration. They are listed in
-DAR §13 and pinned by `review_event_catalog_test`; the authoritative
-list lives in the architecture doc and should be read there rather than
-duplicated here.
+Auto Review emits structured event names during discovery, dispatch,
+execution, finalization, and migration, pinned by
+`review_event_catalog_test` and catalogued in the architecture doc.
 
 Use the review CLI to inspect live state:
 
@@ -275,7 +269,7 @@ Checklist:
 2. Does `caduceus doctor` report `READY` or `UNAVAILABLE`?
 3. Does `caduceus review status` show queued or in-progress entries?
 4. Are PRs open, non-draft (or `draft_pull_requests: true` set), and
-   not forks?
+   not forks (or listed in `allow_fork_prs`)?
 5. Check the daemon log for skip events (`review_skipped_draft`,
    `review_skipped_fork_unsupported`, etc.).
 
@@ -301,7 +295,7 @@ If the sticky comment fails to publish, `ReviewState` enters
 `FailedRetryable` with `publication_attempt_count`,
 `next_publish_at`, and `last_publish_error` persisted. The model is
 never re-run because publication failed; resume is idempotent via
-`sticky_comment_id` (DAR §9.1).
+`sticky_comment_id`.
 
 ### Draft PRs are skipped
 
@@ -311,13 +305,16 @@ is `false`.
 ### Fork PRs are skipped
 
 Fork PRs — and PRs whose head repository cannot be identified — are
-unconditionally skipped in Phase 1 with
-`review_skipped_fork_unsupported`. There is no config knob to enable
-fork review (DAR §11.2).
+skipped with `review_skipped_fork_unsupported` unless the base repo is
+listed in `auto_review.fork_policy.allow_fork_prs`. Allowed forks are
+reviewed through a per-PR quarantine clone; denied forks keep the
+fail-closed behaviour. See
+[docs/security/fork-trust-posture.md](security/fork-trust-posture.md)
+for the trust model before enabling fork review.
 
 ### Oversized PR
 
 If the diff alone exceeds the 1 MiB budget, the run is skipped via
 `review_skipped_oversized_pr` without consuming the normal worker
 retry budget. The event is deterministic: retrying cannot change
-unreviewable input (DAR §7.1).
+unreviewable input.
