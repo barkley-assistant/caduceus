@@ -68,7 +68,12 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y uidmap dbus-user-session
-          curl --proto '=https' --tlsv1.2 -sSf https://get.docker.com/rootless | sh
+          # The hosted ubuntu-24.04 image now pre-installs a rootful
+          # dockerd, so the rootless install script aborts unless
+          # FORCE_ROOTLESS_INSTALL is set; the runner user's rootless
+          # socket is independent of the pre-installed rootful daemon.
+          FORCE_ROOTLESS_INSTALL=1 \
+            curl --proto '=https' --tlsv1.2 -sSf https://get.docker.com/rootless | sh
           export PATH="$HOME/bin:/usr/bin:$PATH"
           export DOCKER_HOST="unix:///run/user/$(id -u)/docker.sock"
           docker info >/dev/null
