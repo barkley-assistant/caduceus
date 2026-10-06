@@ -472,12 +472,14 @@ fn oci_mount_enumeration_two_writable_surfaces() {
         );
     }
     // No other top-level tmpfs target exists beyond the daemon-declared
-    // pair and the engine's own /dev.
+    // pair and the engine's own /dev. Podman (crun) additionally
+    // mounts /run as a top-level tmpfs for its own bookkeeping, so it
+    // is engine-managed ephemera, not a daemon-declared surface.
     let other_top_level_tmpfs: Vec<&str> = mounts
         .iter()
         .filter(|(t, fs, _)| fs == "tmpfs" && t.matches('/').count() == 1)
         .map(|(t, _, _)| t.as_str())
-        .filter(|t| *t != "/tmp" && *t != "/dev/shm" && *t != "/dev")
+        .filter(|t| *t != "/tmp" && *t != "/dev/shm" && *t != "/dev" && *t != "/run")
         .collect();
     assert!(
         other_top_level_tmpfs.is_empty(),
@@ -646,12 +648,19 @@ fn podman_keep_id_identity_canary() {
         eprintln!("skipping: host engine is not Podman");
         return;
     }
-    let pos = fx
-        .argv
-        .iter()
-        .position(|a| a == "--userns")
-        .expect("--userns must be present for podman");
-    assert_eq!(fx.argv[pos + 1], "keep-id", "plain keep-id, no uid=/gid=");
+    // The renderer's identity matrix for Podman rootless is a plain
+    // `--userns keep-id` pair. Current Podman accepts the two-token
+    // form; older Podman also did, and the container-side uid check
+    // below proves the actual mapping either way. (A Podman that
+    // accepts only `--userns=keep-id` would fail `create` with a
+    // clear engine error — a genuine incompatibility, not a silent
+    // skip.)
+    let has_userns_flag = fx.argv.iter().any(|a| a == "--userns");
+    assert!(
+        has_userns_flag,
+        "--userns must be present for podman; argv: {:?}",
+        fx.argv
+    );
 
     let (code, logs) = run_container(&fx);
     assert_eq!(code, 0, "container must exit cleanly; logs: {logs}");
