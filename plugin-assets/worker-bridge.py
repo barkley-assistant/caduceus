@@ -27,8 +27,9 @@ and it runs **before** the bridge starts.
 Harness selection
 -----------------
 
-The reference hook returns OpenCode with the gentle-orchestrator agent. To
-swap harnesses, copy ``plugin-assets/caduceus_harness.py.example`` to
+The reference hook runs ``opencode run -f <prompt>`` with OpenCode's default
+agent. Add ``--agent <name>`` or, on OpenCode v2, ``--standalone`` in your own
+``harness.py`` if you need them. To swap harnesses, copy ``plugin-assets/caduceus_harness.py.example`` to
 ``$HERMES_HOME/caduceus/harness.py`` and edit its ``run_task`` function.
 Existing user-owned full bridge scripts remain valid when the hook is absent.
 
@@ -503,8 +504,8 @@ def invoke_harness(
 ) -> int:
     """Run the configured AI harness inside *worktree* and return its exit code.
 
-    Default implementation: OpenCode with the ``gentle-orchestrator``
-    agent. The harness is responsible for writing
+    Default implementation: OpenCode with its default agent
+    (``opencode run``, no ``--agent`` flag). The harness is responsible for writing
     ``<worktree>/worker-result.json`` describing what it did. Caduceus
     reads that file after this function returns and translates its
     status into ``Phase`` transitions; the bridge never inspects it.
@@ -522,16 +523,13 @@ def invoke_harness(
     The harness is launched with ``subprocess.run`` as an argument array —
     never a shell string — and inherits the bridge's environment after
     the daemon's allowlist. The reference harness invocation uses
-    Unicode-safe commands (``opencode run --agent gentle-orchestrator
-    -f <prompt>``) and passes the prompt path as a separate argument so
+    Unicode-safe commands (``opencode run -f <prompt>``) and passes the prompt path as a separate argument so
     paths containing spaces and Unicode characters reach the harness
     verbatim.
     """
     argv: list[str] = [
         "opencode",
         "run",
-        "--agent",
-        "gentle-orchestrator",
         "-f",
         str(prompt_file),
     ]

@@ -21,8 +21,11 @@ Verify the active path with::
 (see ``Ctx`` in ``plugin-assets/worker-bridge.py``). ``ctx.dry_run``
 is best-effort: it is set if the daemon propagates
 ``CADUCEUS_DRY_RUN`` to the worker, otherwise it defaults to False.
+
+The default uses OpenCode's default agent. On OpenCode v2 you can add
+``"--standalone"`` after ``"run"``; OpenCode 1.x does not accept that flag.
 """
 
 
 def run_task(ctx):
-    return ["opencode", "run", "--agent", "gentle-orchestrator", "-f", str(ctx.prompt)]
+    return ["opencode", "run", "-f", str(ctx.prompt)]
