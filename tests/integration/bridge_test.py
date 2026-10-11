@@ -238,6 +238,8 @@ class TestInvokeHarness:
         assert captured["cwd"] == str(worktree)
         # Prompt path is a single argument, not a shell fragment.
         assert str(prompt) in captured["argv"]
+        assert captured["argv"][:4] == ["opencode", "run", "-f", str(prompt)]
+        assert "--agent" not in captured["argv"]
 
     def test_extra_argv_is_forwarded(self, bridge_module, monkeypatch):
         captured = {}
