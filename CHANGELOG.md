@@ -310,6 +310,16 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
 
 ### Fixed
 
+- **Release canary no longer writes git identity into the developer clone.**
+  The canary's identity preflight rewrote repo-local
+  `git config user.name/user.email` to `Hermes Agent
+  <barkleyassistant@gmail.com>` whenever the checkout's HEAD author
+  differed, silently mutating any clone that ran the test suite once —
+  and failing under any other identity. The preflight is removed: this
+  repo enforces no committer identity, and the canary asserts nothing
+  about the host clone. Tick commits were never affected; they resolve
+  identity through the daemon's own cascade (`git_author_name` → host
+  global config → `Caduceus Daemon <caduceus@daemon.local>` default).
 - **Re-review updates are visible on the PR.** The sticky review
   comment is edited in place, which made a re-review easy to miss.
   Every re-publication (review generation > 1) now prepends a
