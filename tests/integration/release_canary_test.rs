@@ -4,33 +4,31 @@
 //! binary can be driven through the full lifecycle without any
 //! production credentials:
 //!
-//! 1. Identity preflight — verify / set the repo git identity to the
-//!    Hermes Agent convention so the canary's commits are attributable.
-//! 2. Binary provenance — build `cargo build --release --locked`,
+//! 1. Binary provenance — build `cargo build --release --locked`,
 //!    compute the binary's SHA-256, and capture the commit SHA. These
 //!    are recorded in `tests/canary_report.txt` for human review.
-//! 3. Wiremock the full GitHub HTTP surface on `127.0.0.1:0` so the
+//! 2. Wiremock the full GitHub HTTP surface on `127.0.0.1:0` so the
 //!    daemon never touches `api.github.com` (REQ-01, REQ-08, AC-03).
-//! 4. Disposable git origin — `git init --bare` in a tempdir, served by
+//! 3. Disposable git origin — `git init --bare` in a tempdir, served by
 //!    `git daemon` on `127.0.0.1` so the daemon's `git fetch` / `git
 //!    push` exercise real git subprocesses without github.com. The
 //!    origin host is `127.0.0.1`, which matches the wiremock api_base
 //!    host and satisfies `validate_origin_host` (REQ-04, AC-02).
-//! 5. Disposable `HERMES_HOME` tempdir (REQ-03).
-//! 6. Hermes binary gate — skip gracefully when `hermes` is not on
+//! 4. Disposable `HERMES_HOME` tempdir (REQ-03).
+//! 5. Hermes binary gate — skip gracefully when `hermes` is not on
 //!    `PATH` (REQ-02).
-//! 7. Hermes lifecycle — install + enable the plugin, `setup` twice
+//! 6. Hermes lifecycle — install + enable the plugin, `setup` twice
 //!    (idempotent), `doctor` (exit 0 or 2), `status` (AC-01, AC-02).
-//! 8. Dry-run tick — the release binary runs one tick in dry-run mode
+//! 7. Dry-run tick — the release binary runs one tick in dry-run mode
 //!    against wiremock + the disposable origin. Asserts zero GitHub
 //!    mutations and zero pushes (AC-05).
-//! 9. Scheduled non-dry tick — the release binary runs one code-ticket
+//! 8. Scheduled non-dry tick — the release binary runs one code-ticket
 //!    tick to completion. Asserts exactly one commit, one branch push,
 //!    one PR creation, one public comment, zero merges, the issue
 //!    remaining open, and zero unexpected label mutations (AC-06,
 //!    AC-07, AC-08).
-//! 10. Record the request log, object IDs, run ID, PR URL, and cleanup
-//!     evidence in `tests/canary_report.txt` (AC-04, AC-09).
+//! 9. Record the request log, object IDs, run ID, PR URL, and cleanup
+//!    evidence in `tests/canary_report.txt` (AC-04, AC-09).
 //!
 //! ## Run
 //!
@@ -107,50 +105,6 @@ fn find_hermes() -> Option<PathBuf> {
         Ok(p) if p.is_file() => Some(p),
         _ => None,
     }
-}
-
-// ---------------------------------------------------------------------------
-// Harness: identity preflight (REQ-10).
-// ---------------------------------------------------------------------------
-
-/// Verify the repo's `HEAD` author matches the Hermes Agent convention.
-/// If it does not, set `user.name` / `user.email` for this repo only so
-/// the canary's worker commits are attributable. Returns the identity
-/// string that was verified or applied.
-fn identity_preflight() -> String {
-    let expected = "Hermes Agent <barkleyassistant@gmail.com>";
-    let out = Command::new("git")
-        .args(["log", "-1", "--format=%an <%ae>"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output();
-    let current = out
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default();
-    if current == expected {
-        return expected.to_string();
-    }
-    // Apply the convention for this repo only (no --global).
-    let status = Command::new("git")
-        .args(["config", "user.name", "Hermes Agent"])
-        .status()
-        .expect("git config user.name");
-    assert!(
-        status.success(),
-        "identity preflight: git config user.name failed"
-    );
-    let status = Command::new("git")
-        .args(["config", "user.email", "barkleyassistant@gmail.com"])
-        .status()
-        .expect("git config user.email");
-    assert!(
-        status.success(),
-        "identity preflight: git config user.email failed"
-    );
-    expected.to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -525,13 +479,6 @@ async fn release_binary_canary() {
             return;
         }
     };
-
-    // --- REQ-10: identity preflight ---
-    let identity = identity_preflight();
-    assert_eq!(
-        identity, "Hermes Agent <barkleyassistant@gmail.com>",
-        "identity preflight must end at the Hermes Agent convention"
-    );
 
     // --- REQ-05 / AC-01 / AC-04: binary provenance ---
     let commit = commit_sha();
