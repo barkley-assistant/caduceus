@@ -24,6 +24,18 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
 
 ### Security
 
+- **rustls bumped to 0.23.45 for TLS 1.3 record-alignment advisory.**
+  Cargo.lock pinned rustls 0.23.42, which is inside the affected range
+  (0.23.13–0.23.44): rustls accepted TLS 1.3 handshake messages sent at
+  the wrong encryption level when they followed a key-changing message
+  in the same record, so a peer could send handshake messages that
+  should be encrypted in plaintext without rustls rejecting the
+  connection. The handshake transcript remains authenticated, so a
+  network-position attacker cannot alter or complete a handshake. The
+  bump is a lockfile-only update of a transitive dependency (pulled in
+  via reqwest's `rustls-tls` feature); Caduceus APIs, behaviour, and
+  MSRV are unchanged.
+
 - **Fork trust posture documented.** Fork review executes
   attacker-controlled content (fork head SHA, diff, repo metadata);
   the containment, credential-path analysis, and the operator opt-in
