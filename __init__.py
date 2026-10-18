@@ -397,6 +397,14 @@ _OPERATIONAL_PHASE_ORDER = (
     "awaiting_review",
 )
 _BOOKKEEPING_PHASES = ("done", "skipped", "previewed")
+_REVIEW_OPERATIONAL_PHASE_ORDER = (
+    "queued",
+    "in_progress",
+    "needs_attention",
+    "failed",
+)
+_REVIEW_BOOKKEEPING_PHASES = ("done", "skipped")
+_RUN_ID_DISPLAY_CHARS = 12
 
 
 def _count(phases: Dict[str, Any], name: str) -> int:
@@ -405,6 +413,42 @@ def _count(phases: Dict[str, Any], name: str) -> int:
         return int(phases.get(name) or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _live_workers(data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Return the ``live_workers`` list when present and well-formed."""
+    raw = data.get("live_workers")
+    if not isinstance(raw, list):
+        return []
+    return [w for w in raw if isinstance(w, dict)]
+
+
+def _is_review_worker(worker: Dict[str, Any]) -> bool:
+    """``true`` when the heartbeat target uses the ``#pr/N`` review form."""
+    issue = str(worker.get("issue") or "")
+    return "#pr/" in issue
+
+
+def _pretty_worker_target(issue: Any) -> str:
+    """Chat-only: ``owner/repo#pr/N`` → ``owner/repo#N``; else unchanged."""
+    text = str(issue or "")
+    return text.replace("#pr/", "#", 1)
+
+
+def _short_run_id(run_id: Any) -> str:
+    """Truncate a run id for compact chat display."""
+    text = str(run_id or "")
+    if len(text) <= _RUN_ID_DISPLAY_CHARS:
+        return text
+    return text[:_RUN_ID_DISPLAY_CHARS]
+
+
+def _worker_detail_line(worker: Dict[str, Any]) -> str:
+    """One compact worker line: target (run …, freshness)."""
+    target = _pretty_worker_target(worker.get("issue"))
+    run = _short_run_id(worker.get("run_id"))
+    freshness = str(worker.get("freshness") or "unknown")
+    return f"  — {target} (run {run}, {freshness})"
 
 
 def _describe_outcome(raw: Any) -> str:
@@ -480,17 +524,115 @@ def _queue_section(phases: Dict[str, Any]) -> List[str]:
     return lines
 
 
+def _review_phase_summary(review_phases: Dict[str, Any]) -> str:
+    """Compact operational review-phase summary, e.g. ``2 in_progress``."""
+    parts = [
+        f"{_count(review_phases, name)} {name}"
+        for name in _REVIEW_OPERATIONAL_PHASE_ORDER
+        if _count(review_phases, name)
+    ]
+    return ", ".join(parts)
+
+
+def _workers_and_reviews_section(
+    review_phases: Dict[str, Any], workers: List[Dict[str, Any]]
+) -> List[str]:
+    """Render Reviews / Workers lines for dual-job activity.
+
+    Quiet when review operational counts, bookkeeping counts, and live
+    workers are all clear. Single review worker may fold into one line;
+    multiple workers always list every entry (CLI ``live workers: N``
+    parity). Non-zero ``done`` / ``skipped`` still render when nothing
+    is in flight.
+    """
+    review_workers = [w for w in workers if _is_review_worker(w)]
+    ticket_workers = [w for w in workers if not _is_review_worker(w)]
+    phase_summary = _review_phase_summary(review_phases)
+    bookkeeping = [
+        f"{name}: {_count(review_phases, name)}"
+        for name in _REVIEW_BOOKKEEPING_PHASES
+        if _count(review_phases, name)
+    ]
+    lines: List[str] = []
+    if phase_summary or review_workers:
+        if len(review_workers) == 1 and not phase_summary:
+            w = review_workers[0]
+            lines.append(
+                f"  Reviews: 1 in_progress — {_pretty_worker_target(w.get('issue'))} "
+                f"(run {_short_run_id(w.get('run_id'))}, "
+                f"{w.get('freshness') or 'unknown'})"
+            )
+        elif len(review_workers) == 1 and phase_summary.count(",") == 0:
+            w = review_workers[0]
+            label = phase_summary or "1 in_progress"
+            lines.append(
+                f"  Reviews: {label} — {_pretty_worker_target(w.get('issue'))} "
+                f"(run {_short_run_id(w.get('run_id'))}, "
+                f"{w.get('freshness') or 'unknown'})"
+            )
+        else:
+            header = phase_summary or f"{len(review_workers)} in_progress"
+            lines.append(f"  Reviews: {header}")
+            lines.extend(_worker_detail_line(w) for w in review_workers)
+        if bookkeeping:
+            lines.append(f"  Also reviews {' · '.join(bookkeeping)}")
+    elif bookkeeping:
+        # History stays visible when nothing is in flight, matching the
+        # issue queue's trailing ``Also done`` sentence.
+        lines.append(f"  Also reviews {' · '.join(bookkeeping)}")
+    if ticket_workers:
+        if len(ticket_workers) == 1 and not review_workers and not phase_summary:
+            w = ticket_workers[0]
+            lines.append(
+                f"  Workers: 1 — {_pretty_worker_target(w.get('issue'))} "
+                f"(run {_short_run_id(w.get('run_id'))}, "
+                f"{w.get('freshness') or 'unknown'})"
+            )
+        else:
+            lines.append(f"  Workers: {len(ticket_workers)}")
+            lines.extend(_worker_detail_line(w) for w in ticket_workers)
+    return lines
+
+
+def _diagnostic_lines(data: Dict[str, Any]) -> List[str]:
+    """Surface status ``diagnostics`` (corrupt review queue, and similar)."""
+    raw = data.get("diagnostics")
+    if not isinstance(raw, list):
+        return []
+    return [f"  Note: {note}" for note in raw if isinstance(note, str) and note]
+
+
+def _extend_after_table(lines: List[str], extra: List[str]) -> None:
+    """Append prose after a GFM table only once a blank line closes it.
+
+    GFM ends a table at a blank line; a following ``Reviews:`` or
+    ``Note:`` line would otherwise become a single-cell row.
+    """
+    if not extra:
+        return
+    if lines and lines[-1].startswith("  |"):
+        lines.append("")
+    lines.extend(extra)
+
+
 def _verdict_line(
-    data: Dict[str, Any], phases: Dict[str, Any], diagnostic: Any = None
+    data: Dict[str, Any],
+    phases: Dict[str, Any],
+    diagnostic: Any = None,
+    *,
+    review_phases: Optional[Dict[str, Any]] = None,
+    workers: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """Return the one at-a-glance health line; first matching rung wins.
 
     Order matters: corrupt state invalidates every count below it; failures
-    and blocked entries need an operator; an in-progress run answers "is it
-    doing something right now?"; the healthy rung is reachable only when
-    nothing operational is pending.
+    and blocked entries need an operator; a stale heartbeat warns before a
+    fresh in-progress run; the healthy rung is reachable only when nothing
+    operational is pending on either queue and no workers are live.
     """
     emoji = _STATUS_VERDICT_EMOJI
+    review_phases = review_phases if isinstance(review_phases, dict) else {}
+    workers = workers if workers is not None else _live_workers(data)
 
     if data.get("state_corrupt") or diagnostic in ("corrupt_state", "corrupt_queue"):
         return (
@@ -505,9 +647,42 @@ def _verdict_line(
         return (
             f"{emoji['warn']} Blocked — {blocked} issue(s) need operator attention"
         )
+    stale = [w for w in workers if str(w.get("freshness") or "") == "stale"]
+    if stale:
+        return (
+            f"{emoji['warn']} Stale worker heartbeat — "
+            f"{len(stale)} worker(s) not updating"
+        )
     working = _count(phases, "in_progress")
-    if working:
-        return f"{emoji['info']} Working — {working} run(s) in progress"
+    review_working = _count(review_phases, "in_progress")
+    live_count = len(workers)
+    if working or review_working or live_count:
+        # Preserve the historical single-phrase form when only issue
+        # ``in_progress`` is set (no workers / review activity).
+        # Live workers outrank a historical review failure so a
+        # mid-flight run is not hidden behind an older Failed count.
+        if working and not review_working and not live_count:
+            return f"{emoji['info']} Working — {working} run(s) in progress"
+        parts: List[str] = []
+        if live_count:
+            parts.append(f"{live_count} worker(s) running")
+        if working:
+            parts.append(f"{working} issue run(s)")
+        if review_working:
+            parts.append(f"{review_working} review(s)")
+        return f"{emoji['info']} Working — {', '.join(parts)}"
+    review_failed = _count(review_phases, "failed")
+    if review_failed:
+        return (
+            f"{emoji['warn']} Recent review failure — "
+            f"{review_failed} review(s) in Failed"
+        )
+    review_blocked = _count(review_phases, "needs_attention")
+    if review_blocked:
+        return (
+            f"{emoji['warn']} Review blocked — {review_blocked} review(s) "
+            "need operator attention"
+        )
     now = datetime.now(timezone.utc)
     poll_at = _parse_rfc3339(str(data.get("next_allowed_poll_at") or ""))
     resuming = poll_at.astimezone().strftime("%H:%M") if poll_at and poll_at > now else None
@@ -532,6 +707,14 @@ def _verdict_line(
         )
         if count
     ]
+    review_pending = [
+        f"{count} review {label}"
+        for label, count in (
+            ("queued", _count(review_phases, "queued")),
+        )
+        if count
+    ]
+    pending.extend(review_pending)
     if pending:
         return f"{emoji['info']} Queued work — {', '.join(pending)}"
     return f"{emoji['healthy']} Daemon healthy — idle (no queued work)"
@@ -546,6 +729,9 @@ def _format_status_for_chat(payload: Dict[str, Any]) -> str:
     field so the chat output reflects the actual crate version rather
     than the JSON schema version. Chrono renders both tick timestamps
     separately; they share one line when equal (the common idle case).
+    When live workers are present and started differs from finished, the
+    tick line clarifies that finished/outcome describe the last completed
+    tick (current tick still in flight).
 
     Output is line-based: the only markdown construct is the optional
     two-column queue table, which degrades to readable plain text on
@@ -567,20 +753,59 @@ def _format_status_for_chat(payload: Dict[str, Any]) -> str:
     phases = data.get("phases")
     if not isinstance(phases, dict):
         phases = {}
+    review_phases = data.get("review_phases")
+    if not isinstance(review_phases, dict):
+        review_phases = {}
+    workers = _live_workers(data)
     started = data.get("last_tick_started")
     finished = data.get("last_tick_finished")
+    started_dt = _parse_rfc3339(str(started or ""))
+    finished_dt = _parse_rfc3339(str(finished or ""))
+    # Compare parsed datetimes only — two ``_rfc3339(N)`` calls can
+    # produce unequal strings for the same nominal age.
+    in_flight = bool(workers) and (
+        (started_dt is not None and finished_dt is None)
+        or (
+            started_dt is not None
+            and finished_dt is not None
+            and started_dt > finished_dt
+        )
+    )
     if not started and not finished:
         tick_line = "never"
+        outcome_note = _describe_outcome(data.get("last_outcome"))
+        tick_prefix = "last tick"
+    elif in_flight:
+        n = len(workers)
+        tick_line = (
+            f"in flight ({n} workers) — started {_chat_when(started)} · "
+            f"last finished {_chat_when(finished)}"
+        )
+        outcome_note = (
+            f"last completed: {_describe_outcome(data.get('last_outcome'))}"
+        )
+        tick_prefix = "tick"
     elif started == finished:
         tick_line = _chat_when(started)
+        outcome_note = _describe_outcome(data.get("last_outcome"))
+        tick_prefix = "last tick"
     else:
         tick_line = f"started {_chat_when(started)} · finished {_chat_when(finished)}"
+        outcome_note = _describe_outcome(data.get("last_outcome"))
+        tick_prefix = "last tick"
     lines = [
-        _verdict_line(data, phases, root.get("diagnostic")),
-        f"caduceus {version} — last tick {tick_line} "
-        f"({_describe_outcome(data.get('last_outcome'))})",
+        _verdict_line(
+            data,
+            phases,
+            root.get("diagnostic"),
+            review_phases=review_phases,
+            workers=workers,
+        ),
+        f"caduceus {version} — {tick_prefix} {tick_line} ({outcome_note})",
         *_queue_section(phases),
     ]
+    _extend_after_table(lines, _workers_and_reviews_section(review_phases, workers))
+    _extend_after_table(lines, _diagnostic_lines(data))
     next_head = data.get("next_head")
     trailing: List[str] = []
     if next_head:
@@ -593,10 +818,7 @@ def _format_status_for_chat(payload: Dict[str, Any]) -> str:
             )
         else:
             trailing.append(f"  Rate limit: {rate_limit.get('remaining')} remaining")
-    if trailing:
-        if lines[-1].startswith("  |"):
-            lines.append("")  # blank line terminates the GFM table block
-        lines.extend(trailing)
+    _extend_after_table(lines, trailing)
     return "\n".join(lines)
 
 

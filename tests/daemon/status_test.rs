@@ -55,9 +55,9 @@ fn empty_config(state_dir: &Path) -> Config {
 
 #[test]
 fn schema_version_is_pinned() {
-    // The 7.7.0 bump lands the informational `doctor` field on
-    // `StatusReport` — see `src/daemon/status.rs`.
-    assert_eq!(STATUS_SCHEMA_VERSION, "7.7.0");
+    // The 7.8.0 bump lands `review_phases` on `StatusReport` —
+    // see `src/daemon/status.rs`.
+    assert_eq!(STATUS_SCHEMA_VERSION, "7.8.0");
 }
 
 #[test]
@@ -77,7 +77,7 @@ fn status_surfaces_doctor_cache_as_informational() {
     let doctor = assemble_report(checks);
     caduceus::readiness::write_informational_report(&cfg.state_dir, &doctor)
         .expect("write doctor report");
-    let (report, diagnostic) = build_report(&cfg.state_dir).expect("status report");
+    let (report, diagnostic) = build_report(&cfg.state_dir, "json").expect("status report");
     assert!(diagnostic.is_none());
     let doctor = report.doctor.expect("doctor status");
     assert_eq!(doctor.verdict, "READY");
@@ -107,7 +107,7 @@ fn status_ignores_doctor_cache_with_unknown_schema() {
     )
     .expect("write stale doctor report");
 
-    let (report, diagnostic) = build_report(&cfg.state_dir).expect("status report");
+    let (report, diagnostic) = build_report(&cfg.state_dir, "json").expect("status report");
     assert!(diagnostic.is_none());
     assert!(report.doctor.is_none());
 }
@@ -120,7 +120,7 @@ fn idle_output_matches_readme_fixture() {
     // directory as `NoState` and surfaces the
     // "no state yet" hint.
     let cfg = empty_config(&dir.path().join("no-such-state"));
-    let (out, _) = report(&cfg.state_dir, false).expect("report");
+    let (out, _) = report(&cfg.state_dir, "json", false).expect("report");
     let expected = format!(
         "caduceus status\n  state dir: {}\n  no state yet — run `caduceus run` to bootstrap\n",
         cfg.state_dir.display()
@@ -133,7 +133,7 @@ fn missing_state_diagnostic_is_distinct() {
     let dir = tempdir().expect("tempdir");
     let cfg = empty_config(&dir.path().join("no-such-state"));
     // No `state_dir` created.
-    let (_, diag) = build_report(&cfg.state_dir).expect("report");
+    let (_, diag) = build_report(&cfg.state_dir, "json").expect("report");
     assert_eq!(diag, Some(StatusDiagnostic::NoState));
 }
 
@@ -144,7 +144,7 @@ fn corrupt_state_diagnostic_preserves_file() {
     std::fs::create_dir_all(&cfg.state_dir).expect("state dir");
     let meta_path = cfg.state_dir.join("state_meta.json");
     std::fs::write(&meta_path, b"not json {").expect("write");
-    let (_, diag) = build_report(&cfg.state_dir).expect("report");
+    let (_, diag) = build_report(&cfg.state_dir, "json").expect("report");
     match diag {
         Some(StatusDiagnostic::CorruptState { path, .. }) => {
             assert_eq!(path, meta_path);
@@ -166,7 +166,7 @@ fn corrupt_queue_diagnostic_preserves_file() {
     let _ = MetaStore::open(&cfg.state_dir).expect("open meta");
     let queue_path = cfg.state_dir.join("state.json");
     std::fs::write(&queue_path, b"not json {").expect("write");
-    let (_, diag) = build_report(&cfg.state_dir).expect("report");
+    let (_, diag) = build_report(&cfg.state_dir, "json").expect("report");
     match diag {
         Some(StatusDiagnostic::CorruptQueue { path, .. }) => {
             assert_eq!(path, queue_path);
@@ -181,10 +181,11 @@ fn json_snapshot_includes_schema_version() {
     let dir = tempdir().expect("tempdir");
     let cfg = empty_config(dir.path());
     std::fs::create_dir_all(&cfg.state_dir).expect("state dir");
-    let (report, _) = build_report(&cfg.state_dir).expect("report");
+    let (report, _) = build_report(&cfg.state_dir, "json").expect("report");
     let json = render_json(&report).expect("json");
     assert!(json.contains(&format!("\"version\": \"{}\"", STATUS_SCHEMA_VERSION)));
     assert!(json.contains("\"phases\""));
+    assert!(json.contains("\"review_phases\""));
     assert!(json.contains("\"live_workers\""));
     assert!(json.contains("\"recent_errors\""));
 }
@@ -194,7 +195,7 @@ fn all_phase_counts_are_present() {
     let dir = tempdir().expect("tempdir");
     let cfg = empty_config(dir.path());
     std::fs::create_dir_all(&cfg.state_dir).expect("state dir");
-    let (report, _) = build_report(&cfg.state_dir).expect("report");
+    let (report, _) = build_report(&cfg.state_dir, "json").expect("report");
     // Every documented phase is in the report even when
     // the count is zero. The contract pins the field set.
     for label in [
@@ -207,6 +208,23 @@ fn all_phase_counts_are_present() {
         "skipped",
     ] {
         assert!(report.phases.contains_key(label), "missing phase {label}");
+    }
+    for label in [
+        "queued",
+        "in_progress",
+        "done",
+        "failed",
+        "skipped",
+        "needs_attention",
+    ] {
+        assert!(
+            report.review_phases.contains_key(label),
+            "missing review phase {label}"
+        );
+        assert_eq!(
+            report.review_phases[label], 0,
+            "empty review store should zero-fill {label}"
+        );
     }
 }
 
@@ -273,12 +291,113 @@ fn fresh_heartbeat_surfaces_live_worker() {
     let record = sample_heartbeat("RUN-LIVE", "owner/repo#1", now);
     let hb_path = runs_dir.join("RUN-LIVE.heartbeat");
     write_heartbeat_record(&record, &hb_path).expect("write");
-    let (report, _) = build_report(&cfg.state_dir).expect("report");
+    let (report, _) = build_report(&cfg.state_dir, "json").expect("report");
     assert_eq!(report.live_workers.len(), 1);
     let w = &report.live_workers[0];
     assert_eq!(w.run_id, "RUN-LIVE");
     assert_eq!(w.issue, "owner/repo#1");
     assert_eq!(w.freshness, "fresh");
+}
+
+#[test]
+fn review_heartbeat_surfaces_pr_target_form() {
+    let dir = tempdir().expect("tempdir");
+    let cfg = empty_config(dir.path());
+    std::fs::create_dir_all(&cfg.state_dir).expect("state dir");
+    let runs_dir = cfg.state_dir.join("runs");
+    std::fs::create_dir_all(&runs_dir).expect("runs dir");
+    let now = Utc::now();
+    let record = sample_heartbeat("RUN-REVIEW", "owner/repo#pr/432", now);
+    let hb_path = runs_dir.join("RUN-REVIEW.heartbeat");
+    write_heartbeat_record(&record, &hb_path).expect("write");
+    let (report, _) = build_report(&cfg.state_dir, "json").expect("report");
+    assert_eq!(report.live_workers.len(), 1);
+    assert_eq!(report.live_workers[0].issue, "owner/repo#pr/432");
+    assert_eq!(report.live_workers[0].freshness, "fresh");
+}
+
+#[test]
+fn review_phases_count_seeded_review_queue() {
+    use caduceus::review::{RepositoryId, ReviewTarget};
+    use caduceus::state::review::ReviewStore;
+
+    let dir = tempdir().expect("tempdir");
+    let cfg = empty_config(dir.path());
+    std::fs::create_dir_all(&cfg.state_dir).expect("state dir");
+    let store = ReviewStore::open(&cfg.state_dir).expect("review store");
+    store
+        .enqueue_review(&ReviewTarget {
+            repository: RepositoryId {
+                owner: "owner".into(),
+                repo: "repo".into(),
+            },
+            pull_request: 432,
+            head_sha: "a".repeat(40),
+            base_sha: "b".repeat(40),
+            base_ref: "main".into(),
+            merge_base: "c".repeat(40),
+        })
+        .expect("enqueue");
+    let (report, diag) = build_report(&cfg.state_dir, "json").expect("report");
+    assert!(diag.is_none());
+    assert_eq!(report.review_phases.get("queued"), Some(&1));
+    assert_eq!(report.review_phases.get("in_progress"), Some(&0));
+    let human = render_human(&report, None);
+    assert!(
+        human.contains("review phases:"),
+        "missing review phases header:\n{human}"
+    );
+    assert!(
+        human.contains("queued: 1"),
+        "missing queued count:\n{human}"
+    );
+}
+
+#[test]
+fn status_does_not_create_review_store_files() {
+    let dir = tempdir().expect("tempdir");
+    let cfg = empty_config(dir.path());
+    std::fs::create_dir_all(&cfg.state_dir).expect("state dir");
+    let (report, _) = build_report(&cfg.state_dir, "sqlite").expect("report");
+    assert!(report.diagnostics.is_empty());
+    assert_eq!(report.review_phases.get("queued"), Some(&0));
+    assert!(
+        !cfg.state_dir.join("review-claims").exists(),
+        "status must not create review-claims"
+    );
+    assert!(
+        !cfg.state_dir.join("state.db").exists(),
+        "status must not create state.db"
+    );
+    assert!(
+        !cfg.state_dir.join("review_queue.json").exists(),
+        "status must not create review_queue.json"
+    );
+}
+
+#[test]
+fn corrupt_review_queue_is_diagnosed_without_failing_status() {
+    let dir = tempdir().expect("tempdir");
+    let cfg = empty_config(dir.path());
+    std::fs::create_dir_all(&cfg.state_dir).expect("state dir");
+    std::fs::write(cfg.state_dir.join("review_queue.json"), "{not json").expect("write");
+    let (report, diag) = build_report(&cfg.state_dir, "json").expect("report");
+    assert!(diag.is_none(), "issue status must still succeed");
+    assert_eq!(report.review_phases.get("queued"), Some(&0));
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|note| note.contains("review queue unavailable")),
+        "diagnostics: {:?}",
+        report.diagnostics
+    );
+    let human = render_human(&report, None);
+    assert!(
+        human.contains("diagnostics:"),
+        "human output should surface the review diagnostic:\n{human}"
+    );
+    assert!(human.contains("review queue unavailable"));
 }
 
 #[test]
@@ -302,7 +421,7 @@ fn stale_heartbeat_surfaces_with_stale_marker() {
     };
     let hb_path = runs_dir.join("RUN-STALE.heartbeat");
     write_heartbeat_record(&record, &hb_path).expect("write");
-    let (report, _) = build_report(&cfg.state_dir).expect("report");
+    let (report, _) = build_report(&cfg.state_dir, "json").expect("report");
     assert_eq!(report.live_workers.len(), 1);
     assert_eq!(report.live_workers[0].freshness, "stale");
 }
@@ -334,7 +453,7 @@ fn malformed_heartbeat_is_skipped() {
     std::fs::create_dir_all(&runs_dir).expect("runs dir");
     let hb_path = runs_dir.join("RUN-MALFORMED.heartbeat");
     std::fs::write(&hb_path, b"not a heartbeat").expect("write");
-    let (report, _) = build_report(&cfg.state_dir).expect("report");
+    let (report, _) = build_report(&cfg.state_dir, "json").expect("report");
     assert!(report.live_workers.is_empty());
 }
 
@@ -354,7 +473,7 @@ fn symlink_heartbeat_is_rejected() {
     write_heartbeat_record(&record, &target).expect("write");
     let link = runs_dir.join("RUN-SYMLINK.heartbeat");
     std::os::unix::fs::symlink(&target, &link).expect("symlink");
-    let (report, _) = build_report(&cfg.state_dir).expect("report");
+    let (report, _) = build_report(&cfg.state_dir, "json").expect("report");
     // The symlink is rejected. The target is at a
     // non-`.heartbeat` path and is therefore never
     // considered.
@@ -371,7 +490,7 @@ fn non_heartbeat_runs_files_are_ignored() {
     std::fs::write(runs_dir.join("README"), b"hello").expect("write");
     std::fs::write(runs_dir.join("RUN-1.log"), b"transcript").expect("write");
     std::fs::write(runs_dir.join("RUN-1.result.json"), b"{}").expect("write");
-    let (report, _) = build_report(&cfg.state_dir).expect("report");
+    let (report, _) = build_report(&cfg.state_dir, "json").expect("report");
     assert!(report.live_workers.is_empty());
 }
 
@@ -387,7 +506,7 @@ fn report_honours_caduceus_config_env_for_custom_path() {
     // CLI-side composition by building the config and
     // calling `report` with the resolved state_dir.
     let cfg = empty_config(&custom);
-    let (_, diag) = build_report(&cfg.state_dir).expect("report");
+    let (_, diag) = build_report(&cfg.state_dir, "json").expect("report");
     match diag {
         Some(StatusDiagnostic::CorruptState { path, .. }) => {
             assert_eq!(path, custom.join("state_meta.json"));
@@ -599,10 +718,9 @@ fn human_omits_needs_attention_without_block_metadata_from_section() {
 
 #[test]
 fn json_carries_blocked_issues_array_with_entries() {
-    // The 7.7.0 schema adds the informational doctor result on
-    // the JSON contract. Each element carries
-    // `issue_key`, `blocked_source`,
-    // `blocked_recovery_hint`, and `last_error`.
+    // Each blocked_issues element carries `issue_key`,
+    // `blocked_source`, `blocked_recovery_hint`, and
+    // `last_error`.
     let dir = tempdir().expect("tempdir");
     let cfg = empty_config(dir.path());
     let now = Utc::now();
@@ -651,7 +769,7 @@ fn json_carries_blocked_issues_array_with_entries() {
     assert_eq!(
         parsed["version"].as_str(),
         Some(STATUS_SCHEMA_VERSION),
-        "schema version must reflect the 7.7.0 bump"
+        "schema version must reflect the current STATUS_SCHEMA_VERSION"
     );
 }
 
@@ -755,7 +873,7 @@ fn render_human_includes_transcript_for_live_workers() {
     let record = sample_heartbeat("RUN-LIVE", "owner/repo#1", now);
     let hb_path = runs_dir.join("RUN-LIVE.heartbeat");
     write_heartbeat_record(&record, &hb_path).expect("write");
-    let (report, diag) = build_report(&cfg.state_dir).expect("report");
+    let (report, diag) = build_report(&cfg.state_dir, "json").expect("report");
     let out = render_human(&report, diag.as_ref());
     // The live worker line carries the issue key,
     // the transcript path, and the freshness marker.
@@ -938,7 +1056,7 @@ fn report_json_includes_app_version_from_cargo_pkg_version() {
     let dir = tempdir().expect("tempdir");
     let cfg = empty_config(dir.path());
     std::fs::create_dir_all(&cfg.state_dir).expect("state dir");
-    let (output, _diag) = report(cfg.state_dir.as_path(), true).expect("report");
+    let (output, _diag) = report(cfg.state_dir.as_path(), "json", true).expect("report");
     let parsed: serde_json::Value = serde_json::from_str(&output).expect("valid json");
     assert_eq!(
         parsed["app_version"].as_str(),

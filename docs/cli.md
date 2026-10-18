@@ -51,10 +51,14 @@ point. Success is silent.
 
 ## status [--json]
 
-Report daemon state: queue counts, live workers, recent errors, last
-tick. `--json` prints the machine-readable report (own `version`
-field). Exits `2` when no state exists yet, `1` on corrupt state or
-queue, `0` otherwise.
+Report daemon state: issue-queue phase counts, **review-queue phase counts**
+(`review_phases`), live workers (including `#pr/N` review heartbeats with
+fresh/stale within 90s), recent errors, and last tick. When workers are live
+and the current tick has not finished, human output annotates that
+finished/outcome describe the last *completed* tick. `--json` prints the
+machine-readable report (`version` currently `7.8.0`). Hermes
+`/caduceus-status` renders the same facts in a compact chat summary. Exits
+`2` when no state exists yet, `1` on corrupt state or queue, `0` otherwise.
 
 ## doctor [--json] [--skip-canary] [--canary-image IMG] [--canary-command CMD]
 

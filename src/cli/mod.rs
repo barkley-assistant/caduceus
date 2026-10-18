@@ -287,7 +287,8 @@ pub fn run() -> CaduceusResult<()> {
                 Some(path) => caduceus::config::Config::load_from(std::path::Path::new(&path))?,
                 None => caduceus::config::Config::load()?,
             };
-            let (output, diagnostic) = caduceus::status::report(&config.state_dir, json)?;
+            let (output, diagnostic) =
+                caduceus::status::report(&config.state_dir, &config.state_backend, json)?;
             if json {
                 println!("{output}");
             } else {

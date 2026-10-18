@@ -451,3 +451,171 @@ def test_format_status_plain_text_no_ansi(adapter) -> None:
     assert all(line.startswith("  |") for line in table_rows)
     # the table block is closed by a blank line before any following prose
     assert any(line == "" for line in lines)
+
+
+def _review_phases(**overrides: int) -> Dict[str, int]:
+    phases = {
+        name: 0
+        for name in (
+            "queued",
+            "in_progress",
+            "done",
+            "failed",
+            "skipped",
+            "needs_attention",
+        )
+    }
+    phases.update(overrides)
+    return phases
+
+
+def _worker(
+    *,
+    issue: str,
+    run_id: str = "01M56XZEF55H",
+    freshness: str = "fresh",
+) -> Dict[str, Any]:
+    return {
+        "run_id": run_id,
+        "issue": issue,
+        "pid": 1,
+        "freshness": freshness,
+    }
+
+
+def test_format_status_review_worker_not_idle(adapter) -> None:
+    """A live ``#pr/N`` worker must not render as healthy idle / Queue-only."""
+    payload = _payload(
+        last_tick_started=_rfc3339(300),
+        last_tick_finished=_rfc3339(600),
+        last_outcome="idle304",
+        phases=_phases(),
+        review_phases=_review_phases(in_progress=1),
+        live_workers=[
+            _worker(issue="barkley-assistant/caduceus#pr/432", run_id="01M56XZEF55H02V3")
+        ],
+    )
+    result = adapter._format_status_for_chat(payload)
+    assert HEALTHY not in result
+    assert "idle (no queued work)" not in result
+    assert INFO in result
+    assert "Working" in result
+    assert "Queue empty" in result
+    assert "Reviews:" in result
+    assert "barkley-assistant/caduceus#432" in result
+    assert "#pr/" not in result
+    assert "fresh" in result
+    assert "tick in flight" in result or "in flight" in result
+    assert "last finished" in result
+    assert "last completed:" in result
+
+
+def test_format_status_stale_review_worker_warns(adapter) -> None:
+    """A stale heartbeat warns; it must not look like healthy Working."""
+    payload = _payload(
+        last_tick_started=_rfc3339(300),
+        last_tick_finished=_rfc3339(600),
+        last_outcome="idle304",
+        phases=_phases(),
+        review_phases=_review_phases(in_progress=1),
+        live_workers=[
+            _worker(
+                issue="owner/repo#pr/9",
+                run_id="01STALEWORKER1",
+                freshness="stale",
+            )
+        ],
+    )
+    result = adapter._format_status_for_chat(payload)
+    assert result.splitlines()[0].startswith(WARN)
+    assert "Stale worker heartbeat" in result
+    assert HEALTHY not in result
+    assert "Working —" not in result
+
+
+def test_format_status_multi_worker_lists_every_entry(adapter) -> None:
+    """Two+ live workers: summary count plus every worker listed."""
+    payload = _payload(
+        last_tick_started=_rfc3339(120),
+        last_tick_finished=_rfc3339(120),
+        last_outcome="processed",
+        phases=_phases(),
+        review_phases=_review_phases(in_progress=2),
+        live_workers=[
+            _worker(issue="owner/repo#pr/432", run_id="01AAAABBBBCC"),
+            _worker(issue="owner/repo#pr/440", run_id="01CCCCDDDDEE", freshness="stale"),
+            _worker(issue="owner/repo#100", run_id="01TICKETRUN01"),
+        ],
+    )
+    result = adapter._format_status_for_chat(payload)
+    assert "Reviews:" in result
+    assert "owner/repo#432" in result
+    assert "owner/repo#440" in result
+    assert "01AAAABBBBCC" in result
+    assert "01CCCCDDDDEE" in result
+    assert "Workers:" in result
+    assert "owner/repo#100" in result
+    # run ids longer than 12 chars are truncated for chat display
+    assert "01TICKETRUN0" in result
+    # stale wins the verdict before Working
+    assert result.splitlines()[0].startswith(WARN)
+
+
+def test_format_status_review_line_not_absorbed_by_queue_table(adapter) -> None:
+    """A blank line must close the issue-queue table before Reviews prose."""
+    payload = _payload(
+        last_tick_started=_rfc3339(120),
+        last_tick_finished=_rfc3339(120),
+        last_outcome="processed",
+        phases=_phases(queued=2),
+        review_phases=_review_phases(in_progress=1),
+        live_workers=[_worker(issue="owner/repo#pr/432", run_id="01M56XZEF55H")],
+    )
+    lines = adapter._format_status_for_chat(payload).splitlines()
+    table_end = max(i for i, line in enumerate(lines) if line.startswith("  |"))
+    assert lines[table_end + 1] == ""
+    assert lines[table_end + 2].startswith("  Reviews:")
+
+
+def test_format_status_review_bookkeeping_when_idle(adapter) -> None:
+    """Finished review counts stay visible when nothing is in flight."""
+    payload = _payload(
+        last_tick_started=_rfc3339(120),
+        last_tick_finished=_rfc3339(120),
+        last_outcome="idle304",
+        phases=_phases(),
+        review_phases=_review_phases(done=4, skipped=1),
+    )
+    result = adapter._format_status_for_chat(payload)
+    assert HEALTHY in result
+    assert "Also reviews done: 4 · skipped: 1" in result
+    assert "Reviews:" not in result
+
+
+def test_format_status_live_worker_outranks_review_failure(adapter) -> None:
+    """A historical failed review must not hide a worker that is running."""
+    payload = _payload(
+        last_tick_started=_rfc3339(120),
+        last_tick_finished=_rfc3339(120),
+        last_outcome="processed",
+        phases=_phases(),
+        review_phases=_review_phases(failed=2, in_progress=1),
+        live_workers=[_worker(issue="owner/repo#pr/7", run_id="01LIVEWORKER1")],
+    )
+    result = adapter._format_status_for_chat(payload)
+    assert result.splitlines()[0].startswith(INFO)
+    assert "Working" in result
+    assert "Recent review failure" not in result
+    assert "Reviews:" in result
+
+
+def test_format_status_surfaces_review_diagnostic(adapter) -> None:
+    payload = _payload(
+        last_tick_started=_rfc3339(120),
+        last_tick_finished=_rfc3339(120),
+        last_outcome="idle304",
+        phases=_phases(),
+        diagnostics=["review queue unavailable: corrupt review_queue.json"],
+    )
+    result = adapter._format_status_for_chat(payload)
+    assert "Note: review queue unavailable: corrupt review_queue.json" in result

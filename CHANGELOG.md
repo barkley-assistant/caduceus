@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
 
 ### Added
 
+- **Status surfaces review pipeline activity (#433).** `caduceus status`
+  / `status --json` schema `7.8.0` adds zero-filled `review_phases`,
+  read from the configured review backend without opening the store.
+  Human
+  output lists `review phases:` and annotates tick-in-flight when live
+  workers outlast the last completed tick. Hermes `/caduceus-status`
+  now shows live workers (including `#pr/N` → `#N`), Reviews/Workers
+  lines, stale-heartbeat warn, finished review counts, and
+  tick-in-flight wording so a mid-flight review is no longer reported
+  as idle. Review counts are read in place (no store create or sqlite
+  migration). A corrupt review queue is noted in human and chat output
+  without failing issue status, and a live worker outranks a historical
+  review failure in the chat verdict. `hermes caduceus status` remains
+  a binary passthrough. Closes #433.
+
 - **`--json` on wrapper doctor and binary `queue reprocess`.** `hermes
   caduceus doctor --json` emits a machine-readable report (per-check
   status, category, detail, next action, and internal detail, plus a

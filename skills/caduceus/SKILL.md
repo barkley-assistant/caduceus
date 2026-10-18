@@ -26,10 +26,13 @@ When triggered, this skill should:
 
 1. **Check daemon status** by running `/caduceus-status` from chat (or
    `caduceus status` from a shell). The chat reply is a human-readable
-   summary — emoji verdict line, relative tick times, decoded outcome, and a
-   quiet queue line when nothing is pending; read the machine-readable
-   contract from `caduceus status --json` instead (the skill's queue and
-   recovery commands parse the JSON or human output).
+   summary — emoji verdict line, relative tick times, decoded outcome,
+   issue **and** review activity (live workers including `#pr/N`,
+   review phase counts, tick-in-flight), and a quiet queue line when
+   nothing is pending. Same facts as CLI human status; chat is compact.
+   Read the machine-readable contract from `caduceus status --json`
+   instead (the skill's queue and recovery commands parse the JSON or
+   human output).
 2. **If the user wants to know what's happening**: surface the queue
    contents, last-run timestamps, retry counts, recent errors.
 3. **If the user wants to configure**: walk them through the
