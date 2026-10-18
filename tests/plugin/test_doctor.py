@@ -518,9 +518,9 @@ def _status_envelope(last_tick_started: Any, *, diagnostic: Any = None) -> str:
     return json.dumps(
         {
             "app_version": "1.0.0",
-            "version": "7.7.0",
+            "version": "7.8.0",
             "diagnostic": diagnostic,
-            "report": {"version": "7.7.0", "last_tick_started": last_tick_started},
+            "report": {"version": "7.8.0", "last_tick_started": last_tick_started},
         }
     )
 

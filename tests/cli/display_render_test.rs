@@ -105,7 +105,7 @@ fn sample_report() -> StatusReport {
     let long_reason = "main checkout is dirty at /home/agent/projects/zed/repo; refusing to operate until the operator commits or stashes the pending edits";
     let long_error = "worker supervision failure during result: commit_message exceeds limit of 256 bytes (got 425) — the run was discarded and the entry requeued";
     StatusReport {
-        version: "7.7.0".to_string(),
+        version: "7.8.0".to_string(),
         state_dir: PathBuf::from("/state"),
         last_tick_started: Some(Utc::now()),
         last_tick_finished: Some(Utc::now()),
@@ -118,6 +118,14 @@ fn sample_report() -> StatusReport {
             ("failed".to_string(), 2),
             ("needs_attention".to_string(), 1),
             ("queued".to_string(), 0),
+        ]),
+        review_phases: BTreeMap::from([
+            ("queued".to_string(), 0),
+            ("in_progress".to_string(), 1),
+            ("done".to_string(), 0),
+            ("failed".to_string(), 0),
+            ("skipped".to_string(), 0),
+            ("needs_attention".to_string(), 0),
         ]),
         next_head: Some("alpha/project#1".to_string()),
         next_head_earliest_eligibility: None,
@@ -368,6 +376,7 @@ fn status_render_interactive_colors_phase_counts() {
         "  state dir: /state",
         "  phases:",
         "    queued: 0",
+        "  review phases:",
         "  next head: alpha/project#1",
         "  live workers: 1",
         "  blocked issues:",
@@ -471,6 +480,7 @@ fn status_interactive_keeps_ops_skill_labels() {
     let stripped = strip_sgr(&render_human_styled(&report, None, TTY, 120));
     for label in [
         "phases:",
+        "review phases:",
         "queued:",
         "live workers:",
         "blocked issues:",
@@ -483,6 +493,7 @@ fn status_interactive_keeps_ops_skill_labels() {
     let plain = render_human_styled(&report, None, PLAIN, 80);
     for label in [
         "phases:",
+        "review phases:",
         "queued:",
         "live workers:",
         "blocked issues:",

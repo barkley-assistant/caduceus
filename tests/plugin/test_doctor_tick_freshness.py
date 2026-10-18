@@ -38,10 +38,10 @@ def _status_stdout(
     return json.dumps(
         {
             "app_version": "1.0.0",
-            "version": "7.7.0",
+            "version": "7.8.0",
             "diagnostic": diagnostic,
             "report": {
-                "version": "7.7.0",
+                "version": "7.8.0",
                 "last_tick_started": last_tick_started,
                 "last_tick_finished": None,
                 "last_outcome": "idle",

@@ -6,7 +6,84 @@ auto-trigger. Load with `skill_view("caduceus:caduceus")` when the user asks
 about the daemon.
 
 
-## When to load
+When triggered, this skill should:
+
+1. **Check daemon status** by running `/caduceus-status` from chat (or
+   `caduceus status` from a shell). The chat reply is a human-readable
+   summary — emoji verdict line, relative tick times, decoded outcome,
+   issue **and** review activity (live workers including `#pr/N`,
+   review phase counts, tick-in-flight), and a quiet queue line when
+   nothing is pending. Same facts as CLI human status; chat is compact.
+   Read the machine-readable contract from `caduceus status --json`
+   instead (the skill's queue and recovery commands parse the JSON or
+   human output).
+2. **If the user wants to know what's happening**: surface the queue
+   contents, last-run timestamps, retry counts, recent errors.
+3. **If the user wants to configure**: walk them through the
+   `caduceus:` section of `~/.hermes/config.yaml`, then verify watched
+   repositories exist at `<workdir_base>/<owner>/<repo>` with a matching
+   noninteractive `origin`. Reference the plugin's defaults.
+4. **If the user wants to swap harnesses**: explain the new
+   one-function contract. They copy
+   `plugin-assets/caduceus_harness.py.example` to
+   `~/.hermes/caduceus/harness.py` (alongside any existing
+   `worker-bridge.py`) and edit `run_task(ctx)` to return the
+   harness argv. The parent runner in `plugin-assets/worker-bridge.py`
+   loads `harness.py` when present, calls `run_task(ctx)`, runs the
+   returned argv inside the worktree, and synthesizes
+   `worker-result.json` if the hook didn't write one. Existing
+   311-line `worker-bridge.py` copies keep working unchanged on the
+   legacy path. To verify the active path, run
+   `ls ~/.hermes/caduceus/`: a `harness.py` file means the new
+   contract; only `worker-bridge.py` means the legacy path. The parent
+   resolves this relative to `$HERMES_HOME` (default `~/.hermes`). The
+   bridge is target-neutral: a PR review run exports
+   `CADUCEUS_WORK_TARGET=pr` plus the `CADUCEUS_PR_*` vars, resolves
+   only the mode-correct result path, and never synthesizes a result
+   (no result file = execution failure). Re-seed the user-owned bridge
+   (`hermes caduceus setup`) before enabling review runs — an
+   un-updated copy fails closed on a PR env while issue-path runs keep
+   working unchanged.
+5. **If something is broken**: tail `<state_dir>/processor.log` and
+   `<state_dir>/runs/<run-id>.log` for the affected run — or use
+   `hermes caduceus logs` (no args tails `processor.log`, `--follow`
+   streams, `--run <id>` prints one transcript, `--doctor` prints the
+   stored readiness report) so the operator never has to remember the
+   paths. For a terminal failed/skipped entry, show
+   `caduceus queue show OWNER/REPO#N` to
+   inspect the entry and checkpoint, then `caduceus queue reset
+   OWNER/REPO#N [--dry-run]` before proposing the real reset; never edit
+   state files directly. If the root cause is fixed and the operator
+   wants a fresh run, `caduceus queue reprocess
+   OWNER/REPO#N [--dry-run]` creates a new generation and makes the
+   entry immediately claimable.
+6. **If the user asks about a stuck `Failed` issue**: explain that
+   failed entries are not auto-reset. Removing and re-adding the
+   trigger label does not bypass the per-issue retry budget; the
+   operator must run `caduceus queue reset OWNER/REPO#N [--dry-run]`.
+   If instead a brand-new generation is wanted (for example the fix
+   landed elsewhere and the issue should be re-run), `caduceus
+   queue reprocess OWNER/REPO#N [--dry-run]` increments the
+   generation counter and moves the entry back to `Queued` with no
+   backoff, immediately claimable; it refuses only `AwaitingReview`.
+   If the operator wants to drop the entry entirely instead of
+   retrying, `caduceus queue remove OWNER/REPO#N [--dry-run]` deletes
+   only the queue entry (never the remote branch/PR, worktree, or
+   claim file).
+7. **If the user asks about dry-run behavior**: explain that
+   `CADUCEUS_DRY_RUN=1` performs polling, claim, prompt creation, worker
+   execution, and result validation but performs **no** commit, push,
+   comment, label mutation, PR, or issue close. Successful dry-runs
+   transition to `Previewed`; disabling dry-run promotes a still-labeled
+   preview back to `Queued` automatically.
+8. **If the user asks about transcript locality**: each run writes
+   `<state_dir>/runs/<run_id>.log` (the worker transcript) and
+   `<state_dir>/runs/<run_id>.dry-run.md` (only when dry-run). The
+   daemon `processor.log` lives at `<state_dir>/processor.log` and the
+   heartbeat envelope sits at `<state_dir>/runs/<run_id>.heartbeat`.
+   `hermes caduceus logs` is the operator-facing way to read the first
+   two without knowing those paths (see the troubleshooting step
+   above).
 
 - Status / queue / “why isn’t issue #N claimed?”
 - Configure watched repos, OCI sandbox, or Auto Review

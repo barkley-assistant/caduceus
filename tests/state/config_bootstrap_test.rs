@@ -237,7 +237,7 @@ fn readiness_diagnostics_populated() {
     std::fs::create_dir_all(&state_dir).expect("create state dir");
 
     let (report, _) =
-        caduceus::status::build_report(&state_dir).expect("build report with readiness");
+        caduceus::status::build_report(&state_dir, "json").expect("build report with readiness");
     let readiness = report.readiness.expect("readiness should be Some");
     assert!(readiness.contains_key("bridge"), "bridge key missing");
     assert!(readiness.contains_key("harness"), "harness key missing");
@@ -269,7 +269,7 @@ fn readiness_diagnostics_bridge_present() {
     );
 
     let (report, _) =
-        caduceus::status::build_report(&state_dir).expect("build report with readiness");
+        caduceus::status::build_report(&state_dir, "json").expect("build report with readiness");
     let readiness = report.readiness.expect("readiness should be Some");
     assert_eq!(readiness.get("bridge").map(String::as_str), Some("present"));
     assert_eq!(
@@ -534,12 +534,11 @@ fn raw_env_from_process_env_handles_unset_vars() {
 
 #[test]
 fn status_schema_version_bumped_to_7_6_0() {
-    // 7.7.0 lands the informational doctor result on
-    // `StatusReport` for the AC5 dedicated surface; the
-    // previous bump (7.5.0) added `pool_state`.
+    // 7.8.0 lands `review_phases` on `StatusReport` so
+    // dual-job activity is visible from `caduceus status`.
     assert_eq!(
         caduceus::status::STATUS_SCHEMA_VERSION,
-        "7.7.0",
-        "schema version should be 7.7.0 for the doctor field"
+        "7.8.0",
+        "schema version should be 7.8.0 for review_phases"
     );
 }

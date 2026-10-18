@@ -23,6 +23,7 @@ use crate::infra::error::{CaduceusError, CaduceusResult};
 use crate::readiness::{ReadinessReport, ReadinessVerdict};
 use crate::state::meta::{MetaStore, StateMeta, TickOutcome};
 use crate::state::queue::{Phase, QueueEntry, QueueState, StateStore, TicketType};
+use crate::state::review::{parse_review_queue_state, ReviewPhase, REVIEW_QUEUE_FILENAME};
 use crate::worker::supervisor::{read_heartbeat_record, Heartbeat};
 
 /// Distinct diagnostic the reporter can surface. The CLI
@@ -55,6 +56,10 @@ pub struct StatusReport {
     pub last_http_status: Option<u16>,
     pub next_allowed_poll_at: Option<DateTime<Utc>>,
     pub phases: BTreeMap<String, u64>,
+    /// Auto-review queue phase counts (zero-filled). Separate from
+    /// issue `phases` so `awaiting_review` (ticket merge-wait) is
+    /// never confused with PR review pipeline activity.
+    pub review_phases: BTreeMap<String, u64>,
     pub next_head: Option<String>,
     pub next_head_earliest_eligibility: Option<DateTime<Utc>>,
     pub recent_errors: Vec<String>,
@@ -151,6 +156,10 @@ pub struct LiveWorker {
 /// Schema version. Bumped when a new field is added so
 /// the `--json` consumer can detect the version.
 ///
+/// 7.8.0 — added `review_phases` (zero-filled auto-review
+/// queue counts) so `caduceus status` / `/caduceus-status`
+/// surface dual-job activity without a second subprocess.
+///
 /// 7.7.0 — added the informational `doctor` field.
 ///
 /// 7.6.0 — added `blocked_issues` field on
@@ -160,7 +169,16 @@ pub struct LiveWorker {
 /// is additive: the section is omitted from the human
 /// output when empty, and the JSON array is always
 /// present (empty array on a healthy state).
-pub const STATUS_SCHEMA_VERSION: &str = "7.7.0";
+pub const STATUS_SCHEMA_VERSION: &str = "7.8.0";
+
+const REVIEW_PHASE_VARIANTS: &[ReviewPhase] = &[
+    ReviewPhase::Queued,
+    ReviewPhase::InProgress,
+    ReviewPhase::Done,
+    ReviewPhase::Failed,
+    ReviewPhase::Skipped,
+    ReviewPhase::NeedsAttention,
+];
 
 /// Maximum number of recent errors surfaced by
 /// `StatusReport::recent_errors`.
@@ -174,7 +192,14 @@ const HEARTBEAT_STALE_SECONDS: i64 = 90;
 /// Build a [`StatusReport`] for `state_dir` without
 /// consuming the lock. The reporter is read-only and
 /// always safe to run alongside an active tick.
-pub fn build_report(state_dir: &Path) -> CaduceusResult<(StatusReport, Option<StatusDiagnostic>)> {
+///
+/// `state_backend` mirrors `Config.state_backend` (`"sqlite"`
+/// or `"json"`) so review phase counts load from the same
+/// store the daemon / `caduceus review status` use.
+pub fn build_report(
+    state_dir: &Path,
+    state_backend: &str,
+) -> CaduceusResult<(StatusReport, Option<StatusDiagnostic>)> {
     if !state_dir.exists() {
         let report = empty_report(state_dir);
         return Ok((report, Some(StatusDiagnostic::NoState)));
@@ -277,6 +302,13 @@ pub fn build_report(state_dir: &Path) -> CaduceusResult<(StatusReport, Option<St
     //    supervisor's versioned envelope.
     let live_workers = collect_live_workers(state_dir);
 
+    // 6b. Review-queue phase counts. Best-effort: a missing
+    //     or empty store zero-fills; a corrupt store leaves
+    //     zeros and records a diagnostic note so issue-queue
+    //     status still succeeds (exit codes stay on meta/queue).
+    let mut diagnostics = Vec::new();
+    let review_phases = collect_review_phases(state_dir, state_backend, &mut diagnostics);
+
     // 7. The metadata reports `state_corrupt` if the
     //    marker file is present. The CLI refuses to tick
     //    in that mode.
@@ -309,13 +341,14 @@ pub fn build_report(state_dir: &Path) -> CaduceusResult<(StatusReport, Option<St
         last_http_status: meta.snapshot().last_http_status,
         next_allowed_poll_at: meta.snapshot().next_allowed_poll_at,
         phases,
+        review_phases,
         next_head,
         next_head_earliest_eligibility: next_head_earliest,
         recent_errors,
         blocked_issues,
         rate_limit: meta.snapshot().rate_limit,
         live_workers,
-        diagnostics: Vec::new(),
+        diagnostics,
         state_corrupt,
         readiness: Some(readiness),
         pool_state: None,
@@ -348,6 +381,113 @@ fn phase_label(phase: Phase) -> &'static str {
     }
 }
 
+fn empty_review_phases() -> BTreeMap<String, u64> {
+    let mut phases: BTreeMap<String, u64> = BTreeMap::new();
+    for variant in REVIEW_PHASE_VARIANTS {
+        phases.insert(variant.as_str().to_string(), 0);
+    }
+    phases
+}
+
+/// Count review phases without opening [`crate::state::review::ReviewStore`].
+///
+/// Store open creates `review-claims/` and, on sqlite, runs migrations.
+/// Status stays read-only: a missing queue is a zero-filled map; a
+/// present file or database is parsed in place. Failures leave zeros
+/// and append a note to `diagnostics`.
+fn collect_review_phases(
+    state_dir: &Path,
+    state_backend: &str,
+    diagnostics: &mut Vec<String>,
+) -> BTreeMap<String, u64> {
+    let mut phases = empty_review_phases();
+    let loaded = if state_backend == "sqlite" {
+        read_review_phase_counts_sqlite(state_dir)
+    } else {
+        read_review_phase_counts_json(state_dir)
+    };
+    match loaded {
+        Ok(counts) => {
+            for (label, count) in counts {
+                *phases.entry(label).or_insert(0) += count;
+            }
+        }
+        Err(message) => diagnostics.push(message),
+    }
+    phases
+}
+
+fn read_review_phase_counts_json(state_dir: &Path) -> Result<Vec<(String, u64)>, String> {
+    let path = state_dir.join(REVIEW_QUEUE_FILENAME);
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => {
+            return Err(format!(
+                "review queue unavailable: cannot read {}: {err}",
+                path.display()
+            ));
+        }
+    };
+    let state = parse_review_queue_state(&text)
+        .map_err(|err| format!("review queue unavailable: {err}"))?;
+    let mut counts: BTreeMap<String, u64> = BTreeMap::new();
+    for entry in state.entries.values() {
+        *counts.entry(entry.phase.as_str().to_string()).or_insert(0) += 1;
+    }
+    Ok(counts.into_iter().collect())
+}
+
+fn read_review_phase_counts_sqlite(state_dir: &Path) -> Result<Vec<(String, u64)>, String> {
+    let path = state_dir.join(crate::state::store::DB_FILENAME);
+    if !path.is_file() {
+        return Ok(Vec::new());
+    }
+    let conn =
+        rusqlite::Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|err| format!("review queue unavailable: {err}"))?;
+    let mut stmt = conn
+        .prepare("SELECT phase, COUNT(*) FROM review_queue_entries GROUP BY phase")
+        .map_err(|err| format!("review queue unavailable: {err}"))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })
+        .map_err(|err| format!("review queue unavailable: {err}"))?;
+    let mut counts = Vec::new();
+    for row in rows {
+        let (phase, count) = row.map_err(|err| format!("review queue unavailable: {err}"))?;
+        if count > 0 {
+            counts.push((phase, count as u64));
+        }
+    }
+    Ok(counts)
+}
+
+fn push_diagnostics_plain(out: &mut String, report: &StatusReport) {
+    if report.diagnostics.is_empty() {
+        return;
+    }
+    out.push_str("  diagnostics:\n");
+    for note in &report.diagnostics {
+        out.push_str(&format!("    - {note}\n"));
+    }
+}
+
+/// `true` when heartbeats are present and the tick timestamps
+/// imply the current tick has not finished yet (started after
+/// the last recorded finish, or finish is still unset).
+fn tick_in_flight(report: &StatusReport) -> bool {
+    if report.live_workers.is_empty() {
+        return false;
+    }
+    match (report.last_tick_started, report.last_tick_finished) {
+        (Some(started), Some(finished)) => started > finished,
+        (Some(_), None) => true,
+        _ => false,
+    }
+}
+
 fn empty_report(state_dir: &Path) -> StatusReport {
     let mut phases: BTreeMap<String, u64> = BTreeMap::new();
     for variant in PHASE_VARIANTS {
@@ -362,6 +502,7 @@ fn empty_report(state_dir: &Path) -> StatusReport {
         last_http_status: None,
         next_allowed_poll_at: None,
         phases,
+        review_phases: empty_review_phases(),
         next_head: None,
         next_head_earliest_eligibility: None,
         recent_errors: Vec::new(),
@@ -640,6 +781,12 @@ fn render_human_plain(report: &StatusReport, diagnostic: Option<&StatusDiagnosti
     } else {
         out.push_str("  last outcome: -\n");
     }
+    if tick_in_flight(report) {
+        out.push_str(&format!(
+            "  tick status: in flight ({} workers) — finished/outcome are last completed tick\n",
+            report.live_workers.len()
+        ));
+    }
     if let Some(s) = report.last_http_status {
         out.push_str(&format!("  last http status: {s}\n"));
     }
@@ -663,6 +810,11 @@ fn render_human_plain(report: &StatusReport, diagnostic: Option<&StatusDiagnosti
     for (label, count) in &report.phases {
         out.push_str(&format!("    {label}: {count}\n"));
     }
+    out.push_str("  review phases:\n");
+    for (label, count) in &report.review_phases {
+        out.push_str(&format!("    {label}: {count}\n"));
+    }
+    push_diagnostics_plain(&mut out, report);
     if let Some(head) = &report.next_head {
         out.push_str(&format!("  next head: {head}\n"));
     } else if let Some(earliest) = report.next_head_earliest_eligibility {
@@ -830,6 +982,20 @@ fn render_human_interactive(
     } else {
         out.push_str("  last outcome: -\n");
     }
+    if tick_in_flight(report) {
+        display::push_labelled(
+            &mut out,
+            style,
+            width,
+            2,
+            "tick status",
+            &format!(
+                "in flight ({} workers) — finished/outcome are last completed tick",
+                report.live_workers.len()
+            ),
+            Some(display::YELLOW),
+        );
+    }
     if let Some(s) = report.last_http_status {
         display::push_labelled(
             &mut out,
@@ -892,6 +1058,31 @@ fn render_human_interactive(
             "    {marker}{label}: {}\n",
             display::paint_opt(style, display::phase_color(label), &count.to_string())
         ));
+    }
+    out.push_str("  review phases:\n");
+    for (label, count) in &report.review_phases {
+        let glyph = display::phase_glyph(style, label);
+        let marker = if glyph.is_empty() {
+            String::new()
+        } else {
+            format!("{glyph} ")
+        };
+        out.push_str(&format!(
+            "    {marker}{label}: {}\n",
+            display::paint_opt(style, display::phase_color(label), &count.to_string())
+        ));
+    }
+    if !report.diagnostics.is_empty() {
+        out.push_str("  diagnostics:\n");
+        for note in &report.diagnostics {
+            display::push_row_line(
+                &mut out,
+                style,
+                width,
+                4,
+                &format!("    - {}", display::paint(style, display::YELLOW, note)),
+            );
+        }
     }
     let head = if let Some(head) = &report.next_head {
         Some(head.clone())
@@ -1017,8 +1208,15 @@ pub fn render_json(report: &StatusReport) -> CaduceusResult<String> {
 /// lock. The CLI host passes `--json` to switch output
 /// format, and maps the returned diagnostic to the
 /// correct process exit code per `RUN-005`.
-pub fn report(state_dir: &Path, json: bool) -> CaduceusResult<(String, Option<StatusDiagnostic>)> {
-    let (report, diagnostic) = build_report(state_dir)?;
+///
+/// `state_backend` is forwarded to [`build_report`] so
+/// review phase counts use the same backend as the daemon.
+pub fn report(
+    state_dir: &Path,
+    state_backend: &str,
+    json: bool,
+) -> CaduceusResult<(String, Option<StatusDiagnostic>)> {
+    let (report, diagnostic) = build_report(state_dir, state_backend)?;
     if json {
         // The JSON output embeds the diagnostic as a
         // top-level string so consumers can detect the
@@ -1074,6 +1272,7 @@ pub fn build_report_from_state(
         last_http_status: meta.last_http_status,
         next_allowed_poll_at: meta.next_allowed_poll_at,
         phases,
+        review_phases: empty_review_phases(),
         next_head,
         next_head_earliest_eligibility: next_head_earliest,
         recent_errors,
