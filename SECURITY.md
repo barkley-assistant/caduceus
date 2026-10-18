@@ -30,13 +30,14 @@ sensitive operational data. Follow the recovery procedures in
 [State-Recovery](https://github.com/barkley-assistant/caduceus/wiki/State-Recovery);
 do not edit daemon-owned state files directly.
 
-The public-comment filter is a security-relevant control. Report any bypass
-that exposes internal tools, credentials, or other sensitive information through
-the private contact above.
+The public-comment filter is a security-relevant control. Report any bypass that
+exposes internal tools, credentials, or other sensitive information through the
+private contact above.
 
-Fork pull requests are not reviewed in Phase 1. Discovery skips them
-unconditionally — there is no configuration to enable fork review —
-because the daemon's single-origin mirror cannot check out fork SHAs.
-Skips are recorded as structured `review_skipped_fork_unsupported`
-events (including PRs whose head repository is gone), so the exclusion
-is auditable rather than silent.
+Fork pull requests are skipped by default
+(`auto_review.fork_policy.allow_fork_prs` is empty). Operators may opt in per
+watched base repo; allowed forks are reviewed from a throwaway quarantine clone
+so fork objects never enter the production mirror. Skips remain auditable
+(`review_skipped_fork_unsupported`, including PRs whose head repository is
+gone). See
+[docs/security/fork-trust-posture.md](docs/security/fork-trust-posture.md).

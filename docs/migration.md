@@ -1,66 +1,63 @@
 # Migration Guide
 
-## Upgrading to Release N (Investigation deprecated, Auto Review available)
+Operator upgrades between the Investigation era and current Caduceus (Auto
+Review + code tickets only). Soft-wrap prose at ~80 characters.
 
-Release N deprecates Investigation but keeps it active: admissions
-continue with deprecation warnings, in-flight work drains through the
-normal runtime loop. No startup termination of ordinary Investigation
-work in N (DAR §4.4). Auto Review is available and optional.
+## Label standardisation
+
+| Label | Role today |
+| --- | --- |
+| `autofix` (or `ticket_label_code`) | Code / handoff tickets — still active |
+| `autofix-investigate` | Removed with Investigation (N+1) |
+| `autoreview` | Reserved; **inert** — does not gate PR review |
+
+Legacy emoji `🤖 auto-fix` still translates at config load to `autofix` with a
+one-time warning. Re-label open issues to the canonical name; the daemon polls
+only the canonical label.
+
+## Upgrading to Release N (Investigation deprecated)
+
+Release N deprecates Investigation but keeps it active: admissions continue with
+deprecation warnings; in-flight work drains normally. Auto Review is available
+and optional (`executor_mode: oci` + `sandbox:`
++ `auto_review.enabled: true`). Run `caduceus doctor` before enabling.
 
 ### Before you upgrade (pre-N → N)
 
 1. Stop the daemon.
-2. `caduceus queue show` — note investigation entries; they keep
-   running under N.
-3. Optional: set up OCI (`executor_mode: oci` + `sandbox:`) and
-   `auto_review.enabled: true` to start reviewing PRs. Run
-   `caduceus doctor` first.
+2. `caduceus queue show` — note investigation entries; they keep running under
+   N.
+3. Optional: configure OCI + `auto_review` to start reviewing PRs.
 
 ### What happens at first open (pre-N → N)
 
 - Structural migration: SQLite v7 → v8, JSON envelope bump.
-- Non-terminal Investigation rows are NOT terminated or reconciled.
+- Non-terminal Investigation rows are **not** terminated.
 - Investigation admissions keep working with deprecation warnings.
-
-### Label standardisation (#291)
-
-- `autofix` (code tickets), `autofix-investigate` (investigation),
-  `autoreview` (reserved-inert, Phase 1 — no dispatch effect).
-- Legacy emoji labels (`🤖 auto-fix`) are translated at read time to
-  the canonical name with a one-time warning. Update the config and
-  re-label open issues to the canonical name.
 
 ## Direct upgrade pre-N → N+1 (skipping N)
 
-Operators upgrading directly from pre-N to N+1 get identical handling
-of pre-N rows: the startup reconcile pass (independent of the migration
-chain) terminates and archives non-terminal investigation entries on
-first open. See the N+1 section below and the N+1 release notes for
-the direct-upgrade callout.
+Same as N+1 below: startup reconcile terminates and archives non-terminal
+investigation entries on first open. See
+[docs/release-notes.md](release-notes.md).
 
 ## Upgrading to Release N+1 (Investigation removed)
 
-Release N+1 removes the Investigation feature. This guide covers every
-supported starting point.
-
 ### Before you upgrade
 
-1. **Stop the daemon.** No queue work runs during the upgrade.
-2. **Check for investigation work.**
+1. **Stop the daemon.**
+2. **Check for investigation work:**
    ```bash
-   caduceus queue --show
+   caduceus queue show
    ```
-   Note any entry whose ticket type is `investigation`. These are the
-   rows the upgrade will terminate and archive (below).
-3. **Remove the config key.** If your `config.yaml` still sets
-   `ticket_label_investigation`, delete the key (not the whole file).
-   A config carrying it now fails to load with serde's generic
-   `unknown field` error. `auto_review:` is the supported replacement.
+Note any entry whose ticket type is `investigation` — the upgrade
+will terminate and archive those rows.
+3. **Remove `ticket_label_investigation`** from config if present. That key now
+   fails load (`unknown field`). Use `auto_review:` for PR review instead.
 
 ### What happens at first open
 
-The startup reconcile pass runs when the daemon first opens the store
-on N+1, on both backends (JSON and SQLite):
+Startup reconcile runs on first store open (JSON and SQLite):
 
 | Pre-upgrade phase (investigation rows) | Post-upgrade |
 | -------------------------------------- | ------------ |
@@ -69,43 +66,29 @@ on N+1, on both backends (JSON and SQLite):
 | `awaiting_review`                      | `skipped`    |
 | `done` / `skipped` (already terminal)  | unchanged    |
 
-Every terminated row is archived through the standard audit seam
-(`investigation_archived`, `source=reconcile/startup`) and announced
-with a WARN-level `review_migration_terminated_investigation` event
-carrying the repo, issue, and prior phase. Nothing is silently
-dropped: the pass is idempotent and re-runs terminate 0 rows.
+Terminated rows are archived (`investigation_archived`,
+`source=reconcile/startup`) and announced with a WARN-level
+`review_migration_terminated_investigation` event. The pass is idempotent.
 
 ### Re-filing terminated work
 
-Investigation is gone; its replacement is
-[Auto Review](architecture/auto-review.md). For each archived
-investigation entry:
+Investigation is gone. For each archived investigation entry:
 
-1. Decide whether the underlying issue still needs attention. Auto
-   Review requires OCI execution (`executor_mode: oci` plus a
-   `sandbox:` block) — see `caduceus doctor` to check readiness.
-2. If the issue should get automated code changes, re-file it as a
-   code ticket by applying the `autofix` label (or your configured
-   `ticket_label_code` value).
-3. If the issue only needed the investigation's findings, they are
-   lost — the row was skipped before execution. Re-open the issue
-   manually or add a comment describing what to investigate as part
-   of a code ticket's scope.
+1. If the issue still needs automated code changes, label it `autofix` (or your
+   `ticket_label_code`).
+2. For PR review, enable Auto Review (OCI required) — see
+   [docs/auto-review.md](auto-review.md) and `caduceus doctor`.
+3. Findings from skipped investigation rows are not recovered; reopen or comment
+   on the issue manually if needed.
 
 ### Rollback
 
-N+1 stores remain loadable by release N **only** if no reconcile
-terminations have fired (the reconcile pass writes phases and audit
-events the N-era code also understands; a rollback after termination
-shows those rows as `skipped` with the removal reason in `last_error`,
-which the N-era UI renders verbatim). If you must roll back and want
-the rows re-queued, restore the pre-upgrade backup of the state file
-before restarting under release N.
+N+1 stores remain loadable by release N only if no reconcile terminations have
+fired. After termination, those rows appear as `skipped` under N. To re-queue
+them, restore the pre-upgrade state backup before restarting under N.
 
-### Deleting the compatibility surface
+### Compatibility surface
 
-The retained parse-compat variants are documented in
-`src/state/queue/legacy_investigation.rs` with a deletion checklist
-(the earliest release with no supported upgrade path from a pre-N or
-N-era store). Do not delete them while any supported upgrade path
-remains — doing so turns store open into a hard load failure.
+Parse-compat for old investigation rows lives in
+`src/state/queue/legacy_investigation.rs`. Do not delete it while any supported
+upgrade path from a pre-N or N-era store remains.

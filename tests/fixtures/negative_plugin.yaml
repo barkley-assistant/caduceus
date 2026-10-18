@@ -1,4 +1,4 @@
-# LEGACY SCAFFOLDING — intentionally contains fields the v0.18.2 loader
+# LEGACY SCAFFOLDING — intentionally contains fields the v0.22.x loader
 # silently drops. The contract test (test_negative_manifest_with_legacy_fields_is_rejected)
 # reads this file and asserts that ``unknown_fields`` is non-empty.
 manifest_version: 1

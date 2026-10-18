@@ -1,40 +1,40 @@
 # Auto Review
 
-Auto Review is Caduceus's PR review half. The daemon polls watched
-repositories for open pull requests, detects new head revisions, and
-runs each one through an isolated, read-only OCI worker. The result is
-a structured PASS/FAIL verdict published as a single sticky PR comment
-— one comment per PR, updated in place as the PR evolves.
+Auto Review is Caduceus's PR review half. The daemon polls watched repositories
+for open pull requests, detects new head revisions, and runs each one through an
+isolated, read-only OCI worker. The result is a structured PASS/FAIL verdict
+published as a single sticky PR comment — one comment per PR, updated in place
+as the PR evolves.
 
-The deep engineering record lives in
-[docs/architecture/auto-review.md](architecture/auto-review.md); this
-page is the operator-facing reference.
+Module map and tick placement:
+[docs/architecture/auto-review.md](architecture/auto-review.md). Wiki mirror:
+[Auto Review](https://github.com/barkley-assistant/caduceus/wiki/Auto-Review).
 
 ## What Auto Review does
 
 - Monitors PRs in `watched_repos` through the existing cron tick.
-- Treats each previously unseen head revision as an immutable review
-  unit — identity is `repository + PR number + head SHA`.
-- Runs the review in a detached-HEAD worktree at the exact frozen
-  revision, using merge-base (three-dot) diff semantics — the PR's own
-  changes, never the base branch's drift.
-- Produces a structured verdict: PASS or FAIL, with findings rated
-  Blocking, Warning, or Suggestion, each carrying a title, body,
-  optional path/line, and remediation guidance.
-- Publishes one stable, idempotent sticky comment per PR, updated in
-  place on new revisions.
+- Treats each previously unseen head revision as an immutable review unit —
+  identity is `repository + PR number + head SHA`.
+- Runs the review in a detached-HEAD worktree at the exact frozen revision,
+  using merge-base (three-dot) diff semantics — the PR's own changes, never the
+  base branch's drift.
+- Produces a structured verdict: PASS or FAIL, with findings rated Blocking,
+  Warning, or Suggestion, each carrying a title, body, optional path/line, and
+  remediation guidance.
+- Publishes one stable, idempotent sticky comment per PR, updated in place on
+  new revisions.
 - Re-reviews new revisions automatically; no manual trigger is needed.
 - Re-reviews the current head on demand when a trusted author comments
   `/caduceus review` on the PR.
 
 What it does **not** do: no GitHub Checks API, no inline comments, no
-auto-merge, no coalescing of intermediate revisions (every admitted
-SHA is reviewed).
+auto-merge, no coalescing of intermediate revisions (every admitted SHA is
+reviewed).
 
 ## Enabling Auto Review
 
-Auto Review requires OCI execution — reviewing untrusted PR content
-needs containment. The minimal config looks like this:
+Auto Review requires OCI execution — reviewing untrusted PR content needs
+containment. The minimal config looks like this:
 
 ```yaml
 executor_mode: oci
@@ -49,8 +49,8 @@ Before enabling, run `caduceus doctor` to confirm OCI readiness.
 
 ### TrustedHost is rejected
 
-If `auto_review.enabled` is `true` and `executor_mode` is
-`trusted_host`, config load fails with this deliberate error:
+If `auto_review.enabled` is `true` and `executor_mode` is `trusted_host`, config
+load fails with this deliberate error:
 
 ```text
 auto_review.enabled requires OCI execution: set executor_mode: oci
@@ -59,14 +59,13 @@ TrustedHost offers no containment for reviewing untrusted PR
 content. Run `caduceus doctor` or see the configuration docs
 ```
 
-The fix is both changes named in the message: switch to
-`executor_mode: oci` and provide a valid `sandbox:` block with a
-digest-pinned image.
+The fix is both changes named in the message: switch to `executor_mode: oci` and
+provide a valid `sandbox:` block with a digest-pinned image.
 
 ## How reviews are discovered and run
 
-PR polling is a step inside the existing daemon tick, between issue
-polling and the queue drain.
+PR polling is a step inside the existing daemon tick, between issue polling and
+the queue drain.
 
 ### Eligibility
 
@@ -76,13 +75,13 @@ A PR is admitted for review only when **all** of the following hold:
 - The PR is not a draft, unless `draft_pull_requests: true` is set.
 - The head SHA has not been reviewed before and is not already queued.
 - The PR is not a fork, unless the base repo is listed in
-  `auto_review.fork_policy.allow_fork_prs`. Allowed forks are reviewed
-  through a per-PR quarantine clone — a throwaway clone that is never
-  a second remote on the persistent mirror; see
+  `auto_review.fork_policy.allow_fork_prs`. Allowed forks are reviewed through a
+  per-PR quarantine clone — a throwaway clone that is never a second remote on
+  the persistent mirror; see
   [docs/security/fork-trust-posture.md](security/fork-trust-posture.md).
 
-When a PR does not qualify, the daemon emits a structured skip event
-rather than silently ignoring it:
+When a PR does not qualify, the daemon emits a structured skip event rather than
+silently ignoring it:
 
 | Condition | Event |
 |---|---|
@@ -93,51 +92,48 @@ rather than silently ignoring it:
 
 ### Admission budget
 
-`max_reviews_per_tick` (top-level config, default
-`worker_parallelism × 4`) caps how many reviews a single tick will
-admit. `0` means unbounded. This prevents one busy repository from
-flooding the shared worker pool.
+`max_reviews_per_tick` (top-level config, default `worker_parallelism × 4`) caps
+how many reviews a single tick will admit. `0` means unbounded. This prevents
+one busy repository from flooding the shared worker pool.
 
 ### Revision-triggered re-review
 
-When a PR pushes a new head SHA, the next poll discovers it and admits
-a new review. The old review against the old SHA stays valid and
-finalizable; the new review is a separate run. The head SHA is frozen
-at discovery and never re-resolved.
+When a PR pushes a new head SHA, the next poll discovers it and admits a new
+review. The old review against the old SHA stays valid and finalizable; the new
+review is a separate run. The head SHA is frozen at discovery and never
+re-resolved.
 
 ### Explicit re-review via a trusted comment
 
-An allowlisted author can request a re-review of the current head SHA
-by commenting the trigger command on the PR:
+An allowlisted author can request a re-review of the current head SHA by
+commenting the trigger command on the PR:
 
 ```text
 /caduceus review
 ```
 
 - The default command is `/caduceus review`; configure
-  `auto_review.rerun_command` to change it. Matching is
-  case-insensitive and whitespace-tolerant, but the command must be
-  its own line — `/caduceus review` inside a longer sentence does
-  **not** match, and a line inside a fenced code block (```` ``` ````
-  or `~~~`) is ignored.
-- Only authors on the top-level `feedback_author_allowlist` can
-  trigger. An untrusted author's trigger is ignored and recorded as
-  `review_rerun_skipped_untrusted`; with an empty allowlist no
-  trigger is ever accepted (fail-closed).
-- A trusted trigger enqueues an explicit re-review of the PR's
-  **current** head SHA — even if that SHA was already reviewed. Each
-  explicit run appends its own history row for the same SHA; no
-  schema change is involved. Each trigger comment fires **exactly
-  once**: once a review has been queued for it, the same comment is
-  ignored on later polls (`skipped_no_trigger`), so a persistent
-  comment cannot re-enqueue the same review every tick. Posting a
-  **new** trigger comment starts a new review.
-- While a review is already running (`InProgress`), a fresh trigger is
-  skipped with `review_rerun_skipped_in_progress` instead of
-  replacing the active run — the request fires once the current
-  review finishes. Re-running never abandons a running review.
-- Polling never does this: automatic discovery still skips
-  already-reviewed SHAs with `review_skipped_already_complete`.
+  `auto_review.rerun_command` to change it. Matching is case-insensitive and
+  whitespace-tolerant, but the command must be its own line — `/caduceus review`
+  inside a longer sentence does **not** match, and a line inside a fenced code
+  block (```` ``` ```` or `~~~`) is ignored.
+- Only authors on the top-level `feedback_author_allowlist` can trigger. An
+  untrusted author's trigger is ignored and recorded as
+  `review_rerun_skipped_untrusted`; with an empty allowlist no trigger is ever
+  accepted (fail-closed).
+- A trusted trigger enqueues an explicit re-review of the PR's **current** head
+  SHA — even if that SHA was already reviewed. Each explicit run appends its own
+  history row for the same SHA; no schema change is involved. Each trigger
+  comment fires **exactly once**: once a review has been queued for it, the same
+  comment is ignored on later polls (`skipped_no_trigger`), so a persistent
+  comment cannot re-enqueue the same review every tick. Posting a **new**
+  trigger comment starts a new review.
+- While a review is already running (`InProgress`), a fresh trigger is skipped
+  with `review_rerun_skipped_in_progress` instead of replacing the active run —
+  the request fires once the current review finishes. Re-running never abandons
+  a running review.
+- Polling never does this: automatic discovery still skips already-reviewed SHAs
+  with `review_skipped_already_complete`.
 
 ### Draft behaviour
 
@@ -146,25 +142,24 @@ By default, draft PRs are skipped with `review_skipped_draft`. Set
 
 ### Run and attempt semantics
 
-The queue entry owns execution attempts; `ReviewState` has no
-`attempt_count` field. Publication retries are separate from worker
-retries and are tracked on `ReviewState.publication_attempt_count`.
+The queue entry owns execution attempts; `ReviewState` has no `attempt_count`
+field. Publication retries are separate from worker retries and are tracked on
+`ReviewState.publication_attempt_count`.
 
 ## The review verdict and sticky comment
 
 ### Verdict vs execution status
 
-These are intentionally distinct and must never be conflated in logs or
-operator reading:
+These are intentionally distinct and must never be conflated in logs or operator
+reading:
 
-- **Execution status** (`Success` or `Failure`) — did the review
-  execute? Drives retry.
-- **Verdict** (`Pass` or `Fail`) — did the code pass? Drives
-  publication only.
+- **Execution status** (`Success` or `Failure`) — did the review execute? Drives
+  retry.
+- **Verdict** (`Pass` or `Fail`) — did the code pass? Drives publication only.
 
-A FAIL verdict is a successful execution; a FAILED status is an
-infrastructure failure. The CLI separates the two fields for the same
-reason (see [docs/cli.md](cli.md)).
+A FAIL verdict is a successful execution; a FAILED status is an infrastructure
+failure. The CLI separates the two fields for the same reason (see
+[docs/cli.md](cli.md)).
 
 ### Findings
 
@@ -172,25 +167,23 @@ Each finding carries:
 
 - `severity`: `Blocking`, `Warning`, or `Suggestion`
 - `title`, `body`
-- Optional `path` (repo-relative, no leading `/`), `line` (1-based,
-  requires a path)
+- Optional `path` (repo-relative, no leading `/`), `line` (1-based, requires a
+  path)
 - Optional `remediation`
 
 ### Sticky comment
 
-One comment per PR, marked with `<!-- caduceus-auto-review -->`. The
-comment is updated in place on new revisions; superseded generations
-are suppressed by a monotonic publication guard so an older run can
-never overwrite a newer one. Re-publishing the same result is
-byte-identical (idempotency requirement).
+One comment per PR, marked with `<!-- caduceus-auto-review -->`. The comment is
+updated in place on new revisions; superseded generations are suppressed by a
+monotonic publication guard so an older run can never overwrite a newer one.
+Re-publishing the same result is byte-identical (idempotency requirement).
 
-Re-reviews (generation 2 and later, `update` mode) prepend a
-`> [!IMPORTANT]` banner naming the new reviewed commit and the
-generation, so the update is visible without opening the comment's edit
-history.
+Re-reviews (generation 2 and later, `update` mode) prepend a `> [!IMPORTANT]`
+banner naming the new reviewed commit and the generation, so the update is
+visible without opening the comment's edit history.
 
-`auto_review.publication_mode` (`update` (default) | `new_comment`)
-selects the re-review publication policy:
+`auto_review.publication_mode` (`update` (default) | `new_comment`) selects the
+re-review publication policy:
 
 | Mode | Re-review behaviour | Banner | History |
 |---|---|---|---|
@@ -198,18 +191,18 @@ selects the re-review publication policy:
 | `new_comment` | publishes a fresh comment per review generation | suppressed | every generation preserved |
 
 `update` keeps one sticky comment per PR, PATCHed on each re-review.
-`new_comment` publishes a fresh comment per review generation and
-never edits history — the full comment trail per re-review is kept.
-Markers are generation-tagged (`<!-- caduceus-auto-review gen=N -->`);
-untagged legacy comments parse as generation 0. Crash-heal and
-gone-state marker adoption stay exactly-once per generation in both
-modes; an unknown value fails the config load.
+`new_comment` publishes a fresh comment per review generation and never edits
+history — the full comment trail per re-review is kept. Markers are
+generation-tagged (`<!-- caduceus-auto-review gen=N -->`); untagged legacy
+comments parse as generation 0. Crash-heal and gone-state marker adoption stay
+exactly-once per generation in both modes; an unknown value fails the config
+load.
 
 ## Config reference
 
-All keys below are validated at load time; `deny_unknown_fields` is on
-both the top-level `Config` and the `AutoReviewConfig` block, so a
-typo'd key is a load failure, not a silent ignore.
+All keys below are validated at load time; `deny_unknown_fields` is on both the
+top-level `Config` and the `AutoReviewConfig` block, so a typo'd key is a load
+failure, not a silent ignore.
 
 | Key (YAML) | Type | Default | Source | Notes |
 |---|---|---|---|---|
@@ -231,14 +224,14 @@ The `autoreview` GitHub label is **reserved and inert**:
 - No PR eligibility requires it.
 - It must never be applied to issues as a classification label.
 
-Dispatch is flag-based (`auto_review.enabled: true`); the label is a
-reserved classification name with no dispatch effect.
+Dispatch is flag-based (`auto_review.enabled: true`); the label has no dispatch
+effect.
 
 ## Observability
 
-Auto Review emits structured event names during discovery, dispatch,
-execution, finalization, and migration, pinned by
-`review_event_catalog_test` and catalogued in the architecture doc.
+Auto Review emits structured event names during discovery, dispatch, execution,
+finalization, and migration, pinned by `review_event_catalog_test` and
+catalogued in the architecture doc.
 
 Use the review CLI to inspect live state:
 
@@ -248,18 +241,18 @@ caduceus review list [--json]
 caduceus review show <owner/repo> <pr> [--json]
 ```
 
-See [docs/cli.md](cli.md) for the full per-row field list and the
-`review/1.0` JSON envelope.
+See [docs/cli.md](cli.md) for the full per-row field list and the `review/1.0`
+JSON envelope.
 
 ## Troubleshooting
 
 ### "Auto Review will not start" — TrustedHost rejection
 
-Symptom: `caduceus run` fails at config load with the error quoted in
-[Enabling Auto Review](#enabling-auto-review).
+Symptom: `caduceus run` fails at config load with the error quoted in [Enabling
+Auto Review](#enabling-auto-review).
 
-Fix: switch to `executor_mode: oci` and add a valid `sandbox:` block
-with a digest-pinned image. Run `caduceus doctor` to verify readiness.
+Fix: switch to `executor_mode: oci` and add a valid `sandbox:` block with a
+digest-pinned image. Run `caduceus doctor` to verify readiness.
 
 ### "Reviews are not appearing"
 
@@ -268,53 +261,48 @@ Checklist:
 1. Is `auto_review.enabled: true` present in the config?
 2. Does `caduceus doctor` report `READY` or `UNAVAILABLE`?
 3. Does `caduceus review status` show queued or in-progress entries?
-4. Are PRs open, non-draft (or `draft_pull_requests: true` set), and
-   not forks (or listed in `allow_fork_prs`)?
+4. Are PRs open, non-draft (or `draft_pull_requests: true` set), and not forks
+   (or listed in `allow_fork_prs`)?
 5. Check the daemon log for skip events (`review_skipped_draft`,
    `review_skipped_fork_unsupported`, etc.).
 
 ### Stuck review
 
-Run `caduceus review show <owner/repo> <pr>` to see the review state,
-verdict, publication state, and last error. A review may be genuinely
-in progress, or it may be blocked by:
+Run `caduceus review show <owner/repo> <pr>` to see the review state, verdict,
+publication state, and last error. A review may be genuinely in progress, or it
+may be blocked by:
 
-- A mutation violation (`review_mutation_violation`) — terminal,
-  routes to `NeedsAttention`. Retry cannot fix a contract violation.
-- An unavailable head SHA (`review_skipped_head_sha_unavailable`) —
-  the PR was force-pushed and the old SHA is gone. The next poll
-  discovers the new SHA and admits a new review. Not
-  `NeedsAttention`.
-- A gone PR (`review_skipped_pr_gone` with reason
-  `pr_not_found` or `closed_unmerged`) — permanently moot. Not
-  `NeedsAttention`.
+- A mutation violation (`review_mutation_violation`) — terminal, routes to
+  `NeedsAttention`. Retry cannot fix a contract violation.
+- An unavailable head SHA (`review_skipped_head_sha_unavailable`) — the PR was
+  force-pushed and the old SHA is gone. The next poll discovers the new SHA and
+  admits a new review. Not `NeedsAttention`.
+- A gone PR (`review_skipped_pr_gone` with reason `pr_not_found` or
+  `closed_unmerged`) — permanently moot. Not `NeedsAttention`.
 
 ### Failed finalization or publication
 
-If the sticky comment fails to publish, `ReviewState` enters
-`FailedRetryable` with `publication_attempt_count`,
-`next_publish_at`, and `last_publish_error` persisted. The model is
-never re-run because publication failed; resume is idempotent via
-`sticky_comment_id`.
+If the sticky comment fails to publish, `ReviewState` enters `FailedRetryable`
+with `publication_attempt_count`, `next_publish_at`, and `last_publish_error`
+persisted. The model is never re-run because publication failed; resume is
+idempotent via `sticky_comment_id`.
 
 ### Draft PRs are skipped
 
-Set `auto_review.draft_pull_requests: true` to admit them. The default
-is `false`.
+Set `auto_review.draft_pull_requests: true` to admit them. The default is
+`false`.
 
 ### Fork PRs are skipped
 
-Fork PRs — and PRs whose head repository cannot be identified — are
-skipped with `review_skipped_fork_unsupported` unless the base repo is
-listed in `auto_review.fork_policy.allow_fork_prs`. Allowed forks are
-reviewed through a per-PR quarantine clone; denied forks keep the
-fail-closed behaviour. See
-[docs/security/fork-trust-posture.md](security/fork-trust-posture.md)
-for the trust model before enabling fork review.
+Fork PRs — and PRs whose head repository cannot be identified — are skipped with
+`review_skipped_fork_unsupported` unless the base repo is listed in
+`auto_review.fork_policy.allow_fork_prs`. Allowed forks are reviewed through a
+per-PR quarantine clone; denied forks keep the fail-closed behaviour. See
+[docs/security/fork-trust-posture.md](security/fork-trust-posture.md) for the
+trust model before enabling fork review.
 
 ### Oversized PR
 
 If the diff alone exceeds the 1 MiB budget, the run is skipped via
-`review_skipped_oversized_pr` without consuming the normal worker
-retry budget. The event is deterministic: retrying cannot change
-unreviewable input.
+`review_skipped_oversized_pr` without consuming the normal worker retry budget.
+The event is deterministic: retrying cannot change unreviewable input.

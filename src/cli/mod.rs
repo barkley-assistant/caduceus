@@ -32,15 +32,15 @@ static GIT_AUTHOR_WARNED: AtomicBool = AtomicBool::new(false);
 /// and status schemas version independently.
 const QUEUE_SCHEMA_VERSION: &str = "queue/1.0";
 
-/// Caduceus v1.0.0: poll GitHub, queue one unit of work per tick, finalise
-/// code results. (The investigation finalization route was removed in
+/// Caduceus v1.0.0: one-shot tick daemon — OCI auto-review plus labeled
+/// ticket implementation. (Investigation finalization was removed in
 /// release N+1; see docs/release-notes.md.)
 #[derive(Debug, Parser)]
 #[command(
     name = "caduceus",
     bin_name = "caduceus",
     version,
-    about = "GitHub issue orchestrator with worker supervision",
+    about = "Sandboxed PR auto-review and handoff-ticket daemon",
     long_about = None
 )]
 pub struct Cli {

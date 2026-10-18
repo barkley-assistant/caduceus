@@ -1,12 +1,11 @@
 # Caduceus v1.0 — Hermes plugin manifest
 #
-# Field set is restricted to the ones the Hermes Agent v0.18.2
+# Field set is restricted to the ones the Hermes Agent v0.22.x
 # directory-plugin loader actually consumes (see
 # hermes_cli/plugins.py::PluginManifest). Unknown fields are silently
 # dropped by Hermes; Caduceus's contract test rejects them on this side
 # instead. The cross-document test (tests/docs_contract_test.rs) and
-# tests/hermes_plugin_test.py::test_manifest_uses_only_supported_fields
-# pin this allowlist together.
+# plugin manifest tests pin this allowlist together.
 #
 # `kind: standalone` is the only kind the contract accepts. Caduceus is a
 # daemon with its own cron lifecycle and explicit `setup` step; it does
@@ -14,21 +13,21 @@
 # provider.
 #
 # Note: requires_env, files, binaries, hooks, config, cron_profiles, and
-# profile_section are all **forbidden** legacy fields from the pre-0.18
-# plugin shape. The negative fixture under
+# profile_section are all **forbidden** legacy fields from older
+# plugin shapes. The negative fixture under
 # tests/fixtures/negative_plugin.yaml locks this rule.
 manifest_version: 1
 name: caduceus
 version: 1.0.0
 description: >-
-  Hermes-managed Unix daemon that polls GitHub for labeled issues, runs a
-  user-configured AI harness in isolated worktrees under a hard timeout,
-  and finalizes results as branches, pull requests, and comments.
+  Hermes-managed Unix daemon that auto-reviews pull requests in an OCI
+  sandbox and implements labeled handoff tickets via a user-owned AI
+  harness — sticky PASS/FAIL reviews, checkpointed ticket finalization.
 author: barkley-assistant
 kind: standalone
 provides_tools: []
 provides_hooks: []
-# requires_env is part of the v0.18.2 allowed field set. Caduceus
+# requires_env is part of the v0.22.x allowed field set. Caduceus
 # declares no required environment variables (the daemon resolves the
 # GitHub token via env_clear + allowlist at runtime), so the list is
 # empty. Removing this key would change the manifest's byte shape;

@@ -1086,7 +1086,7 @@ def _doctor_check_cron_capability(ctx: Any) -> _DoctorFinding:
             category="host-capability-unavailable",
             status="fail",
             detail="hermes CLI not on PATH",
-            next_action="install Hermes Agent v0.18.2+ and ensure `hermes` is on PATH",
+            next_action="install Hermes Agent v0.22.x+ and ensure `hermes` is on PATH",
             internal_detail="shutil.which('hermes') returned None",
         )
     try:
