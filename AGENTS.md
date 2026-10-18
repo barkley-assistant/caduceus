@@ -7,8 +7,8 @@ These requirements apply to human and automated contributors.
 - Keep this as one Rust crate producing the `caduceus` binary.
 - Keep Python in `plugin-assets/worker-bridge.py` and `tests/`.
 - Keep the Hermes plugin in `plugin.yaml`, `__init__.py`, and
-  `skills/caduceus/`. Hermes Agent v0.18.2 is the minimum host version.
-- Do not add top-level directories outside `.github/`,
+  `skills/caduceus/`.
+- Do not add top-level directories outside `.github/`, `docs/`,
   `plugin-assets/`, `skills/`, `src/`, and `tests/` without approval.
 - Do not commit generated files.
 

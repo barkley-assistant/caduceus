@@ -1,9 +1,8 @@
 # CLI reference
 
-Every subcommand of the `caduceus` binary, its flags and defaults,
-exit codes, and the `hermes caduceus` wrapper surface. The daemon is
-driven by a cron job that runs `caduceus run`; everything else here is
-operator tooling.
+Every subcommand of the `caduceus` binary, its flags and defaults, exit codes,
+and the `hermes caduceus` wrapper surface. The daemon is driven by a cron job
+that runs `caduceus run`; everything else here is operator tooling.
 
 ```text
 caduceus run
@@ -27,13 +26,12 @@ caduceus setup [--dry-run]
 
 - A bare `caduceus` invocation prints the help to stdout and exits 0
   (git-style); it never runs a tick.
-- Every subcommand resolves its configuration from
-  `$CADUCEUS_CONFIG` when set, falling back to the canonical
-  resolution chain (`Config::load`).
-- `--json` output is a versioned envelope: the queue commands emit
-  `schema: "queue/1.0"` with `app_version`, `state_dir`,
-  `diagnostic`, and `payload` fields; the review commands emit
-  `schema: "review/1.0"`; `status` emits its own `version` field.
+- Every subcommand resolves its configuration from `$CADUCEUS_CONFIG` when set,
+  falling back to the canonical resolution chain (`Config::load`).
+- `--json` output is a versioned envelope: the queue commands emit `schema:
+  "queue/1.0"` with `app_version`, `state_dir`, `diagnostic`, and `payload`
+  fields; the review commands emit `schema: "review/1.0"`; `status` emits its
+  own `version` field.
 - Exit codes:
 
 | Command | Exit codes |
@@ -45,9 +43,9 @@ caduceus setup [--dry-run]
 
 ## run
 
-Run a single tick: poll GitHub, claim at most `max_issues_per_tick`
-entries, supervise workers, finalise results. This is the cron entry
-point. Success is silent.
+Run a single tick: poll GitHub, claim at most `max_issues_per_tick` entries,
+supervise workers, finalise results. This is the cron entry point. Success is
+silent.
 
 ## status [--json]
 
@@ -62,145 +60,137 @@ machine-readable report (`version` currently `7.8.0`). Hermes
 
 ## doctor [--json] [--skip-canary] [--canary-image IMG] [--canary-command CMD]
 
-Check live OCI production readiness and print a human summary or JSON.
-The optional diagnostic canary runs the real executor path against a
-pinned image; skip it with `--skip-canary`, or configure it with
-`--canary-image` + `--canary-command` (or the
-`CADUCEUS_DOCTOR_CANARY_IMAGE` / `CADUCEUS_DOCTOR_CANARY_COMMAND`
-environment variables). An informational report is written into the
-state directory. Exits `1` when the verdict is `Unavailable`.
+Check live OCI production readiness and print a human summary or JSON. The
+optional diagnostic canary runs the real executor path against a pinned image;
+skip it with `--skip-canary`, or configure it with `--canary-image` +
+`--canary-command` (or the `CADUCEUS_DOCTOR_CANARY_IMAGE` /
+`CADUCEUS_DOCTOR_CANARY_COMMAND` environment variables). An informational report
+is written into the state directory. Exits `1` when the verdict is
+`Unavailable`.
 
 ## worktree-gc [--older-than-days N] [--dry-run]
 
-Sweep stale worktrees across every watched repository, defaulting to
-an age threshold of 30 days. `--dry-run` reports eligible worktrees
-without removing them. The sweep takes the daemon lock and refuses to
-run while another tick holds it.
+Sweep stale worktrees across every watched repository, defaulting to an age
+threshold of 30 days. `--dry-run` reports eligible worktrees without removing
+them. The sweep takes the daemon lock and refuses to run while another tick
+holds it.
 
 ## queue show [<owner/repo#n>] [--json]
 
 List every queue entry as a table (key, phase, ticket type, attempts,
-generation, age) or print full detail for one entry, including its
-finalization checkpoint (branch, run id, stage, PR). Read-only: `show`
-snapshots under the shared state lock, never writes, and does not take
-the daemon lock, so it is safe to run alongside a live tick. `--json`
-emits the `queue/1.0` envelope; a missing entry yields a
-`"no_entry"` diagnostic and a non-zero exit.
+generation, age) or print full detail for one entry, including its finalization
+checkpoint (branch, run id, stage, PR). Read-only: `show` snapshots under the
+shared state lock, never writes, and does not take the daemon lock, so it is
+safe to run alongside a live tick. `--json` emits the `queue/1.0` envelope; a
+missing entry yields a `"no_entry"` diagnostic and a non-zero exit.
 
 ## queue reset <owner/repo#n> [--dry-run] [--json] [--force-finalization-reset]
 
-Return a `Failed`, `Skipped`, or `NeedsAttention` entry to `Queued`,
-clearing the retry counter and run-tracking fields. The saved
-finalization checkpoint is preserved by default so a follow-up tick
-resumes from the saved branch / PR; `--force-finalization-reset`
-drops it after warning about the affected branch and pull request —
-the remote branch and PR are never deleted by the daemon. The live
-path takes the daemon lock and refuses to run while an active claim
-file exists for the entry. `--dry-run` prints the planned change
-without mutating anything.
+Return a `Failed`, `Skipped`, or `NeedsAttention` entry to `Queued`, clearing
+the retry counter and run-tracking fields. The saved finalization checkpoint is
+preserved by default so a follow-up tick resumes from the saved branch / PR;
+`--force-finalization-reset` drops it after warning about the affected branch
+and pull request — the remote branch and PR are never deleted by the daemon. The
+live path takes the daemon lock and refuses to run while an active claim file
+exists for the entry. `--dry-run` prints the planned change without mutating
+anything.
 
 ## queue reprocess <owner/repo#n> [--dry-run] [--json]
 
-Create a new generation for an issue: the generation counter is
-incremented and a terminal entry moves back to `Queued` with the
-retry counter cleared and no backoff, making it immediately claimable
-on the next tick. Use it to fast-track a retry after fixing the root
-cause, or to reopen a finished entry. Refuses only `AwaitingReview`
-(human review must complete first). Distinct from `reset`, which
-retries the same generation. The live path mutates state under the
-queue's exclusive lock but does not take the daemon lock; prefer
-running it while no tick is in flight. `--dry-run` prints the current
-and would-be generation. `--json` emits the versioned `queue/1.0`
-envelope used by `reset`/`remove`/`show`, with an
-`action: "reprocess"` payload carrying `key`, `dry_run`,
-`previous_generation`, and `new_generation` (the generation the store
+Create a new generation for an issue: the generation counter is incremented and
+a terminal entry moves back to `Queued` with the retry counter cleared and no
+backoff, making it immediately claimable on the next tick. Use it to fast-track
+a retry after fixing the root cause, or to reopen a finished entry. Refuses only
+`AwaitingReview` (human review must complete first). Distinct from `reset`,
+which retries the same generation. The live path mutates state under the queue's
+exclusive lock but does not take the daemon lock; prefer running it while no
+tick is in flight. `--dry-run` prints the current and would-be generation.
+`--json` emits the versioned `queue/1.0` envelope used by
+`reset`/`remove`/`show`, with an `action: "reprocess"` payload carrying `key`,
+`dry_run`, `previous_generation`, and `new_generation` (the generation the store
 persisted).
 
 ## queue remove <owner/repo#n> [--dry-run] [--force] [--json]
 
-Drop a queue entry entirely. Only the queue entry is removed: the
-worktree, claim file, remote branch, and pull request are left for the
-reaper / `worktree-gc` and are never touched under any flag. By
-default it refuses `InProgress`, `AwaitingReview`, and `Done` entries;
-`--force` relaxes the phase guard only — an entry with a live claim
-file is always refused. If the trigger label is still on the issue,
-the next poll re-enqueues a fresh entry; that is documented behaviour,
-not a bug (remove the label first to keep the issue out of the
-queue). The live path takes the daemon lock; `--dry-run` mirrors the
-same guards read-only.
+Drop a queue entry entirely. Only the queue entry is removed: the worktree,
+claim file, remote branch, and pull request are left for the reaper /
+`worktree-gc` and are never touched under any flag. By default it refuses
+`InProgress`, `AwaitingReview`, and `Done` entries; `--force` relaxes the phase
+guard only — an entry with a live claim file is always refused. If the trigger
+label is still on the issue, the next poll re-enqueues a fresh entry; that is
+documented behaviour, not a bug (remove the label first to keep the issue out of
+the queue). The live path takes the daemon lock; `--dry-run` mirrors the same
+guards read-only.
 
 ## review status [<owner/repo>] [--json]
 
-Report the review queue: aggregate phase counts (queued, in_progress,
-done, failed, skipped, needs_attention) plus one line per entry, with
-the repository rendered in its canonical lowercase form. An optional
-`owner/repo` filter restricts the report to one repository. Read-only:
-the daemon lock is never taken and state is never written. `--json`
-emits the `review/1.0` envelope with `counts` and the full per-row
-field set — repo, PR, base SHA, head SHA, merge base, review state,
-run id, review generation, execution attempts, execution status,
-verdict, last error, reviewed-at, publication state, publication
-attempt count, next publication attempt. `execution status` is a
-derived presentation field (parsed from the latest same-generation
-history row's durable `ReviewResult.status`), not a stored column;
-`verdict` holds the outcome. On a corrupt review store the JSON path
-emits `diagnostic: "corrupt_review_state"` with a non-zero exit.
+Report the review queue: aggregate phase counts (queued, in_progress, done,
+failed, skipped, needs_attention) plus one line per entry, with the repository
+rendered in its canonical lowercase form. An optional `owner/repo` filter
+restricts the report to one repository. Read-only: the daemon lock is never
+taken and state is never written. `--json` emits the `review/1.0` envelope with
+`counts` and the full per-row field set — repo, PR, base SHA, head SHA, merge
+base, review state, run id, review generation, execution attempts, execution
+status, verdict, last error, reviewed-at, publication state, publication attempt
+count, next publication attempt. `execution status` is a derived presentation
+field (parsed from the latest same-generation history row's durable
+`ReviewResult.status`), not a stored column; `verdict` holds the outcome. On a
+corrupt review store the JSON path emits `diagnostic: "corrupt_review_state"`
+with a non-zero exit.
 
 ## review list [--json]
 
-List every review queue entry as a table (key, phase, attempts,
-generation, verdict, publication, run id). `--json` emits the
-`review/1.0` envelope with the full per-row field set (see
-`review status`). An empty queue prints `review queue: no entries`.
+List every review queue entry as a table (key, phase, attempts, generation,
+verdict, publication, run id). `--json` emits the `review/1.0` envelope with the
+full per-row field set (see `review status`). An empty queue prints `review
+queue: no entries`.
 
 ## review show <owner/repo> <pr> [--json]
 
-Print full detail for one pull request plus its run history: the
-queue entry joined with the per-`(repo, pr)` state row (verdict,
-reviewed-at, publication fields) and every history row (run id, head
-SHA, generation, completed time, parsed status/verdict/summary).
-History `result_json` documents are parsed defensively: current
-schema versions surface their parsed fields; older versions surface
-the raw document with a `parse_error` and are never back-migrated.
-A missing entry errors on the human path and emits a `"no_entry"`
-diagnostic (non-zero exit) with `--json`.
+Print full detail for one pull request plus its run history: the queue entry
+joined with the per-`(repo, pr)` state row (verdict, reviewed-at, publication
+fields) and every history row (run id, head SHA, generation, completed time,
+parsed status/verdict/summary). History `result_json` documents are parsed
+defensively: current schema versions surface their parsed fields; older versions
+surface the raw document with a `parse_error` and are never back-migrated. A
+missing entry errors on the human path and emits a `"no_entry"` diagnostic
+(non-zero exit) with `--json`.
 
-All structured review events are listed in DAR §13 (see
-[docs/architecture/auto-review.md](architecture/auto-review.md)).
+Review CLI field semantics and sticky-comment behaviour are covered in
+[docs/auto-review.md](auto-review.md); module map in
+[docs/architecture/auto-review.md](architecture/auto-review.md).
 
 ## migrate-state --from <path> [--dry-run]
 
 Import a legacy v0 JSON state file into the current schema under
-`<state_dir>/state.json`. The import is idempotent (already-present
-entries are skipped), takes the daemon lock, validates every record,
-and leaves live state unchanged on malformed input. A successful write
-creates a timestamped backup in the state directory.
+`<state_dir>/state.json`. The import is idempotent (already-present entries are
+skipped), takes the daemon lock, validates every record, and leaves live state
+unchanged on malformed input. A successful write creates a timestamped backup in
+the state directory.
 
 ## migrate-state --to-sqlite [--dry-run]
 
-Migrate the JSON queue into the SQLite state store and flip
-`state_backend` to `sqlite` in the operator's config. The JSON file is
-preserved alongside the SQLite store; rollback is config-side.
+Migrate the JSON queue into the SQLite state store and flip `state_backend` to
+`sqlite` in the operator's config. The JSON file is preserved alongside the
+SQLite store; rollback is config-side.
 
 `--from` and `--to-sqlite` are mutually exclusive; one is required.
 
 ## setup [--dry-run]
 
-Generate minimal non-secret configuration. Requires `$HERMES_HOME`
-(the command errors without it). `--dry-run` prints the planned
-action without writing. This is the binary's config generator only —
-the plugin install flow (binary build, bridge seeding, state
-directories) is `hermes caduceus setup`.
+Generate minimal non-secret configuration. Requires `$HERMES_HOME` (the command
+errors without it). `--dry-run` prints the planned action without writing. This
+is the binary's config generator only — the plugin install flow (binary build,
+bridge seeding, state directories) is `hermes caduceus setup`.
 
 ## The `hermes caduceus` wrapper
 
 The Hermes plugin exposes eleven subcommands. `run`, `review`, `queue`,
-`worktree-gc`, and `migrate-state` forward every trailing token
-verbatim to the binary — clap is the single source of truth for their
-flags. A CI drift guard (`tests/plugin/cli_parity_test.py`) parses the
-binary's `Command` enum from `src/cli/mod.rs` and fails when the
-wrapper set diverges, so a new binary subcommand breaks CI instead of
-operators.
+`worktree-gc`, and `migrate-state` forward every trailing token verbatim to the
+binary — clap is the single source of truth for their flags. A CI drift guard
+(`tests/plugin/cli_parity_test.py`) parses the binary's `Command` enum from
+`src/cli/mod.rs` and fails when the wrapper set diverges, so a new binary
+subcommand breaks CI instead of operators.
 
 ```text
 hermes caduceus setup [--dry-run]
@@ -216,34 +206,31 @@ hermes caduceus cron-install [--dry-run] [--verbose]
 hermes caduceus cron-remove [--verbose]
 ```
 
-`hermes caduceus run` blocks for the whole tick: worker supervision
-alone defaults to a one-hour timeout, so the wrapper allows up to two
-hours before killing the passthrough. For longer-running ticks, run
-the binary directly (or via the cron pulse wrapper).
+`hermes caduceus run` blocks for the whole tick: worker supervision alone
+defaults to a one-hour timeout, so the wrapper allows up to two hours before
+killing the passthrough. For longer-running ticks, run the binary directly (or
+via the cron pulse wrapper).
 
-Note the two different doctors: the wrapper's `hermes caduceus doctor`
-checks plugin health (binary present, bridge seeded, cron job
-installed) **and** chains the binary's own machine contracts — `caduceus
-doctor --json --skip-canary` for the live OCI-readiness verdict and
-`caduceus status --json` for tick freshness — into one report. Both are
-read-only inputs. Trusted-host boxes report OCI readiness as WARN (their
-OCI checks did not run); a last tick older than 5 minutes is WARN and
-older than 30 minutes is FAIL (the cron job fires every 2 minutes).
-WARN is advisory and never changes the exit code, which stays 0/1/2.
-`--json` prints one document instead of the report — `command`,
-`severity` (the exit code the run returns: 0 `ok`, 1 `config-runtime`,
-2 `host-capability-unavailable`), `severity_label`, and a `checks`
-array of `{name, status, category, detail, next_action,
-internal_detail}`. The human report and the exit codes are unchanged
-by the flag, and `--verbose` adds nothing in JSON mode (all fields are
-always present).
-The wrapper doctor renders color and status glyphs on an interactive
-TTY; piped or CI output stays plain `[OK]`/`[WARN]`/`[FAIL]` lines with
-no ANSI bytes. `cron-install`, `cron-remove`, and `logs` exist only in
-the wrapper. `hermes caduceus logs` reads the files the daemon already
-writes: `processor.log` (default: the last 50 lines; `--follow` streams
-new lines, `--tail N` overrides the count, `0` prints the whole file),
-`runs/<run_id>.log` (`--run <run_id>`), and the stored readiness report
-(`--doctor`, pretty-printed). A missing state dir or target prints a
-diagnostic and exits 1; secrets in log bodies are redacted and `--json`
+Note the two different doctors: the wrapper's `hermes caduceus doctor` checks
+plugin health (binary present, bridge seeded, cron job installed) **and** chains
+the binary's own machine contracts — `caduceus doctor --json --skip-canary` for
+the live OCI-readiness verdict and `caduceus status --json` for tick freshness —
+into one report. Both are read-only inputs. Trusted-host boxes report OCI
+readiness as WARN (their OCI checks did not run); a last tick older than 5
+minutes is WARN and older than 30 minutes is FAIL (the cron job fires every 2
+minutes). WARN is advisory and never changes the exit code, which stays 0/1/2.
+`--json` prints one document instead of the report — `command`, `severity` (the
+exit code the run returns: 0 `ok`, 1 `config-runtime`, 2
+`host-capability-unavailable`), `severity_label`, and a `checks` array of
+`{name, status, category, detail, next_action, internal_detail}`. The human
+report and the exit codes are unchanged by the flag, and `--verbose` adds
+nothing in JSON mode (all fields are always present). The wrapper doctor renders
+color and status glyphs on an interactive TTY; piped or CI output stays plain
+`[OK]`/`[WARN]`/`[FAIL]` lines with no ANSI bytes. `cron-install`,
+`cron-remove`, and `logs` exist only in the wrapper. `hermes caduceus logs`
+reads the files the daemon already writes: `processor.log` (default: the last 50
+lines; `--follow` streams new lines, `--tail N` overrides the count, `0` prints
+the whole file), `runs/<run_id>.log` (`--run <run_id>`), and the stored
+readiness report (`--doctor`, pretty-printed). A missing state dir or target
+prints a diagnostic and exits 1; secrets in log bodies are redacted and `--json`
 emits a machine-readable envelope.

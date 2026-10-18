@@ -143,7 +143,7 @@ pub const DENIED_ENV_NAMES: &[&str] = &[
     "GITHUB_TOKEN",
 ];
 
-/// Pin to the v0.18.2 Hermes loader contract. The manifest is required
+/// Pin to the v0.22.x Hermes loader contract. The manifest is required
 /// to use *only* the fields the loader actually reads. Anything outside
 /// this list must be rejected by Caduceus's contract test before
 /// reaching Hermes.
@@ -160,9 +160,9 @@ pub const HERMES_MANIFEST_FIELDS: &[&str] = &[
 ];
 
 /// The plugin loader rejects unknown fields. Every name in this list
-/// must be the *opposite* of "supported" — these are the historical
-/// 0.18-era fields we MUST refuse to write into our own manifest, even
-/// if a previous codepath once allowed them.
+/// must be the *opposite* of "supported" — these are historical
+/// pre-v0.22 loader fields we MUST refuse to write into our own
+/// manifest, even if a previous codepath once allowed them.
 pub const HERMES_FORBIDDEN_MANIFEST_FIELDS: &[&str] = &[
     "binaries",
     "config",
