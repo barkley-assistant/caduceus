@@ -8,9 +8,8 @@
 //!
 //! ## Hermes version handling (Preferred / Acceptable split)
 //!
-//! The operator's `hermes` reports `Hermes Agent v0.19.0`. The contract
-//! minimum is Hermes v0.18.2 (per `AGENTS.md:10` and `plugin.yaml:3`).
-//! The CLI subcommand set is identical on v0.18.x and v0.19.x.
+//! The contract minimum is Hermes Agent v0.22.x (per `plugin.yaml` and
+//! README). Lifecycle tests accept v0.22.x and newer 0.x releases.
 //!
 //! Tests are split into two strategies to keep the suite robust against
 //! version drift:
@@ -149,8 +148,24 @@ fn find_hermes() -> Option<PathBuf> {
 // Harness: preflight version check.
 // ---------------------------------------------------------------------------
 
-/// Preflight: find `hermes` on PATH and verify its version is in the
-/// supported range (`v0.18.x`, `v0.19.x`, or `v0.20.x`).
+/// True when `version` looks like `Hermes Agent vMAJOR.MINOR…` and is
+/// at least `(min_major, min_minor)`.
+fn hermes_version_at_least(version: &str, min_major: u32, min_minor: u32) -> bool {
+    let Some(rest) = version.strip_prefix("Hermes Agent v") else {
+        return false;
+    };
+    let mut parts = rest.split('.');
+    let Some(major) = parts.next().and_then(|p| p.parse::<u32>().ok()) else {
+        return false;
+    };
+    let Some(minor) = parts.next().and_then(|p| p.parse::<u32>().ok()) else {
+        return false;
+    };
+    (major, minor) >= (min_major, min_minor)
+}
+
+/// Preflight: find `hermes` on PATH and verify its version is at least
+/// v0.22.x (contract minimum).
 ///
 /// Returns `Some(path)` if `hermes` is present and compatible, or `None`
 /// to signal "skip this test". When skipping, emits a clear stderr line
@@ -166,12 +181,8 @@ fn preflight_or_skip() -> Option<PathBuf> {
         .ok()?;
     let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
-    // Accept v0.18.x (contract minimum), v0.19.x (operator current), and
-    // v0.20.x (forward-compatible). The CLI subcommand surface is
-    // identical across these versions.
-    let compatible = version.starts_with("Hermes Agent v0.18")
-        || version.starts_with("Hermes Agent v0.19")
-        || version.starts_with("Hermes Agent v0.20");
+    // Accept Hermes Agent v0.22.x and newer 0.x minors (forward-compatible).
+    let compatible = hermes_version_at_least(&version, 0, 22);
     if !compatible {
         eprintln!("hermes_lifecycle_test: skipping, hermes version mismatch: {version}");
         return None;

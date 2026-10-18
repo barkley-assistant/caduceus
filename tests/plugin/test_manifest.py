@@ -58,7 +58,7 @@ def _manifest_field_check(plugin_yaml_text: str) -> tuple:
 
 
 def test_manifest_uses_only_supported_fields(install_plugin: Path) -> None:
-    """``plugin.yaml`` declares only fields the v0.18.2 loader accepts."""
+    """``plugin.yaml`` declares only fields the v0.22.x loader accepts."""
     yaml_text = (install_plugin / "plugin.yaml").read_text(encoding="utf-8")
     allowed, rejected = _manifest_field_check(yaml_text)
     assert not rejected, f"unknown manifest fields: {rejected}"

@@ -4,7 +4,7 @@
 //!
 //! Task 8.1 requires a "cross-document test that extracts config keys
 //! and worker environment names and compares them with Rust fixtures,
-//! plus a Hermes contract test pinned to v0.18.2." This file pins
+//! plus a Hermes contract test pinned to v0.22.x." This file pins
 //! both.
 //!
 //! The test surfaces are:
@@ -25,13 +25,13 @@
 //!    `LC_ALL`, `PATH`, `TERM`, `TMPDIR`) appear in both the Rust
 //!    fixture and the daemon's `crate::worker::DEFAULT_ALLOWLIST_*`
 //!    constants.
-//! 4. **Hermes v0.18.2 plugin manifest** — `plugin.yaml` references
-//!    only the fields the v0.18.2 directory-plugin loader accepts, and
+//! 4. **Hermes v0.22.x plugin manifest** — `plugin.yaml` references
+//!    only the fields the v0.22.x directory-plugin loader accepts, and
 //!    no field on the legacy forbidden list appears.
 //! 5. **No false claims** — `README.md` and the plugin skill do not
 //!    claim that Hermes reads `commands/*.md`, `cron/*.yaml`, manifest
 //!    config defaults, binary declarations, or lifecycle hooks. This
-//!    match prevents drift back to the pre-0.18 plugin shape.
+//!    match prevents drift back to the legacy plugin shape.
 
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
@@ -522,7 +522,7 @@ fn worker_default_allowlist_matches_canonical_constants() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 4 — Hermes v0.18.2 plugin manifest contract
+// Test 4 — Hermes v0.22.x plugin manifest contract
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -550,7 +550,7 @@ fn plugin_yaml_uses_only_hermes_supported_fields() {
         assert!(
             HERMES_MANIFEST_FIELDS.contains(&key.as_str()),
             "plugin.yaml declares top-level key `{key}` which is not in the Hermes \
-             v0.18.2 supported field list"
+             v0.22.x supported field list"
         );
     }
     for forbidden in HERMES_FORBIDDEN_MANIFEST_FIELDS {
@@ -562,26 +562,31 @@ fn plugin_yaml_uses_only_hermes_supported_fields() {
 }
 
 #[test]
-fn hermes_v0182_minimum_version_appears_in_docs() {
+fn hermes_v022_minimum_version_appears_in_docs() {
     let readme = read_repo_file("README.md");
     let skill = read_repo_file("skills/caduceus/SKILL.md");
     assert!(
-        readme.contains("v0.18.2"),
-        "README.md must state Hermes Agent v0.18.2 as the minimum tested host"
+        readme.contains("v0.22.x"),
+        "README.md must state Hermes Agent v0.22.x as the minimum tested host"
     );
-    // The skill file references Hermes v0.18.2 explicitly so future
+    // The skill file references Hermes v0.22.x explicitly so future
     // edits do not silently relax the floor.
     assert!(
-        skill.contains("v0.18.2") || skill.contains("Hermes Agent"),
-        "skills/caduceus/SKILL.md must reference Hermes Agent / v0.18.2"
+        skill.contains("v0.22.x"),
+        "skills/caduceus/SKILL.md must reference Hermes Agent v0.22.x"
+    );
+    // Skill must stay self-contained: no outbound http(s) links.
+    assert!(
+        !skill.contains("http://") && !skill.contains("https://"),
+        "skills/caduceus/SKILL.md must not contain external http(s) links"
     );
 }
 
 #[test]
-fn python_manifest_field_allowlist_matches_hermes_v0182() {
+fn python_manifest_field_allowlist_matches_hermes_v022() {
     let allowlist = extract_python_manifest_field_allowlist();
     // Anything declared in the negative fixture must NOT be in the
-    // supported set; anything that's a real Hermes v0.18 field MUST
+    // supported set; anything that's a real Hermes v0.22 field MUST
     // appear in the supported set.
     assert!(!allowlist.contains("profile_section"));
     assert!(!allowlist.contains("binaries"));
@@ -629,7 +634,7 @@ fn readme_and_skill_do_not_claim_legacy_loader_features() {
 fn skill_describes_opt_in_nature_of_plugin_skills() {
     let skill = read_repo_file("skills/caduceus/SKILL.md");
     // The skill must explicitly say it does NOT auto-trigger — that's
-    // the v0.18 plugin-skill contract. Hermes has no automatic skill
+    // the Hermes plugin-skill contract. Hermes has no automatic skill
     // trigger rules; plugin skills are opt-in.
     let lower = skill.to_ascii_lowercase();
     assert!(

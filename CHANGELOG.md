@@ -94,11 +94,11 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
 
 ### Breaking
 
-- **Host networking removed from the OCI sandbox.** The `unrestricted`
-  value of `sandbox.network` (and the `--network host` argv it rendered)
-  no longer exists: host networking is structurally unrepresentable, and a
-  config carrying `network: unrestricted` fails at load with a typed
-  unknown-variant error. Migration: set `network: none` (the only value).
+- **Host networking removed from the OCI sandbox.** `sandbox.network`
+  accepts `none` (default, loopback only) or `unrestricted` (the engine's
+  isolated bridge). Host networking (`--network host`) is structurally
+  unrepresentable. Migration: use `none` unless you explicitly need bridge
+  networking; do not expect host-network semantics from `unrestricted`.
 - **`sandbox.reserved_host_disk_mb: 0` now disables the host disk-pressure
   watchdog** (previously rejected as invalid). Any positive value is the
   free-space floor in MB (default `2048`); `0` means no sampling and no

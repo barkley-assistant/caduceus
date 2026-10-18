@@ -3,7 +3,7 @@ name = "caduceus"
 version = "1.0.0"
 edition = "2021"
 rust-version = "1.97"
-description = "Unix single-host, one-shot Rust daemon that polls GitHub, queues one unit of work per tick, and finalizes code or investigation results."
+description = "Unix single-host, one-shot Rust daemon that auto-reviews PRs in an OCI sandbox and implements labeled handoff tickets with checkpointed finalization."
 license = "MIT"
 publish = false
 

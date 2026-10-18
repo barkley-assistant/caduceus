@@ -71,7 +71,7 @@ Record all operator-visible changes in
    cargo fmt --check
    cargo clippy --locked --all-targets -- -D warnings
    cargo test --locked --all-targets
-   python3 -m pytest -q tests/hermes_plugin_test.py tests/bridge_test.py
+   uv run pytest -q tests/plugin/ tests/integration/bridge_test.py
    cargo build --locked --release
    ```
 

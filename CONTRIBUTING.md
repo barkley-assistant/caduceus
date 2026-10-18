@@ -26,7 +26,7 @@ Run the required checks before requesting review:
 cargo fmt --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked --all-targets
-pytest -q tests/hermes_plugin_test.py tests/bridge_test.py
+uv run pytest -q tests/plugin/ tests/integration/bridge_test.py
 ```
 
 ## Commits
