@@ -12,13 +12,18 @@ use crate::infra::error::{CaduceusError, CaduceusResult};
 use super::http_helpers::HTTP_CACHE_FILENAME;
 /// One cached response keyed by full URL + Accept header. The
 /// body is stored alongside the ETag so a 304 can reuse the last
-/// successfully parsed body verbatim.
+/// successfully parsed body verbatim. `link` preserves the GitHub
+/// `Link` pagination header across 304 revalidation (fresh 304
+/// responses omit it).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CacheEntry {
     pub etag: String,
     pub status: u16,
     pub body: Vec<u8>,
     pub final_url: String,
+    /// Raw `Link` header from the cached 2xx response, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
 }
 
 /// Persistent conditional cache rooted at `<state_dir>/cache/http.json`.

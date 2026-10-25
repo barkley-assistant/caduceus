@@ -1,8 +1,8 @@
 //! Per-`(repo, pr)` review state store and the [`ReviewStore`]
 //! facade over both backends (issue #295, DAR §4.2): the JSON side is
-//! three v1-born versioned files under `<state_dir>/review.lock`;
-//! the SQLite side is three tables in the same `state.db` under the
-//! v8 envelope.
+//! v1-born versioned files under `<state_dir>/review.lock`; the
+//! SQLite side is matching tables in the same `state.db` (review-era
+//! activation at v8; CI-rejection set at v10, issue #435).
 //!
 //! Connection discipline: every load/persist helper takes a
 //! [`ReviewConn`] so SQLite operations run on the SAME connection
@@ -20,15 +20,19 @@ use fs2::FileExt;
 use rusqlite::params;
 
 use super::{
-    require_review_file_version, review_queue_key, review_state_key, validate_history_row,
-    validated_review_state, ClaimedReview, EnqueueReason, ReviewClaimFileBody, ReviewClaimToken,
-    ReviewEnqueueOutcome, ReviewHistoryFile, ReviewHistoryRow, ReviewPhase, ReviewQueueEntry,
-    ReviewQueueState, REVIEW_CLAIMS_DIRNAME, REVIEW_CLAIM_FILE_VERSION, REVIEW_HISTORY_FILENAME,
-    REVIEW_HISTORY_FILE_VERSION, REVIEW_LOCK_FILENAME, REVIEW_QUEUE_FILENAME,
-    REVIEW_QUEUE_FILE_VERSION, REVIEW_STATE_FILENAME, REVIEW_STATE_FILE_VERSION,
+    bounded_string, require_review_file_version, review_queue_key, review_state_key,
+    validate_history_row, validated_review_state, CiRejection, CiRejectionFile, ClaimedReview,
+    EnqueueReason, ReviewClaimFileBody, ReviewClaimToken, ReviewEnqueueOutcome, ReviewHistoryFile,
+    ReviewHistoryRow, ReviewPhase, ReviewQueueEntry, ReviewQueueState,
+    REVIEW_CI_REJECTIONS_FILENAME, REVIEW_CI_REJECTIONS_FILE_VERSION, REVIEW_CLAIMS_DIRNAME,
+    REVIEW_CLAIM_FILE_VERSION, REVIEW_HISTORY_FILENAME, REVIEW_HISTORY_FILE_VERSION,
+    REVIEW_LOCK_FILENAME, REVIEW_QUEUE_FILENAME, REVIEW_QUEUE_FILE_VERSION, REVIEW_STATE_FILENAME,
+    REVIEW_STATE_FILE_VERSION,
 };
 use crate::infra::error::{scrub, CaduceusError, CaduceusResult};
-use crate::review::{RepositoryId, ReviewState, ReviewTarget};
+use crate::review::{
+    RepositoryId, ReviewState, ReviewTarget, MAX_REPO_COMPONENT_BYTES, MAX_SHA_BYTES,
+};
 use crate::state::queue::{atomic_write, process_start_identity, sync_dir};
 
 // ---------------------------------------------------------------------------
@@ -142,6 +146,47 @@ pub fn serialize_review_history(file: &ReviewHistoryFile) -> CaduceusResult<Stri
     })
 }
 
+/// Parse + validate `review_ci_rejections.json` (issue #435).
+pub fn parse_review_ci_rejections(text: &str) -> CaduceusResult<CiRejectionFile> {
+    const SCOPE: &str = "<review-ci-rejections>";
+    let file: CiRejectionFile =
+        serde_json::from_str(text).map_err(|err| CaduceusError::StateCorrupt {
+            path: PathBuf::from(SCOPE),
+            message: format!("review CI rejections JSON parse: {err}"),
+        })?;
+    require_review_file_version(SCOPE, file.version, REVIEW_CI_REJECTIONS_FILE_VERSION)?;
+    for row in &file.rejections {
+        validate_ci_rejection(row)?;
+    }
+    Ok(file)
+}
+
+/// Serialize the CI-rejection set to canonical one-line JSON.
+pub fn serialize_review_ci_rejections(file: &CiRejectionFile) -> CaduceusResult<String> {
+    serde_json::to_string(file).map_err(|err| CaduceusError::StateCorrupt {
+        path: PathBuf::from("<review-ci-rejections>"),
+        message: format!("review CI rejections JSON serialize: {err}"),
+    })
+}
+
+fn validate_ci_rejection(row: &CiRejection) -> CaduceusResult<()> {
+    const SCOPE: &str = "<review-ci-rejections>";
+    bounded_string(
+        SCOPE,
+        "repository.owner",
+        &row.repository.owner,
+        MAX_REPO_COMPONENT_BYTES,
+    )?;
+    bounded_string(
+        SCOPE,
+        "repository.repo",
+        &row.repository.repo,
+        MAX_REPO_COMPONENT_BYTES,
+    )?;
+    bounded_string(SCOPE, "head_sha", &row.head_sha, MAX_SHA_BYTES)?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Connection handle
 // ---------------------------------------------------------------------------
@@ -180,18 +225,18 @@ enum ReviewConn<'a> {
 /// Back-end implementation for [`ReviewStore`].
 #[derive(Debug)]
 enum ReviewStoreBackend {
-    /// Three JSON files per the module docs; lock = `review.lock`.
+    /// Review JSON sidecars per the module docs; lock = `review.lock`.
     Json,
-    /// Three tables in `state.db`.
+    /// Matching tables in `state.db`.
     Sqlite,
 }
 
-/// Handle over the three review-era stores (queue, per-PR state,
-/// append-only history), mirroring [`crate::state::queue::StateStore`]'s
-/// shape. JSON mutations serialise on an exclusive `flock` of
-/// `<state_dir>/review.lock` (deliberately NOT `state.lock`, so the
-/// two failure domains never nest); SQLite mutations run one
-/// `BEGIN IMMEDIATE` per operation.
+/// Handle over the review-era stores (queue, per-PR state,
+/// append-only history, CI-rejection set), mirroring
+/// [`crate::state::queue::StateStore`]'s shape. JSON mutations
+/// serialise on an exclusive `flock` of `<state_dir>/review.lock`
+/// (deliberately NOT `state.lock`, so the two failure domains never
+/// nest); SQLite mutations run one `BEGIN IMMEDIATE` per operation.
 #[derive(Debug)]
 pub struct ReviewStore {
     state_dir: PathBuf,
@@ -202,8 +247,8 @@ pub struct ReviewStore {
 impl ReviewStore {
     /// Open the JSON-backed store. Creates the state directory and
     /// `review-claims/` if missing, then forces a validated load of
-    /// all three files so a corrupt file is reported at open time.
-    /// A missing file is the empty envelope.
+    /// every review sidecar so a corrupt file is reported at open
+    /// time. A missing file is the empty envelope.
     pub fn open(state_dir: &Path) -> CaduceusResult<Self> {
         fs::create_dir_all(state_dir)?;
         let claims_dir = state_dir.join(REVIEW_CLAIMS_DIRNAME);
@@ -216,13 +261,15 @@ impl ReviewStore {
         store.load_queue(&ReviewConn::Json)?;
         store.load_state_map(&ReviewConn::Json)?;
         store.load_history(&ReviewConn::Json)?;
+        store.load_ci_rejections(&ReviewConn::Json)?;
         Ok(store)
     }
 
     /// Open a SQLite-backed store. Ensures the database schema (the
-    /// migration chain runs on first open — a v7 store migrates to
-    /// v8 here), then forces a validated load of all three tables.
-    /// Claim files remain on disk for both backends.
+    /// migration chain runs on first open — a v7 store migrates
+    /// through to the current version here), then forces a validated
+    /// load of every review table. Claim files remain on disk for
+    /// both backends.
     pub fn open_sqlite(state_dir: &Path) -> CaduceusResult<Self> {
         fs::create_dir_all(state_dir)?;
         let claims_dir = state_dir.join(REVIEW_CLAIMS_DIRNAME);
@@ -239,6 +286,7 @@ impl ReviewStore {
         store.load_queue(&ReviewConn::Sqlite(&conn))?;
         store.load_state_map(&ReviewConn::Sqlite(&conn))?;
         store.load_history(&ReviewConn::Sqlite(&conn))?;
+        store.load_ci_rejections(&ReviewConn::Sqlite(&conn))?;
         Ok(store)
     }
 
@@ -273,6 +321,61 @@ impl ReviewStore {
             ReviewConn::Json => load_history_json(&self.state_dir.join(REVIEW_HISTORY_FILENAME)),
             ReviewConn::Sqlite(conn) => load_history_sqlite(conn, &self.state_dir),
         }
+    }
+
+    fn load_ci_rejections(&self, conn: &ReviewConn) -> CaduceusResult<CiRejectionFile> {
+        match conn {
+            ReviewConn::Json => {
+                load_ci_rejections_json(&self.state_dir.join(REVIEW_CI_REJECTIONS_FILENAME))
+            }
+            ReviewConn::Sqlite(conn) => load_ci_rejections_sqlite(conn, &self.state_dir),
+        }
+    }
+
+    // --- CI rejections (issue #435) ----------------------------------------
+
+    /// Head SHAs recorded as CI-failed for one `(repo, pr)`.
+    pub fn ci_rejected_head_shas(
+        &self,
+        repo: &RepositoryId,
+        pr: u64,
+    ) -> CaduceusResult<Vec<String>> {
+        self.with_shared(|store, conn| match conn {
+            ReviewConn::Json => {
+                let file = store.load_ci_rejections(conn)?;
+                Ok(file.head_shas_for(repo, pr).into_iter().collect())
+            }
+            ReviewConn::Sqlite(sqlite) => {
+                load_ci_rejected_shas_sqlite(sqlite, &store.state_dir, repo, pr)
+            }
+        })
+    }
+
+    /// Record a CI-failed head SHA (idempotent). Persist happens
+    /// inside the exclusive section before the caller emits the skip
+    /// event.
+    pub fn record_ci_rejection(
+        &self,
+        repo: &RepositoryId,
+        pr: u64,
+        head_sha: &str,
+    ) -> CaduceusResult<()> {
+        // Persist owner/repo in the same lowercase form as
+        // `review_state_key` so JSON and SQLite agree.
+        let rejection = CiRejection {
+            repository: RepositoryId {
+                owner: repo.owner.to_ascii_lowercase(),
+                repo: repo.repo.to_ascii_lowercase(),
+            },
+            pull_request: pr,
+            head_sha: head_sha.to_string(),
+        };
+        validate_ci_rejection(&rejection)?;
+        self.with_exclusive(|store, conn| {
+            let mut file = store.load_ci_rejections(conn)?;
+            file.insert(rejection);
+            store.persist_ci_rejections(conn, &file)
+        })
     }
 
     // --- review queue ------------------------------------------------------
@@ -1012,6 +1115,22 @@ impl ReviewStore {
             ReviewConn::Sqlite(conn) => persist_history_sqlite(conn, history),
         }
     }
+
+    fn persist_ci_rejections(
+        &self,
+        conn: &ReviewConn,
+        file: &CiRejectionFile,
+    ) -> CaduceusResult<()> {
+        match conn {
+            ReviewConn::Json => {
+                let path = self.state_dir.join(REVIEW_CI_REJECTIONS_FILENAME);
+                let body = serialize_review_ci_rejections(file)?;
+                atomic_write(&path, body.as_bytes())?;
+                sync_dir(&self.state_dir)
+            }
+            ReviewConn::Sqlite(conn) => persist_ci_rejections_sqlite(conn, file),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1130,6 +1249,14 @@ fn load_history_json(path: &Path) -> CaduceusResult<ReviewHistoryFile> {
     match fs::read(path) {
         Ok(_) => parse_review_history(&read_utf8(path, "review history file")?),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(ReviewHistoryFile::empty()),
+        Err(err) => Err(err.into()),
+    }
+}
+
+fn load_ci_rejections_json(path: &Path) -> CaduceusResult<CiRejectionFile> {
+    match fs::read(path) {
+        Ok(_) => parse_review_ci_rejections(&read_utf8(path, "review CI rejections file")?),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(CiRejectionFile::empty()),
         Err(err) => Err(err.into()),
     }
 }
@@ -1603,6 +1730,120 @@ fn persist_history_sqlite(
             corrupt_store(format!(
                 "cannot append review history row {}: {e}",
                 row.review_run_id
+            ))
+        })?;
+    }
+    Ok(())
+}
+
+fn load_ci_rejections_sqlite(
+    conn: &rusqlite::Connection,
+    state_dir: &Path,
+) -> CaduceusResult<CiRejectionFile> {
+    let db_path = state_dir.join(crate::state::store::DB_FILENAME);
+    let mut stmt = conn
+        .prepare(
+            "SELECT owner, repo, pull_request, head_sha
+             FROM review_ci_rejections
+             ORDER BY owner, repo, pull_request, head_sha",
+        )
+        .map_err(|e| {
+            corrupt(
+                &db_path,
+                format!("cannot prepare review_ci_rejections select: {e}"),
+            )
+        })?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(|e| corrupt(&db_path, format!("cannot read review_ci_rejections: {e}")))?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (owner, repo, pull_request, head_sha) =
+            row.map_err(|e| corrupt(&db_path, format!("cannot read rejection row: {e}")))?;
+        let rejection = CiRejection {
+            repository: repository_from_columns(&owner, &repo),
+            pull_request: parse_pr_u64(pull_request)?,
+            head_sha,
+        };
+        validate_ci_rejection(&rejection).map_err(|e| corrupt(&db_path, e.to_string()))?;
+        out.push(rejection);
+    }
+    Ok(CiRejectionFile {
+        version: REVIEW_CI_REJECTIONS_FILE_VERSION,
+        rejections: out,
+    })
+}
+
+/// Keyed SQLite read for one `(repo, pr)` — uses the composite index
+/// instead of scanning the whole rejection table each discovery row.
+fn load_ci_rejected_shas_sqlite(
+    conn: &rusqlite::Connection,
+    state_dir: &Path,
+    repo: &RepositoryId,
+    pr: u64,
+) -> CaduceusResult<Vec<String>> {
+    let db_path = state_dir.join(crate::state::store::DB_FILENAME);
+    let owner = repo.owner.to_ascii_lowercase();
+    let name = repo.repo.to_ascii_lowercase();
+    let mut stmt = conn
+        .prepare(
+            "SELECT head_sha FROM review_ci_rejections
+             WHERE owner = ?1 AND repo = ?2 AND pull_request = ?3
+             ORDER BY head_sha",
+        )
+        .map_err(|e| {
+            corrupt(
+                &db_path,
+                format!("cannot prepare review_ci_rejections keyed select: {e}"),
+            )
+        })?;
+    let rows = stmt
+        .query_map(params![owner, name, pr as i64], |row| {
+            row.get::<_, String>(0)
+        })
+        .map_err(|e| {
+            corrupt(
+                &db_path,
+                format!("cannot read keyed review_ci_rejections: {e}"),
+            )
+        })?;
+    let mut out = Vec::new();
+    for row in rows {
+        let head_sha =
+            row.map_err(|e| corrupt(&db_path, format!("cannot read rejection sha: {e}")))?;
+        out.push(head_sha);
+    }
+    Ok(out)
+}
+
+fn persist_ci_rejections_sqlite(
+    conn: &rusqlite::Connection,
+    file: &CiRejectionFile,
+) -> CaduceusResult<()> {
+    conn.execute("DELETE FROM review_ci_rejections", [])
+        .map_err(|e| corrupt_store(format!("cannot clear review_ci_rejections: {e}")))?;
+    for row in &file.rejections {
+        conn.execute(
+            "INSERT INTO review_ci_rejections (owner, repo, pull_request, head_sha)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                row.repository.owner.to_lowercase(),
+                row.repository.repo.to_lowercase(),
+                row.pull_request as i64,
+                row.head_sha,
+            ],
+        )
+        .map_err(|e| {
+            corrupt_store(format!(
+                "cannot persist CI rejection {}/{}#{}@{}: {e}",
+                row.repository.owner, row.repository.repo, row.pull_request, row.head_sha
             ))
         })?;
     }

@@ -7,6 +7,7 @@
 //! - [`pr`] — pull-request wire model, list/fetch, comment create/update.
 //! - [`verify`] — second-pass label verification before claiming.
 
+pub mod ci_status;
 pub mod client;
 pub mod fork_gate;
 pub mod issue;
@@ -21,6 +22,10 @@ pub mod verify;
 // public symbol name (e.g. `IssueSummary` lives in both `client` and
 // `poll`); the per-leaf module re-exports below are the table of
 // contents for the directory.
+pub use crate::github::ci_status::{
+    fetch_ci_rollup, is_safe_commit_sha, rollup, CheckRun, CheckRunsPage, CiLookupError, CiRollup,
+    CombinedStatus, CHECK_RUNS_PER_PAGE,
+};
 pub use crate::github::client::{
     cache_key, check_voice_or_error, is_valid_etag, poll_interval_from_headers,
     rate_limit_from_headers, super_err_from_voice, CacheEntry, Client, HttpCache, HttpClient,

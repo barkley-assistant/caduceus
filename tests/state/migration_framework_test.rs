@@ -539,7 +539,9 @@ fn no_live_version_flip() {
     // from drifting apart (or reverting) independently.
     // #306 bumps SQLite to v9 (review-queue blocked columns) without
     // a JSON envelope bump — the fields are serde(default) additive.
-    assert_eq!(SCHEMA_VERSION, 9);
+    // #435 bumps SQLite to v10 (`review_ci_rejections`) without a
+    // JSON issue-queue envelope bump.
+    assert_eq!(SCHEMA_VERSION, 10);
     assert_eq!(QUEUE_FILE_VERSION, 2);
 }
 

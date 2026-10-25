@@ -296,6 +296,7 @@ impl LifecycleHarness {
             rerun_command: "/caduceus review".to_string(),
             fork_policy: None,
             publication_mode: PublicationMode::Update,
+            require_ci_pass: false,
         });
         cfg.state_backend = backend.state_backend().to_string();
         cfg.repo_storage_root = root.join("repos");

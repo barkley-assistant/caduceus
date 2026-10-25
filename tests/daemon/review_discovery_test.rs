@@ -131,6 +131,7 @@ fn ar_config(enabled: bool) -> AutoReviewConfig {
         rerun_command: "/caduceus review".to_string(),
         fork_policy: None,
         publication_mode: PublicationMode::Update,
+        require_ci_pass: false,
     }
 }
 
@@ -141,6 +142,7 @@ fn ar_config_drafts(enabled: bool, drafts: bool) -> AutoReviewConfig {
         rerun_command: "/caduceus review".to_string(),
         fork_policy: None,
         publication_mode: PublicationMode::Update,
+        require_ci_pass: false,
     }
 }
 
@@ -148,6 +150,7 @@ fn held_none() -> caduceus::daemon::tick::review_discovery::HeldShas {
     caduceus::daemon::tick::review_discovery::HeldShas {
         active: Vec::new(),
         last_reviewed: None,
+        ci_rejected: Vec::new(),
     }
 }
 
@@ -158,6 +161,7 @@ fn held(
     caduceus::daemon::tick::review_discovery::HeldShas {
         active: active.iter().map(|s| s.to_string()).collect(),
         last_reviewed: last_reviewed.map(|s| s.to_string()),
+        ci_rejected: Vec::new(),
     }
 }
 
@@ -344,6 +348,14 @@ fn event_constants_match_dar_13_catalog() {
     );
     assert_eq!(STALE_SHA_EVENT, "review_stale_sha_observed");
     assert_eq!(FORK_SKIP_EVENT, "review_skipped_fork_unsupported");
+    assert_eq!(
+        caduceus::daemon::tick::review_discovery::SKIPPED_CI_PENDING_EVENT,
+        "review_skipped_ci_pending"
+    );
+    assert_eq!(
+        caduceus::daemon::tick::review_discovery::SKIPPED_CI_FAILED_EVENT,
+        "review_skipped_ci_failed"
+    );
 }
 
 /// Capture `emit_discovered` through the plan's serial +

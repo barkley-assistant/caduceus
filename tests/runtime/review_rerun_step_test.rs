@@ -60,6 +60,7 @@ fn ar_config() -> AutoReviewConfig {
         rerun_command: "/caduceus review".to_string(),
         fork_policy: None,
         publication_mode: PublicationMode::Update,
+        require_ci_pass: false,
     }
 }
 

@@ -150,8 +150,9 @@ caduceus:
 TrustedHost + `auto_review.enabled: true` fails at config load. Run
 `hermes caduceus doctor` / `caduceus doctor` first (want OCI `READY`).
 
-Useful keys: `draft_pull_requests`, `rerun_command` (default
-`/caduceus review`), `publication_mode` (`update`|`new_comment`),
+Useful keys: `draft_pull_requests`, `require_ci_pass` (default
+`true`), `rerun_command` (default `/caduceus review`),
+`publication_mode` (`update`|`new_comment`),
 `fork_policy.allow_fork_prs`, top-level `max_reviews_per_tick`.
 
 ## Config keys operators touch

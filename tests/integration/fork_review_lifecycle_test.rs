@@ -89,6 +89,7 @@ async fn fork_review_lifecycle_end_to_end() {
             allow_fork_prs: vec!["owner/r".to_string()],
         }),
         publication_mode: PublicationMode::Update,
+        require_ci_pass: false,
     });
 
     let fork_url = h.fork_url();

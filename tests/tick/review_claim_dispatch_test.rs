@@ -299,6 +299,7 @@ async fn claim_fixture(
         rerun_command: "/caduceus review".to_string(),
         fork_policy: None,
         publication_mode: PublicationMode::Update,
+        require_ci_pass: false,
     });
     cfg.git_timeout_seconds = 30;
 

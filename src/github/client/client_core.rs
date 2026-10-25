@@ -236,11 +236,16 @@ impl Client {
                         .map(str::to_string)
                         .unwrap_or_default();
                     if is_valid_etag(&etag) {
+                        let link = headers_snapshot
+                            .get(reqwest::header::LINK)
+                            .and_then(|h| h.to_str().ok())
+                            .map(str::to_string);
                         let entry = CacheEntry {
                             etag,
                             status,
                             body: body.clone(),
                             final_url: current.to_string(),
+                            link,
                         };
                         self.cache.put(key.clone(), entry)?;
                     }
@@ -254,11 +259,22 @@ impl Client {
                 }
                 304 => {
                     if let Some(entry) = cached.clone() {
+                        // GitHub 304 responses omit Link; reinject the
+                        // cached value so pagination callers still see
+                        // rel=next after revalidation.
+                        let mut headers = headers_snapshot;
+                        if headers.get(reqwest::header::LINK).is_none() {
+                            if let Some(link) = entry.link.as_deref() {
+                                if let Ok(value) = HeaderValue::from_str(link) {
+                                    headers.insert(reqwest::header::LINK, value);
+                                }
+                            }
+                        }
                         return Ok(Response {
                             status: 304,
                             final_url: entry.final_url.clone(),
                             body: entry.body.clone(),
-                            headers: headers_snapshot,
+                            headers,
                             from_cache: true,
                         });
                     }
