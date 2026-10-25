@@ -34,6 +34,7 @@ use std::pin::Pin;
 
 use tracing::{info, warn};
 
+use crate::github::ci_status::{fetch_ci_rollup, CiLookupError, CiRollup};
 use crate::github::pr::list_pull_requests;
 use crate::github::Client;
 use crate::infra::config::{AutoReviewConfig, Config};
@@ -67,6 +68,12 @@ pub const SKIPPED_DRAFT_EVENT: &str = "review_skipped_draft";
 /// DAR SS5.1 skip event: the exact head SHA is already active in the
 /// review queue or was already reviewed.
 pub const SKIPPED_ALREADY_COMPLETE_EVENT: &str = "review_skipped_already_complete";
+/// Issue #435 skip event: CI checks for this head SHA are still
+/// pending (or awaiting maintainer approval). Re-evaluated next poll.
+pub const SKIPPED_CI_PENDING_EVENT: &str = "review_skipped_ci_pending";
+/// Issue #435 skip event: CI for this head SHA failed; the SHA is
+/// recorded durably so later polls take the already-complete path.
+pub const SKIPPED_CI_FAILED_EVENT: &str = "review_skipped_ci_failed";
 /// DAR SS5.1 poll event: the PR's head moved relative to a SHA the
 /// daemon held (active entry or `last_reviewed_head_sha`).
 pub const STALE_SHA_EVENT: &str = "review_stale_sha_observed";
@@ -120,6 +127,30 @@ fn emit_skipped_already_complete(repo: &str, pr: u64, head_sha: &str) {
     );
 }
 
+/// Emit `review_skipped_ci_pending` (issue #435).
+fn emit_skipped_ci_pending(repo: &str, pr: u64, head_sha: &str) {
+    info!(
+        target: "caduceus",
+        event = SKIPPED_CI_PENDING_EVENT,
+        repo = repo,
+        pr = pr,
+        head_sha = head_sha,
+        "PR skipped: CI checks pending"
+    );
+}
+
+/// Emit `review_skipped_ci_failed` (issue #435).
+fn emit_skipped_ci_failed(repo: &str, pr: u64, head_sha: &str) {
+    info!(
+        target: "caduceus",
+        event = SKIPPED_CI_FAILED_EVENT,
+        repo = repo,
+        pr = pr,
+        head_sha = head_sha,
+        "PR skipped: CI checks failed"
+    );
+}
+
 /// Emit `review_stale_sha_observed` (D6: the held SHA moved).
 fn emit_stale_sha(repo: &str, pr: u64, previous_sha: &str, observed_sha: &str) {
     info!(
@@ -138,7 +169,8 @@ fn emit_stale_sha(repo: &str, pr: u64, previous_sha: &str, observed_sha: &str) {
 // ---------------------------------------------------------------------------
 
 /// What discovery holds for one `(repo, pr)` (D6): the head SHAs of
-/// ACTIVE queue entries and the completed-review pointer.
+/// ACTIVE queue entries, the completed-review pointer, and (when the
+/// CI gate is on) SHAs already rejected for red CI.
 ///
 /// Public so integration tests can build the dedup fixtures
 /// (`classify_discovery_row_for_tests`); no behaviour surface.
@@ -148,6 +180,9 @@ pub struct HeldShas {
     pub active: Vec<String>,
     /// `ReviewState.last_reviewed_head_sha` of the completed review.
     pub last_reviewed: Option<String>,
+    /// Head SHAs recorded in `review_ci_rejections` (issue #435).
+    /// Empty when `require_ci_pass` is false.
+    pub ci_rejected: Vec<String>,
 }
 
 /// One row's verdict (D5). `Ineligible` and `Malformed` carry NO
@@ -194,6 +229,9 @@ pub struct ReviewDiscoveryStats {
     pub skipped_draft: u32,
     pub skipped_fork: u32,
     pub skipped_already_complete: u32,
+    pub skipped_ci_pending: u32,
+    pub skipped_ci_failed: u32,
+    pub ci_lookup_failed: u32,
     pub ineligible: u32,
     pub malformed: u32,
     pub stale_observed: u32,
@@ -311,11 +349,13 @@ pub(crate) fn classify_discovery_row(
     }
 
     // 6. Dedup: the exact `(repo, pr, head_sha)` is already active in
-    //    the queue or already reviewed -> `review_skipped_already_
-    //    complete` (DAR SS4.3 pointer + active-only dedup; history is
-    //    never consulted).
+    //    the queue, already reviewed, or durably CI-rejected ->
+    //    `review_skipped_already_complete` (DAR SS4.3 pointer +
+    //    active-only dedup; history is never consulted). CI-rejected
+    //    SHAs take this path so a later poll makes no CI API call.
     let already_held = held.active.iter().any(|sha| sha == head_sha)
-        || held.last_reviewed.as_deref() == Some(head_sha);
+        || held.last_reviewed.as_deref() == Some(head_sha)
+        || held.ci_rejected.iter().any(|sha| sha == head_sha);
     if already_held {
         return RowDecision {
             action: RowAction::SkipAlreadyComplete,
@@ -596,9 +636,10 @@ pub(crate) async fn poll_review_step(
             };
 
             // Held SHAs for this (repo, pr): active queue entries +
-            // the completed-review pointer (D6). Read per row through
-            // the store's public read API.
-            let held = read_held_shas(review_store, owner, name, pr_number)?;
+            // the completed-review pointer + (when gated) CI
+            // rejections (D6 / #435). Read per row through the
+            // store's public read API.
+            let held = read_held_shas(review_store, owner, name, pr_number, ar.require_ci_pass)?;
 
             let decision = classify_discovery_row(row, ar, &held);
 
@@ -611,6 +652,27 @@ pub(crate) async fn poll_review_step(
 
             match decision.action {
                 RowAction::Admit => {
+                    // CI gate (#435): before any git work and before
+                    // `review_discovered`. Pending / failure do not
+                    // consume the admission budget and must not look
+                    // like a discovery (mirrors draft/fork skips).
+                    match apply_ci_gate(
+                        client,
+                        review_store,
+                        ar,
+                        owner,
+                        name,
+                        repo,
+                        pr_number,
+                        &decision.head_sha,
+                        &mut stats,
+                    )
+                    .await?
+                    {
+                        CiGateOutcome::Admit => {}
+                        CiGateOutcome::Skipped => continue,
+                    }
+
                     emit_discovered(repo, pr_number, &decision.head_sha);
                     stats.discovered += 1;
 
@@ -744,6 +806,25 @@ pub(crate) async fn poll_review_step(
                     stats.skipped_fork += 1;
                 }
                 RowAction::AdmitFork { head_repo } => {
+                    // CI gate (#435): before any quarantine clone and
+                    // before `review_discovered`.
+                    match apply_ci_gate(
+                        client,
+                        review_store,
+                        ar,
+                        owner,
+                        name,
+                        repo,
+                        pr_number,
+                        &decision.head_sha,
+                        &mut stats,
+                    )
+                    .await?
+                    {
+                        CiGateOutcome::Admit => {}
+                        CiGateOutcome::Skipped => continue,
+                    }
+
                     emit_discovered(repo, pr_number, &decision.head_sha);
                     stats.discovered += 1;
 
@@ -860,13 +941,15 @@ pub(crate) async fn poll_review_step(
 }
 
 /// Read the held SHAs for one `(repo, pr)` (D6): active queue
-/// entries' head SHAs + `ReviewState.last_reviewed_head_sha`.
-/// Store-read errors propagate as step-level (D9).
+/// entries' head SHAs + `ReviewState.last_reviewed_head_sha` +
+/// (when `require_ci_pass`) CI-rejected SHAs. Store-read errors
+/// propagate as step-level (D9).
 fn read_held_shas(
     review_store: &ReviewStore,
     owner: &str,
     name: &str,
     pr_number: u64,
+    require_ci_pass: bool,
 ) -> CaduceusResult<HeldShas> {
     let repository = RepositoryId {
         owner: owner.to_string(),
@@ -886,10 +969,84 @@ fn read_held_shas(
         .collect();
     let state = review_store.review_state(&repository, pr_number)?;
     let last_reviewed = state.and_then(|s| s.last_reviewed_head_sha);
+    let ci_rejected = if require_ci_pass {
+        review_store.ci_rejected_head_shas(&repository, pr_number)?
+    } else {
+        Vec::new()
+    };
     Ok(HeldShas {
         active,
         last_reviewed,
+        ci_rejected,
     })
+}
+
+/// Whether the CI gate lets admission continue.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CiGateOutcome {
+    Admit,
+    Skipped,
+}
+
+/// Run the CI gate for one eligible head (issue #435). Shared by
+/// `Admit` and `AdmitFork` so the two arms cannot drift. Returns
+/// `Err` only for step-level failures (rate limit, 401/403).
+#[allow(clippy::too_many_arguments)]
+async fn apply_ci_gate(
+    client: &Client,
+    review_store: &ReviewStore,
+    ar: &AutoReviewConfig,
+    owner: &str,
+    name: &str,
+    repo: &str,
+    pr_number: u64,
+    head_sha: &str,
+    stats: &mut ReviewDiscoveryStats,
+) -> CaduceusResult<CiGateOutcome> {
+    if !ar.require_ci_pass {
+        return Ok(CiGateOutcome::Admit);
+    }
+    match fetch_ci_rollup(client, owner, name, head_sha).await {
+        Ok(CiRollup::Absent | CiRollup::Success) => Ok(CiGateOutcome::Admit),
+        Ok(CiRollup::Pending) => {
+            emit_skipped_ci_pending(repo, pr_number, head_sha);
+            stats.skipped_ci_pending += 1;
+            Ok(CiGateOutcome::Skipped)
+        }
+        Ok(CiRollup::Failure) => {
+            let repository = RepositoryId {
+                owner: owner.to_string(),
+                repo: name.to_string(),
+            };
+            // Persist first, then emit — a store-write failure is
+            // step-level and must not look like a durable skip.
+            review_store.record_ci_rejection(&repository, pr_number, head_sha)?;
+            emit_skipped_ci_failed(repo, pr_number, head_sha);
+            stats.skipped_ci_failed += 1;
+            Ok(CiGateOutcome::Skipped)
+        }
+        Err(CiLookupError::Retryable(msg)) => {
+            warn!(
+                target: "caduceus",
+                error = %msg,
+                repo = repo,
+                pr = pr_number,
+                "review discovery: CI lookup failed; skipping target (next poll retries)"
+            );
+            stats.ci_lookup_failed += 1;
+            Ok(CiGateOutcome::Skipped)
+        }
+        Err(CiLookupError::RateLimited(err) | CiLookupError::Auth(err)) => {
+            warn!(
+                target: "caduceus",
+                error = %err,
+                repo = repo,
+                pr = pr_number,
+                "review discovery: CI gate step-level failure; aborting discovery"
+            );
+            Err(err)
+        }
+    }
 }
 
 /// Public test seam (plan SS4.3, D12): mirrors
@@ -949,6 +1106,18 @@ pub fn emit_skipped_draft_for_tests(repo: &str, pr: u64, head_sha: &str) {
 /// tests.
 pub fn emit_skipped_already_complete_for_tests(repo: &str, pr: u64, head_sha: &str) {
     emit_skipped_already_complete(repo, pr, head_sha)
+}
+
+/// Public test seam (D12): the structured `review_skipped_ci_pending`
+/// emitter, for event-capture tests.
+pub fn emit_skipped_ci_pending_for_tests(repo: &str, pr: u64, head_sha: &str) {
+    emit_skipped_ci_pending(repo, pr, head_sha)
+}
+
+/// Public test seam (D12): the structured `review_skipped_ci_failed`
+/// emitter, for event-capture tests.
+pub fn emit_skipped_ci_failed_for_tests(repo: &str, pr: u64, head_sha: &str) {
+    emit_skipped_ci_failed(repo, pr, head_sha)
 }
 
 /// Public test seam (D12): the structured `review_stale_sha_observed`

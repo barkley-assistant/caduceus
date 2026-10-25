@@ -1,8 +1,7 @@
 //! Review-era persistence (issue #295, DAR §4.1-4.3).
 //!
-//! Three sibling stores live beside the issue queue, one per surface,
-//! each with a JSON mirror file and a SQLite table in the same
-//! `state.db`:
+//! Sibling stores live beside the issue queue, each with a JSON mirror
+//! file and a SQLite table in the same `state.db`:
 //!
 //! - review queue (`review_queue.json` / `review_queue_entries`) —
 //!   entries keyed by the canonical [`review_queue_key`] of a
@@ -11,7 +10,10 @@
 //!   keyed by the canonical lowercase [`review_state_key`];
 //! - append-only history (`review_history.json` / `review_history`) —
 //!   identity = `review_run_id`, unique per completed run;
-//!   `(repo, pr, head_sha)` is deliberately NOT unique.
+//!   `(repo, pr, head_sha)` is deliberately NOT unique;
+//! - CI-failure rejection set (`review_ci_rejections.json` /
+//!   `review_ci_rejections`, issue #435) — head SHAs skipped
+//!   durably after a red CI gate.
 //!
 //! Version policy: these files are born at v1 in the same change as
 //! their first reader, so there is no legitimate older version — a
@@ -28,6 +30,7 @@
 //! reaper (which parses every `claims/*.claim` as an issue-shaped
 //! `ClaimFileBody`) never sees them.
 
+mod ci_rejections;
 mod claim;
 mod history;
 mod queue;
@@ -41,15 +44,16 @@ use crate::review::{
     REVIEW_SCHEMA_VERSION,
 };
 
+pub use ci_rejections::{CiRejection, CiRejectionFile};
 pub use claim::{ClaimedReview, ReviewClaimFileBody, ReviewClaimToken};
 pub use history::{ReviewHistoryFile, ReviewHistoryRow};
 pub use queue::{
     EnqueueReason, ReviewEnqueueOutcome, ReviewPhase, ReviewQueueEntry, ReviewQueueState,
 };
 pub use state::{
-    parse_review_history, parse_review_queue_state, parse_review_state_map,
-    serialize_review_history, serialize_review_queue_state, serialize_review_state_map,
-    ReviewStateMap, ReviewStore,
+    parse_review_ci_rejections, parse_review_history, parse_review_queue_state,
+    parse_review_state_map, serialize_review_ci_rejections, serialize_review_history,
+    serialize_review_queue_state, serialize_review_state_map, ReviewStateMap, ReviewStore,
 };
 
 use crate::review::ReviewTarget;
@@ -63,6 +67,9 @@ pub const REVIEW_STATE_FILE_VERSION: u32 = 1;
 /// Envelope version of `review_history.json`. Born at v1 with its
 /// first reader in this change.
 pub const REVIEW_HISTORY_FILE_VERSION: u32 = 1;
+/// Envelope version of `review_ci_rejections.json`. Born at v1 with
+/// its first reader (issue #435).
+pub const REVIEW_CI_REJECTIONS_FILE_VERSION: u32 = 1;
 /// On-disk format of a review claim file.
 pub const REVIEW_CLAIM_FILE_VERSION: u32 = 1;
 
@@ -72,6 +79,8 @@ pub const REVIEW_QUEUE_FILENAME: &str = "review_queue.json";
 pub const REVIEW_STATE_FILENAME: &str = "review_state.json";
 /// Name of the review history file inside `<state_dir>`.
 pub const REVIEW_HISTORY_FILENAME: &str = "review_history.json";
+/// Name of the CI-failure rejection file inside `<state_dir>`.
+pub const REVIEW_CI_REJECTIONS_FILENAME: &str = "review_ci_rejections.json";
 /// Name of the review claims directory inside `<state_dir>`.
 pub const REVIEW_CLAIMS_DIRNAME: &str = "review-claims";
 /// Name of the `flock` file serialising review-store mutations.

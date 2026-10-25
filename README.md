@@ -120,7 +120,9 @@ Details:
    ```
 
 4. For PR review, set `executor_mode: oci`, a valid `sandbox:`, and
-   `auto_review.enabled: true`. See [docs/auto-review.md](docs/auto-review.md).
+   `auto_review.enabled: true`. By default Caduceus waits for green CI
+   (or no CI) before reviewing; set `require_ci_pass: false` to review
+   on every push. See [docs/auto-review.md](docs/auto-review.md).
 5. First real traffic: `CADUCEUS_DRY_RUN=1`. Dry-run does everything except
    commit / push / comment / label / PR / close, and writes
    `<state_dir>/runs/<run_id>.dry-run.md`.

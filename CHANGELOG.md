@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
 
 ### Added
 
+- **Auto Review CI gate (default on).** New
+  `auto_review.require_ci_pass` (default `true`) admits a PR head only
+  when combined commit statuses + check runs are green, or when no CI
+  is reported at all. Pending checks defer with
+  `review_skipped_ci_pending` (re-evaluated every poll). A failing
+  head is recorded in `review_ci_rejections` / SQLite schema v10 and
+  later polls emit `review_skipped_already_complete` without another
+  CI call. Set `require_ci_pass: false` to restore fire-on-push. A
+  schema-10 store will not open on an older binary. Closes #435.
+
 - **Status surfaces review pipeline activity (#433).** `caduceus status`
   / `status --json` schema `7.8.0` adds zero-filled `review_phases`,
   read from the configured review backend without opening the store.

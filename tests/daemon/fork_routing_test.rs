@@ -66,6 +66,7 @@ fn ar_config(allow_fork_prs: &[&str]) -> AutoReviewConfig {
             allow_fork_prs: allow_fork_prs.iter().map(|s| s.to_string()).collect(),
         }),
         publication_mode: PublicationMode::Update,
+        require_ci_pass: false,
     }
 }
 
@@ -81,6 +82,7 @@ fn discovery_config(root: &Path, api_base: &str) -> Config {
         rerun_command: "/caduceus review".to_string(),
         fork_policy: None,
         publication_mode: PublicationMode::Update,
+        require_ci_pass: false,
     });
     cfg
 }
@@ -89,6 +91,7 @@ fn empty_held() -> HeldShas {
     HeldShas {
         active: Vec::new(),
         last_reviewed: None,
+        ci_rejected: Vec::new(),
     }
 }
 

@@ -137,6 +137,39 @@ fn matrix_enabled_oci_valid_sandbox_is_the_ok_shape() {
     let ar = cfg.auto_review().expect("block resolved");
     assert!(ar.enabled);
     assert!(ar.draft_pull_requests);
+    // Issue #435: omitted require_ci_pass defaults ON.
+    assert!(ar.require_ci_pass);
+}
+
+#[test]
+fn require_ci_pass_defaults_to_true_when_omitted() {
+    let cfg = load(&format!(
+        "{}auto_review:\n  enabled: false\n",
+        trusted_host_base()
+    ))
+    .expect("config loads");
+    let ar = cfg.auto_review().expect("block present");
+    assert!(ar.require_ci_pass);
+}
+
+#[test]
+fn require_ci_pass_explicit_false_wins() {
+    let cfg = load(&format!(
+        "{}auto_review:\n  enabled: false\n  require_ci_pass: false\n",
+        trusted_host_base()
+    ))
+    .expect("config loads");
+    assert!(!cfg.auto_review().expect("block").require_ci_pass);
+}
+
+#[test]
+fn require_ci_pass_explicit_true_wins() {
+    let cfg = load(&format!(
+        "{}auto_review:\n  enabled: false\n  require_ci_pass: true\n",
+        trusted_host_base()
+    ))
+    .expect("config loads");
+    assert!(cfg.auto_review().expect("block").require_ci_pass);
 }
 
 #[test]

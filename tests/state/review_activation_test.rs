@@ -177,9 +177,9 @@ fn pre_295_binary_rejection_is_structural() {
 #[test]
 fn v8_is_exactly_the_review_schema() {
     // "v8 == implemented schema": a fresh current store contains
-    // exactly the pre-#295 table set PLUS the three review tables (and
+    // exactly the pre-#295 table set PLUS the review-era tables (and
     // no other additions). #306 (v9) only adds COLUMNS to
-    // review_queue_entries, so the table set is unchanged.
+    // review_queue_entries; #435 (v10) adds `review_ci_rejections`.
     let dir = temp_dir("v8-exact");
     let db_path = dir.join("state.db");
     let conn = open(&db_path).expect("open fresh review-schema store");
@@ -206,10 +206,11 @@ fn v8_is_exactly_the_review_schema() {
         "circuit_state",
         "leases",
         "oci_runs",
-        // The v8 additions (#295).
+        // The v8 additions (#295) plus v10 CI-rejection set (#435).
         "review_queue_entries",
         "review_state",
         "review_history",
+        "review_ci_rejections",
     ]
     .iter()
     .map(|s| s.to_string())
@@ -217,7 +218,7 @@ fn v8_is_exactly_the_review_schema() {
     expected.sort();
     assert_eq!(
         tables, expected,
-        "the review schema adds exactly the three review tables"
+        "the review schema adds the review-era tables plus CI rejections"
     );
     let _ = fs::remove_dir_all(&dir);
 }
@@ -232,10 +233,10 @@ fn registry_last_step_reaches_current_and_review_activation_exists() {
             .any(|&(from, to, label)| from == 7 && to == 8 && label == "review-era structures"),
         "the v7→v8 review-era step (#295) must exist in the registry"
     );
-    // The chain's last step reaches SCHEMA_VERSION (#306: 8→9).
+    // The chain's last step reaches SCHEMA_VERSION (#435: 9→10).
     let (last_from, last_to, last_label) = *chain.last().unwrap();
-    assert_eq!(last_from, 8);
-    assert_eq!(last_to, 9);
-    assert_eq!(last_label, "review_queue_entries blocked columns");
+    assert_eq!(last_from, 9);
+    assert_eq!(last_to, 10);
+    assert_eq!(last_label, "review_ci_rejections table (apply_schema)");
     assert_eq!(last_to, SCHEMA_VERSION);
 }

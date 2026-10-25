@@ -42,6 +42,7 @@ fn discovery_config(root: &Path, api_base: &str) -> Config {
         rerun_command: "/caduceus review".to_string(),
         fork_policy: None,
         publication_mode: caduceus::config::PublicationMode::Update,
+        require_ci_pass: false,
     });
     cfg
 }

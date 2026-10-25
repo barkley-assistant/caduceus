@@ -15,7 +15,8 @@ use caduceus::runtime::audit::review_events::{
     REVIEW_FAILED_VERDICT_EVENT, REVIEW_MIGRATION_TERMINATED_INVESTIGATION_EVENT,
     REVIEW_PASSED_EVENT, REVIEW_RETRY_SCHEDULED_EVENT, REVIEW_SKIPPED_HEAD_SHA_UNAVAILABLE_EVENT,
     REVIEW_SKIPPED_PR_GONE_EVENT, REVIEW_STARTED_EVENT, REVIEW_WORKER_COMPLETED_EVENT,
-    SKIPPED_ALREADY_COMPLETE_EVENT, SKIPPED_DRAFT_EVENT, STALE_SHA_EVENT,
+    SKIPPED_ALREADY_COMPLETE_EVENT, SKIPPED_CI_FAILED_EVENT, SKIPPED_CI_PENDING_EVENT,
+    SKIPPED_DRAFT_EVENT, STALE_SHA_EVENT,
 };
 
 #[test]
@@ -30,6 +31,8 @@ fn dar_section_13_catalog_names_match_exactly() {
     );
     assert_eq!(SKIPPED_DRAFT_EVENT, "review_skipped_draft");
     assert_eq!(FORK_SKIP_EVENT, "review_skipped_fork_unsupported");
+    assert_eq!(SKIPPED_CI_PENDING_EVENT, "review_skipped_ci_pending");
+    assert_eq!(SKIPPED_CI_FAILED_EVENT, "review_skipped_ci_failed");
     assert_eq!(ADMITTED_EVENT, "review_admitted");
     assert_eq!(REVIEW_STARTED_EVENT, "review_started");
     assert_eq!(REVIEW_WORKER_COMPLETED_EVENT, "review_worker_completed");

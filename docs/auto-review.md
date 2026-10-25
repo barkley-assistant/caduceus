@@ -27,9 +27,10 @@ Module map and tick placement:
 - Re-reviews the current head on demand when a trusted author comments
   `/caduceus review` on the PR.
 
-What it does **not** do: no GitHub Checks API, no inline comments, no
-auto-merge, no coalescing of intermediate revisions (every admitted SHA is
-reviewed).
+What it does **not** do: no inline review comments, no auto-merge, no
+coalescing of intermediate revisions (every admitted SHA is reviewed). It
+**does** read GitHub's combined commit status and check-runs APIs to gate
+admission when `require_ci_pass` is on (the default).
 
 ## Enabling Auto Review
 
@@ -43,6 +44,7 @@ sandbox:
   # ... other sandbox fields as documented in the wiki
 auto_review:
   enabled: true
+  # require_ci_pass: true   # default — omit, or set false for fire-on-push
 ```
 
 Before enabling, run `caduceus doctor` to confirm OCI readiness.
@@ -73,12 +75,17 @@ A PR is admitted for review only when **all** of the following hold:
 
 - The PR is open.
 - The PR is not a draft, unless `draft_pull_requests: true` is set.
-- The head SHA has not been reviewed before and is not already queued.
+- The head SHA has not been reviewed before, is not already queued, and is
+  not recorded as CI-failed (when `require_ci_pass` is on).
 - The PR is not a fork, unless the base repo is listed in
   `auto_review.fork_policy.allow_fork_prs`. Allowed forks are reviewed through a
   per-PR quarantine clone — a throwaway clone that is never a second remote on
   the persistent mirror; see
   [docs/security/fork-trust-posture.md](security/fork-trust-posture.md).
+- With `require_ci_pass: true` (the default): the head SHA's combined commit
+  status + check runs on the **watched base repo** are success, or no CI is
+  reported at all. Pending checks defer admission; a failing SHA is skipped
+  durably.
 
 When a PR does not qualify, the daemon emits a structured skip event rather than
 silently ignoring it:
@@ -87,8 +94,21 @@ silently ignoring it:
 |---|---|
 | Draft PR | `review_skipped_draft` |
 | Fork PR (not in `allow_fork_prs`) | `review_skipped_fork_unsupported` |
-| Already-reviewed SHA | `review_skipped_already_complete` |
+| Already-reviewed / queued / CI-failed SHA | `review_skipped_already_complete` |
+| CI still pending (or `action_required`) | `review_skipped_ci_pending` |
+| CI failed (first sight) | `review_skipped_ci_failed` |
 | Closed or merged PR | Never admitted |
+
+### CI gate limits (v1)
+
+- Stuck pending (checks never complete) is never reviewed.
+- A green re-run of a previously failed SHA (same commit) is not auto-admitted;
+  use `/caduceus review` or push a new head.
+- Optional check failures block (no required-checks-only filter).
+- Fork CI that exists only on the head repository looks like no CI and is
+  admitted (the gate queries the watched base repo only).
+- If a poll lands before GitHub has registered any check, both counts are 0 and
+  the SHA is admitted; a later red result does not cancel that run.
 
 ### Admission budget
 
@@ -211,6 +231,7 @@ failure, not a silent ignore.
 | `auto_review.draft_pull_requests` | `bool` | `false` | `:219` | When `false`, drafts skip with `review_skipped_draft` |
 | `auto_review.rerun_command` | `string` | `/caduceus review` | `:226` | Trusted-comment re-review trigger; must be non-empty and start with `/` |
 | `auto_review.fork_policy.allow_fork_prs` | `list[string]` | `[]` | `:228-262` | Per-repo opt-in for fork PRs; empty = fail-closed, no fork review |
+| `auto_review.require_ci_pass` | `bool` | `true` | `:238` | Gate admission on green CI; `false` restores fire-on-push |
 | `max_reviews_per_tick` | `u32` | `worker_parallelism × 4` | `:303` | Top-level; `0` = unbounded |
 | `state_backend` | `String` | `"json"` | `:244` | `"json"` or `"sqlite"`; review supports both |
 | `executor_mode` | `ExecutorKind` | `TrustedHost` | `:841` | Auto Review requires `oci` |
@@ -263,7 +284,11 @@ Checklist:
 3. Does `caduceus review status` show queued or in-progress entries?
 4. Are PRs open, non-draft (or `draft_pull_requests: true` set), and not forks
    (or listed in `allow_fork_prs`)?
-5. Check the daemon log for skip events (`review_skipped_draft`,
+5. With the default CI gate: are checks green (or absent)? Look for
+   `review_skipped_ci_pending` / `review_skipped_ci_failed`. A 401/403 in the
+   log means the token cannot read Checks / Commit statuses (fine-grained
+   tokens need those permissions; classic `repo` already covers both).
+6. Check the daemon log for other skip events (`review_skipped_draft`,
    `review_skipped_fork_unsupported`, etc.).
 
 ### Stuck review

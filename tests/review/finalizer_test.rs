@@ -929,6 +929,7 @@ fn new_comment_cfg(mut cfg: Config) -> Config {
         rerun_command: "/caduceus review".to_string(),
         fork_policy: None,
         publication_mode: PublicationMode::NewComment,
+        require_ci_pass: false,
     });
     cfg
 }

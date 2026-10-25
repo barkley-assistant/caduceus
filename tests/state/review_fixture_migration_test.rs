@@ -140,6 +140,10 @@ fn pre_n_migration_chain_covers_v7_to_current() {
         chain.iter().any(|(from, to, _)| *from == 8 && *to == 9),
         "chain must contain the v8→v9 blocked-columns step"
     );
+    assert!(
+        chain.iter().any(|(from, to, _)| *from == 9 && *to == 10),
+        "chain must contain the v9→v10 CI-rejections step"
+    );
     let last_to = chain.last().map(|(_, to, _)| *to);
     assert_eq!(
         last_to,
@@ -257,7 +261,12 @@ fn n_era_sqlite_loads_cleanly_at_current_version() {
     // The committed db itself has ≥1 review_state row (the #331
     // reconciliation input).
     let conn = Connection::open(&db_path).expect("reopen n-era db");
-    for review_table in ["review_queue_entries", "review_state", "review_history"] {
+    for review_table in [
+        "review_queue_entries",
+        "review_state",
+        "review_history",
+        "review_ci_rejections",
+    ] {
         assert!(
             table_exists(&conn, review_table),
             "n-era fixture must contain the review-era table {review_table}"

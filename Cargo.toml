@@ -697,6 +697,10 @@ name = "fork_gate_test"
 path = "tests/github/fork_gate_test.rs"
 
 [[test]]
+name = "ci_status_test"
+path = "tests/github/ci_status_test.rs"
+
+[[test]]
 name = "prompt_test"
 path = "tests/github/prompt_test.rs"
 
@@ -813,6 +817,10 @@ name = "review_discovery_test"
 path = "tests/daemon/review_discovery_test.rs"
 
 [[test]]
+name = "review_ci_gate_test"
+path = "tests/daemon/review_ci_gate_test.rs"
+
+[[test]]
 name = "review_skip_route_test"
 path = "tests/tick/review_skip_route_test.rs"
 
@@ -827,6 +835,10 @@ path = "tests/tick/review_drain_test.rs"
 [[test]]
 name = "review_fixture_migration_test"
 path = "tests/state/review_fixture_migration_test.rs"
+
+[[test]]
+name = "ci_rejections_test"
+path = "tests/state/ci_rejections_test.rs"
 
 [[test]]
 name = "investigation_removal_test"

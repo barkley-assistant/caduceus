@@ -1,8 +1,9 @@
 # N-era fixture provenance
 
 These files are **compatibility artefacts produced by the current
-release-N code** (caduceus at the v9 SQLite / v2 JSON / review-sidecar
-v1 era), not synthetic hand-written JSON.
+release-N code** (caduceus at the v10 SQLite / v2 JSON / review-sidecar
+v1 era, including `review_ci_rejections` from issue #435), not
+synthetic hand-written JSON.
 
 - Generator: `tests/fixtures/state/generate_n_era.rs` (temporary,
   removed before the PR lands). It drives the CURRENT store APIs —
@@ -30,11 +31,11 @@ Contents:
   `QUEUE_FILE_VERSION`), written through `StateStore::open`'s own
   persist path (empty queue: the issue queue is the pre-review
   sibling and carries no rows in this fixture).
-- `state.db` — SQLite at `schema_version = 9` (current
-  `SCHEMA_VERSION`), containing the three review tables with one
-  `review_state` row, one `review_history` row, and one
-  `review_queue_entries` row (InProgress), WAL-checkpointed so no
-  `-wal`/`-shm` sidecars ship.
+- `state.db` — SQLite at `schema_version = 10` (current
+  `SCHEMA_VERSION`), containing the three review tables plus
+  `review_ci_rejections`, with one `review_state` row, one
+  `review_history` row, and one `review_queue_entries` row
+  (InProgress), WAL-checkpointed so no `-wal`/`-shm` sidecars ship.
 - `review_queue.json` — v1 review queue sidecar, one InProgress
   entry (`owner/r#7` at head `bbbb2222…`).
 - `review_state.json` — v1 review state sidecar, one Published

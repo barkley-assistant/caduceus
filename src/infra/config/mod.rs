@@ -235,6 +235,11 @@ pub struct AutoReviewConfig {
     /// history untouched. Absent key = `Update`; unknown value =
     /// hard config error (the #380 lesson).
     pub publication_mode: PublicationMode,
+    /// Gate auto-review admission on green CI for the head SHA
+    /// (issue #435). Default `true`: admit only when combined
+    /// statuses + check runs are success, or when no CI is reported
+    /// at all. `false` restores fire-on-push admission.
+    pub require_ci_pass: bool,
 }
 
 /// How each review generation reaches the PR: PATCH the single sticky
@@ -281,6 +286,7 @@ pub struct RawAutoReviewConfig {
     pub rerun_command: Option<String>,
     pub fork_policy: Option<RawForkPolicy>,
     pub publication_mode: Option<String>,
+    pub require_ci_pass: Option<bool>,
 }
 
 /// Raw layer — mirrors the schema with all-`Option` fields.
@@ -980,6 +986,8 @@ impl Config {
                 rerun_command,
                 fork_policy,
                 publication_mode,
+                // Issue #435: default ON — skip red revisions.
+                require_ci_pass: raw_ar.require_ci_pass.unwrap_or(true),
             }
         });
         if let Some(ar) = &auto_review {

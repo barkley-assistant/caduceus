@@ -90,7 +90,17 @@ use crate::infra::error::{store_version_guidance, CaduceusError, CaduceusResult}
 ///   only when it exists without the columns. The JSON counterpart
 ///   needs no envelope bump: the fields are additive
 ///   `#[serde(default)]` on the v1-born `review_queue.json` entries.
-pub const SCHEMA_VERSION: i64 = 9;
+///
+/// ## v10
+///
+/// - `review_ci_rejections` table (issue #435): durable set of
+///   `(owner, repo, pull_request, head_sha)` triples skipped by the
+///   auto-review CI gate after a red combined status / check-run
+///   rollup. The v9→v10 migration step is structural only
+///   (`m_v4_v5` precedent); the table is created by `apply_schema`
+///   via `SCHEMA_SQL`. JSON counterpart is the new v1-born
+///   `review_ci_rejections.json` sidecar.
+pub const SCHEMA_VERSION: i64 = 10;
 
 /// The last schema version that is deliberately rejected instead of
 /// migrated. Keeping this explicit prevents a future schema bump from
@@ -237,6 +247,16 @@ CREATE TABLE IF NOT EXISTS review_history (
 CREATE INDEX IF NOT EXISTS idx_review_history_repo ON review_history(owner, repo, pull_request);
 CREATE INDEX IF NOT EXISTS idx_review_history_pr ON review_history(pull_request);
 CREATE INDEX IF NOT EXISTS idx_review_history_head_sha ON review_history(owner, repo, pull_request, head_sha);
+
+CREATE TABLE IF NOT EXISTS review_ci_rejections (
+    owner        TEXT NOT NULL,
+    repo         TEXT NOT NULL,
+    pull_request INTEGER NOT NULL,
+    head_sha     TEXT NOT NULL,
+    PRIMARY KEY (owner, repo, pull_request, head_sha)
+);
+CREATE INDEX IF NOT EXISTS idx_review_ci_rejections_pr
+    ON review_ci_rejections(owner, repo, pull_request);
 ";
 
 // Open / initialise.
@@ -476,6 +496,12 @@ const SQLITE_MIGRATIONS: &[Migration] = &[
         label: "review_queue_entries blocked columns",
         apply: m_v8_v9,
     },
+    Migration {
+        from: 9,
+        to: 10,
+        label: "review_ci_rejections table (apply_schema)",
+        apply: m_v9_v10,
+    },
 ];
 
 /// Validate the registry's chain invariants (D1/D4): steps are strictly
@@ -702,6 +728,14 @@ fn m_v8_v9(tx: &Transaction) -> CaduceusResult<()> {
         )
         .map_err(|e| CaduceusError::Other(format!("v8→v9 ALTER review_queue_entries: {e}")))?;
     }
+    Ok(())
+}
+
+/// Migrate from schema v9 to v10. The `review_ci_rejections` table is
+/// created by `apply_schema` via `SCHEMA_SQL`, so this is a structural
+/// no-op (`m_v4_v5` / `m_v7_v8` precedent).
+fn m_v9_v10(tx: &Transaction) -> CaduceusResult<()> {
+    let _ = tx;
     Ok(())
 }
 
