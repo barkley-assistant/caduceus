@@ -340,9 +340,14 @@ impl ReviewStore {
         repo: &RepositoryId,
         pr: u64,
     ) -> CaduceusResult<Vec<String>> {
-        self.with_shared(|store, conn| {
-            let file = store.load_ci_rejections(conn)?;
-            Ok(file.head_shas_for(repo, pr).into_iter().collect())
+        self.with_shared(|store, conn| match conn {
+            ReviewConn::Json => {
+                let file = store.load_ci_rejections(conn)?;
+                Ok(file.head_shas_for(repo, pr).into_iter().collect())
+            }
+            ReviewConn::Sqlite(sqlite) => {
+                load_ci_rejected_shas_sqlite(sqlite, &store.state_dir, repo, pr)
+            }
         })
     }
 
@@ -1774,6 +1779,48 @@ fn load_ci_rejections_sqlite(
         version: REVIEW_CI_REJECTIONS_FILE_VERSION,
         rejections: out,
     })
+}
+
+/// Keyed SQLite read for one `(repo, pr)` — uses the composite index
+/// instead of scanning the whole rejection table each discovery row.
+fn load_ci_rejected_shas_sqlite(
+    conn: &rusqlite::Connection,
+    state_dir: &Path,
+    repo: &RepositoryId,
+    pr: u64,
+) -> CaduceusResult<Vec<String>> {
+    let db_path = state_dir.join(crate::state::store::DB_FILENAME);
+    let owner = repo.owner.to_ascii_lowercase();
+    let name = repo.repo.to_ascii_lowercase();
+    let mut stmt = conn
+        .prepare(
+            "SELECT head_sha FROM review_ci_rejections
+             WHERE owner = ?1 AND repo = ?2 AND pull_request = ?3
+             ORDER BY head_sha",
+        )
+        .map_err(|e| {
+            corrupt(
+                &db_path,
+                format!("cannot prepare review_ci_rejections keyed select: {e}"),
+            )
+        })?;
+    let rows = stmt
+        .query_map(params![owner, name, pr as i64], |row| {
+            row.get::<_, String>(0)
+        })
+        .map_err(|e| {
+            corrupt(
+                &db_path,
+                format!("cannot read keyed review_ci_rejections: {e}"),
+            )
+        })?;
+    let mut out = Vec::new();
+    for row in rows {
+        let head_sha =
+            row.map_err(|e| corrupt(&db_path, format!("cannot read rejection sha: {e}")))?;
+        out.push(head_sha);
+    }
+    Ok(out)
 }
 
 fn persist_ci_rejections_sqlite(

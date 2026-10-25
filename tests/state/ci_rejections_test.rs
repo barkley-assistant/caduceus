@@ -3,7 +3,7 @@
 use caduceus::review::RepositoryId;
 use caduceus::state::review::{
     parse_review_ci_rejections, serialize_review_ci_rejections, ReviewStore,
-    REVIEW_CI_REJECTIONS_FILE_VERSION,
+    MAX_CI_REJECTIONS_PER_PR, REVIEW_CI_REJECTIONS_FILE_VERSION,
 };
 use caduceus::store::{open, SCHEMA_VERSION};
 use rusqlite::Connection;
@@ -65,6 +65,53 @@ fn sqlite_round_trip() {
     };
     let shas2 = store.ci_rejected_head_shas(&other, 3).expect("read");
     assert_eq!(shas2, vec!["deadbeef".to_string()]);
+}
+
+#[test]
+fn per_pr_cap_drops_oldest_json() {
+    let dir = tempdir().expect("tempdir");
+    let store = ReviewStore::open(dir.path()).expect("open");
+    let r = repo();
+    let other = RepositoryId {
+        owner: "other".to_string(),
+        repo: "x".to_string(),
+    };
+    // Unrelated PR must not be pruned by this PR's cap.
+    store
+        .record_ci_rejection(&other, 1, "keepme")
+        .expect("other");
+    for i in 0..(MAX_CI_REJECTIONS_PER_PR + 3) {
+        let sha = format!("sha{i:04x}");
+        store.record_ci_rejection(&r, 7, &sha).expect("record");
+    }
+    let shas = store.ci_rejected_head_shas(&r, 7).expect("read");
+    assert_eq!(shas.len(), MAX_CI_REJECTIONS_PER_PR);
+    assert!(!shas.iter().any(|s| s == "sha0000"));
+    assert!(shas.iter().any(|s| s == "sha0022")); // 0..35 → keep 3..34
+    let other_shas = store.ci_rejected_head_shas(&other, 1).expect("other read");
+    assert_eq!(other_shas, vec!["keepme".to_string()]);
+}
+
+#[test]
+fn sqlite_keyed_read_isolates_prs() {
+    let dir = tempdir().expect("tempdir");
+    let store = ReviewStore::open_sqlite(dir.path()).expect("open sqlite");
+    let r = repo();
+    let other = RepositoryId {
+        owner: "other".to_string(),
+        repo: "x".to_string(),
+    };
+    store.record_ci_rejection(&r, 7, "aaa").expect("a");
+    store.record_ci_rejection(&r, 8, "bbb").expect("b");
+    store.record_ci_rejection(&other, 7, "ccc").expect("c");
+    assert_eq!(
+        store.ci_rejected_head_shas(&r, 7).expect("r7"),
+        vec!["aaa".to_string()]
+    );
+    assert_eq!(
+        store.ci_rejected_head_shas(&r, 8).expect("r8"),
+        vec!["bbb".to_string()]
+    );
 }
 
 #[test]

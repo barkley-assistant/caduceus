@@ -120,7 +120,9 @@ pub fn rollup(combined: &CombinedStatus, checks: &CheckRunsPage) -> CiRollup {
     if status_count == 0 && check_count == 0 {
         return CiRollup::Absent;
     }
-    CiRollup::Success
+    // Defensive: every non-empty input path sets a flag above.
+    // Never admit from this arm.
+    CiRollup::Pending
 }
 
 /// Single check-run classifier shared by the pure rollup and the
@@ -259,16 +261,10 @@ async fn fetch_check_runs(
             )));
         }
     }
-    // Incomplete collection (missing Link, short page, empty array
-    // while total_count > 0): do not admit on a partial view.
-    let total = collected.total_count.unwrap_or(0) as usize;
-    if total > collected.check_runs.len() {
-        return Err(CiLookupError::Retryable(format!(
-            "CI gate: check-runs for {owner}/{repo}@{head_sha} incomplete \
-             (total_count {total} > collected {})",
-            collected.check_runs.len()
-        )));
-    }
+    // Completeness is Link / page-cap termination only. Do not
+    // compare `total_count` to the collected array: with
+    // `filter=latest`, GitHub's total can include superseded runs
+    // and would permanently Retryable-wedge green heads.
     Ok(collected)
 }
 

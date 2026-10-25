@@ -14,6 +14,11 @@ use serde::{Deserialize, Serialize};
 use crate::review::RepositoryId;
 use crate::state::review::review_state_key;
 
+/// Cap on retained red head SHAs per `(owner, repo, pr)`.
+/// Older entries are dropped on insert so the set cannot grow
+/// without bound across force-push cycles.
+pub const MAX_CI_REJECTIONS_PER_PR: usize = 32;
+
 /// One rejected `(repo, pr, head_sha)` triple.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -49,7 +54,9 @@ impl CiRejectionFile {
             .collect()
     }
 
-    /// Insert if absent.
+    /// Insert if absent. Caps retained SHAs per `(repo, pr)` at
+    /// [`MAX_CI_REJECTIONS_PER_PR`], dropping the oldest for that
+    /// key when the cap would be exceeded.
     pub fn insert(&mut self, rejection: CiRejection) {
         if self.rejections.iter().any(|r| {
             r.pull_request == rejection.pull_request
@@ -62,6 +69,25 @@ impl CiRejectionFile {
                     .eq_ignore_ascii_case(&rejection.repository.repo)
         }) {
             return;
+        }
+        let want = review_state_key(&rejection.repository, rejection.pull_request);
+        let mut for_pr = 0usize;
+        for r in &self.rejections {
+            if review_state_key(&r.repository, r.pull_request) == want {
+                for_pr += 1;
+            }
+        }
+        while for_pr >= MAX_CI_REJECTIONS_PER_PR {
+            if let Some(idx) = self
+                .rejections
+                .iter()
+                .position(|r| review_state_key(&r.repository, r.pull_request) == want)
+            {
+                self.rejections.remove(idx);
+                for_pr -= 1;
+            } else {
+                break;
+            }
         }
         self.rejections.push(rejection);
     }

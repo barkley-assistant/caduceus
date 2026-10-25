@@ -44,7 +44,7 @@ use crate::review::{
     REVIEW_SCHEMA_VERSION,
 };
 
-pub use ci_rejections::{CiRejection, CiRejectionFile};
+pub use ci_rejections::{CiRejection, CiRejectionFile, MAX_CI_REJECTIONS_PER_PR};
 pub use claim::{ClaimedReview, ReviewClaimFileBody, ReviewClaimToken};
 pub use history::{ReviewHistoryFile, ReviewHistoryRow};
 pub use queue::{

@@ -1,13 +1,13 @@
 //! Pure CI rollup truth table and fetch-layer pagination
-//! (issue #435).
+//! (issue #435 / PR #436 review).
 
 use caduceus::config::Config;
 use caduceus::github::{
-    fetch_ci_rollup, rollup, CheckRun, CheckRunsPage, CiLookupError, CiRollup, Client,
+    fetch_ci_rollup, is_safe_commit_sha, rollup, CheckRun, CheckRunsPage, CiRollup, Client,
     CombinedStatus, HttpCache,
 };
-use wiremock::matchers::{method, path, path_regex};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use wiremock::matchers::{method, path, query_param, query_param_is_missing};
+use wiremock::{Match, Mock, MockServer, Request, ResponseTemplate};
 
 #[path = "../fixtures/mod.rs"]
 mod fixtures;
@@ -43,6 +43,30 @@ fn run(status: &str, conclusion: Option<&str>) -> CheckRun {
     }
 }
 
+fn success_run() -> serde_json::Value {
+    serde_json::json!({"status": "completed", "conclusion": "success"})
+}
+
+fn failure_run() -> serde_json::Value {
+    serde_json::json!({"status": "completed", "conclusion": "failure"})
+}
+
+struct NoHeader(&'static str);
+
+impl Match for NoHeader {
+    fn matches(&self, req: &Request) -> bool {
+        !req.headers.contains_key(self.0)
+    }
+}
+
+fn client_for(server: &MockServer, state_dir: &std::path::Path) -> Client {
+    let mut cfg = Config::test_defaults(state_dir);
+    cfg.api_base = server.uri();
+    cfg.github_token = Some("ghp_testtoken_value_xyz".to_string());
+    let cache = HttpCache::open(state_dir).expect("cache");
+    Client::with_cache(&cfg, cache).expect("client")
+}
+
 #[test]
 fn empty_empty_is_absent_even_when_combined_state_is_pending() {
     assert_eq!(
@@ -53,9 +77,6 @@ fn empty_empty_is_absent_even_when_combined_state_is_pending() {
 
 #[test]
 fn legacy_failure_is_failure() {
-    // Pure rollup with empty checks (fetch short-circuits before
-    // check-runs, but the pure function still classifies legacy
-    // failure on its own).
     assert_eq!(
         rollup(&status("failure", 1), &checks(vec![], Some(0))),
         CiRollup::Failure
@@ -132,9 +153,6 @@ fn action_required_is_pending() {
 
 #[test]
 fn unrecognized_conclusion_does_not_admit() {
-    // Treated as Pending by the pure function; the fetch layer
-    // surfaces Retryable instead so discovery never records a
-    // durable failure for it.
     assert_eq!(
         rollup(
             &empty_status(),
@@ -169,10 +187,30 @@ fn cancelled_timed_out_stale_are_failure() {
     }
 }
 
+#[test]
+fn is_safe_commit_sha_table() {
+    assert!(is_safe_commit_sha("a"));
+    assert!(is_safe_commit_sha(
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    ));
+    assert!(is_safe_commit_sha(
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    ));
+    assert!(is_safe_commit_sha("ABCDEF"));
+    assert!(!is_safe_commit_sha(""));
+    assert!(!is_safe_commit_sha(
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    ));
+    assert!(!is_safe_commit_sha("not-hex"));
+    assert!(!is_safe_commit_sha("../etc"));
+    assert!(!is_safe_commit_sha("abc/def"));
+}
+
 #[tokio::test]
-async fn short_check_runs_page_is_retryable() {
-    // One page, no Link header, total_count larger than the runs
-    // array: must not roll up to Success (unseen page could fail).
+async fn total_count_larger_than_latest_array_is_not_retryable() {
+    // filter=latest can leave total_count > array length after a
+    // re-run; Link termination means a single page with no next is
+    // complete (PR #436 review).
     let server = MockServer::start().await;
     let sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     Mock::given(method("GET"))
@@ -185,28 +223,144 @@ async fn short_check_runs_page_is_retryable() {
         .mount(&server)
         .await;
     Mock::given(method("GET"))
-        .and(path_regex(format!(
-            r"^/repos/owner/r/commits/{sha}/check-runs"
-        )))
+        .and(path(format!("/repos/owner/r/commits/{sha}/check-runs")))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "total_count": 2,
-            "check_runs": [{
-                "status": "completed",
-                "conclusion": "success"
-            }]
+            "check_runs": [success_run()]
         })))
         .mount(&server)
         .await;
 
-    let state_dir = tempdir("ci-short-page");
-    let mut cfg = Config::test_defaults(&state_dir);
-    cfg.api_base = server.uri();
-    cfg.github_token = Some("ghp_testtoken_value_xyz".to_string());
-    let cache = HttpCache::open(&state_dir).expect("cache");
-    let client = Client::with_cache(&cfg, cache).expect("client");
-
-    let err = fetch_ci_rollup(&client, "owner", "r", sha)
+    let state_dir = tempdir("ci-total-gt-array");
+    let client = client_for(&server, &state_dir);
+    let rollup = fetch_ci_rollup(&client, "owner", "r", sha)
         .await
-        .expect_err("incomplete page must not admit");
-    assert!(matches!(err, CiLookupError::Retryable(_)), "got {err:?}");
+        .expect("complete single page must admit");
+    assert_eq!(rollup, CiRollup::Success);
+}
+
+#[tokio::test]
+async fn link_header_two_page_rollup() {
+    let server = MockServer::start().await;
+    let sha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    let page2 = format!(
+        "{}/repos/owner/r/commits/{sha}/check-runs?filter=latest&per_page=100&page=2",
+        server.uri()
+    );
+    Mock::given(method("GET"))
+        .and(path(format!("/repos/owner/r/commits/{sha}/status")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "state": "pending",
+            "total_count": 0,
+            "statuses": []
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/repos/owner/r/commits/{sha}/check-runs")))
+        .and(query_param_is_missing("page"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Link", format!("<{page2}>; rel=\"next\""))
+                .set_body_json(serde_json::json!({
+                    "total_count": 2,
+                    "check_runs": [success_run()]
+                })),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/repos/owner/r/commits/{sha}/check-runs")))
+        .and(query_param("page", "2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "total_count": 2,
+            "check_runs": [failure_run()]
+        })))
+        .mount(&server)
+        .await;
+
+    let state_dir = tempdir("ci-two-page");
+    let client = client_for(&server, &state_dir);
+    let rollup = fetch_ci_rollup(&client, "owner", "r", sha)
+        .await
+        .expect("two pages roll up");
+    assert_eq!(rollup, CiRollup::Failure);
+}
+
+#[tokio::test]
+async fn check_runs_304_preserves_link_for_page_two() {
+    let server = MockServer::start().await;
+    let sha = "cccccccccccccccccccccccccccccccccccccccc";
+    let page2 = format!(
+        "{}/repos/owner/r/commits/{sha}/check-runs?filter=latest&per_page=100&page=2",
+        server.uri()
+    );
+    Mock::given(method("GET"))
+        .and(path(format!("/repos/owner/r/commits/{sha}/status")))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("etag", "\"status1\"")
+                .set_body_json(serde_json::json!({
+                    "state": "pending",
+                    "total_count": 0,
+                    "statuses": []
+                })),
+        )
+        .mount(&server)
+        .await;
+
+    // Page 1: first GET (no If-None-Match) → 200 + ETag + Link.
+    Mock::given(method("GET"))
+        .and(path(format!("/repos/owner/r/commits/{sha}/check-runs")))
+        .and(query_param_is_missing("page"))
+        .and(NoHeader("if-none-match"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("etag", "\"page1\"")
+                .insert_header("Link", format!("<{page2}>; rel=\"next\""))
+                .set_body_json(serde_json::json!({
+                    "total_count": 2,
+                    "check_runs": [success_run()]
+                })),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    // Page 1 revalidation → 304 without Link (GitHub behaviour).
+    Mock::given(method("GET"))
+        .and(path(format!("/repos/owner/r/commits/{sha}/check-runs")))
+        .and(query_param_is_missing("page"))
+        .and(wiremock::matchers::header("if-none-match", "\"page1\""))
+        .respond_with(ResponseTemplate::new(304))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // Page 2 served both polls (distinct URL / cache key).
+    Mock::given(method("GET"))
+        .and(path(format!("/repos/owner/r/commits/{sha}/check-runs")))
+        .and(query_param("page", "2"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("etag", "\"page2\"")
+                .set_body_json(serde_json::json!({
+                    "total_count": 2,
+                    "check_runs": [failure_run()]
+                })),
+        )
+        .expect(2)
+        .mount(&server)
+        .await;
+
+    let state_dir = tempdir("ci-304-link");
+    let client = client_for(&server, &state_dir);
+    let first = fetch_ci_rollup(&client, "owner", "r", sha)
+        .await
+        .expect("first poll");
+    assert_eq!(first, CiRollup::Failure);
+
+    // Same client / cache: page-1 304 must still follow cached Link.
+    let second = fetch_ci_rollup(&client, "owner", "r", sha)
+        .await
+        .expect("304 must not drop page 2");
+    assert_eq!(second, CiRollup::Failure);
 }
